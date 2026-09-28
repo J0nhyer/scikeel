@@ -248,12 +248,37 @@ export interface PaneState {
  *  a user-configured ACP agent (#14). The UI reads it to withhold controls the
  *  ACP dialect cannot honour — a model picker that silently changed nothing
  *  would be worse than no picker (AGENTS.md). */
-export type RuntimeKind = "opencode" | "acp";
+export type RuntimeKind = "opencode" | "acp" | "server";
+
+/** A runtime offered by the authenticated multi-user Web platform. OpenCode is
+ *  private to the signed-in user; server runtimes reuse administrator-managed
+ *  Claude Code / Codex installations without exposing their credentials. */
+export type GatewayRuntimeId = "opencode" | "claude" | "codex";
+
+export interface GatewayRuntimeOption {
+  runtime: GatewayRuntimeId;
+  kind: "opencode" | "server";
+  managed: boolean;
+  label: string;
+  enabled: boolean;
+  models: string[];
+  defaultModel: string | null;
+  selectedModel: string | null;
+}
+
+export type GatewayUserRole = "admin" | "user";
 
 interface RuntimeState {
   status: RuntimeStatus;
   serverUrl: string;
   runtimeKind: RuntimeKind;
+  /** Multi-user Web platform runtime selected by this account. Null on the
+   *  desktop and on older gateways that do not expose runtime selection. */
+  gatewayRuntime: GatewayRuntimeId | null;
+  gatewayRuntimes: GatewayRuntimeOption[];
+  gatewayUserRole: GatewayUserRole | null;
+  gatewayRuntimeSwitching: boolean;
+  selectGatewayRuntime: (runtime: GatewayRuntimeId) => Promise<void>;
   /** The connected ACP agent's display name, or null on OpenCode. */
   acpAgentName: string | null;
   /** The ACP agent's OWN selectors per session — model, reasoning level,
@@ -2372,6 +2397,80 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   // Reconciled with the saved selection on every connect; OpenCode until then,
   // which is what a first paint before any connection is actually driving.
   runtimeKind: "opencode",
+  gatewayRuntime: null,
+  gatewayRuntimes: [],
+  gatewayUserRole: null,
+  gatewayRuntimeSwitching: false,
+  selectGatewayRuntime: async (runtime) => {
+    if (!isGatewayWeb) return;
+    const state = get();
+    if (state.gatewayRuntime === runtime || state.gatewayRuntimeSwitching) return;
+    const option = state.gatewayRuntimes.find((candidate) => candidate.runtime === runtime);
+    if (!option) {
+      set({ error: `Runtime ${runtime} is not available on this platform.` });
+      return;
+    }
+    if (!option.enabled) {
+      set({ error: `${option.label} has no administrator-enabled models.` });
+      return;
+    }
+    if (Object.keys(state.runningSessions).length > 0) {
+      set({ error: "Wait for the current agent turn to finish before switching runtime." });
+      return;
+    }
+
+    set({ switching: true, gatewayRuntimeSwitching: true, error: null });
+    try {
+      const response = await fetch(`${gatewayOrigin()}/api/runtime`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          runtime,
+          ...(option.selectedModel ? { model: option.selectedModel } : {}),
+        }),
+      });
+      if (!response.ok) {
+        const detail = await response
+          .json()
+          .then((body: { error?: string }) => body.error)
+          .catch(() => null);
+        throw new Error(detail ?? `HTTP ${response.status}`);
+      }
+
+      // Conversations belong to their runtime. Clear the old runtime's view
+      // before reconnecting so an OpenCode session is never sent to Codex (or
+      // vice versa); switching back reloads that runtime's persisted history.
+      useLayoutStore.getState().reset(null);
+      set({
+        sessions: [],
+        currentId: null,
+        threads: {},
+        skills: [],
+        agents: [],
+        commands: [],
+        providers: [],
+        defaultModel: null,
+        questions: [],
+        permissions: [],
+        sessionParents: {},
+        panes: {},
+        sessionAgents: {},
+        runningSessions: {},
+        sendingSessions: {},
+        sending: false,
+        retryNotices: {},
+        backgroundReviews: {},
+      });
+      if (!(await get().connectRetry())) {
+        throw new Error(get().error ?? "The selected runtime did not reconnect.");
+      }
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      set({ switching: false, gatewayRuntimeSwitching: false });
+    }
+  },
   acpAgentName: null,
   acpConfigOptions: {},
   setAcpConfigOption: async (sessionId, configId, value) => {
@@ -2847,6 +2946,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     let directory: string | null;
     let password: string | null;
     let baseUrl = get().serverUrl;
+    let gatewayRuntimeKind: RuntimeKind = "opencode";
+    let gatewayRuntimeName: string | null = null;
+    let gatewayRuntime: GatewayRuntimeId | null = null;
+    let gatewayRuntimes: GatewayRuntimeOption[] = [];
+    let gatewayUserRole: GatewayUserRole | null = null;
     // Artifact path resolutions are relative to the workspace folder, so a
     // connect that lands somewhere else must not reuse them (#92).
     const previousWorkspace = get().workspace;
@@ -2872,7 +2976,72 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       } catch {
         /* whoami is best-effort; the client still connects */
       }
-      set({ serverUrl: baseUrl, workspace: directory, webReadOnly: readOnly });
+      try {
+        const [meResponse, runtimeResponse] = await Promise.all([
+          fetch(`${baseUrl}/api/me`, { credentials: "same-origin" }),
+          fetch(`${baseUrl}/api/runtime`, { credentials: "same-origin" }),
+        ]);
+        if (meResponse.ok) {
+          const me = (await meResponse.json()) as { user?: { role?: string } };
+          if (me.user?.role === "admin" || me.user?.role === "user") {
+            gatewayUserRole = me.user.role;
+          }
+        }
+        if (runtimeResponse.ok) {
+          const managed = (await runtimeResponse.json()) as {
+            runtime?: string;
+            kind?: string;
+            label?: string;
+            available?: Array<{
+              runtime?: string;
+              kind?: string;
+              managed?: boolean;
+              label?: string;
+              enabled?: boolean;
+              models?: unknown;
+              defaultModel?: unknown;
+              selectedModel?: unknown;
+            }>;
+          };
+          if (["opencode", "claude", "codex"].includes(managed.runtime ?? "")) {
+            gatewayRuntime = managed.runtime as GatewayRuntimeId;
+          }
+          gatewayRuntimes = (managed.available ?? []).flatMap((option) => {
+            if (!["opencode", "claude", "codex"].includes(option.runtime ?? "")) return [];
+            const selectedKind = option.kind === "server" ? "server" : "opencode";
+            return [{
+              runtime: option.runtime as GatewayRuntimeId,
+              kind: selectedKind,
+              managed: option.managed === true,
+              label: option.label ?? option.runtime!,
+              enabled: option.enabled !== false,
+              models: Array.isArray(option.models)
+                ? option.models.filter((model): model is string => typeof model === "string")
+                : [],
+              defaultModel:
+                typeof option.defaultModel === "string" ? option.defaultModel : null,
+              selectedModel:
+                typeof option.selectedModel === "string" ? option.selectedModel : null,
+            }];
+          });
+          if (managed.kind === "server") {
+            gatewayRuntimeKind = "server";
+            gatewayRuntimeName = managed.label ?? "Administrator-managed agent";
+          } else if (gatewayRuntime) {
+            gatewayRuntimeName = managed.label ?? "OpenCode";
+          }
+        }
+      } catch {
+        /* Older gateways do not expose runtime metadata. */
+      }
+      set({
+        serverUrl: baseUrl,
+        workspace: directory,
+        webReadOnly: readOnly,
+        gatewayRuntime,
+        gatewayRuntimes,
+        gatewayUserRole,
+      });
     } else {
       // Scope skill discovery to the sidecar's workspace (null in browser dev).
       directory = await workspacePath();
@@ -2943,7 +3112,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       opencodeClient = oc;
       client = oc;
       c = oc;
-      set({ runtimeKind: "opencode", acpAgentName: null });
+      set({
+        runtimeKind: gatewayRuntimeKind,
+        acpAgentName: gatewayRuntimeKind === "server" ? gatewayRuntimeName : null,
+        gatewayRuntime,
+        gatewayRuntimes,
+        gatewayUserRole,
+      });
       // Background streams reuse the same sidecar; the foreground now streams
       // this folder, so drop any background stream that was covering it (avoid a
       // double fold of the same events).
@@ -4230,7 +4405,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // soon as it is accepted. Without this the running lock would be taken
       // AFTER the turn's own `session.idle` had already cleared it, leaving a
       // spinner turning under a finished answer until the next reconcile.
-      s.runtimeKind === "acp",
+      s.runtimeKind === "acp" || s.runtimeKind === "server",
       false,
       sessionId,
       draftKey,
@@ -4590,7 +4765,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         (sid) => withRetry(() => client!.sendPrompt(sid, prompt, undefined, model)),
         // Same reason as the composer's send: an ACP `session/prompt` answers
         // when the turn is OVER, so its lock has to be taken before the call.
-        get().runtimeKind === "acp",
+        get().runtimeKind === "acp" || get().runtimeKind === "server",
         false,
         id,
       );

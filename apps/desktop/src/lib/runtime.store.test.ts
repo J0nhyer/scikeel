@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   /** Desktop or plain-browser runtime (drives the isTauri gates). */
   isTauri: true,
+  /** Authenticated platform Web client, toggled only by gateway-specific tests. */
+  isGatewayWeb: false,
   /** The host's active workspace folder, as `active-workspace.txt` holds it.
    *  `setWorkspace`/`newDatedWorkspace` move it and `workspacePath` reads it
    *  back, because that is the contract the Rust side keeps: creating a dated
@@ -128,6 +130,13 @@ vi.mock("./tauri", () => ({
   installSkillMarkdown: mocks.installSkillMarkdown,
   workspaceSkillNames: mocks.workspaceSkillNames,
   adoptWorkspaceSkills: mocks.adoptWorkspaceSkills,
+}));
+vi.mock("./webMode", () => ({
+  get isGatewayWeb() {
+    return mocks.isGatewayWeb;
+  },
+  gatewayToken: () => "gateway-test-token",
+  gatewayOrigin: () => "http://gateway.test",
 }));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
 vi.mock("./systemNotification", () => ({
@@ -319,6 +328,8 @@ import { leaves, makeLeaf, useLayoutStore } from "./layout";
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.isTauri = true;
+  mocks.isGatewayWeb = false;
   mocks.activeWorkspace = "/ws/base";
   mocks.failConnects = 0;
   mocks.failCreates = 0;
@@ -348,6 +359,11 @@ beforeEach(async () => {
   useToastStore.setState({ toasts: [] });
   mocks.closedDirs.length = 0;
   useRuntimeStore.setState({
+    runtimeKind: "opencode",
+    gatewayRuntime: null,
+    gatewayRuntimes: [],
+    gatewayRuntimeSwitching: false,
+    gatewayUserRole: null,
     currentId: null,
     draftWorkspaces: {},
     threads: {},
@@ -367,6 +383,116 @@ beforeEach(async () => {
   // connect() fires loadCatalog without awaiting it — settle it so tests that
   // override `agents` (or read them) aren't racing the catalog write.
   await new Promise((r) => setTimeout(r, 0));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("gateway runtime selection", () => {
+  it("loads the signed-in role and managed runtime model metadata", async () => {
+    mocks.isTauri = false;
+    mocks.isGatewayWeb = true;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/whoami")) {
+        return new Response(JSON.stringify({ directory: "/srv/student", mode: "full" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/me")) {
+        return new Response(JSON.stringify({ user: { id: "usr_admin", role: "admin" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/runtime")) {
+        return new Response(JSON.stringify({
+          runtime: "codex",
+          kind: "server",
+          label: "Codex",
+          available: [
+            {
+              runtime: "opencode",
+              kind: "opencode",
+              managed: false,
+              label: "OpenCode",
+              enabled: true,
+              models: [],
+              defaultModel: null,
+              selectedModel: null,
+            },
+            {
+              runtime: "codex",
+              kind: "server",
+              managed: true,
+              label: "Codex",
+              enabled: true,
+              models: ["gpt-fast", "gpt-deep"],
+              defaultModel: "gpt-fast",
+              selectedModel: "gpt-deep",
+            },
+          ],
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useRuntimeStore.getState().connect();
+
+    expect(useRuntimeStore.getState().gatewayUserRole).toBe("admin");
+    expect(useRuntimeStore.getState().gatewayRuntimes).toEqual([
+      expect.objectContaining({ runtime: "opencode", enabled: true }),
+      expect.objectContaining({
+        runtime: "codex",
+        enabled: true,
+        models: ["gpt-fast", "gpt-deep"],
+        selectedModel: "gpt-deep",
+      }),
+    ]);
+  });
+
+  it("rejects a disabled managed runtime without posting a selection", async () => {
+    mocks.isTauri = false;
+    mocks.isGatewayWeb = true;
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    useRuntimeStore.setState({
+      gatewayRuntime: "opencode",
+      gatewayRuntimes: [
+        {
+          runtime: "opencode",
+          kind: "opencode",
+          managed: false,
+          label: "OpenCode",
+          enabled: true,
+          models: [],
+          defaultModel: null,
+          selectedModel: null,
+        },
+        {
+          runtime: "claude",
+          kind: "server",
+          managed: true,
+          label: "Claude Code",
+          enabled: false,
+          models: [],
+          defaultModel: null,
+          selectedModel: null,
+        },
+      ],
+    });
+
+    await useRuntimeStore.getState().selectGatewayRuntime("claude");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().error).toMatch(/no administrator-enabled models/i);
+  });
 });
 
 describe("agent artifact presentation targets", () => {
@@ -3573,4 +3699,3 @@ describe("stall guard integration", () => {
     }
   });
 });
-
