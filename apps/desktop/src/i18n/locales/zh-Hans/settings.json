@@ -40,6 +40,11 @@
   "runtime": {
     "title": "代理运行时",
     "hint": "opencode serve，通过其 HTTP + SSE API 驱动",
+    "platformTitle": "智能体运行时",
+    "platformHint": "OpenCode 由每个账号独立使用；Claude Code 和 Codex 使用管理员维护的服务器配置。",
+    "platformSelect": "运行时",
+    "platformOpenCodeHint": "你自己的 OpenCode 工作进程、会话和模型选择。",
+    "platformManagedHint": "{{runtime}} 使用管理员统一维护的服务器安装与配置。",
     "connect": "连接",
     "disconnect": "断开连接",
     "serverLabel": "服务器",
@@ -129,6 +134,17 @@
     "removeFavorite": "从收藏中移除 {{model}}",
     "change": "更换",
     "noProvidersHint": "在下方连接一个 Provider。"
+  },
+  "managedModels": {
+    "title": "托管的 CLI 模型",
+    "hint": "只有管理员可以更改用户可选择的 Claude Code 和 Codex 模型。",
+    "enabled": "{{runtime}} 已启用模型",
+    "enabledHint": "每行填写一个模型标识符。",
+    "default": "{{runtime}} 默认模型",
+    "save": "保存 {{runtime}} 模型",
+    "empty": "尚未配置模型；用户无法选择此 CLI。",
+    "saved": "已保存 {{runtime}} 模型。",
+    "failed": "无法保存 {{runtime}} 模型：{{detail}}"
   },
   "providers": {
     "title": "供应商",

@@ -76,6 +76,7 @@ import { ModelBrowser } from "@/components/settings/ModelBrowser";
 import { fallbackDefaultModel, flattenModelOptions } from "@/components/settings/modelCatalog";
 import { ProviderManagerCard } from "@/components/settings/ProviderManagerCard";
 import { AgentModelsCard } from "@/components/settings/AgentModelsCard";
+import { ManagedRuntimeModelsCard } from "@/components/settings/ManagedRuntimeModelsCard";
 import { MemoryCard } from "@/components/settings/MemoryCard";
 import { Row, Section, Switch } from "@/components/settings/Section";
 import { isDesktopOnlySection, resolveSection } from "@/components/settings/sections";
@@ -142,6 +143,11 @@ export function SettingsPage() {
   const defaultModel = useRuntimeStore((s) => s.defaultModel);
   const loadCatalog = useRuntimeStore((s) => s.loadCatalog);
   const runtimeKind = useRuntimeStore((s) => s.runtimeKind);
+  const gatewayRuntime = useRuntimeStore((s) => s.gatewayRuntime);
+  const gatewayRuntimes = useRuntimeStore((s) => s.gatewayRuntimes);
+  const gatewayUserRole = useRuntimeStore((s) => s.gatewayUserRole);
+  const gatewayRuntimeSwitching = useRuntimeStore((s) => s.gatewayRuntimeSwitching);
+  const selectGatewayRuntime = useRuntimeStore((s) => s.selectGatewayRuntime);
   const autoReview = useRuntimeStore((s) => s.autoReview);
   const setAutoReview = useRuntimeStore((s) => s.setAutoReview);
   const turnNotify = useRuntimeStore((s) => s.turnNotify);
@@ -1038,8 +1044,52 @@ export function SettingsPage() {
         </Section>
         )}
 
+        {/* ---- Per-user runtime on the authenticated cloud platform ---- */}
+        {section === "models" && isGatewayWeb && gatewayRuntime && gatewayRuntimes.length > 0 && (
+        <Section title={t("runtime.platformTitle")} hint={t("runtime.platformHint")} flush>
+          <Row
+            title={t("runtime.platformSelect")}
+            hint={
+              gatewayRuntime === "opencode"
+                ? t("runtime.platformOpenCodeHint")
+                : t("runtime.platformManagedHint", {
+                    runtime:
+                      gatewayRuntimes.find((option) => option.runtime === gatewayRuntime)?.label ??
+                      gatewayRuntime,
+                  })
+            }
+            control={
+              <div className="flex items-center gap-2">
+                {gatewayRuntimeSwitching && <Loader2 size={12} className="animate-spin text-muted" />}
+                <select
+                  value={gatewayRuntime}
+                  onChange={(event) =>
+                    void selectGatewayRuntime(
+                      event.target.value as (typeof gatewayRuntimes)[number]["runtime"],
+                    )
+                  }
+                  disabled={gatewayRuntimeSwitching}
+                  aria-label={t("runtime.platformSelect")}
+                  className={selectCls("min-w-36")}
+                >
+                  {gatewayRuntimes.map((option) => (
+                    <option key={option.runtime} value={option.runtime} disabled={!option.enabled}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            }
+          />
+        </Section>
+        )}
+
+        {section === "models" && isGatewayWeb && gatewayUserRole === "admin" && (
+          <ManagedRuntimeModelsCard />
+        )}
+
         {/* ---- Models ---- */}
-        {section === "models" && (
+        {section === "models" && runtimeKind !== "acp" && (
         <Section title={t("model.title")} hint={t("model.hint")} flush>
           {!modelSurfaceAvailable ? (
             <p className="px-4 py-3 text-[13px] text-muted">{t("model.connectPrompt")}</p>
@@ -1093,7 +1143,7 @@ export function SettingsPage() {
         {section === "memory" && <MemoryCard />}
 
         {/* ---- Providers ---- */}
-        {section === "models" && (
+        {section === "models" && runtimeKind === "opencode" && (
         <ProviderManagerCard
           providers={providers}
           // The web client can only read this surface, so say so up front
@@ -1846,7 +1896,7 @@ export function SettingsPage() {
         )}
 
         {/* ---- Review ---- */}
-        {section === "general" && runtimeKind !== "acp" && (
+        {section === "general" && runtimeKind === "opencode" && (
         <Section title={t("review.title")} hint={t("review.hint")} flush>
           <div className="divide-y divide-faint">
             <Row
@@ -1867,7 +1917,7 @@ export function SettingsPage() {
         {/* ---- Turn-completion notifications ---- */}
         {/* Desktop only: the gateway web client has no native notifications.
             Off by default; fires one system notification per settled turn. */}
-        {section === "general" && isTauri && runtimeKind !== "acp" && (
+        {section === "general" && isTauri && runtimeKind === "opencode" && (
           <Section title={t("notify.title")} hint={t("notify.hint")} flush>
             <div className="divide-y divide-faint">
               <Row
@@ -1890,7 +1940,7 @@ export function SettingsPage() {
             repeating the same tool call with identical results (Channel B) —
             and offer Keep waiting / Stop. Never auto-interrupts. Available on
             the web too (the warning is inline there; no system notification). */}
-        {section === "general" && runtimeKind !== "acp" && (
+        {section === "general" && runtimeKind === "opencode" && (
           <Section
             title={t("stall.title")}
             hint={t("stall.hint") + (isGatewayWeb ? ` ${t("stall.webNote")}` : "")}
@@ -1964,7 +2014,7 @@ export function SettingsPage() {
         {/* Desktop only: it needs a folder on this machine and a local runtime
             to import into, so the gateway web client hides it rather than
             offering a control that cannot work. */}
-        {section === "general" && isTauri && runtimeKind !== "acp" && <ConversationSyncCard />}
+        {section === "general" && isTauri && runtimeKind === "opencode" && <ConversationSyncCard />}
 
         {/* ---- Which agent this app drives: OpenCode, or an ACP agent (#14) ---- */}
         {section === "runtime" && <AcpAgentsCard />}

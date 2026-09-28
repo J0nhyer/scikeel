@@ -8,9 +8,11 @@
 // read once at module load (that is the real thing being exercised), and every
 // module branching on it holds its own copy.
 import { act, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderInfo } from "@ai4s/sdk";
+import type { GatewayRuntimeOption } from "@/lib/runtime";
 
 (window as unknown as { __OS_WEB__?: boolean }).__OS_WEB__ = true;
 
@@ -22,6 +24,39 @@ const { SettingsPage } = await import("./SettingsPage");
 const providers: ProviderInfo[] = [
   { id: "opencode", name: "OpenCode Zen", models: [{ id: "grok-code", name: "Grok Code" }] },
   { id: "openai", name: "OpenAI", models: [{ id: "gpt-5.2", name: "GPT-5.2" }] },
+];
+const selectGatewayRuntime = vi.fn(async () => {});
+const gatewayRuntimes: GatewayRuntimeOption[] = [
+  {
+    runtime: "opencode",
+    kind: "opencode",
+    managed: false,
+    label: "OpenCode",
+    enabled: true,
+    models: [],
+    defaultModel: null,
+    selectedModel: null,
+  },
+  {
+    runtime: "claude",
+    kind: "server",
+    managed: true,
+    label: "Claude Code",
+    enabled: true,
+    models: ["opus"],
+    defaultModel: "opus",
+    selectedModel: "opus",
+  },
+  {
+    runtime: "codex",
+    kind: "server",
+    managed: true,
+    label: "Codex",
+    enabled: true,
+    models: ["gpt-5.6-sol"],
+    defaultModel: "gpt-5.6-sol",
+    selectedModel: "gpt-5.6-sol",
+  },
 ];
 
 function webClient() {
@@ -54,7 +89,18 @@ describe("Providers in the gateway web client", () => {
 
   beforeEach(async () => {
     vi.spyOn(runtime, "getClient").mockReturnValue(webClient());
-    useRuntimeStore.setState({ status: "ready", defaultModel: "openai/gpt-5.2", switching: false });
+    selectGatewayRuntime.mockClear();
+    useRuntimeStore.setState({
+      status: "ready",
+      defaultModel: "openai/gpt-5.2",
+      switching: false,
+      runtimeKind: "opencode",
+      gatewayRuntime: "opencode",
+      gatewayRuntimes: [...gatewayRuntimes],
+      gatewayUserRole: "user",
+      gatewayRuntimeSwitching: false,
+      selectGatewayRuntime,
+    });
     await i18n.changeLanguage("en");
     await renderAt("/settings/models");
   });
@@ -63,6 +109,7 @@ describe("Providers in the gateway web client", () => {
     view?.unmount();
     view = undefined;
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     useRuntimeStore.setState(initialRuntime, true);
   });
 
@@ -85,6 +132,70 @@ describe("Providers in the gateway web client", () => {
     expect(screen.queryByPlaceholderText(/Connect a provider/)).not.toBeInTheDocument();
     // Removing one (DELETE /auth, config write → 403).
     expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+  });
+
+  it("lets this account choose OpenCode, Claude Code, or Codex independently", async () => {
+    const selector = screen.getByRole("combobox", { name: "Runtime" });
+    expect(within(selector).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "OpenCode",
+      "Claude Code",
+      "Codex",
+    ]);
+    await userEvent.selectOptions(selector, "codex");
+    expect(selectGatewayRuntime).toHaveBeenCalledWith("codex");
+  });
+
+  it("shows model selection but not OpenCode provider management for a managed CLI", async () => {
+    act(() => {
+      useRuntimeStore.setState({ runtimeKind: "server", gatewayRuntime: "codex" });
+    });
+    expect(screen.getByText(/Codex uses the administrator's server installation/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Model" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 2, name: "Providers" })).not.toBeInTheDocument();
+  });
+
+  it("does not show managed catalog configuration to an ordinary user", () => {
+    expect(screen.queryByRole("heading", { name: "Managed CLI models" })).not.toBeInTheDocument();
+  });
+
+  it("lets an administrator save one managed CLI catalog at a time", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        managedRuntimes: {
+          claude: { models: ["sonnet", "opus"], defaultModel: "sonnet" },
+          codex: { models: ["gpt-fast"], defaultModel: "gpt-fast" },
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    act(() => useRuntimeStore.setState({ gatewayUserRole: "admin" }));
+
+    const models = await screen.findByLabelText("Codex enabled models");
+    await userEvent.clear(models);
+    await userEvent.type(models, "gpt-fast\ngpt-deep");
+    await userEvent.selectOptions(screen.getByLabelText("Codex default model"), "gpt-deep");
+    await userEvent.click(screen.getByRole("button", { name: "Save Codex models" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/admin/runtime"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          runtime: "codex",
+          models: ["gpt-fast", "gpt-deep"],
+          defaultModel: "gpt-deep",
+        }),
+      }),
+    );
   });
 });
 

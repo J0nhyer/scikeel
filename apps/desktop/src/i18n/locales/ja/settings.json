@@ -40,6 +40,11 @@
   "runtime": {
     "title": "エージェントランタイム",
     "hint": "opencode serve を、その HTTP + SSE API 経由で操作します",
+    "platformTitle": "エージェントランタイム",
+    "platformHint": "OpenCode はアカウントごとに独立しています。Claude Code と Codex は管理者が管理するサーバープロファイルを使用します。",
+    "platformSelect": "ランタイム",
+    "platformOpenCodeHint": "専用の OpenCode ワーカー、会話、モデル選択を使用します。",
+    "platformManagedHint": "{{runtime}} は管理者のサーバーインストールと設定を使用します。",
     "connect": "接続",
     "disconnect": "切断",
     "serverLabel": "サーバー",
@@ -129,6 +134,17 @@
     "removeFavorite": "{{model}} をお気に入りから削除",
     "change": "変更",
     "noProvidersHint": "下の Providers で接続してください。"
+  },
+  "managedModels": {
+    "title": "管理対象 CLI モデル",
+    "hint": "ユーザーが選択できる Claude Code と Codex のモデルを変更できるのは管理者だけです。",
+    "enabled": "{{runtime}} の有効なモデル",
+    "enabledHint": "1 行に 1 つのモデル識別子を入力します。",
+    "default": "{{runtime}} の既定モデル",
+    "save": "{{runtime}} のモデルを保存",
+    "empty": "モデルが設定されていないため、ユーザーはこの CLI を選択できません。",
+    "saved": "{{runtime}} のモデルを保存しました。",
+    "failed": "{{runtime}} のモデルを保存できませんでした: {{detail}}"
   },
   "providers": {
     "title": "プロバイダー",

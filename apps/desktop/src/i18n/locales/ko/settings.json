@@ -40,6 +40,11 @@
   "runtime": {
     "title": "에이전트 런타임",
     "hint": "opencode serve — HTTP + SSE API로 제어",
+    "platformTitle": "에이전트 런타임",
+    "platformHint": "OpenCode는 계정별로 독립적으로 유지됩니다. Claude Code와 Codex는 관리자가 유지하는 서버 프로필을 사용합니다.",
+    "platformSelect": "런타임",
+    "platformOpenCodeHint": "전용 OpenCode 워커, 대화 및 모델 선택을 사용합니다.",
+    "platformManagedHint": "{{runtime}}는 관리자의 서버 설치와 설정을 사용합니다.",
     "connect": "연결",
     "disconnect": "연결 해제",
     "serverLabel": "서버",
@@ -129,6 +134,17 @@
     "removeFavorite": "{{model}}을 즐겨찾기에서 제거",
     "change": "변경",
     "noProvidersHint": "아래에서 제공자를 연결하세요."
+  },
+  "managedModels": {
+    "title": "관리형 CLI 모델",
+    "hint": "관리자만 사용자가 선택할 수 있는 Claude Code 및 Codex 모델을 변경할 수 있습니다.",
+    "enabled": "{{runtime}} 활성 모델",
+    "enabledHint": "한 줄에 모델 식별자 하나를 입력하세요.",
+    "default": "{{runtime}} 기본 모델",
+    "save": "{{runtime}} 모델 저장",
+    "empty": "구성된 모델이 없어 사용자가 이 CLI를 선택할 수 없습니다.",
+    "saved": "{{runtime}} 모델을 저장했습니다.",
+    "failed": "{{runtime}} 모델을 저장할 수 없습니다: {{detail}}"
   },
   "providers": {
     "title": "공급자",

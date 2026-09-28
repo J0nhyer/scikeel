@@ -40,6 +40,11 @@
   "runtime": {
     "title": "Entorno de ejecución del agente",
     "hint": "opencode serve, controlado mediante su API HTTP + SSE",
+    "platformTitle": "Entorno de ejecución del agente",
+    "platformHint": "OpenCode permanece privado en tu cuenta. Claude Code y Codex usan perfiles del servidor mantenidos por el administrador.",
+    "platformSelect": "Entorno de ejecución",
+    "platformOpenCodeHint": "Tu propio proceso de OpenCode, conversaciones y selección de modelos.",
+    "platformManagedHint": "{{runtime}} usa la instalación y configuración del servidor del administrador.",
     "connect": "Conectar",
     "disconnect": "Desconectar",
     "serverLabel": "Servidor",
@@ -129,6 +134,17 @@
     "removeFavorite": "Quitar {{model}} de favoritos",
     "change": "Cambiar",
     "noProvidersHint": "Conecta un proveedor más abajo."
+  },
+  "managedModels": {
+    "title": "Modelos de CLI administrados",
+    "hint": "Solo los administradores pueden cambiar qué modelos de Claude Code y Codex pueden seleccionar los usuarios.",
+    "enabled": "Modelos habilitados de {{runtime}}",
+    "enabledHint": "Un identificador de modelo por línea.",
+    "default": "Modelo predeterminado de {{runtime}}",
+    "save": "Guardar modelos de {{runtime}}",
+    "empty": "No hay modelos configurados; los usuarios no pueden seleccionar esta CLI.",
+    "saved": "Modelos de {{runtime}} guardados.",
+    "failed": "No se pudieron guardar los modelos de {{runtime}}: {{detail}}"
   },
   "providers": {
     "title": "Proveedores",
