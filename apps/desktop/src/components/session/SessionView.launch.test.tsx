@@ -3,11 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderAt } from "@/test/render";
 import { useRuntimeStore } from "@/lib/runtime";
 
-// COPYCAT RULE: useRuntimeStore is module-global — restore the status this file
-// found it at, so no other suite inherits a faked one.
-const RUNTIME_STATUS = useRuntimeStore.getState().status;
+// COPYCAT RULE: useRuntimeStore is module-global — restore the complete state
+// this file found, so no other suite inherits a faked runtime kind or action.
+const INITIAL_RUNTIME = useRuntimeStore.getState();
 afterEach(() => {
-  useRuntimeStore.setState({ status: RUNTIME_STATUS, error: null });
+  useRuntimeStore.setState(INITIAL_RUNTIME, true);
   vi.useRealTimers();
 });
 
@@ -42,5 +42,29 @@ describe("a session pane while the runtime is starting", () => {
     renderAt("/live");
     expect(await screen.findByText("OpenCode runtime")).toBeInTheDocument();
     expect(screen.queryByText("Starting the local runtime…")).not.toBeInTheDocument();
+  });
+});
+
+describe("a session pane using an administrator-managed CLI", () => {
+  it("shows the ordinary model picker", async () => {
+    useRuntimeStore.setState({
+      status: "ready",
+      runtimeKind: "server",
+      webReadOnly: false,
+      bootstrap: vi.fn(async () => {}),
+      providers: [
+        {
+          id: "codex",
+          name: "Codex",
+          models: [{ id: "gpt-fast", name: "gpt-fast" }],
+        },
+      ],
+      defaultModel: "codex/gpt-fast",
+    });
+
+    renderAt("/live");
+
+    expect(await screen.findByRole("button", { name: "Switch model" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approval mode" })).not.toBeInTheDocument();
   });
 });

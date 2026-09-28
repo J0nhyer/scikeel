@@ -108,6 +108,30 @@ describe("ModelPicker", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("switches an administrator-managed CLI model through the ordinary picker", async () => {
+    useRuntimeStore.setState({
+      runtimeKind: "server",
+      providers: [
+        {
+          id: "codex",
+          name: "Codex",
+          models: [
+            { id: "gpt-fast", name: "gpt-fast" },
+            { id: "gpt-deep", name: "gpt-deep" },
+          ],
+        },
+      ],
+      defaultModel: "codex/gpt-fast",
+    });
+    const user = userEvent.setup();
+    renderPicker();
+
+    await user.click(chip());
+    await user.click(within(screen.getByRole("dialog")).getByText("gpt-deep"));
+
+    expect(setDefaultModel).toHaveBeenCalledWith("codex/gpt-deep");
+  });
+
   it("stays open after switching to a reasoning-capable model (so effort can be tuned)", async () => {
     useRuntimeStore.setState({ defaultModel: "openai/gpt-mini" });
     const user = userEvent.setup();

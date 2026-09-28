@@ -421,8 +421,9 @@ export function SessionView({
     return [...byPath.values()];
   }, [thread?.blocks]);
 
-  // An ACP agent is driving instead of the bundled OpenCode runtime (#14).
-  const acp = useRuntimeStore((s) => s.runtimeKind) === "acp";
+  const runtimeKind = useRuntimeStore((s) => s.runtimeKind);
+  const acp = runtimeKind === "acp";
+  const managedServer = runtimeKind === "server";
   const acpConfigOptions = useRuntimeStore((s) => s.acpConfigOptions);
   const setAcpConfigOption = useRuntimeStore((s) => s.setAcpConfigOption);
   const planAvailable = agents.some((a) => a.name === "plan");
@@ -1198,13 +1199,13 @@ export function SessionView({
                           ? t("composer.placeholder.plan")
                           : t("composer.placeholder.default")
               }
-              // Both switches belong to the OpenCode runtime: the approval mode is
-              // its config (an ACP agent asks for permission on its own terms),
-              // and the model picker sends a per-turn model ACP v1 has no way to
-              // honour — the agent owns its model. Withheld rather than shown
-              // doing nothing (#14).
-              approvalMode={acp ? undefined : approvalMode}
-              onApprovalModeChange={acp ? undefined : (mode) => void setApprovalMode(mode)}
+              // Approval mode belongs to OpenCode. ACP handles permissions on
+              // its own terms, while a managed server CLI uses its fixed server
+              // policy. Both therefore hide this switch.
+              approvalMode={acp || managedServer ? undefined : approvalMode}
+              onApprovalModeChange={
+                acp || managedServer ? undefined : (mode) => void setApprovalMode(mode)
+              }
               agentMode={planAvailable ? agentMode : undefined}
               onAgentModeChange={planAvailable ? (mode) => setAgentMode(mode, key) : undefined}
               showModelPicker={connected && !webReadOnly && !acp}
