@@ -258,6 +258,50 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   const studentRuntime = await student.request("/api/runtime", { headers: { accept: "application/json" } });
   assert.equal((await json(studentRuntime)).runtime, "opencode");
 
+  const configuredCodex = await admin.request("/api/admin/runtime", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({
+      runtime: "codex",
+      models: ["gpt-fast", "gpt-deep"],
+      defaultModel: "gpt-fast",
+    }),
+  });
+  assert.equal(configuredCodex.status, 200);
+  assert.deepEqual((await json(configuredCodex)).managedRuntimes.codex, {
+    models: ["gpt-fast", "gpt-deep"],
+    defaultModel: "gpt-fast",
+  });
+
+  const invalidCatalog = await admin.request("/api/admin/runtime", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({
+      runtime: "codex",
+      models: ["gpt-fast"],
+      defaultModel: "gpt-missing",
+    }),
+  });
+  assert.equal(invalidCatalog.status, 400);
+  const unchangedCatalog = await admin.request("/api/admin/runtime", {
+    headers: { accept: "application/json" },
+  });
+  assert.deepEqual((await json(unchangedCatalog)).managedRuntimes.codex, {
+    models: ["gpt-fast", "gpt-deep"],
+    defaultModel: "gpt-fast",
+  });
+
+  const studentAdminAttempt = await student.request("/api/admin/runtime", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({
+      runtime: "codex",
+      models: ["forbidden"],
+      defaultModel: "forbidden",
+    }),
+  });
+  assert.equal(studentAdminAttempt.status, 403);
+
   const selectClaude = await admin.request("/api/runtime", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
@@ -302,22 +346,33 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   }
   assert.match(streamed, /session\.idle/);
   await eventReader.cancel();
-  const studentAdminAttempt = await student.request("/api/admin/runtime", {
-    method: "POST",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ runtime: "codex" }),
-  });
-  assert.equal(studentAdminAttempt.status, 403);
 
   const switchRuntime = await admin.request("/api/runtime", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ runtime: "codex" }),
+    body: JSON.stringify({ runtime: "codex", model: "gpt-deep" }),
   });
   assert.equal(switchRuntime.status, 200);
-  assert.equal((await json(switchRuntime)).runtime, "codex");
+  assert.deepEqual(await json(switchRuntime), expectRuntime({ runtime: "codex", model: "gpt-deep" }));
   const stillUnchangedStudentRuntime = await student.request("/api/runtime", { headers: { accept: "application/json" } });
   assert.equal((await json(stillUnchangedStudentRuntime)).runtime, "opencode");
+  const adminManagedConfig = await admin.request("/global/config", {
+    headers: { accept: "application/json" },
+  });
+  assert.deepEqual(await json(adminManagedConfig), { model: "codex/gpt-deep" });
+  const codexProviders = await admin.request("/config/providers", {
+    headers: { accept: "application/json" },
+  });
+  assert.deepEqual(await json(codexProviders), {
+    providers: [{
+      id: "codex",
+      name: "Codex",
+      models: {
+        "gpt-fast": { name: "gpt-fast", variants: {}, limit: { context: 0 } },
+        "gpt-deep": { name: "gpt-deep", variants: {}, limit: { context: 0 } },
+      },
+    }],
+  });
   const codexSessionsBefore = await admin.request("/experimental/session", {
     headers: { accept: "application/json" },
   });
@@ -340,7 +395,7 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   const codexAssistant = await waitForAssistant(admin, codexSession.id);
   assert.match(
     codexAssistant.parts.find((part) => part.type === "text").text,
-    /Codex\[admin-model\]: hello Codex/,
+    /Codex\[gpt-deep\]: hello Codex/,
   );
 
   const codexFollowUp = await admin.request(`/session/${codexSession.id}/prompt_async`, {
@@ -354,13 +409,41 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
       headers: { accept: "application/json" },
     });
     const messages = await json(messagesResponse);
-    if (messages.some((message) => message.parts?.some((part) => /Codex\[admin-model\]: continue Codex/.test(part.text ?? "")))) {
+    if (messages.some((message) => message.parts?.some((part) => /Codex\[gpt-deep\]: continue Codex/.test(part.text ?? "")))) {
       assert.equal(messages.some((message) => message.info?.error), false);
       break;
     }
     if (attempt === 99) assert.fail("Codex follow-up did not finish");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+
+  const selectStudentCodex = await student.request("/api/runtime", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ runtime: "codex", model: "gpt-fast" }),
+  });
+  assert.equal(selectStudentCodex.status, 200);
+  assert.equal((await json(selectStudentCodex)).model, "gpt-fast");
+  const studentManagedConfig = await student.request("/global/config", {
+    headers: { accept: "application/json" },
+  });
+  assert.deepEqual(await json(studentManagedConfig), { model: "codex/gpt-fast" });
+  const adminStillDeep = await admin.request("/global/config", {
+    headers: { accept: "application/json" },
+  });
+  assert.deepEqual(await json(adminStillDeep), { model: "codex/gpt-deep" });
+
+  const patchAdminModel = await admin.request("/global/config", {
+    method: "PATCH",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ model: "codex/gpt-fast" }),
+  });
+  assert.equal(patchAdminModel.status, 200);
+  assert.deepEqual(await json(patchAdminModel), { model: "codex/gpt-fast" });
+  const adminAfterPatch = await admin.request("/global/config", {
+    headers: { accept: "application/json" },
+  });
+  assert.deepEqual(await json(adminAfterPatch), { model: "codex/gpt-fast" });
 
   const switchBack = await admin.request("/api/runtime", {
     method: "POST",
@@ -373,3 +456,49 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   });
   assert.deepEqual((await json(restoredClaudeSessions)).map((session) => session.id), [claudeSession.id]);
 });
+
+function expectRuntime({ runtime, model }) {
+  return {
+    runtime,
+    kind: "server",
+    managed: true,
+    label: runtime === "codex" ? "Codex" : "Claude Code",
+    enabled: true,
+    models: runtime === "codex" ? ["gpt-fast", "gpt-deep"] : ["admin-model"],
+    defaultModel: runtime === "codex" ? "gpt-fast" : "admin-model",
+    selectedModel: model,
+    model,
+    available: [
+      {
+        runtime: "opencode",
+        kind: "opencode",
+        managed: false,
+        label: "OpenCode",
+        enabled: true,
+        models: [],
+        defaultModel: null,
+        selectedModel: null,
+      },
+      {
+        runtime: "claude",
+        kind: "server",
+        managed: true,
+        label: "Claude Code",
+        enabled: true,
+        models: ["admin-model"],
+        defaultModel: "admin-model",
+        selectedModel: "admin-model",
+      },
+      {
+        runtime: "codex",
+        kind: "server",
+        managed: true,
+        label: "Codex",
+        enabled: true,
+        models: ["gpt-fast", "gpt-deep"],
+        defaultModel: "gpt-fast",
+        selectedModel: model,
+      },
+    ],
+  };
+}

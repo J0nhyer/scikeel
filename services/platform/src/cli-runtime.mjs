@@ -63,6 +63,19 @@ function runtimeDescriptor(runtime) {
   };
 }
 
+function managedModelKey(runtime, model) {
+  return model ? `${runtime}/${model}` : null;
+}
+
+function modelFromManagedKey(runtime, value) {
+  const key = normalizeModelId(value);
+  const prefix = `${runtime}/`;
+  if (!key.startsWith(prefix) || key.length === prefix.length) {
+    throw issue("invalid_model", `model must start with ${prefix}`);
+  }
+  return key.slice(prefix.length);
+}
+
 function emptyManagedRuntimes() {
   return {
     claude: { models: [], defaultModel: null },
@@ -1121,15 +1134,38 @@ export class CliRuntimeManager {
       return true;
     }
     if (path === "/global/config" && request.method === "GET") {
-      sendJson(response, 200, {});
+      const runtime = this.runtimeForUser(userId);
+      sendJson(response, 200, { model: managedModelKey(runtime, this.modelForUser(userId, runtime)) });
       return true;
     }
     if (path === "/global/config" && request.method === "PATCH") {
-      sendJson(response, 403, { error: "the agent runtime is managed by the administrator" });
+      try {
+        const body = await jsonBody(request);
+        if (Object.keys(body).length !== 1 || typeof body.model !== "string") {
+          throw issue("invalid_config", "only the selected model may be changed");
+        }
+        const runtime = this.runtimeForUser(userId);
+        const model = modelFromManagedKey(runtime, body.model);
+        await this.setUserModel(userId, runtime, model);
+        sendJson(response, 200, { model: managedModelKey(runtime, model) });
+      } catch (error) {
+        sendJson(response, error.status ?? 400, { error: error.message });
+      }
       return true;
     }
     if (path === "/config/providers" && request.method === "GET") {
-      sendJson(response, 200, { providers: [] });
+      const runtime = this.runtimeForUser(userId);
+      const { models } = this.managedRuntimes[runtime];
+      sendJson(response, 200, {
+        providers: [{
+          id: runtime,
+          name: runtimeDescriptor(runtime).label,
+          models: Object.fromEntries(models.map((model) => [
+            model,
+            { name: model, variants: {}, limit: { context: 0 } },
+          ])),
+        }],
+      });
       return true;
     }
     if (path === "/provider" && request.method === "GET") {
