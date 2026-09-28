@@ -446,6 +446,7 @@ describe("gateway runtime selection", () => {
     await useRuntimeStore.getState().connect();
 
     expect(useRuntimeStore.getState().gatewayUserRole).toBe("admin");
+    expect(useRuntimeStore.getState().sessionListReady).toBe(true);
     expect(useRuntimeStore.getState().gatewayRuntimes).toEqual([
       expect.objectContaining({ runtime: "opencode", enabled: true }),
       expect.objectContaining({

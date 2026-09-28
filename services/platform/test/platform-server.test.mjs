@@ -200,6 +200,21 @@ test("does not expose worker routes without a platform session", async () => {
   assert.equal(fixture.manager.listWorkers().length, 0);
 });
 
+test("logs out through a browser form and revokes the platform session", async () => {
+  const fixture = await makeFixture();
+  const admin = makeClient(fixture.base);
+  await login(admin, "admin", "admin-password");
+
+  const logout = await admin.request("/auth/logout", { method: "POST" });
+  assert.equal(logout.status, 303);
+  assert.equal(logout.headers.get("location"), "/login");
+  assert.equal(admin.jar.has("osd_session"), false);
+  assert.equal(admin.jar.has("osd_worker_bootstrap"), false);
+
+  const me = await admin.request("/api/me", { headers: { accept: "application/json" } });
+  assert.equal(me.status, 401);
+});
+
 test("keeps OpenCode per user while exposing administrator-managed Claude and Codex CLIs", async () => {
   const root = await mkdtemp(join(tmpdir(), "osd-platform-cli-"));
   const webRoot = join(root, "web");

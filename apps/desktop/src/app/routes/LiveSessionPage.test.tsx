@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { screenVisibility } from "./LiveSessionPage";
+import { missingSessionId, screenVisibility } from "./LiveSessionPage";
 
 describe("how a Screen is hidden", () => {
   it("shows the active one", () => {
@@ -27,5 +27,22 @@ describe("how a Screen is hidden", () => {
     const { className, style } = screenVisibility(false, false);
     expect(className).toContain("hidden");
     expect(style).toBeUndefined();
+  });
+});
+
+describe("restored Web sessions", () => {
+  const sessions = [{ id: "ses_current" }];
+
+  it("waits until the runtime is ready before rejecting a restored session", () => {
+    expect(missingSessionId("connecting", false, ["ses_old"], sessions)).toBeNull();
+    expect(missingSessionId("ready", false, ["ses_old"], sessions)).toBeNull();
+  });
+
+  it("recognizes a URL or restored layout session that the selected CLI does not own", () => {
+    expect(missingSessionId("ready", true, ["ses_old"], sessions)).toBe("ses_old");
+  });
+
+  it("keeps a session that exists in the selected CLI", () => {
+    expect(missingSessionId("ready", true, ["ses_current"], sessions)).toBeNull();
   });
 });

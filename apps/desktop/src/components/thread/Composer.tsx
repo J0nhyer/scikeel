@@ -38,6 +38,7 @@ import {
   walkWorkspace,
 } from "@/components/thread/references";
 import { ModelPicker } from "@/components/thread/ModelPicker";
+import { RuntimePicker } from "@/components/thread/RuntimePicker";
 import { AcpConfigPicker } from "@/components/thread/AcpConfigPicker";
 import type { AcpConfigOption } from "@ai4s/sdk/acp";
 import { WorkspaceChip } from "@/components/thread/WorkspaceChip";
@@ -1139,7 +1140,12 @@ export function Composer({
               onCancel={() => setConfirmCompact(false)}
             />
           )}
-          {showModelPicker && <ModelPicker sessionId={modelSessionId} compact={compactToolbar} />}
+          {showModelPicker && (
+            <>
+              <RuntimePicker compact={compactToolbar} />
+              <ModelPicker sessionId={modelSessionId} compact={compactToolbar} />
+            </>
+          )}
           {configOptions && onConfigOption && (
             <AcpConfigPicker options={configOptions} onChange={onConfigOption} disabled={working} />
           )}

@@ -48,6 +48,7 @@ import { startPaneDrag } from "@/lib/dragPane";
 import { isGatewayWeb } from "@/lib/webMode";
 import { pathKey, samePath } from "@/lib/workspacePath";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { PlatformLogoutButton } from "@/components/sidebar/PlatformLogoutButton";
 import {
   ContextMenu,
   ContextMenuEmpty,
@@ -956,7 +957,7 @@ export function Sidebar({ project }: { project: Project }) {
           {exampleRows.map(sessionRow)}
         </div>
 
-        <div className="border-t border-border px-3 py-3">
+        <div className="flex flex-wrap items-center gap-1 border-t border-border px-3 py-3">
           <button
             className="relative flex items-center gap-2 rounded-input px-2 py-1 text-[13px] text-muted hover:bg-surface-2 hover:text-text"
             onClick={() => navigate("/settings")}
@@ -971,6 +972,7 @@ export function Sidebar({ project }: { project: Project }) {
               />
             )}
           </button>
+          {isGatewayWeb && <PlatformLogoutButton />}
         </div>
         </>
         )}

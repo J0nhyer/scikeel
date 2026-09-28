@@ -43,6 +43,10 @@
       "plan": "計画する内容を入力 — ファイルは変更されません"
     },
     "commandsAria": "コマンド",
+    "runtime": {
+      "aria": "CLI を選択",
+      "title": "この会話で使用する CLI"
+    },
     "source": {
       "skill": "スキル",
       "mcp": "mcp"

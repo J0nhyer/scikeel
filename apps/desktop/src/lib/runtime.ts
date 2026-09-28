@@ -277,6 +277,9 @@ interface RuntimeState {
   gatewayRuntime: GatewayRuntimeId | null;
   gatewayRuntimes: GatewayRuntimeOption[];
   gatewayUserRole: GatewayUserRole | null;
+  /** True after the current runtime's session list has loaded at least once.
+   *  Web deep links must not reject a session during the connect/list gap. */
+  sessionListReady: boolean;
   gatewayRuntimeSwitching: boolean;
   selectGatewayRuntime: (runtime: GatewayRuntimeId) => Promise<void>;
   /** The connected ACP agent's display name, or null on OpenCode. */
@@ -2400,6 +2403,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   gatewayRuntime: null,
   gatewayRuntimes: [],
   gatewayUserRole: null,
+  sessionListReady: false,
   gatewayRuntimeSwitching: false,
   selectGatewayRuntime: async (runtime) => {
     if (!isGatewayWeb) return;
@@ -2444,6 +2448,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       useLayoutStore.getState().reset(null);
       set({
         sessions: [],
+        sessionListReady: false,
         currentId: null,
         threads: {},
         skills: [],
@@ -2923,6 +2928,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   },
 
   connect: async () => {
+    if (isGatewayWeb) set({ sessionListReady: false });
     // This attempt failed. Inside a retry loop that is a step, not an outcome:
     // the message is kept for connectRetry to report if the window runs out,
     // and the UI stays on "connecting" instead of blinking the offline card.
@@ -3943,7 +3949,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     retiredBackgroundReviews.clear();
     backgroundReviewResultParts.clear();
     reviewInFlight = null;
-    set({ status: "offline", modelSwitchError: null, backgroundReviews: {} });
+    set({
+      status: "offline",
+      modelSwitchError: null,
+      backgroundReviews: {},
+      sessionListReady: false,
+    });
   },
 
   refreshSessions: async () => {
@@ -3955,7 +3966,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         // path for parent links after a reload (no live task event to learn from).
         const sessionParents = { ...s.sessionParents };
         for (const m of sessions) if (m.parentId) sessionParents[m.id] = m.parentId;
-        return { sessions, sessionParents };
+        return { sessions, sessionParents, sessionListReady: true };
       });
     } catch {
       /* ignore transient list failures */

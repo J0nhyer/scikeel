@@ -1,5 +1,7 @@
 # Progress
 
+2026-09-28 20:24 · Deployed reliable Web sign-out, an in-composer CLI selector beside the model selector, and stale-session recovery that returns missing or wrong-runtime links to a clean chat; passed 18/18 platform tests, 276/276 focused Web tests, TypeScript, ESLint, public authentication/runtime/logout checks, and a fresh production build.
+
 2026-09-28 20:13 · Deployed administrator-managed Claude/Codex model catalogs with per-user CLI/model selection, preserved OpenCode, fixed visible CLI error propagation, passed 17/17 platform and 46/46 focused Web tests, and verified real Codex two-turn, Claude Code, and OpenCode conversations before restoring the administrator to OpenCode.
 
 2026-09-28 15:48 · Added the administrator-only Claude/Codex model catalog editor; four focused frontend suites pass 28/28 and TypeScript passes.

@@ -43,6 +43,10 @@
       "plan": "描述要规划的任务——不会改动任何文件"
     },
     "commandsAria": "命令",
+    "runtime": {
+      "aria": "选择 CLI",
+      "title": "选择此对话使用的 CLI"
+    },
     "source": {
       "skill": "技能",
       "mcp": "mcp"

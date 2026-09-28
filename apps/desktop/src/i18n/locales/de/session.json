@@ -43,6 +43,10 @@
       "plan": "Beschreibe, was geplant werden soll — keine Dateien werden geändert"
     },
     "commandsAria": "Befehle",
+    "runtime": {
+      "aria": "CLI auswählen",
+      "title": "CLI für diese Unterhaltung"
+    },
     "source": {
       "skill": "skill",
       "mcp": "mcp"

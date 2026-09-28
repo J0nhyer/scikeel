@@ -177,6 +177,7 @@ export function SessionView({
   // own below (#34).
   const status = useRuntimeStore((s) => s.status);
   const switching = useRuntimeStore((s) => s.switching);
+  const sessionListReady = useRuntimeStore((s) => s.sessionListReady);
   const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
   // Session-keyed maps are read PER SESSION, never as the whole map: they churn
   // as any session streams (background panes and invisible subagents included),
@@ -245,9 +246,13 @@ export function SessionView({
   // Split buttons/drag only make sense where tiling works (desktop, not web).
   const canSplit = !isGatewayWeb && !isMobile;
 
-  const connected = status === "ready" || switching;
-  const connecting = status === "connecting" && !switching;
-  const displayStatus = switching ? "ready" : status;
+  // The platform marks the transport ready just before its first session list
+  // arrives. Keep a restored/stale conversation read-only in that gap so it
+  // cannot send to an id that belongs to another CLI or no longer exists.
+  const waitingForWebSessions = isGatewayWeb && !sessionListReady;
+  const connected = !waitingForWebSessions && (status === "ready" || switching);
+  const connecting = waitingForWebSessions || (status === "connecting" && !switching);
+  const displayStatus = waitingForWebSessions ? "connecting" : switching ? "ready" : status;
   const slowStart = useSlowStart(connecting);
 
   // A newly-created session (draft's first send) binds onto this leaf; the

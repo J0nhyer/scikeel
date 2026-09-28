@@ -43,6 +43,10 @@
       "plan": "계획할 내용을 입력하세요 — 파일은 변경되지 않습니다"
     },
     "commandsAria": "명령",
+    "runtime": {
+      "aria": "CLI 선택",
+      "title": "이 대화에 사용할 CLI"
+    },
     "source": {
       "skill": "스킬",
       "mcp": "mcp"

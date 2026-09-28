@@ -28,6 +28,20 @@ const MOUNTED_SCREENS = 10;
  *  display:none. */
 const WARM_SCREENS = 5;
 
+/** The first restored URL/layout session that is absent from the selected
+ *  runtime. The list-ready gate avoids rejecting a valid deep link during the
+ *  short connect → list-sessions window. */
+export function missingSessionId(
+  status: string,
+  sessionListReady: boolean,
+  candidates: Array<string | null>,
+  sessions: Array<{ id: string }>,
+): string | null {
+  if (status !== "ready" || !sessionListReady) return null;
+  const valid = new Set(sessions.map((session) => session.id));
+  return candidates.find((id): id is string => !!id && !valid.has(id)) ?? null;
+}
+
 /**
  * Live agent surface. Owns the split-layout ↔ runtime plumbing: it keeps the
  * URL and the single directory-scoped stream (`openSession`) in step with the
@@ -76,6 +90,7 @@ export function LiveSessionPage() {
   const status = useRuntimeStore((s) => s.status);
   const switching = useRuntimeStore((s) => s.switching);
   const sessions = useRuntimeStore((s) => s.sessions);
+  const sessionListReady = useRuntimeStore((s) => s.sessionListReady);
   const workspace = useRuntimeStore((s) => s.workspace);
   const runningCount = useRuntimeStore((s) => Object.keys(s.runningSessions).length);
   const openSession = useRuntimeStore((s) => s.openSession);
@@ -121,7 +136,24 @@ export function LiveSessionPage() {
   // than duplicating it into the focused one; otherwise bind it onto the focused
   // pane. Read fresh layout state so this reacts only to real URL changes.
   const urlId = params.sessionId ?? null;
+  const waitingForWebSessions = isGatewayWeb && !sessionListReady;
+  const unavailableId = isGatewayWeb
+    ? missingSessionId(status, sessionListReady, [urlId, focusedSid], sessions)
+    : null;
+
+  // A URL or persisted layout can point at a session from another account, a
+  // deleted session, or the CLI selected before this one. Do not send even one
+  // history/prompt request to that id: replace it with a clean draft and keep
+  // the user on the chat surface.
   useEffect(() => {
+    if (!unavailableId) return;
+    useLayoutStore.getState().reset(null);
+    resetDraftView();
+    navigate("/live", { replace: true });
+  }, [unavailableId, navigate, resetDraftView]);
+
+  useEffect(() => {
+    if (waitingForWebSessions || unavailableId) return;
     const st = useLayoutStore.getState();
     const leaf = st.tree && st.focusedLeafId ? findLeaf(st.tree, st.focusedLeafId) : null;
     if ((leaf?.sessionId ?? null) === urlId) return;
@@ -152,7 +184,7 @@ export function LiveSessionPage() {
       return;
     }
     st.bindSession(st.focusedLeafId, urlId);
-  }, [urlId]);
+  }, [urlId, waitingForWebSessions, unavailableId]);
 
   // focus → URL: reflect the focused session in the address bar (switching
   // panes, or a draft's first send binding a new id). Only ever navigates TO a
@@ -162,11 +194,11 @@ export function LiveSessionPage() {
   // (/new, /clear) navigate to "/live" explicitly where they happen. Push (not
   // replace) so a new conversation adds a history entry (Back works).
   useEffect(() => {
-    if (!focusedSid) return;
+    if (!focusedSid || waitingForWebSessions || unavailableId) return;
     const want = `/live/${focusedSid}`;
     if (location.pathname !== want) navigate(want);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedSid]);
+  }, [focusedSid, waitingForWebSessions, unavailableId]);
 
   // Load history for every OTHER visible pane (the focused one loads via
   // openSession). Without this a restored/tiled background pane shows a skeleton
@@ -183,6 +215,7 @@ export function LiveSessionPage() {
   // blank draft only if a real session was current — never wiping a just-written
   // /clear thread (currentId is already null then).
   useEffect(() => {
+    if (waitingForWebSessions || unavailableId) return;
     if (focusedSid) {
       void openSession(focusedSid);
     } else if (useRuntimeStore.getState().currentId) {
@@ -190,7 +223,15 @@ export function LiveSessionPage() {
       // out of the project the user picked (#69).
       resetDraftView();
     }
-  }, [focusedSid, connected, sessionDir, openSession, resetDraftView]);
+  }, [
+    focusedSid,
+    connected,
+    sessionDir,
+    waitingForWebSessions,
+    unavailableId,
+    openSession,
+    resetDraftView,
+  ]);
 
   // One backstop poll for the whole layout: if any pane's session.idle was lost
   // (SSE reconnect windows), re-check the server so no spinner outlives its turn.
