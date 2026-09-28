@@ -16,6 +16,12 @@ function requiredModel() {
 if (runtime === "claude") {
   const { model } = requiredModel();
   process.stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: "claude-native-session" })}\n`);
+  if (prompt === "fail after text") {
+    const error = "API Error: 400 retired model";
+    process.stdout.write(`${JSON.stringify({ type: "assistant", session_id: "claude-native-session", message: { role: "assistant", content: [{ type: "text", text: error }] } })}\n`);
+    process.stdout.write(`${JSON.stringify({ type: "result", subtype: "success", is_error: true, session_id: "claude-native-session", result: error })}\n`);
+    process.exit(1);
+  }
   process.stdout.write(`${JSON.stringify({ type: "assistant", session_id: "claude-native-session", message: { role: "assistant", content: [{ type: "text", text: `Claude[${model}]: ${prompt}` }] } })}\n`);
   process.stdout.write(`${JSON.stringify({ type: "result", subtype: "success", session_id: "claude-native-session", result: `Claude[${model}]: ${prompt}` })}\n`);
   process.exit(0);

@@ -71,6 +71,21 @@ test("runs Claude with a copied administrator configuration and private user his
   assert.equal((await manager.listSessions({ userId: "usr_b" })).length, 0);
 });
 
+test("marks a failed Claude turn as an error even when the CLI emitted text", async () => {
+  const { root, manager } = await makeManager("claude");
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "claude");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+
+  await manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "fail after text" });
+  const finished = await waitForIdle(manager, "usr_a", session.id);
+
+  assert.match(finished.history.at(-1).parts[0]?.text ?? "", /retired model/);
+  assert.match(finished.history.at(-1).info.error?.data?.message ?? "", /retired model/);
+});
+
 test("runs Codex and never shares one user's session list with another user", async () => {
   const { root, manager } = await makeManager("codex");
   await manager.init();

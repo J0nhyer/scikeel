@@ -866,7 +866,7 @@ export class CliRuntimeManager {
       assistantMessage.info.time.completed = completed;
       const errorText = session._error ?? (code === 0 ? "" : output.stderr.trim() || `agent exited (code=${code ?? "null"}, signal=${signal ?? "none"})`);
       delete session._error;
-      if (errorText && assistantMessage.parts.length === 0) {
+      if (errorText) {
         assistantMessage.info.error = { name: "CliRuntimeError", data: { message: errorText } };
         this.emit(userId, {
           type: "session.error",
