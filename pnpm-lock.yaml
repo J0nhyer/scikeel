@@ -253,6 +253,8 @@ importers:
 
   packages/shared: {}
 
+  services/platform: {}
+
 packages:
 
   3dmol@2.5.5:

@@ -1931,7 +1931,11 @@ pub fn set_workspace_base(env: &Env, path: String) -> Result<String, String> {
     }
     ensure_base_layout(dir.clone()).map_err(|e| format!("could not create folder: {e}"))?;
     let canon = crate::artifact_file::native_path(&dir.canonicalize().map_err(|e| e.to_string())?);
-    std::fs::write(base_workspace_file(env)?, canon.as_bytes()).map_err(|e| e.to_string())?;
+    let record = base_workspace_file(env)?;
+    if let Some(parent) = record.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(record, canon.as_bytes()).map_err(|e| e.to_string())?;
     Ok(canon)
 }
 
@@ -1954,7 +1958,11 @@ pub fn set_workspace(
     // Persisted and returned in native form — on Windows the verbatim `\\?\`
     // path `canonicalize()` produces matches nothing the sidecar reports (#76).
     let native = crate::artifact_file::native_path(&canon);
-    std::fs::write(active_workspace_file(env)?, native.as_bytes()).map_err(|e| e.to_string())?;
+    let record = active_workspace_file(env)?;
+    if let Some(parent) = record.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(record, native.as_bytes()).map_err(|e| e.to_string())?;
 
     // Follow the active folder with the snapshot watcher so out-of-app edits
     // (external editor, detached process) in the new workspace are captured too.
@@ -2100,7 +2108,7 @@ mod tests {
         auth_has_provider, dependency_pins, deploy_goal_plugin_dependencies,
         package_dependency_version, OPENCODE_PLUGIN_PACKAGE,
         base_workspace_dir, ensure_base_layout, prune_stale_skills, random_hex, remove_key_from_config,
-        resolve_proxy_env, set_workspace_base, skill_name_from_markdown, sync_skill_pack,
+        resolve_proxy_env, set_workspace, set_workspace_base, skill_name_from_markdown, sync_skill_pack,
         validate_proxy_url, workspace_dir,
         workspace_skill_dirs,
     };
@@ -2630,6 +2638,31 @@ mod tests {
         );
         assert!(base.join("projects").is_dir());
         assert!(base.join("sessions").is_dir());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn workspace_records_create_the_runtime_parent_for_isolated_state_dirs() {
+        let (env, dir) = temp_env("workspace-record-parent");
+        let workspace = dir.join("workspace");
+        let base = dir.join("base");
+        let _ = fs::remove_dir_all(dir.join("runtime"));
+
+        let selected = set_workspace(&env, workspace.to_string_lossy().to_string()).unwrap();
+        assert_eq!(selected, workspace.to_string_lossy());
+        assert_eq!(
+            fs::read_to_string(dir.join("runtime/active-workspace.txt")).unwrap(),
+            workspace.to_string_lossy()
+        );
+
+        fs::remove_dir_all(dir.join("runtime")).unwrap();
+        let selected_base = set_workspace_base(&env, base.to_string_lossy().to_string()).unwrap();
+        assert_eq!(selected_base, base.to_string_lossy());
+        assert_eq!(
+            fs::read_to_string(dir.join("runtime/base-workspace.txt")).unwrap(),
+            base.to_string_lossy()
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

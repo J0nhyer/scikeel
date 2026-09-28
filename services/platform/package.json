@@ -1,0 +1,14 @@
+{
+  "name": "@ai4s/platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Internal multi-user control plane for Open Science workers.",
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
