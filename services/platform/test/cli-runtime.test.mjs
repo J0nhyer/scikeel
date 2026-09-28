@@ -55,6 +55,9 @@ async function waitForIdle(manager, userId, sessionId) {
 
 test("runs Claude with a copied administrator configuration and private user history", async () => {
   const { root, manager } = await makeManager("claude");
+  await manager.init();
+  await manager.setManagedRuntime("claude", ["sonnet", "opus"], "sonnet");
+  await manager.setUserRuntime("usr_a", "claude", "opus");
   const workspace = join(root, "workspace");
   await mkdir(workspace, { recursive: true });
   const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
@@ -62,13 +65,17 @@ test("runs Claude with a copied administrator configuration and private user his
   const finished = await waitForIdle(manager, "usr_a", session.id);
 
   assert.equal(finished.nativeSessionId, "claude-native-session");
-  assert.match(finished.history.at(-1).parts[0].text, /Claude: hello/);
+  assert.equal(finished.history.at(-1).info.error, undefined);
+  assert.match(finished.history.at(-1).parts[0]?.text ?? "", /Claude\[opus\]: hello/);
   assert.equal(await readFile(join(root, "runtime", "users", "usr_a", "claude-config", "settings.json"), "utf8"), '{"model":"admin-model"}');
   assert.equal((await manager.listSessions({ userId: "usr_b" })).length, 0);
 });
 
 test("runs Codex and never shares one user's session list with another user", async () => {
   const { root, manager } = await makeManager("codex");
+  await manager.init();
+  await manager.setManagedRuntime("codex", ["gpt-fast", "gpt-deep"], "gpt-fast");
+  await manager.setUserRuntime("usr_a", "codex", "gpt-deep");
   const workspace = join(root, "workspace");
   await mkdir(workspace, { recursive: true });
   const first = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
@@ -76,10 +83,11 @@ test("runs Codex and never shares one user's session list with another user", as
   let finished = await waitForIdle(manager, "usr_a", first.id);
 
   assert.equal(finished.nativeSessionId, "codex-native-session");
-  assert.match(finished.history.at(-1).parts[0].text, /Codex: analyze/);
+  assert.equal(finished.history.at(-1).info.error, undefined);
+  assert.match(finished.history.at(-1).parts[0]?.text ?? "", /Codex\[gpt-deep\]: analyze/);
   await manager.sendPrompt({ userId: "usr_a", sessionId: first.id, text: "continue" });
   finished = await waitForIdle(manager, "usr_a", first.id);
-  assert.match(finished.history.at(-1).parts[0].text, /Codex: continue/);
+  assert.match(finished.history.at(-1).parts[0]?.text ?? "", /Codex\[gpt-deep\]: continue/);
   assert.equal(finished.history.some((message) => message.info?.error), false);
   assert.equal((await manager.listSessions({ userId: "usr_b" })).length, 0);
   assert.match(await readFile(join(root, "runtime", "users", "usr_a", "codex-home", "config.toml"), "utf8"), /admin-model/);

@@ -630,11 +630,17 @@ export class CliRuntimeManager {
 
   commandFor(state, session, text) {
     const runtime = session.runtime;
+    const model = this.modelForUser(session.userId, runtime);
+    if (!model) {
+      throw issue("runtime_unconfigured", `${runtimeDescriptor(runtime).label} has no administrator-enabled models`);
+    }
     if (runtime === "claude") {
       const args = [
         ...this.claudeArgs,
         "-p",
         text,
+        "--model",
+        model,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -657,6 +663,8 @@ export class CliRuntimeManager {
       session.directory,
       "-s",
       "workspace-write",
+      "--model",
+      model,
       ...(session.nativeSessionId ? ["resume", session.nativeSessionId] : []),
       text,
     ];
@@ -777,6 +785,7 @@ export class CliRuntimeManager {
     const { state, session } = await this.getOwnedSession(userId, sessionId);
     if (session.status === "running") throw issue("session_busy", "session is already running", 409);
     if (typeof text !== "string" || !text.trim()) throw issue("empty_prompt", "prompt is empty");
+    const childSpec = this.commandFor(state, session, text);
     await this.syncCredentials(state, session.runtime);
     const timestamp = now();
     const userMessage = {
@@ -804,7 +813,6 @@ export class CliRuntimeManager {
       parts: [],
     };
     this.emitMessageUpdated(userId, session, assistantMessage);
-    const childSpec = this.commandFor(state, session, text);
     let child;
     try {
       child = this.spawnImpl(childSpec.command, childSpec.args, {
