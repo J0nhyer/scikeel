@@ -77,3 +77,12 @@ local workspace + SQLite + JSONL provenance.
 - Do not write inferences as verified facts; tie conclusions to code or data.
 - New session workspaces are local git repos: the app initializes them and makes
   best-effort local commits after workspace file changes. Never set a remote or push.
+- This cloud host has only 3.3 GiB RAM and previously suffered global OOM and
+  loss of SSH responsiveness during an unbounded frontend build. Run all Web
+  builds, tests, typechecks and lint through the package scripts, which use
+  `scripts/dev/safe-desktop-task.mjs` to enforce per-task cgroup memory/swap
+  limits and serialize heavy tasks on small Linux hosts. Never invoke Vite,
+  Vitest, Cargo, or parallel heavy jobs directly on this host without an
+  equivalent verified cgroup limit. A failed build must leave the deployed Web
+  bundle untouched. If the bounded build runs out of memory, optimize its
+  footprint; never remove the host guard or raise it into the system reserve.

@@ -1,5 +1,9 @@
 # Progress
 
+2026-09-30 01:37 · Added enforced cgroup memory/swap limits, serialized Web build/test/typecheck/lint tasks, host-pressure stop, and staged Web deployment; all 1658 Web tests passed (6 skipped), typecheck and lint passed, while bounded Vite builds stopped safely before deployment because the current bundle exceeds this host's safe build footprint; SSH, platform, and the existing Web bundle remained available.
+
+2026-09-30 00:25 · Confirmed three global OOM events since September 28, including exhausted 2 GiB swap and a 2.54 GiB build-process kill on September 29 at 22:19; development remains paused while correlating the later loss of remote access before the user's manual reboot.
+
 2026-09-29 22:33 · Deployed the Web account menu, assistant/model selectors, live CLI catalog refresh and conversation handover; passed 30/30 platform tests, 1657 Web tests (6 skipped), typecheck, lint, staged production build, 390px browser checks, two real Codex turns and one real OpenCode turn; Claude's retired upstream relay remains unavailable until the administrator replaces it.
 
 2026-09-29 14:45 · Completed and self-reviewed sequential backend and Web implementation plans covering live CLI profile discovery, per-conversation models, upstream-change handover, shared Web selectors, and account navigation; implementation has not started.
