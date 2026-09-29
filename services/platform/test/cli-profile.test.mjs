@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CliProfileResolver } from "../src/cli-profile.mjs";
+
+test("resolves native catalogs, aliases and private identity revisions", async (t) => {
+  const root = await fs.mkdtemp(join(tmpdir(), "osd-profiles-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const claude = join(root, "claude");
+  const codex = join(root, "codex");
+  await fs.mkdir(claude); await fs.mkdir(codex);
+  const settings = (token) => JSON.stringify({ model: "opus", env: { ANTHROPIC_DEFAULT_OPUS_MODEL: "fixture-opus-upstream", ANTHROPIC_AUTH_TOKEN: token } });
+  await fs.writeFile(join(claude, "settings.json"), settings("fixture-secret-one"));
+  await fs.writeFile(join(codex, "config.toml"), 'model = "gpt-1"\nmodel_provider = "OpenAI"\nmodel_catalog_json = "codex-models.json"\n[model_providers.OpenAI]\nbase_url = "https://fixture-relay.invalid/v1"\nwire_api = "responses"\n');
+  await fs.writeFile(join(codex, "codex-models.json"), JSON.stringify({ models: Array.from({ length: 7 }, (_, i) => ({ slug: `gpt-${i + 1}`, display_name: `GPT ${i + 1}` })) }));
+  const resolver = new CliProfileResolver({ claudeConfigDir: claude, codexHome: codex });
+  const initial = await resolver.refresh("claude");
+  assert.equal(initial.defaultModel, "fixture-opus-upstream");
+  assert.deepEqual((await resolver.refresh("codex")).models.map((model) => model.id), Array.from({ length: 7 }, (_, i) => `gpt-${i + 1}`));
+  assert.ok(!JSON.stringify(resolver.publicOption(initial)).includes("fixture-secret"));
+  await fs.writeFile(join(claude, "settings.json"), settings("fixture-secret-two"));
+  assert.notEqual((await resolver.refresh("claude")).identityRevision, initial.identityRevision);
+  const before = await resolver.refresh("codex");
+  await fs.writeFile(join(codex, "codex-models.json"), JSON.stringify({ models: [{ slug: "gpt-new", display_name: "New" }] }));
+  const changed = await resolver.refresh("codex");
+  assert.equal(changed.identityRevision, before.identityRevision);
+  assert.notEqual(changed.catalogRevision, before.catalogRevision);
+  const paths = { home: join(root, "home"), codexHome: join(root, "user-codex") };
+  await fs.mkdir(paths.home);
+  const copy = await resolver.copyForTurn(changed, { paths });
+  assert.equal((await fs.stat(join(copy.codexHome, "config.toml"))).mode & 0o777, 0o600);
+});
