@@ -77,6 +77,7 @@ import { fallbackDefaultModel, flattenModelOptions } from "@/components/settings
 import { ProviderManagerCard } from "@/components/settings/ProviderManagerCard";
 import { AgentModelsCard } from "@/components/settings/AgentModelsCard";
 import { ManagedRuntimeModelsCard } from "@/components/settings/ManagedRuntimeModelsCard";
+import { GatewayModelsPanel } from "@/components/settings/GatewayModelsPanel";
 import { MemoryCard } from "@/components/settings/MemoryCard";
 import { Row, Section, Switch } from "@/components/settings/Section";
 import { isDesktopOnlySection, resolveSection } from "@/components/settings/sections";
@@ -1045,7 +1046,8 @@ export function SettingsPage() {
         )}
 
         {/* ---- Per-user runtime on the authenticated cloud platform ---- */}
-        {section === "models" && isGatewayWeb && gatewayRuntime && gatewayRuntimes.length > 0 && (
+        {section === "models" && isGatewayWeb && <GatewayModelsPanel />}
+        {section === "models" && !isGatewayWeb && gatewayRuntime && gatewayRuntimes.length > 0 && (
         <Section title={t("runtime.platformTitle")} hint={t("runtime.platformHint")} flush>
           <Row
             title={t("runtime.platformSelect")}
@@ -1084,12 +1086,12 @@ export function SettingsPage() {
         </Section>
         )}
 
-        {section === "models" && isGatewayWeb && gatewayUserRole === "admin" && (
+        {section === "models" && !isGatewayWeb && gatewayUserRole === "admin" && (
           <ManagedRuntimeModelsCard />
         )}
 
         {/* ---- Models ---- */}
-        {section === "models" && runtimeKind !== "acp" && (
+        {section === "models" && !isGatewayWeb && runtimeKind !== "acp" && (
         <Section title={t("model.title")} hint={t("model.hint")} flush>
           {!modelSurfaceAvailable ? (
             <p className="px-4 py-3 text-[13px] text-muted">{t("model.connectPrompt")}</p>
@@ -1143,7 +1145,7 @@ export function SettingsPage() {
         {section === "memory" && <MemoryCard />}
 
         {/* ---- Providers ---- */}
-        {section === "models" && runtimeKind === "opencode" && (
+        {section === "models" && !isGatewayWeb && runtimeKind === "opencode" && (
         <ProviderManagerCard
           providers={providers}
           // The web client can only read this surface, so say so up front

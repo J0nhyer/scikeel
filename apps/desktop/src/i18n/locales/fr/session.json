@@ -44,7 +44,9 @@
     },
     "commandsAria": "Commandes",
     "runtime": {
-      "aria": "Choisir le CLI",
+      "aria": "Assistant IA",
+      "modelLabel": "Modèle",
+      "unavailable": "Cet assistant IA est indisponible",
       "title": "CLI utilisé pour cette conversation"
     },
     "source": {
@@ -115,6 +117,7 @@
     },
     "model": {
       "aria": "Changer de modèle",
+      "unavailable": "Aucun modèle disponible",
       "title": "Modèle et effort de raisonnement",
       "search": "Rechercher des modèles…",
       "none": "Choisir un modèle",

@@ -42,6 +42,16 @@ if (runtime === "codex") {
     }
   }
   process.stdout.write(`${JSON.stringify({ type: "thread.started", thread_id: "codex-native-session" })}\n`);
+  if (prompt === "recover after warning") {
+    process.stdout.write(`${JSON.stringify({ type: "item.completed", item: { type: "error", message: `Temporary warning at ${process.env.CODEX_HOME}/config.toml` } })}\n`);
+  }
+  if (prompt === "terminal turn failure") {
+    process.stdout.write(`${JSON.stringify({ type: "turn.failed", error: { message: "Terminal provider failure" } })}\n`);
+    process.exit(0);
+  }
+  if (prompt.startsWith("tool-fixture:")) {
+    process.stdout.write(`${JSON.stringify({ type: "item.completed", item: { id: "tool-1", type: "command_execution", command: "read research data", exit_code: 0, aggregated_output: prompt } })}\n`);
+  }
   process.stdout.write(`${JSON.stringify({ type: "item.completed", item: { id: "item-1", type: "agent_message", text: `Codex[${model}]: ${prompt}` } })}\n`);
   process.stdout.write(`${JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } })}\n`);
   process.exit(0);

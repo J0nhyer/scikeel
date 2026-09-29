@@ -557,7 +557,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       parentID?: string | null;
       metadata?: Record<string, unknown>;
       time?: { created?: number; updated?: number };
-      model?: { id?: string; providerID?: string };
+      model?: { id?: string; providerID?: string } | string;
     }>;
     const sessions = arr.map((s) => {
       const mine = (s.metadata?.[META_NS] ?? {}) as { archived?: number };
@@ -569,7 +569,10 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         parentId: s.parentID ?? undefined,
         created: s.time?.created,
         updated: s.time?.updated,
-        ...(s.model ? { model: s.model } : {}),
+        ...(s.model ? { model: typeof s.model === "string" ? (() => {
+          const separator = s.model.indexOf("/");
+          return separator > 0 ? { providerID: s.model.slice(0, separator), id: s.model.slice(separator + 1) } : undefined;
+        })() : s.model } : {}),
         ...(typeof mine.archived === "number" ? { archived: mine.archived } : {}),
         ...(s.metadata ? { metadata: s.metadata } : {}),
       } satisfies SessionMeta;

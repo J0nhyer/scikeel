@@ -6,6 +6,8 @@
     "expandTitle": "展开侧边栏（{{shortcut}}）",
     "settings": "设置",
     "signOut": "退出登录",
+    "account": "{{username}} 的账号",
+    "adminBadge": "管理员",
     "home": "回到首页"
   },
   "items": {

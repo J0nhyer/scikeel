@@ -42,7 +42,7 @@
     "hint": "opencode serve, piloté via son API HTTP + SSE",
     "platformTitle": "Runtime de l'agent",
     "platformHint": "OpenCode reste privé dans votre compte. Claude Code et Codex utilisent les profils serveur gérés par l'administrateur.",
-    "platformSelect": "Runtime",
+    "platformSelect": "Assistant IA",
     "platformOpenCodeHint": "Votre propre processus OpenCode, vos conversations et votre choix de modèle.",
     "platformManagedHint": "{{runtime}} utilise l'installation et la configuration serveur de l'administrateur.",
     "connect": "Connecter",
@@ -107,6 +107,7 @@
     "privacy": "Seule l'API publique GitHub Releases est contactée. Aucun fichier de workspace ni clé API n'est envoyé."
   },
   "model": {
+    "catalogLimited": "Le serveur n'a trouvé qu'une partie des modèles de cet assistant.",
     "title": "Modèle",
     "hint": "Le modèle avec lequel démarre chaque nouvelle conversation. Les fournisseurs ci-dessous déterminent les choix.",
     "connectPrompt": "Connectez le runtime pour configurer les modèles.",

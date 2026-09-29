@@ -99,6 +99,7 @@ import {
   type StallVerdict,
 } from "./stallGuard";
 import { fallbackDefaultModel } from "@/components/settings/modelCatalog";
+import { webModelChoices } from "./webModelCatalog";
 import { listProvidersWithAvailability, ZEN_PROVIDER_ID } from "./zenModels";
 import { toast } from "@/lib/toast";
 import i18n from "@/i18n";
@@ -264,9 +265,12 @@ export interface GatewayRuntimeOption {
   models: string[];
   defaultModel: string | null;
   selectedModel: string | null;
+  status?: "ready" | "limited" | "unavailable";
+  catalogRevision?: string | null;
 }
 
 export type GatewayUserRole = "admin" | "user";
+export interface GatewayUser { id: string; username: string; role: GatewayUserRole }
 
 interface RuntimeState {
   status: RuntimeStatus;
@@ -276,6 +280,9 @@ interface RuntimeState {
    *  desktop and on older gateways that do not expose runtime selection. */
   gatewayRuntime: GatewayRuntimeId | null;
   gatewayRuntimes: GatewayRuntimeOption[];
+  gatewayUser: GatewayUser | null;
+  gatewayCatalogState: "loading" | "ready" | "limited" | "unavailable";
+  refreshGatewayRuntimes: () => Promise<void>;
   gatewayUserRole: GatewayUserRole | null;
   /** True after the current runtime's session list has loaded at least once.
    *  Web deep links must not reject a session during the connect/list gap. */
@@ -626,6 +633,34 @@ let bootstrapInFlight: Promise<void> | null = null;
  *  whole instruction block instead of the one line the user typed). Awaiting
  *  the in-flight load costs no extra request — it is already running. */
 let catalogInFlight: Promise<void> | null = null;
+// A switch or reconnect invalidates any older metadata request, even if it
+// finishes after the new assistant has already connected.
+let gatewayCatalogVersion = 0;
+
+function reconcileGatewayModels(state: RuntimeState, options: GatewayRuntimeOption[]) {
+  const selected = options.find((item) => item.runtime === state.gatewayRuntime);
+  const status = selected?.enabled ? selected.status ?? "ready" : "unavailable";
+  const choices = webModelChoices(state.gatewayRuntime, state.providers, options);
+  const keys = new Set(choices.map((item) => item.key));
+  const prefix = `${state.gatewayRuntime}/`;
+  const preferred = selected?.selectedModel ?? selected?.defaultModel;
+  const suggested = preferred && keys.has(`${prefix}${preferred}`) ? `${prefix}${preferred}` : choices[0]?.key ?? null;
+  const defaultModel = state.gatewayRuntime === "opencode" && state.defaultModel && keys.has(state.defaultModel)
+    ? state.defaultModel : suggested;
+  const sessionModels = { ...state.sessionModels };
+  for (const [id, model] of Object.entries(sessionModels)) {
+    if (id.startsWith("draft") && !keys.has(model)) {
+      delete sessionModels[id];
+      continue;
+    }
+    if ((state.gatewayRuntime === "opencode" ? !/^(claude|codex)\//.test(model) : model.startsWith(prefix)) && !keys.has(model)) {
+      if (defaultModel) sessionModels[id] = defaultModel;
+      else delete sessionModels[id];
+    }
+  }
+  saveRecord(SESSION_MODELS_KEY, sessionModels);
+  return { gatewayRuntimes: options, gatewayCatalogState: status, defaultModel, sessionModels };
+}
 /** Registered once: the remote-access gateway tells us when a LAN/CLI client
  *  created or deleted a session so the sidebar re-lists (no OpenCode event for
  *  session create/delete). See docs/rfc/remote-access-gateway.md. */
@@ -2338,6 +2373,11 @@ export function agentForTurn(
 /** The model + reasoning effort for a session's turn: its own per-pane override
  *  if set, else a configured agent model (#96), else the global default. */
 function modelForSession(state: RuntimeState, key: string): { model: string | null; variant: string | undefined } {
+  if (isGatewayWeb && state.gatewayRuntime) {
+    const model = state.sessionModels[key] ?? state.defaultModel;
+    return { model, variant: state.gatewayRuntime === "opencode"
+      ? variantExposed(state.providers, model, state.sessionVariants[key] ?? state.reasoningVariant) : undefined };
+  }
   // An agent carrying its own configured model OWNS the turn: sending an
   // explicit per-turn model would override exactly that setting, which is why
   // the `build` row used to do nothing and Plan mode ignored its own model
@@ -2402,6 +2442,40 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   runtimeKind: "opencode",
   gatewayRuntime: null,
   gatewayRuntimes: [],
+  gatewayUser: null,
+  gatewayCatalogState: "loading",
+  refreshGatewayRuntimes: async () => {
+    if (!isGatewayWeb) return;
+    const version = ++gatewayCatalogVersion;
+    const selected = get().gatewayRuntime;
+    set({ gatewayCatalogState: "loading" });
+    try {
+      const response = await fetch(`${gatewayOrigin()}/api/runtime`, { credentials: "same-origin" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json() as { available?: GatewayRuntimeOption[]; runtime?: GatewayRuntimeId };
+      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
+      if (data.runtime !== selected || !Array.isArray(data.available)) throw new Error("Assistant catalog is unavailable");
+      let providers = get().providers;
+      let configured = get().defaultModel;
+      if (selected === "opencode") {
+        const source = opencodeClient;
+        if (!source) throw new Error("Assistant is disconnected");
+        [providers, configured] = await Promise.all([listProvidersWithAvailability(source), source.getDefaultModel()]);
+        if (source !== opencodeClient) return;
+      }
+      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
+      set((state) => ({ providers, ...reconcileGatewayModels({ ...state, providers, defaultModel: configured }, data.available!) }));
+    } catch {
+      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
+      // Do not offer stale choices after an offline or failed refresh.
+      set((state) => ({
+        gatewayCatalogState: "unavailable",
+        gatewayRuntimes: state.gatewayRuntimes.map((option) => option.runtime === selected
+          ? { ...option, models: [], status: "unavailable" as const } : option),
+        ...(selected === "opencode" ? { providers: [] } : { defaultModel: null }),
+      }));
+    }
+  },
   gatewayUserRole: null,
   sessionListReady: false,
   gatewayRuntimeSwitching: false,
@@ -2418,12 +2492,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       set({ error: `${option.label} has no administrator-enabled models.` });
       return;
     }
-    if (Object.keys(state.runningSessions).length > 0) {
+    if (state.sending || Object.keys(state.runningSessions).length > 0) {
       set({ error: "Wait for the current agent turn to finish before switching runtime." });
       return;
     }
 
-    set({ switching: true, gatewayRuntimeSwitching: true, error: null });
+    ++gatewayCatalogVersion;
+    set({ switching: true, gatewayRuntimeSwitching: true, gatewayCatalogState: "loading", error: null });
     try {
       const response = await fetch(`${gatewayOrigin()}/api/runtime`, {
         method: "POST",
@@ -2431,7 +2506,6 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           runtime,
-          ...(option.selectedModel ? { model: option.selectedModel } : {}),
         }),
       });
       if (!response.ok) {
@@ -2455,6 +2529,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         agents: [],
         commands: [],
         providers: [],
+        gatewayCatalogState: "loading",
         defaultModel: null,
         questions: [],
         permissions: [],
@@ -2471,7 +2546,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         throw new Error(get().error ?? "The selected runtime did not reconnect.");
       }
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
+      set((current) => ({
+        error: err instanceof Error ? err.message : String(err),
+        gatewayCatalogState: current.gatewayRuntimes.find((item) => item.runtime === current.gatewayRuntime)?.status ?? "unavailable",
+      }));
     } finally {
       set({ switching: false, gatewayRuntimeSwitching: false });
     }
@@ -2777,28 +2855,34 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   loadCatalog: async () => {
     if (!client) return;
+    const source = client;
     const run = (async () => {
     void get().refreshAgentModels();
     try {
       const [firstSkills, agents, defaultModel, commands, providers] = await Promise.all([
-        client.listSkills(),
-        client.listAgents(),
-        client.getDefaultModel().catch(() => null),
-        client.listCommands().catch(() => []),
+        source.listSkills(),
+        source.listAgents(),
+        source.getDefaultModel().catch(() => null),
+        source.listCommands().catch(() => []),
         // listProviders is OpenCodeClient-only (not on the AgentRuntime port);
         // opencodeClient is the same instance as `client`, set together.
         opencodeClient
           ? listProvidersWithAvailability(opencodeClient).catch(() => [])
           : Promise.resolve([]),
       ]);
+      if (source !== client) return;
       // A model switch in flight owns `defaultModel`: this read may predate
       // the switch's config write, and applying it would visibly revert the
       // just-selected model.
-      set(
-        get().switching
-          ? { agents, commands, providers }
-          : { agents, defaultModel, commands, providers },
-      );
+      set((state) => {
+        if (isGatewayWeb && state.gatewayRuntime && state.gatewayRuntime !== "opencode") {
+          return { agents, commands, providers, ...reconcileGatewayModels(state, state.gatewayRuntimes) };
+        }
+        if (isGatewayWeb && state.gatewayRuntime === "opencode" && !state.switching) {
+          return { agents, commands, providers, ...reconcileGatewayModels({ ...state, providers, defaultModel }, state.gatewayRuntimes) };
+        }
+        return state.switching ? { agents, commands, providers } : { agents, defaultModel, commands, providers };
+      });
       // Self-heal a dangling default model. It can go stale out-of-band — its
       // provider removed, its id renamed, or the config edited outside the app
       // — and then every send fails with "model not found". Settings only
@@ -2812,7 +2896,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // switch as "dangling" and points it back at an old model (#37).
       const justSwitched =
         defaultModel === lastSwitchModel && Date.now() - lastSwitchAt < SWITCH_HEAL_GRACE_MS;
-      if (!get().switching && !justSwitched && defaultModel) {
+      if ((!isGatewayWeb || get().gatewayRuntime === "opencode") && !get().switching && !justSwitched && defaultModel) {
         const next = fallbackDefaultModel(providers, defaultModel);
         if (next) {
           try {
@@ -2879,6 +2963,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   setDefaultModel: async (model) => {
     if (!client) throw new Error("Not connected to the OpenCode runtime.");
+    if (isGatewayWeb) ++gatewayCatalogVersion;
     // #37 diagnostics: record what we ask for so a repro (e.g. switching after a
     // plan's quota runs out) shows the exact target model.
     void logDebug(`[provider] setDefaultModel → ${model}`);
@@ -2928,7 +3013,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   },
 
   connect: async () => {
-    if (isGatewayWeb) set({ sessionListReady: false });
+    if (isGatewayWeb) {
+      ++gatewayCatalogVersion;
+      set({ sessionListReady: false, gatewayCatalogState: "loading" });
+    }
     // This attempt failed. Inside a retry loop that is a step, not an outcome:
     // the message is kept for connectRetry to report if the window runs out,
     // and the UI stays on "connecting" instead of blinking the offline card.
@@ -2957,6 +3045,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     let gatewayRuntime: GatewayRuntimeId | null = null;
     let gatewayRuntimes: GatewayRuntimeOption[] = [];
     let gatewayUserRole: GatewayUserRole | null = null;
+    let gatewayUser: GatewayUser | null = null;
     // Artifact path resolutions are relative to the workspace folder, so a
     // connect that lands somewhere else must not reuse them (#92).
     const previousWorkspace = get().workspace;
@@ -2988,9 +3077,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
           fetch(`${baseUrl}/api/runtime`, { credentials: "same-origin" }),
         ]);
         if (meResponse.ok) {
-          const me = (await meResponse.json()) as { user?: { role?: string } };
+          const me = (await meResponse.json()) as { user?: { id?: string; username?: string; role?: string } };
           if (me.user?.role === "admin" || me.user?.role === "user") {
             gatewayUserRole = me.user.role;
+            if (typeof me.user.id === "string" && typeof me.user.username === "string") gatewayUser = { id: me.user.id, username: me.user.username, role: me.user.role };
           }
         }
         if (runtimeResponse.ok) {
@@ -3007,6 +3097,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
               models?: unknown;
               defaultModel?: unknown;
               selectedModel?: unknown;
+              status?: unknown;
+              catalogRevision?: unknown;
             }>;
           };
           if (["opencode", "claude", "codex"].includes(managed.runtime ?? "")) {
@@ -3028,6 +3120,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
                 typeof option.defaultModel === "string" ? option.defaultModel : null,
               selectedModel:
                 typeof option.selectedModel === "string" ? option.selectedModel : null,
+              status: option.status === "limited" || option.status === "unavailable" ? option.status : "ready",
+              catalogRevision: typeof option.catalogRevision === "string" ? option.catalogRevision : null,
             }];
           });
           if (managed.kind === "server") {
@@ -3047,7 +3141,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         gatewayRuntime,
         gatewayRuntimes,
         gatewayUserRole,
+        gatewayUser,
+        gatewayCatalogState: gatewayRuntimes.find((item) => item.runtime === gatewayRuntime)?.status ?? "unavailable",
       });
+      if (gatewayRuntime && gatewayRuntime !== "opencode") {
+        set((state) => reconcileGatewayModels(state, gatewayRuntimes));
+      }
     } else {
       // Scope skill discovery to the sidecar's workspace (null in browser dev).
       directory = await workspacePath();
@@ -3124,6 +3223,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         gatewayRuntime,
         gatewayRuntimes,
         gatewayUserRole,
+        gatewayUser,
       });
       // Background streams reuse the same sidecar; the foreground now streams
       // this folder, so drop any background stream that was covering it (avoid a
@@ -3959,14 +4059,29 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   refreshSessions: async () => {
     if (!client) return;
+    const source = client;
     try {
-      const sessions = await client.listSessions();
+      const sessions = await source.listSessions();
+      if (source !== client) return;
       set((s) => {
         // The list also names each subagent session's parent — the recovery
         // path for parent links after a reload (no live task event to learn from).
         const sessionParents = { ...s.sessionParents };
         for (const m of sessions) if (m.parentId) sessionParents[m.id] = m.parentId;
-        return { sessions, sessionParents, sessionListReady: true };
+        const sessionModels = { ...s.sessionModels };
+        if (isGatewayWeb && s.gatewayRuntime && s.gatewayRuntime !== "opencode") {
+          for (const session of sessions) {
+            const saved = session.model;
+            if (saved?.providerID === s.gatewayRuntime && saved.id) {
+              const candidate = `${saved.providerID}/${saved.id}`;
+              const options = s.gatewayRuntimes.find((item) => item.runtime === s.gatewayRuntime);
+              if (options?.enabled && options.models.includes(saved.id)) sessionModels[session.id] = candidate;
+              else if (s.defaultModel) sessionModels[session.id] = s.defaultModel;
+              else delete sessionModels[session.id];
+            }
+          }
+        }
+        return { sessions, sessionParents, sessionModels, sessionListReady: true };
       });
     } catch {
       /* ignore transient list failures */
@@ -4386,6 +4501,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // found".
     const s = get();
     const key = sessionId ?? draftKey ?? s.currentId ?? DRAFT_KEY;
+    if (isGatewayWeb && (s.gatewayCatalogState === "loading" || s.gatewayCatalogState === "unavailable" || s.gatewayRuntimeSwitching)) {
+      set({ error: "AI assistant model catalog is unavailable. Refresh and try again." });
+      return Promise.resolve(null);
+    }
+    if (isGatewayWeb && s.gatewayRuntime && s.gatewayRuntime !== "opencode" &&
+      !webModelChoices(s.gatewayRuntime, s.providers, s.gatewayRuntimes).some((item) => item.key === (s.sessionModels[key] ?? s.defaultModel))) {
+      set({ error: "Select an available model before sending." });
+      return Promise.resolve(null);
+    }
     const mode = s.sessionAgents[key];
     const agent =
       mode === "plan" && s.agents.some((a) => a.name === "plan") ? "plan" : undefined;
@@ -4408,6 +4532,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
             toast.error(
               i18n.t("session:composer.error.imageNotSent", { names: dropped.join(", ") }),
             );
+          }
+          const latest = get();
+          if (isGatewayWeb && (latest.gatewayCatalogState === "loading" || latest.gatewayCatalogState === "unavailable" ||
+            latest.gatewayRuntimeSwitching || (latest.gatewayRuntime !== "opencode" &&
+              !webModelChoices(latest.gatewayRuntime, latest.providers, latest.gatewayRuntimes).some((item) => item.key === model)))) {
+            throw new Error("AI assistant model catalog changed. Refresh and select a model again.");
           }
           await client!.sendPrompt(sid, text, agent, model, variant, parts);
         }),

@@ -1,5 +1,7 @@
 # Progress
 
+2026-09-29 22:33 · Deployed the Web account menu, assistant/model selectors, live CLI catalog refresh and conversation handover; passed 30/30 platform tests, 1657 Web tests (6 skipped), typecheck, lint, staged production build, 390px browser checks, two real Codex turns and one real OpenCode turn; Claude's retired upstream relay remains unavailable until the administrator replaces it.
+
 2026-09-29 14:45 · Completed and self-reviewed sequential backend and Web implementation plans covering live CLI profile discovery, per-conversation models, upstream-change handover, shared Web selectors, and account navigation; implementation has not started.
 
 2026-09-29 14:22 · Revised the Web assistant design to follow server Claude/Codex relay profiles and live model catalogs, migrate CLI access to assistant-level enablement, and carry bounded chat context across upstream changes; implementation has not started.

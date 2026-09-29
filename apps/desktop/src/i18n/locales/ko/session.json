@@ -44,7 +44,9 @@
     },
     "commandsAria": "명령",
     "runtime": {
-      "aria": "CLI 선택",
+      "aria": "AI 어시스턴트",
+      "modelLabel": "모델",
+      "unavailable": "이 AI 어시스턴트를 사용할 수 없습니다",
       "title": "이 대화에 사용할 CLI"
     },
     "source": {
@@ -115,6 +117,7 @@
     },
     "model": {
       "aria": "모델 전환",
+      "unavailable": "사용 가능한 모델이 없습니다",
       "title": "모델 및 추론 강도",
       "search": "모델 검색…",
       "none": "모델 선택",

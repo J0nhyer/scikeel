@@ -224,7 +224,8 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   await mkdir(adminCodex, { recursive: true });
   await writeFile(join(adminClaude, "settings.json"), JSON.stringify({ model: "admin-model" }));
   await writeFile(join(adminCodex, "auth.json"), '{"auth":true}\n');
-  await writeFile(join(adminCodex, "config.toml"), 'model = "admin-model"\n');
+  await writeFile(join(adminCodex, "config.toml"), 'model = "gpt-fast"\nmodel_catalog_json = "codex-models.json"\n');
+  await writeFile(join(adminCodex, "codex-models.json"), JSON.stringify({ models: ["gpt-fast", "gpt-deep"] }));
   await mkdir(join(webRoot, "assets"), { recursive: true });
   await writeFile(join(webRoot, "index.html"), "<!doctype html><html><head></head><body>web</body></html>");
   await writeFile(join(webRoot, "assets", "app.js"), "console.log('web');\n");
@@ -276,17 +277,10 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   const configuredCodex = await admin.request("/api/admin/runtime", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({
-      runtime: "codex",
-      models: ["gpt-fast", "gpt-deep"],
-      defaultModel: "gpt-fast",
-    }),
+    body: JSON.stringify({ runtime: "codex", enabled: true }),
   });
   assert.equal(configuredCodex.status, 200);
-  assert.deepEqual((await json(configuredCodex)).managedRuntimes.codex, {
-    models: ["gpt-fast", "gpt-deep"],
-    defaultModel: "gpt-fast",
-  });
+  assert.equal((await json(configuredCodex)).assistantEnabled.codex, true);
 
   const invalidCatalog = await admin.request("/api/admin/runtime", {
     method: "POST",
@@ -301,10 +295,7 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   const unchangedCatalog = await admin.request("/api/admin/runtime", {
     headers: { accept: "application/json" },
   });
-  assert.deepEqual((await json(unchangedCatalog)).managedRuntimes.codex, {
-    models: ["gpt-fast", "gpt-deep"],
-    defaultModel: "gpt-fast",
-  });
+  assert.equal((await json(unchangedCatalog)).assistantEnabled.codex, true);
 
   const studentAdminAttempt = await student.request("/api/admin/runtime", {
     method: "POST",
@@ -368,7 +359,7 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     body: JSON.stringify({ runtime: "codex", model: "gpt-deep" }),
   });
   assert.equal(switchRuntime.status, 200);
-  assert.deepEqual(await json(switchRuntime), expectRuntime({ runtime: "codex", model: "gpt-deep" }));
+  assert.equal((await json(switchRuntime)).model, "gpt-deep");
   const stillUnchangedStudentRuntime = await student.request("/api/runtime", { headers: { accept: "application/json" } });
   assert.equal((await json(stillUnchangedStudentRuntime)).runtime, "opencode");
   const adminManagedConfig = await admin.request("/global/config", {
@@ -392,7 +383,7 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     headers: { accept: "application/json" },
   });
   assert.deepEqual(await json(codexSessionsBefore), []);
-  assert.equal(await readFile(join(root, "cli-runtime", "users", adminLogin.user.id, "claude-config", "settings.json"), "utf8"), '{"model":"admin-model"}');
+  assert.equal(JSON.parse(await readFile(join(root, "cli-runtime", "users", adminLogin.user.id, "claude-config", "profiles", cliRuntime.profiles.get("claude").identityRevision, cliRuntime.profiles.get("claude").sourceRevision, "settings.json"), "utf8")).model, "admin-model");
 
   const codexSessionResponse = await admin.request(`/session?directory=${encodeURIComponent(workspace)}`, {
     method: "POST",
@@ -401,12 +392,32 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   });
   assert.equal(codexSessionResponse.status, 200);
   const codexSession = await json(codexSessionResponse);
+  const invalidPrompt = await admin.request(`/session/${codexSession.id}/prompt_async`, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ parts: [{ type: "text", text: "  " }] }),
+  });
+  assert.equal(invalidPrompt.status, 400);
+  const invalidModel = await admin.request(`/session/${codexSession.id}/prompt_async`, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ model: { providerID: "codex", modelID: "unavailable" }, parts: [{ type: "text", text: "hello" }] }),
+  });
+  assert.equal(invalidModel.status, 400);
+  const invalidMessages = await admin.request(`/session/${codexSession.id}/message`);
+  assert.deepEqual(await json(invalidMessages), []);
   const codexPrompt = await admin.request(`/session/${codexSession.id}/prompt_async`, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
     body: JSON.stringify({ parts: [{ type: "text", text: "hello Codex" }] }),
   });
   assert.equal(codexPrompt.status, 202);
+  const overlappingPrompt = await admin.request(`/session/${codexSession.id}/prompt_async`, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ parts: [{ type: "text", text: "should not overlap" }] }),
+  });
+  assert.equal(overlappingPrompt.status, 409);
   const codexAssistant = await waitForAssistant(admin, codexSession.id);
   assert.match(
     codexAssistant.parts.find((part) => part.type === "text").text,

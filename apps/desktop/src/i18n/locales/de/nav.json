@@ -6,6 +6,8 @@
     "expandTitle": "Seitenleiste ausklappen ({{shortcut}})",
     "settings": "Einstellungen",
     "signOut": "Abmelden",
+    "account": "Konto {{username}}",
+    "adminBadge": "Admin",
     "home": "Startseite"
   },
   "items": {

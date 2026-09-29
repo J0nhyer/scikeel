@@ -44,8 +44,10 @@
     },
     "commandsAria": "Commands",
     "runtime": {
-      "aria": "Choose CLI",
-      "title": "CLI used for this conversation"
+      "aria": "AI assistant",
+      "modelLabel": "Model",
+      "title": "AI assistant used for this conversation",
+      "unavailable": "This AI assistant is unavailable"
     },
     "source": {
       "skill": "skill",
@@ -115,6 +117,7 @@
     },
     "model": {
       "aria": "Switch model",
+      "unavailable": "No models available",
       "title": "Model & reasoning effort",
       "search": "Search models…",
       "none": "Select model",

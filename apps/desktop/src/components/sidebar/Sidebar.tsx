@@ -48,7 +48,7 @@ import { startPaneDrag } from "@/lib/dragPane";
 import { isGatewayWeb } from "@/lib/webMode";
 import { pathKey, samePath } from "@/lib/workspacePath";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { PlatformLogoutButton } from "@/components/sidebar/PlatformLogoutButton";
+import { GatewayAccountMenu } from "@/components/sidebar/GatewayAccountMenu";
 import {
   ContextMenu,
   ContextMenuEmpty,
@@ -112,6 +112,7 @@ export function Sidebar({ project }: { project: Project }) {
   // Select each field individually: a bare `useRuntimeStore()` subscribes to the
   // whole store, re-rendering the sidebar on every SSE fold during a session (#34).
   const sessions = useRuntimeStore((s) => s.sessions);
+  const gatewayUser = useRuntimeStore((s) => s.gatewayUser);
   const projects = useRuntimeStore((s) => s.projects);
   const workspace = useRuntimeStore((s) => s.workspace);
   const hiddenExamples = useRuntimeStore((s) => s.hiddenExamples);
@@ -957,7 +958,7 @@ export function Sidebar({ project }: { project: Project }) {
           {exampleRows.map(sessionRow)}
         </div>
 
-        <div className="flex flex-wrap items-center gap-1 border-t border-border px-3 py-3">
+        {!isGatewayWeb && <div className="flex flex-wrap items-center gap-1 border-t border-border px-3 py-3">
           <button
             className="relative flex items-center gap-2 rounded-input px-2 py-1 text-[13px] text-muted hover:bg-surface-2 hover:text-text"
             onClick={() => navigate("/settings")}
@@ -972,10 +973,11 @@ export function Sidebar({ project }: { project: Project }) {
               />
             )}
           </button>
-          {isGatewayWeb && <PlatformLogoutButton />}
-        </div>
+        </div>}
         </>
         )}
+
+        {isGatewayWeb && <div className="mt-auto"><GatewayAccountMenu user={gatewayUser} showUpdateBadge={showUpdateBadge} /></div>}
 
         {pendingRemoveProject && (
           <ConfirmDialog

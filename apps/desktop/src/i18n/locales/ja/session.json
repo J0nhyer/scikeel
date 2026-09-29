@@ -44,7 +44,9 @@
     },
     "commandsAria": "コマンド",
     "runtime": {
-      "aria": "CLI を選択",
+      "aria": "AI アシスタント",
+      "modelLabel": "モデル",
+      "unavailable": "この AI アシスタントは使用できません",
       "title": "この会話で使用する CLI"
     },
     "source": {
@@ -115,6 +117,7 @@
     },
     "model": {
       "aria": "モデルを切り替え",
+      "unavailable": "利用できるモデルがありません",
       "title": "モデルと推論の強度",
       "search": "モデルを検索…",
       "none": "モデルを選択",

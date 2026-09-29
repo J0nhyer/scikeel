@@ -1,6 +1,10 @@
 // Workspace-per-session behavior: a fresh draft's first message creates a new
 // dated folder by default; an explicit switcher choice pins the destination.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { WebModelPicker } from "@/components/thread/WebModelPicker";
 
 const mocks = vi.hoisted(() => ({
   /** Desktop or plain-browser runtime (drives the isTauri gates). */
@@ -34,7 +38,7 @@ const mocks = vi.hoisted(() => ({
   runShell: vi.fn(),
   renameSessionSpy: vi.fn(),
   /** What listSessions() answers — the runtime's whole history. */
-  sessionList: [] as { id: string; title: string; directory?: string }[],
+  sessionList: [] as { id: string; title: string; directory?: string; model?: { providerID?: string; id?: string } }[],
   moveSessionSpy: vi.fn(),
   /** Next renameSession call is rejected by the server. */
   failRename: false,
@@ -386,10 +390,156 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
 });
 
 describe("gateway runtime selection", () => {
+  const codexCatalog = (models: string[], selectedModel: string) => ({ runtime: "codex" as const,
+    kind: "server" as const, managed: true, label: "Codex", enabled: true, models,
+    defaultModel: models[0] ?? null, selectedModel, status: "ready" as const });
+
+  it("sends exactly the model selected and displayed by the Web conversation picker", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    act(() => useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready", modelSwitching: false,
+      gatewayRuntimes: [codexCatalog(["gpt-fast", "gpt-deep"], "gpt-fast")],
+      defaultModel: "codex/gpt-fast", sessionModels: {}, currentId: "ses_a" }));
+    render(createElement(WebModelPicker, { sessionId: "ses_a" }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Model: gpt-fast" }));
+    await user.click(screen.getByRole("menuitem", { name: "gpt-deep" }));
+    expect(screen.getByRole("button", { name: "Model: gpt-deep" })).toBeInTheDocument();
+    await act(() => useRuntimeStore.getState().sendPrompt("research", "ses_a"));
+    expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, "codex/gpt-deep", undefined);
+    expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-fast");
+  });
+
+  it("updates the real default and each conversation after the managed catalog changes", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready",
+      gatewayRuntimes: [codexCatalog(["old", "next"], "old")], defaultModel: "codex/old",
+      sessionModels: { ses_a: "codex/old", ses_b: "codex/next" } });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ runtime: "codex",
+      available: [codexCatalog(["next", "new"], "new")] }), { status: 200 })));
+    await useRuntimeStore.getState().refreshGatewayRuntimes();
+    expect(useRuntimeStore.getState()).toMatchObject({ defaultModel: "codex/new",
+      sessionModels: { ses_a: "codex/new", ses_b: "codex/next" }, gatewayCatalogState: "ready" });
+    await useRuntimeStore.getState().sendPrompt("research", "ses_a");
+    expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, "codex/new", undefined);
+    expect(useRuntimeStore.getState().defaultModel).toBe("codex/new");
+  });
+
+  it("blocks sends after a refresh fails and discards a stale response from a previous refresh", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready",
+      gatewayRuntimes: [codexCatalog(["old"], "old")], defaultModel: "codex/old",
+      sessionModels: { ses_a: "codex/old" } });
+    let answerOld!: (result: Response) => void;
+    const pending = new Promise<Response>((resolve) => { answerOld = resolve; });
+    const fetchMock = vi.fn().mockImplementationOnce(() => pending)
+      .mockResolvedValueOnce(new Response("offline", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const oldRequest = useRuntimeStore.getState().refreshGatewayRuntimes();
+    await useRuntimeStore.getState().refreshGatewayRuntimes();
+    answerOld(new Response(JSON.stringify({ runtime: "codex", available: [codexCatalog(["old"], "old")] }), { status: 200 }));
+    await oldRequest;
+    expect(useRuntimeStore.getState().gatewayCatalogState).toBe("unavailable");
+    expect(useRuntimeStore.getState().defaultModel).toBeNull();
+    await useRuntimeStore.getState().sendPrompt("cannot send", "ses_a");
+    expect(mocks.sendPromptFullSpy).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("catches an offline fetch and recovers with a new authoritative catalog", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready",
+      gatewayRuntimes: [codexCatalog(["old"], "old")], defaultModel: "codex/old", sessionModels: {} });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce(new TypeError("Network offline"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ runtime: "codex", available: [codexCatalog(["new"], "new")] }), { status: 200 })));
+    await expect(useRuntimeStore.getState().refreshGatewayRuntimes()).resolves.toBeUndefined();
+    expect(useRuntimeStore.getState().gatewayCatalogState).toBe("unavailable");
+    expect(await useRuntimeStore.getState().sendPrompt("offline", "ses_a")).toBeNull();
+    await useRuntimeStore.getState().refreshGatewayRuntimes();
+    expect(useRuntimeStore.getState().defaultModel).toBe("codex/new");
+    expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
+  });
+
+  it("reloads OpenCode providers after an offline refresh instead of leaving an empty picker", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    mocks.providers = [{ id: "openai", name: "OpenAI", models: [{ id: "new", name: "New" }] }];
+    mocks.currentModel = "openai/new";
+    const option = { runtime: "opencode" as const, kind: "opencode" as const, managed: false, label: "OpenCode",
+      enabled: true, models: [], defaultModel: null, selectedModel: null };
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", gatewayRuntimes: [option],
+      providers: [{ id: "openai", name: "OpenAI", models: [{ id: "old", name: "Old" }] }],
+      defaultModel: "openai/old", sessionModels: { ses_a: "openai/old" } });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValueOnce(new TypeError("Network offline"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ runtime: "opencode", available: [option] }), { status: 200 })));
+    await useRuntimeStore.getState().refreshGatewayRuntimes();
+    expect(useRuntimeStore.getState().providers).toEqual([]);
+    expect(useRuntimeStore.getState().gatewayCatalogState).toBe("unavailable");
+    await useRuntimeStore.getState().refreshGatewayRuntimes();
+    expect(useRuntimeStore.getState().providers).toEqual(mocks.providers);
+    expect(useRuntimeStore.getState().defaultModel).toBe("openai/new");
+    expect(useRuntimeStore.getState().sessionModels.ses_a).toBe("openai/new");
+    await useRuntimeStore.getState().sendPrompt("recovered", "ses_a");
+    expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "recovered", undefined, "openai/new", undefined);
+  });
+
+  it("shows an OpenCode model on first Web load when its worker has no configured default", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    mocks.currentModel = null;
+    mocks.providers = [{ id: "opencode", name: "OpenCode", models: [{ id: "free-model", name: "Free Model" }] }];
+    const option = { runtime: "opencode" as const, kind: "opencode" as const, managed: false, label: "OpenCode",
+      enabled: true, models: [], defaultModel: null, selectedModel: null, status: "ready" as const };
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", gatewayRuntimes: [option],
+      providers: [], defaultModel: null });
+    await useRuntimeStore.getState().loadCatalog();
+    expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
+    expect(useRuntimeStore.getState().defaultModel).toBe("opencode/free-model");
+    expect(useRuntimeStore.getState().providers).toEqual(mocks.providers);
+  });
+
+  it("clears unavailable selections when the selected assistant disappears", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready",
+      gatewayRuntimes: [codexCatalog(["old"], "old")], defaultModel: "codex/old", sessionModels: { ses_a: "codex/old" } });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ runtime: "codex", available: [] }), { status: 200 })));
+    await useRuntimeStore.getState().refreshGatewayRuntimes();
+    expect(useRuntimeStore.getState().defaultModel).toBeNull();
+    expect(useRuntimeStore.getState().sessionModels.ses_a).toBeUndefined();
+    expect(useRuntimeStore.getState().gatewayCatalogState).toBe("unavailable");
+    expect(await useRuntimeStore.getState().sendPrompt("removed", "ses_a")).toBeNull();
+    expect(mocks.sendPromptFullSpy).not.toHaveBeenCalled();
+  });
+
+  it("ignores a pending catalog response after an assistant switch starts", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready",
+      gatewayRuntimes: [codexCatalog(["old"], "old"), { runtime: "claude", kind: "server", managed: true,
+        label: "Claude Code", enabled: true, models: ["sonnet"], defaultModel: "sonnet", selectedModel: "sonnet" }],
+      defaultModel: "codex/old" });
+    let answerOld!: (result: Response) => void;
+    const pending = new Promise<Response>((resolve) => { answerOld = resolve; });
+    const fetchMock = vi.fn().mockImplementationOnce(() => pending)
+      .mockResolvedValueOnce(new Response("failed", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const oldRequest = useRuntimeStore.getState().refreshGatewayRuntimes();
+    const switching = useRuntimeStore.getState().selectGatewayRuntime("claude");
+    answerOld(new Response(JSON.stringify({ runtime: "codex", available: [codexCatalog(["stale"], "stale")] }), { status: 200 }));
+    await Promise.all([oldRequest, switching]);
+    expect(useRuntimeStore.getState().gatewayRuntimes[0].models).toEqual(["old"]);
+    expect(useRuntimeStore.getState().defaultModel).toBe("codex/old");
+  });
+
   it("loads the signed-in role and managed runtime model metadata", async () => {
     mocks.isTauri = false;
     mocks.isGatewayWeb = true;
@@ -402,7 +552,7 @@ describe("gateway runtime selection", () => {
         });
       }
       if (url.endsWith("/api/me")) {
-        return new Response(JSON.stringify({ user: { id: "usr_admin", role: "admin" } }), {
+        return new Response(JSON.stringify({ user: { id: "usr_admin", username: "admin", role: "admin" } }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -446,6 +596,7 @@ describe("gateway runtime selection", () => {
     await useRuntimeStore.getState().connect();
 
     expect(useRuntimeStore.getState().gatewayUserRole).toBe("admin");
+    expect(useRuntimeStore.getState().gatewayUser).toEqual({ id: "usr_admin", username: "admin", role: "admin" });
     expect(useRuntimeStore.getState().sessionListReady).toBe(true);
     expect(useRuntimeStore.getState().gatewayRuntimes).toEqual([
       expect.objectContaining({ runtime: "opencode", enabled: true }),
@@ -456,6 +607,29 @@ describe("gateway runtime selection", () => {
         selectedModel: "gpt-deep",
       }),
     ]);
+  });
+
+  it("keeps a draft model choice separate from the account default", () => {
+    useRuntimeStore.setState({ defaultModel: "codex/gpt-fast", sessionModels: {} });
+    useRuntimeStore.getState().setSessionModel("draft:leaf-a", "codex/gpt-deep");
+    expect(useRuntimeStore.getState().sessionModels["draft:leaf-a"]).toBe("codex/gpt-deep");
+    expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-fast");
+  });
+
+  it("restores the server's managed model for each session without changing the account default", async () => {
+    mocks.isTauri = false;
+    mocks.isGatewayWeb = true;
+    mocks.sessionList = [
+      { id: "ses_a", title: "A", model: { providerID: "codex", id: "gpt-deep" } },
+      { id: "ses_b", title: "B", model: { providerID: "codex", id: "gpt-fast" } },
+    ];
+    useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready",
+      gatewayRuntimes: [{ runtime: "codex", kind: "server", managed: true, label: "Codex", enabled: true,
+        models: ["gpt-fast", "gpt-deep"], defaultModel: "gpt-fast", selectedModel: "gpt-fast" }],
+      defaultModel: "codex/gpt-fast", sessionModels: { ses_a: "codex/retired" } });
+    await useRuntimeStore.getState().refreshSessions();
+    expect(useRuntimeStore.getState().sessionModels).toMatchObject({ ses_a: "codex/gpt-deep", ses_b: "codex/gpt-fast" });
+    expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-fast");
   });
 
   it("rejects a disabled managed runtime without posting a selection", async () => {

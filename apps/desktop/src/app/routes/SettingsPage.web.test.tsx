@@ -7,7 +7,7 @@
 // `window.__OS_WEB__` is set before the imports rather than mocked: the flag is
 // read once at module load (that is the real thing being exercised), and every
 // module branching on it holds its own copy.
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -97,6 +97,8 @@ describe("Providers in the gateway web client", () => {
       runtimeKind: "opencode",
       gatewayRuntime: "opencode",
       gatewayRuntimes: [...gatewayRuntimes],
+      gatewayCatalogState: "ready",
+      providers,
       gatewayUserRole: "user",
       gatewayRuntimeSwitching: false,
       selectGatewayRuntime,
@@ -113,15 +115,11 @@ describe("Providers in the gateway web client", () => {
     useRuntimeStore.setState(initialRuntime, true);
   });
 
-  it("shows what is connected and where to change it", async () => {
-    // Scoped to the card: the provider names also appear in the model browser.
-    const card = screen.getByRole("heading", { level: 2, name: "Providers" }).closest("section")!;
-    expect(await within(card).findByText("OpenCode Zen")).toBeInTheDocument();
-    expect(within(card).getByText("OpenAI")).toBeInTheDocument();
-    expect(within(card).getByText(/osd auth set/)).toBeInTheDocument();
-    expect(
-      within(card).getByText("Connected providers — read-only from the browser"),
-    ).toBeInTheDocument();
+  it("shows only an AI assistant and a default model, with no provider connection details", () => {
+    expect(screen.getByRole("button", { name: /AI assistant: OpenCode/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Model: GPT-5.2/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Providers" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/osd auth set/)).not.toBeInTheDocument();
   });
 
   it("offers none of the writes the gateway refuses", () => {
@@ -135,22 +133,17 @@ describe("Providers in the gateway web client", () => {
   });
 
   it("lets this account choose OpenCode, Claude Code, or Codex independently", async () => {
-    const selector = screen.getByRole("combobox", { name: "Runtime" });
-    expect(within(selector).getAllByRole("option").map((option) => option.textContent)).toEqual([
-      "OpenCode",
-      "Claude Code",
-      "Codex",
-    ]);
-    await userEvent.selectOptions(selector, "codex");
+    await userEvent.click(screen.getByRole("button", { name: /AI assistant: OpenCode/ }));
+    expect(screen.getAllByRole("menuitem").map((option) => option.textContent)).toEqual(["OpenCode", "Claude Code", "Codex"]);
+    await userEvent.click(screen.getByRole("menuitem", { name: "Codex" }));
     expect(selectGatewayRuntime).toHaveBeenCalledWith("codex");
   });
 
   it("shows model selection but not OpenCode provider management for a managed CLI", async () => {
     act(() => {
-      useRuntimeStore.setState({ runtimeKind: "server", gatewayRuntime: "codex" });
+      useRuntimeStore.setState({ runtimeKind: "server", gatewayRuntime: "codex", defaultModel: "codex/gpt-5.6-sol" });
     });
-    expect(screen.getByText(/Codex uses the administrator's server installation/)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Model" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Model: gpt-5.6-sol/ })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { level: 2, name: "Providers" })).not.toBeInTheDocument();
   });
 
@@ -158,44 +151,10 @@ describe("Providers in the gateway web client", () => {
     expect(screen.queryByRole("heading", { name: "Managed CLI models" })).not.toBeInTheDocument();
   });
 
-  it("lets an administrator save one managed CLI catalog at a time", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === "POST") {
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      return new Response(JSON.stringify({
-        managedRuntimes: {
-          claude: { models: ["sonnet", "opus"], defaultModel: "sonnet" },
-          codex: { models: ["gpt-fast"], defaultModel: "gpt-fast" },
-        },
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    });
-    vi.stubGlobal("fetch", fetchMock);
+  it("hides the obsolete managed catalog editor for administrators too", () => {
     act(() => useRuntimeStore.setState({ gatewayUserRole: "admin" }));
-
-    const models = await screen.findByLabelText("Codex enabled models");
-    await userEvent.clear(models);
-    await userEvent.type(models, "gpt-fast\ngpt-deep");
-    await userEvent.selectOptions(screen.getByLabelText("Codex default model"), "gpt-deep");
-    await userEvent.click(screen.getByRole("button", { name: "Save Codex models" }));
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/admin/runtime"),
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          runtime: "codex",
-          models: ["gpt-fast", "gpt-deep"],
-          defaultModel: "gpt-deep",
-        }),
-      }),
-    );
+    expect(screen.queryByLabelText("Codex enabled models")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Managed CLI models" })).not.toBeInTheDocument();
   });
 });
 

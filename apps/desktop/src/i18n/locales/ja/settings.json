@@ -42,7 +42,7 @@
     "hint": "opencode serve を、その HTTP + SSE API 経由で操作します",
     "platformTitle": "エージェントランタイム",
     "platformHint": "OpenCode はアカウントごとに独立しています。Claude Code と Codex は管理者が管理するサーバープロファイルを使用します。",
-    "platformSelect": "ランタイム",
+    "platformSelect": "AI アシスタント",
     "platformOpenCodeHint": "専用の OpenCode ワーカー、会話、モデル選択を使用します。",
     "platformManagedHint": "{{runtime}} は管理者のサーバーインストールと設定を使用します。",
     "connect": "接続",
@@ -107,6 +107,7 @@
     "privacy": "公開 GitHub Releases API だけに接続します。ワークスペースのファイルや API キーは送信しません。"
   },
   "model": {
+    "catalogLimited": "サーバーで確認できたのは一部のモデルだけです。",
     "title": "モデル",
     "hint": "新しい会話が既定で使うモデル。選べる範囲は下の Providers が決めます。",
     "connectPrompt": "モデルを設定するには、ランタイムに接続してください。",

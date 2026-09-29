@@ -42,7 +42,7 @@
     "hint": "opencode serve，通过其 HTTP + SSE API 驱动",
     "platformTitle": "智能体运行时",
     "platformHint": "OpenCode 由每个账号独立使用；Claude Code 和 Codex 使用管理员维护的服务器配置。",
-    "platformSelect": "运行时",
+    "platformSelect": "AI 助手",
     "platformOpenCodeHint": "你自己的 OpenCode 工作进程、会话和模型选择。",
     "platformManagedHint": "{{runtime}} 使用管理员统一维护的服务器安装与配置。",
     "connect": "连接",
@@ -107,6 +107,7 @@
     "privacy": "仅访问公开的 GitHub Releases API。不会发送工作区文件或 API 密钥。"
   },
   "model": {
+    "catalogLimited": "服务器只能识别此助手的部分模型。",
     "title": "模型",
     "hint": "每个新会话默认使用的模型。可选范围由下方的 Providers 提供。",
     "connectPrompt": "连接运行时以配置模型。",

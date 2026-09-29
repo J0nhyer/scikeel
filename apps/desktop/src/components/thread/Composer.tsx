@@ -39,6 +39,7 @@ import {
 } from "@/components/thread/references";
 import { ModelPicker } from "@/components/thread/ModelPicker";
 import { RuntimePicker } from "@/components/thread/RuntimePicker";
+import { WebModelPicker } from "@/components/thread/WebModelPicker";
 import { AcpConfigPicker } from "@/components/thread/AcpConfigPicker";
 import type { AcpConfigOption } from "@ai4s/sdk/acp";
 import { WorkspaceChip } from "@/components/thread/WorkspaceChip";
@@ -1142,8 +1143,10 @@ export function Composer({
           )}
           {showModelPicker && (
             <>
-              <RuntimePicker compact={compactToolbar} />
-              <ModelPicker sessionId={modelSessionId} compact={compactToolbar} />
+              {isGatewayWeb ? <>
+                <RuntimePicker compact={compactToolbar} />
+                <WebModelPicker sessionId={modelSessionId} compact={compactToolbar} />
+              </> : <ModelPicker sessionId={modelSessionId} compact={compactToolbar} />}
             </>
           )}
           {configOptions && onConfigOption && (

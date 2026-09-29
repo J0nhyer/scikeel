@@ -6,6 +6,8 @@
     "expandTitle": "Expand sidebar ({{shortcut}})",
     "settings": "Settings",
     "signOut": "Sign out",
+    "account": "{{username}} account",
+    "adminBadge": "Admin",
     "home": "Home"
   },
   "items": {

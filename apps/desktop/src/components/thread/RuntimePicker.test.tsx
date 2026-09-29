@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRuntimeStore } from "@/lib/runtime";
@@ -54,18 +54,13 @@ describe("RuntimePicker", () => {
     useRuntimeStore.setState(initial, true);
   });
 
-  it("lets a user choose the CLI beside the composer model picker", async () => {
+  it("lets a user choose an AI assistant beside the composer model picker", async () => {
     const user = userEvent.setup();
     render(<RuntimePicker />);
 
-    const selector = screen.getByRole("combobox", { name: "Choose CLI" });
-    expect(within(selector).getAllByRole("option").map((option) => option.textContent)).toEqual([
-      "OpenCode",
-      "Claude Code",
-      "Codex",
-    ]);
-
-    await user.selectOptions(selector, "codex");
+    await user.click(screen.getByRole("button", { name: /AI assistant: OpenCode/ }));
+    expect(screen.getAllByRole("menuitem").map((option) => option.textContent)).toEqual(["OpenCode", "Claude Code", "Codex"]);
+    await user.click(screen.getByRole("menuitem", { name: "Codex" }));
     expect(selectGatewayRuntime).toHaveBeenCalledWith("codex");
   });
 
@@ -73,13 +68,13 @@ describe("RuntimePicker", () => {
     act(() => useRuntimeStore.setState({ gatewayRuntimeSwitching: true }));
     render(<RuntimePicker />);
 
-    expect(screen.getByRole("combobox", { name: "Choose CLI" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /AI assistant: OpenCode/ })).toBeDisabled();
   });
 
   it("does not render outside the authenticated platform", () => {
     act(() => useRuntimeStore.setState({ gatewayRuntime: null, gatewayRuntimes: [] }));
     render(<RuntimePicker />);
 
-    expect(screen.queryByRole("combobox", { name: "Choose CLI" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /AI assistant/ })).toBeNull();
   });
 });

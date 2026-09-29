@@ -6,6 +6,8 @@
     "expandTitle": "サイドバーを展開する ({{shortcut}})",
     "settings": "設定",
     "signOut": "ログアウト",
+    "account": "{{username}}のアカウント",
+    "adminBadge": "管理者",
     "home": "ホームへ戻る"
   },
   "items": {

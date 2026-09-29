@@ -44,7 +44,9 @@
     },
     "commandsAria": "Befehle",
     "runtime": {
-      "aria": "CLI auswählen",
+      "aria": "KI-Assistent",
+      "modelLabel": "Modell",
+      "unavailable": "Dieser KI-Assistent ist nicht verfügbar",
       "title": "CLI für diese Unterhaltung"
     },
     "source": {
@@ -115,6 +117,7 @@
     },
     "model": {
       "aria": "Modell wechseln",
+      "unavailable": "Keine Modelle verfügbar",
       "title": "Modell & Denkaufwand",
       "search": "Modelle suchen…",
       "none": "Modell wählen",

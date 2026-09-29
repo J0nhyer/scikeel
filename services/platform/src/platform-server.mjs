@@ -656,7 +656,7 @@ export class PlatformServer {
         }
         if (path === "/api/runtime") {
           if (request.method === "GET") {
-            sendJson(response, 200, this.cliRuntime?.describe(user.id) ?? {
+            sendJson(response, 200, this.cliRuntime ? await this.cliRuntime.freshDescribe(user.id) : {
               runtime: "opencode",
               kind: "opencode",
               managed: false,
@@ -700,7 +700,7 @@ export class PlatformServer {
             return;
           }
           if (request.method === "GET") {
-            sendJson(response, 200, this.cliRuntime.adminDescribe());
+            sendJson(response, 200, await this.cliRuntime.freshAdminDescribe());
             return;
           }
           if (request.method === "POST") {
@@ -710,11 +710,9 @@ export class PlatformServer {
               sendJson(
                 response,
                 200,
-                await this.cliRuntime.setManagedRuntime(
-                  payload.runtime,
-                  payload.models,
-                  payload.defaultModel,
-                ),
+                await (Object.keys(payload).sort().join(",") === "enabled,runtime"
+                  ? this.cliRuntime.setAssistantEnabled(payload.runtime, payload.enabled)
+                  : this.cliRuntime.setManagedRuntime(payload.runtime, payload.models, payload.defaultModel)),
               );
             } catch (error) {
               sendJson(response, error?.status ?? 400, { error: error?.message ?? "could not update runtime" });
