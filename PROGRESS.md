@@ -1,5 +1,7 @@
 # Progress
 
+2026-09-29 14:45 · Completed and self-reviewed sequential backend and Web implementation plans covering live CLI profile discovery, per-conversation models, upstream-change handover, shared Web selectors, and account navigation; implementation has not started.
+
 2026-09-29 14:22 · Revised the Web assistant design to follow server Claude/Codex relay profiles and live model catalogs, migrate CLI access to assistant-level enablement, and carry bounded chat context across upstream changes; implementation has not started.
 
 2026-09-28 20:24 · Deployed reliable Web sign-out, an in-composer CLI selector beside the model selector, and stale-session recovery that returns missing or wrong-runtime links to a clean chat; passed 18/18 platform tests, 276/276 focused Web tests, TypeScript, ESLint, public authentication/runtime/logout checks, and a fresh production build.
