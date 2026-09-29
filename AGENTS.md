@@ -64,6 +64,11 @@ local workspace + SQLite + JSONL provenance.
 
 - Default working language for discussion is Chinese; **all project files and
   code are in English** (this is a pure-English project).
+- Current product work targets the public multi-user gateway Web client only.
+  Unless the user explicitly requests desktop work, scope product design,
+  implementation, deployment, and acceptance testing to Web. Shared code must
+  not intentionally break desktop builds, but desktop UX and feature parity are
+  not current deliverables.
 - One progress file: `PROGRESS.md`. Append one line per real milestone,
   `YYYY-MM-DD HH:MM` + a one-sentence conclusion, newest on top. Results and
   blockers only.
