@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-01 16:33 · Verified the public-source snapshot with 239 focused Web tests and all 38 platform tests under the small-host cgroup limits; local commits are ready for J0nhyer/scikeel and publication is waiting for GitHub device authorization.
+
 2026-10-01 16:27 · Prepared the SciKeel public-source snapshot with Web features and deployment/collaboration documentation; typecheck, lint, documentation checks, and current/history credential-pattern scans passed, while GitHub publication requires renewed account authentication.
 
 2026-10-01 16:16 · Rewrote the SciKeel README around browser research workflows, Web hosting, and source collaboration with one desktop-retention note; added manual Windows hosting and unattended-operation limits, verified documentation links/shell examples/environment names, and explicitly left native Windows acceptance unverified.
