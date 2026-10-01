@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-01 17:11 · Published SciKeel to the public J0nhyer/scikeel GitHub repository with main as the default branch, preserved the complete upstream history and upstream remote, and verified the remote commit after a clean scan of 4750 historical file objects.
+
 2026-10-01 16:33 · Verified the public-source snapshot with 239 focused Web tests and all 38 platform tests under the small-host cgroup limits; local commits are ready for J0nhyer/scikeel and publication is waiting for GitHub device authorization.
 
 2026-10-01 16:27 · Prepared the SciKeel public-source snapshot with Web features and deployment/collaboration documentation; typecheck, lint, documentation checks, and current/history credential-pattern scans passed, while GitHub publication requires renewed account authentication.
