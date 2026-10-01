@@ -6,11 +6,11 @@ import { FilesPage, SessionFilesPane } from "./FilesPage";
 
 const listDir = vi.fn();
 vi.mock("@/lib/artifactFile", () => ({
-  listDir: (rel: string, root?: string) => listDir(rel, root),
+  listDir: (rel: string, root?: string, dir?: string) => dir === undefined ? listDir(rel, root) : listDir(rel, root, dir),
 }));
 vi.mock("@/components/inspector/FilePreviewInspector", () => ({
-  FilePreviewInspector: ({ data }: { data: { filename: string } }) => (
-    <div data-testid="preview">preview:{data.filename}</div>
+  FilePreviewInspector: ({ data, workspaceDirectory }: { data: { filename: string }; workspaceDirectory?: string }) => (
+    <div data-testid="preview" data-directory={workspaceDirectory}>preview:{data.filename}</div>
   ),
 }));
 vi.mock("@/components/notebook/NotebookEditor", () => ({
@@ -70,6 +70,15 @@ describe("FilesPage", () => {
     await waitFor(() => expect(screen.getByText("figure.png")).toBeInTheDocument());
   });
 
+  it("refreshes the current directory after an agent adds a paper", async () => {
+    render(<FilesPage />);
+    await screen.findByText("figure.png");
+    listDir.mockResolvedValue([{ path: "paper.pdf", name: "paper.pdf", isDir: false, size: 800, modified: 5 }]);
+    await userEvent.click(screen.getByRole("button", { name: "Refresh files" }));
+    expect(await screen.findByText("paper.pdf")).toBeInTheDocument();
+    expect(screen.queryByText("figure.png")).not.toBeInTheDocument();
+  });
+
   it("restores the last open directory when the global Files page is reopened", async () => {
     const first = render(<FilesPage />);
     await userEvent.click(await screen.findByText("data"));
@@ -101,6 +110,12 @@ describe("FilesPage", () => {
       />,
     );
     expect(await screen.findByText("genes.bed")).toBeInTheDocument();
-    expect(listDir).toHaveBeenLastCalledWith("data", "workspace");
+    expect(listDir).toHaveBeenLastCalledWith("data", "workspace", "/workspace/session-1");
+  });
+
+  it("keeps preview and download scoped to the session that owns the selected file", async () => {
+    render(<SessionFilesPane sessionId="ses_1" sessionDir="/workspace/session-1" onClose={() => {}} />);
+    await userEvent.click(await screen.findByText("figure.png"));
+    expect(screen.getByTestId("preview")).toHaveAttribute("data-directory", "/workspace/session-1");
   });
 });

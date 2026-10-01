@@ -45,6 +45,7 @@
     }
   },
   "files": {
+    "refresh": "Actualizar archivos",
     "loading": "Cargando…",
     "folderEmpty": "Esta carpeta está vacía.",
     "explorerUnavailableWeb": "El explorador de archivos está disponible en la app de escritorio.",

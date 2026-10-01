@@ -1,12 +1,82 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRuntimeStore } from "@/lib/runtime";
 import { WebModelPicker } from "./WebModelPicker";
 
+const viewport = vi.hoisted(() => ({ mobile: false }));
+vi.mock("@/lib/useIsMobile", () => ({ useIsMobile: () => viewport.mobile }));
+vi.mock("@/lib/webMode", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/webMode")>(),
+  get isGatewayWeb() { return true; },
+}));
+
 describe("WebModelPicker", () => {
   const before = useRuntimeStore.getState();
+  beforeEach(() => {
+    viewport.mobile = false;
+    useRuntimeStore.setState({ providers: [], sessionVariants: {}, reasoningVariant: null,
+      gatewayRuntimeSwitching: false, modelSwitching: false });
+  });
   afterEach(() => { cleanup(); useRuntimeStore.setState(before, true); });
+
+  const withReasoning = () => act(() => useRuntimeStore.setState({
+    gatewayRuntime: "codex", gatewayCatalogState: "ready", defaultModel: "codex/gpt-deep",
+    gatewayRuntimes: [{ runtime: "codex", kind: "server", managed: true, label: "Codex", enabled: true,
+      models: ["gpt-deep", "big-pickle"], defaultModel: "gpt-deep", selectedModel: "gpt-deep" }],
+    providers: [{ id: "codex", name: "Codex", models: [
+      { id: "gpt-deep", name: "GPT Deep", variants: ["low", "high", "xhigh"] },
+      { id: "big-pickle", name: "Big Pickle", variants: [] },
+    ] }], sessionModels: {},
+  }));
+
+  it.each([false, true])("selects only a session effort using actual variants (mobile: %s)", async (mobile) => {
+    withReasoning();
+    viewport.mobile = mobile;
+    const user = userEvent.setup();
+    render(<WebModelPicker sessionId="draft:leaf-a" compact />);
+    await user.click(screen.getByRole("button", { name: "Reasoning effort: Model default" }));
+    const role = mobile ? "button" : "menuitem";
+    expect(screen.queryByRole(role, { name: "Medium" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole(role, { name: "X-High" }));
+    expect(useRuntimeStore.getState().sessionVariants).toEqual({ "draft:leaf-a": "xhigh" });
+    expect(useRuntimeStore.getState().reasoningVariant).toBeNull();
+    const effortButton = screen.getByRole("button", { name: "Reasoning effort: X-High" });
+    expect(effortButton).toHaveAttribute("title", "Reasoning effort: X-High");
+    expect(effortButton.textContent).toBe("");
+    expect(effortButton.querySelector("svg")).not.toBeNull();
+  });
+
+  it("keeps explicit model default after selecting it over a stale global effort", async () => {
+    withReasoning();
+    act(() => useRuntimeStore.setState({ reasoningVariant: "high" }));
+    const user = userEvent.setup();
+    render(<WebModelPicker sessionId="ses_a" />);
+    await user.click(screen.getByRole("button", { name: "Reasoning effort: High" }));
+    await user.click(screen.getByRole("menuitem", { name: "Model default" }));
+    expect(useRuntimeStore.getState().sessionVariants.ses_a).toBeNull();
+    expect(screen.getByRole("button", { name: "Reasoning effort: Model default" })).toBeInTheDocument();
+  });
+
+  it("hides effort for an unsupported model and clears it when switching", async () => {
+    withReasoning();
+    act(() => useRuntimeStore.setState({ sessionVariants: { ses_a: "high", ses_other: "low" } }));
+    const user = userEvent.setup();
+    const view = render(<WebModelPicker sessionId="ses_a" />);
+    await user.click(screen.getByRole("button", { name: "Model: gpt-deep" }));
+    await user.click(screen.getByRole("menuitem", { name: "big-pickle" }));
+    expect(screen.queryByRole("button", { name: /Reasoning effort/ })).not.toBeInTheDocument();
+    expect(useRuntimeStore.getState().sessionVariants).toEqual({ ses_a: null, ses_other: "low" });
+    view.unmount();
+    render(<WebModelPicker sessionId="ses_a" />);
+    expect(screen.queryByRole("button", { name: /Reasoning effort/ })).not.toBeInTheDocument();
+  });
+
+  it("does not expose session effort in the default model settings", () => {
+    withReasoning();
+    render(<WebModelPicker defaultMode />);
+    expect(screen.queryByRole("button", { name: /Reasoning effort/ })).not.toBeInTheDocument();
+  });
 
   it("changes only the current draft or session selection", async () => {
     const user = userEvent.setup();

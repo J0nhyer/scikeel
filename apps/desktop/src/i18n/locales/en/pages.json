@@ -45,6 +45,7 @@
     }
   },
   "files": {
+    "refresh": "Refresh files",
     "loading": "Loading…",
     "folderEmpty": "This folder is empty.",
     "explorerUnavailableWeb": "The file explorer is available in the desktop app.",

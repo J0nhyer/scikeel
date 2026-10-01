@@ -58,6 +58,12 @@
     "contentNotCaptured": "Contenu non capturé pour cette version (écriture binaire, ou modification n'ayant enregistré qu'une différence)."
   },
   "filePreview": {
+    "pdfPrevious": "Page précédente",
+    "pdfNext": "Page suivante",
+    "pdfPageNumber": "Numéro de page",
+    "pdfZoomIn": "Agrandir",
+    "pdfZoomOut": "Réduire",
+    "pdfPage": "PDF page {{page}} sur {{total}}",
     "historyAria": "Historique",
     "historyTitle": "Historique — chaque version enregistrée avec son code et sa conversation",
     "openExternally": "Ouvrir en externe",

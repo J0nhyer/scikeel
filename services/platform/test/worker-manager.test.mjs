@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,4 +84,23 @@ test("rejects unsafe instance ids and prevents ownership reassignment", async ()
     manager.ensureWorker({ instanceId: "user-a", userId: "b" }),
     /another user/,
   );
+});
+
+test("pins both supported worker layouts to the private workspace and repairs legacy roots on restart", async () => {
+  const manager = await makeManager();
+  const paths = manager.instancePaths("user-a");
+  const paper = join(paths.workspaceDir, "papers", "paper.pdf");
+  await mkdir(join(paths.workspaceDir, "papers"), { recursive: true });
+  await writeFile(paper, "%PDF-existing-paper");
+  await manager.ensureWorker({ instanceId: "user-a", userId: "a" });
+  for (const layout of ["runtime", "com.ai4s.workbench/runtime"]) {
+    const record = join(paths.stateDir, layout, "base-workspace.txt");
+    assert.equal((await readFile(record, "utf8")).trim(), paths.workspaceDir);
+    await writeFile(record, "/shared/Documents/OpenScience");
+  }
+  await manager.restartWorker("user-a");
+  for (const layout of ["runtime", "com.ai4s.workbench/runtime"]) {
+    assert.equal((await readFile(join(paths.stateDir, layout, "base-workspace.txt"), "utf8")).trim(), paths.workspaceDir);
+  }
+  assert.equal(await readFile(paper, "utf8"), "%PDF-existing-paper");
 });

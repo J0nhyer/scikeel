@@ -58,6 +58,12 @@
     "contentNotCaptured": "Inhalt für diese Version nicht erfasst (ein binäres Schreiben oder eine Bearbeitung, bei der nur ein Diff aufgezeichnet wurde)."
   },
   "filePreview": {
+    "pdfPrevious": "Vorherige Seite",
+    "pdfNext": "Nächste Seite",
+    "pdfPageNumber": "Seitennummer",
+    "pdfZoomIn": "Vergrößern",
+    "pdfZoomOut": "Verkleinern",
+    "pdfPage": "PDF Seite {{page}} von {{total}}",
     "historyAria": "Verlauf",
     "historyTitle": "Verlauf — jede erfasste Version mit Code und Unterhaltung",
     "openExternally": "Extern öffnen",

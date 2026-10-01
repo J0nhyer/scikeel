@@ -45,6 +45,7 @@
     }
   },
   "files": {
+    "refresh": "刷新文件",
     "loading": "正在加载…",
     "folderEmpty": "此文件夹为空。",
     "explorerUnavailableWeb": "文件浏览器在桌面应用中可用。",

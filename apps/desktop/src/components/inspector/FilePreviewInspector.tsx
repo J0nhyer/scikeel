@@ -15,6 +15,7 @@ import type { FilePreviewInspector as FilePreviewInspectorT, FileRoot } from "@a
 import { previewKindForName, type PreviewKind } from "@/lib/artifacts";
 import {
   base64ToBytes,
+  downloadArtifact,
   openArtifactExternally,
   previewUrl,
   probeLargeFile,
@@ -52,11 +53,12 @@ import { useWheelChain } from "@/lib/wheelChain";
 import { cn } from "@/lib/cn";
 import { samePath } from "@/lib/workspacePath";
 import { PaneTitlebarInset } from "./RightPane";
+import { PdfPreview } from "./PdfPreview";
 
 /**
  * Right-pane preview for any workspace file. Strategy (no format conversion):
- * pdf / image / html — served from the local file server (http://127.0.0.1)
- * and rendered by the webview's NATIVE viewers via <iframe>/<img>;
+ * PDF uses a page renderer in the gateway web client and the native viewer on
+ * desktop; image / html use the file server via <img>/<iframe>;
  * csv/tsv — parsed to a table; docx/xlsx/pptx — local JS renderers fed raw
  * bytes; everything else — code/text.
  */
@@ -120,9 +122,8 @@ export function FilePreviewInspector({
   const [url, setUrl] = useState<string | null>(null);
   const [text, setText] = useState<string | null>(data.content ?? null);
   const [bytes, setBytes] = useState<ArrayBuffer | null>(null);
-  // Web client: a direct gateway URL for the file — powers img/iframe previews,
-  // the text/bytes fetch, and the open/download action.
-  const [dl, setDl] = useState<string | null>(null);
+  // File downloads mint their own ticket when clicked, independently of preview.
+  const [downloading, setDownloading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Opening a file to EDIT it lands on the text. Arriving on a rendered
@@ -156,7 +157,6 @@ export function FilePreviewInspector({
     setDraft(null);
     setUrl(null);
     setBytes(null);
-    setDl(null);
   }, [data.path, data.content, data.root, workspaceDirectory]);
 
   useEffect(() => {
@@ -180,13 +180,12 @@ export function FilePreviewInspector({
         if (isGatewayWeb) {
           const u = await previewUrl(data.path, data.root, workspaceDirectory);
           if (cancelled) return;
-          setDl(u);
           if (needsUrl) setUrl(u);
           if (needsText && data.content === undefined) {
             const r = u ? await fetch(u) : null;
             if (cancelled) return;
             if (r && r.ok) setText(await r.text());
-            else if (kind !== "html" && kind !== "markdown") setError(t("filePreview.mobileNoPreview"));
+            else if (data.content === undefined) setError(t("filePreview.mobileNoPreview"));
           }
           if (needsBytes) {
             const r = u ? await fetch(u) : null;
@@ -311,10 +310,17 @@ export function FilePreviewInspector({
   }, [autoSave, data.path, data.root, text]);
 
   // Open in the OS app on desktop; open/download via the browser in web.
-  const openOrDownload = () => {
+  const openOrDownload = async () => {
     if (waitingForWorkspace) return;
     if (isGatewayWeb) {
-      if (dl) window.open(dl, "_blank", "noopener");
+      setDownloading(true);
+      try {
+        await downloadArtifact(data.path, data.root, workspaceDirectory);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setDownloading(false);
+      }
     } else {
       void openArtifactExternally(data.path, data.root);
     }
@@ -436,7 +442,7 @@ export function FilePreviewInspector({
             </button>
           </>
         )}
-        <button
+        {!isGatewayWeb && <button
           className={cn("shrink-0", showHistory ? "text-accent" : "text-text hover:opacity-60")}
           aria-label={t("filePreview.historyAria")}
           title={t("filePreview.historyTitle")}
@@ -444,13 +450,13 @@ export function FilePreviewInspector({
           onClick={() => setShowHistory((v) => !v)}
         >
           <History size={14} strokeWidth={1.5} />
-        </button>
+        </button>}
         <button
           className="shrink-0 text-text hover:opacity-60 disabled:cursor-wait disabled:opacity-40"
           aria-label={isGatewayWeb ? t("filePreview.download") : t("filePreview.openExternally")}
           title={isGatewayWeb ? t("filePreview.download") : t("filePreview.openExternallyTitle")}
-          onClick={openOrDownload}
-          disabled={waitingForWorkspace}
+          onClick={() => void openOrDownload()}
+          disabled={waitingForWorkspace || downloading || loading}
         >
           {isGatewayWeb ? <Download size={14} strokeWidth={1.5} /> : <ExternalLink size={14} strokeWidth={1.5} />}
         </button>
@@ -744,7 +750,7 @@ function Body({
   if (kind === "pdf") {
     // The webview's native PDF viewer (WKWebView / WebView2) renders the served URL.
     return url ? (
-      <iframe title={t("filePreview.pdfPreviewTitle")} src={url} className="h-full min-h-[480px] w-full" />
+      isGatewayWeb ? <PdfPreview url={url} /> : <iframe title={t("filePreview.pdfPreviewTitle")} src={url} className="h-full min-h-[480px] w-full" />
     ) : (
       <Note text={t("filePreview.desktopOnly")} />
     );

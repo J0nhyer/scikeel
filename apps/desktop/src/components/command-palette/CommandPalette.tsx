@@ -16,7 +16,7 @@ import { useRuntimeStore } from "@/lib/runtime";
 import { useLayoutStore } from "@/lib/layout";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { isGatewayWeb } from "@/lib/webMode";
-import { WORKFLOW_STARTERS } from "@/components/thread/WorkflowStarters";
+import { workflowStarterPrompt, type WorkflowStarterId } from "@/components/thread/WorkflowStarters";
 
 interface Action {
   id: string;
@@ -25,11 +25,8 @@ interface Action {
   run: () => void;
 }
 
-/** Prompt for a starter workflow by id, so ⌘K and the empty-session cards stay in sync. */
-const starterPrompt = (id: string) => WORKFLOW_STARTERS.find((s) => s.id === id)?.prompt ?? "";
-
 export function CommandPalette() {
-  const { t } = useTranslation("nav");
+  const { t, i18n } = useTranslation("nav");
   const open = useUiStore((s) => s.paletteOpen);
   const setOpen = useUiStore((s) => s.setPaletteOpen);
   const toggleTheme = useUiStore((s) => s.toggleTheme);
@@ -59,12 +56,12 @@ export function CommandPalette() {
   // Start a new session and send a workflow prompt, then reveal that session.
   // Its own Screen and pane, like every other "new session" entry — the pane the
   // user was reading stays put.
-  const runWorkflow = async (starterId: string) => {
+  const runWorkflow = async (starterId: WorkflowStarterId) => {
     close();
     const layout = useLayoutStore.getState();
     const leafId = newPaneAllowed ? layout.openInNewGroup(null) : null;
     useRuntimeStore.getState().startDraft();
-    const id = await useRuntimeStore.getState().sendPrompt(starterPrompt(starterId));
+    const id = await useRuntimeStore.getState().sendPrompt(workflowStarterPrompt(starterId, i18n.language));
     if (id && leafId) layout.bindSession(leafId, id);
     if (id) navigate(`/live/${id}`);
   };

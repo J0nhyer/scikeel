@@ -58,6 +58,12 @@
     "contentNotCaptured": "No se capturó el contenido de esta versión (una escritura binaria, o una edición que solo registró una diferencia)."
   },
   "filePreview": {
+    "pdfPrevious": "Página anterior",
+    "pdfNext": "Página siguiente",
+    "pdfPageNumber": "Número de página",
+    "pdfZoomIn": "Ampliar",
+    "pdfZoomOut": "Reducir",
+    "pdfPage": "PDF página {{page}} de {{total}}",
     "historyAria": "Historial",
     "historyTitle": "Historial — cada versión registrada con su código y conversación",
     "openExternally": "Abrir externamente",

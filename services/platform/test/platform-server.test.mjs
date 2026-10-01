@@ -114,6 +114,35 @@ async function waitForAssistant(client, sessionId) {
   throw new Error(`CLI assistant response did not arrive for ${sessionId}`);
 }
 
+test("streams authenticated file downloads as named attachments while previews stay inline", async () => {
+  const fixture = await makeFixture();
+  const client = makeClient(fixture.base);
+  const { user } = await login(client, "admin", "admin-password");
+  const worker = await fixture.manager.ensureWorker({ instanceId: `user-${user.id}`, userId: user.id });
+  await mkdir(join(worker.workspaceDir, "papers"));
+  const pdf = Buffer.from("%PDF-test-original-bytes");
+  await writeFile(join(worker.workspaceDir, "papers", "paper.pdf"), pdf);
+  const preview = await client.request("/v1/fs/read?path=papers%2Fpaper.pdf");
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("content-disposition"), null);
+  const download = await client.request("/v1/fs/read?path=papers%2Fpaper.pdf&download=paper.pdf");
+  assert.equal(download.status, 200);
+  assert.match(download.headers.get("content-disposition"), /^attachment;.*filename="paper.pdf"/);
+  assert.deepEqual(Buffer.from(await download.arrayBuffer()), pdf);
+  const unicodeName = "CNN \u5b66\u4e60.pdf";
+  const unicode = await client.request(`/v1/fs/read?path=papers%2Fpaper.pdf&download=${encodeURIComponent(unicodeName)}`);
+  assert.ok(unicode.headers.get("content-disposition").includes(`filename*=UTF-8''${encodeURIComponent(unicodeName)}`));
+  const longName = `${"a".repeat(239)}\u{1F600}.pdf`;
+  const long = await client.request(`/v1/fs/read?path=papers%2Fpaper.pdf&download=${encodeURIComponent(longName)}`);
+  assert.equal(long.status, 200);
+  assert.ok(long.headers.get("content-disposition").includes(encodeURIComponent(`${"a".repeat(239)}\u{1F600}`)));
+  const missing = await client.request("/v1/fs/read?path=missing.pdf&download=missing.pdf");
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get("content-disposition"), null);
+  const anonymous = makeClient(fixture.base);
+  assert.equal((await anonymous.request("/v1/fs/read?path=papers%2Fpaper.pdf&download=paper.pdf")).status, 303);
+});
+
 test("authenticates users, routes each one to an isolated worker, and rewrites upstream auth", async () => {
   const fixture = await makeFixture();
   const admin = makeClient(fixture.base);

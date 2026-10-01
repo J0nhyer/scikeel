@@ -250,6 +250,7 @@ function publicSession(session) {
     time: { created: session.createdAt, updated: session.updatedAt },
     metadata: session.metadata ?? {},
     ...(session.model ? { model: session.model } : {}),
+    variant: session.variant ?? null,
   };
 }
 
@@ -705,6 +706,7 @@ export class CliRuntimeManager {
         "--add-dir",
         session.directory,
       ];
+      if (session.variant) args.push("--effort", session.variant);
       if (nativeSessionId) args.push("--resume", nativeSessionId);
       else args.push("--session-id", randomUUID());
       return { command: this.claudeCommand, args };
@@ -720,6 +722,7 @@ export class CliRuntimeManager {
       "workspace-write",
       "--model",
       model,
+      ...(session.variant ? ["-c", `model_reasoning_effort=${JSON.stringify(session.variant)}`] : []),
       ...(nativeSessionId ? ["resume", nativeSessionId] : []),
       text,
     ];
@@ -742,6 +745,7 @@ export class CliRuntimeManager {
       userId,
       runtime,
       model: managedModelKey(runtime, this.modelForUser(userId, runtime)),
+      variant: null,
       nativeSessionId: null,
       directory: safeDirectory,
       title: typeof title === "string" && title.trim() ? title.trim().slice(0, 240) : "New session",
@@ -838,7 +842,7 @@ export class CliRuntimeManager {
     });
   }
 
-  async reservePrompt({ userId, sessionId, text, model }) {
+  async reservePrompt({ userId, sessionId, text, model, variant }) {
     const { state, session } = await this.getOwnedSession(userId, sessionId);
     if (session.status === "running" || this.turnReservations.has(session.id)) throw issue("session_busy", "session is already running", 409);
     if (typeof text !== "string" || !text.trim()) throw issue("empty_prompt", "prompt is empty");
@@ -858,8 +862,14 @@ export class CliRuntimeManager {
     if (model !== undefined && !profile.models.some((item) => item.id === model)) throw issue("model_not_enabled", "model is unavailable", 400);
     const chosen = profile.models.some((item) => item.id === selected) ? selected : profile.defaultModel;
     if (!chosen) throw issue("model_not_enabled", "model is unavailable", 400);
+    const variants = profile.models.find((item) => item.id === chosen)?.variants ?? {};
+    if (variant !== undefined && variant !== null && (typeof variant !== "string" || !Object.hasOwn(variants, variant))) {
+      throw issue("invalid_variant", "reasoning variant is unavailable for this model", 400);
+    }
+    // Match OpenCode's per-turn contract: omission uses the model default.
+    const chosenVariant = variant ?? null;
     if (turn.cancelled) throw issue("turn_cancelled", "turn was cancelled", 409);
-    return Object.assign(turn, { profile, chosen });
+    return Object.assign(turn, { profile, chosen, chosenVariant });
     } catch (error) {
       if (this.turnReservations.get(session.id) === turn) this.turnReservations.delete(session.id);
       session.status = "idle";
@@ -895,12 +905,12 @@ export class CliRuntimeManager {
   }
 
   async startReservedPrompt(turn) {
-    const { userId, state, session, text, profile, chosen } = turn;
+    const { userId, state, session, text, profile, chosen, chosenVariant } = turn;
     const pinned = await this.profileResolver.copyForTurn(profile, { paths: state.paths });
     if (turn.cancelled) throw issue("turn_cancelled", "turn was cancelled", 409);
     const stale = Boolean(session.nativeSessionId && session.identityRevision !== profile.identityRevision);
     const prompt = `${stale ? handoverText(session.history) : ""}${text}`;
-    const childSpec = this.commandFor(state, { ...session, model: chosen }, prompt, stale ? null : session.nativeSessionId);
+    const childSpec = this.commandFor(state, { ...session, model: chosen, variant: chosenVariant }, prompt, stale ? null : session.nativeSessionId);
     const redact = (value) => {
       let result = String(value ?? "");
       let authValues = [];
@@ -1009,6 +1019,7 @@ export class CliRuntimeManager {
         session.nativeSessionId = session._pendingNativeSessionId ?? session.nativeSessionId;
         session.identityRevision = profile.identityRevision;
         session.model = managedModelKey(session.runtime, chosen);
+        session.variant = chosenVariant;
       }
       delete session._pendingNativeSessionId;
       delete session._redact;
@@ -1236,7 +1247,7 @@ export class CliRuntimeManager {
             if (body.model?.providerID !== this.runtimeForUser(userId)) throw issue("invalid_model", "model belongs to another AI assistant");
             model = normalizeModelId(body.model.modelID);
           }
-          const turn = await this.reservePrompt({ userId, sessionId, text, model });
+          const turn = await this.reservePrompt({ userId, sessionId, text, model, variant: body.variant });
           void this.runReservedPrompt(turn).catch(() => {
             this.logger({ type: "cli.turn.error", userId, sessionId });
           });
@@ -1315,7 +1326,7 @@ export class CliRuntimeManager {
           name: runtimeDescriptor(runtime).label,
           models: Object.fromEntries(models.map((model) => [
             model,
-            { name: model, variants: {}, limit: { context: 0 } },
+            { name: model, variants: this.profiles.get(runtime)?.models.find((item) => item.id === model)?.variants ?? {}, limit: { context: 0 } },
           ])),
         }],
       });

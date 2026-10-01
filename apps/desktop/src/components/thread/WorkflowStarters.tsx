@@ -1,13 +1,16 @@
 import { useTranslation } from "react-i18next";
 import { ChevronRight, FileSearch, FlaskConical, Globe2, LineChart } from "lucide-react";
+import { resolveLocale } from "@/i18n/config";
+import zhWorkflowPrompts from "@/i18n/locales/zh-Hans/workflow-prompts.json";
 import { installExample, isTauri } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
 
+export type WorkflowStarterId = "demo" | "analyze" | "audit" | "example-climate";
+
 export interface WorkflowStarter {
-  id: string;
+  id: WorkflowStarterId;
   icon: React.ReactNode;
-  /** Sent to the agent as-is — content, not UI copy, so it is never translated.
-   *  The card's display title/description live in `session:starters.<id>.*`. */
+  /** Default English agent prompt. Chinese prompts live in the Chinese locale. */
   prompt: string;
   /** Side effect to run before sending the prompt (e.g. install example files). */
   prepare?: () => Promise<void>;
@@ -58,13 +61,21 @@ export const WORKFLOW_STARTERS: WorkflowStarter[] = [
   },
 ];
 
+/** Keep starter cards and command-palette actions on the same locale-aware prompt. */
+export function workflowStarterPrompt(id: WorkflowStarterId, locale: string): string {
+  const starter = WORKFLOW_STARTERS.find((item) => item.id === id);
+  if (!starter) return "";
+  if (resolveLocale(locale) !== "zh-Hans") return starter.prompt;
+  return `${zhWorkflowPrompts.interaction}\n\n${zhWorkflowPrompts.starters[id]}`;
+}
+
 /**
  * Empty-session welcome: a quiet, centered composition in the app's paper
  * aesthetic. The conversation is the point, so the copy invites a message
  * first; the starters below are an optional on-ramp, not a dashboard.
  */
 export function WorkflowStarters({ onPick }: { onPick: (prompt: string) => void }) {
-  const { t } = useTranslation(["session", "common"]);
+  const { t, i18n } = useTranslation(["session", "common"]);
   // Display copy per starter id — t()'s generated key type rejects a dynamic
   // `starters.${id}.title` template, so each card's copy is looked up by id
   // from this literal-keyed map instead.
@@ -106,7 +117,7 @@ export function WorkflowStarters({ onPick }: { onPick: (prompt: string) => void 
                     );
                     return;
                   }
-                  onPick(s.prompt);
+                  onPick(workflowStarterPrompt(s.id, i18n.language));
                 })();
               }}
               className="group flex w-full items-center gap-3.5 border-t border-border px-4 py-3.5 text-left transition-colors first:border-t-0 hover:bg-surface-2"

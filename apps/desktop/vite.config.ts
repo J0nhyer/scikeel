@@ -3,11 +3,12 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import pkg from "./package.json";
+import { webVendorPlugin } from "./web-vendor";
 
 const r = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), webVendorPlugin(r("../../.deploy/vendor"))],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },

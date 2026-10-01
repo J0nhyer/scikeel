@@ -12,6 +12,13 @@ const sourcePath = (home, path) => path?.startsWith("~/.codex/")
   : path?.startsWith("~/") ? join(dirname(home), path.slice(2))
     : isAbsolute(path ?? "") ? path : join(home, path ?? "");
 
+function codexVariants(entry) {
+  const levels = Array.isArray(entry?.supported_reasoning_levels) ? entry.supported_reasoning_levels : [];
+  return Object.fromEntries(levels
+    .filter((level) => typeof level?.effort === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(level.effort))
+    .map(({ effort }) => [effort, { reasoningEffort: effort }]));
+}
+
 export class CliProfileResolver {
   constructor({ claudeConfigDir = join(homedir(), ".claude"), codexHome = join(homedir(), ".codex"), fetchImpl = globalThis.fetch, clock = Date.now, revisionKey } = {}) {
     this.claudeConfigDir = resolve(claudeConfigDir);
@@ -53,7 +60,7 @@ export class CliProfileResolver {
       const catalogContent = catalogPath ? await fs.readFile(catalogPath, "utf8") : "";
       const catalog = catalogContent ? JSON.parse(catalogContent) : null;
       const local = unique([
-        ...(Array.isArray(catalog) ? catalog : Array.isArray(catalog?.models) ? catalog.models : []).map((entry) => typeof entry === "string" ? { id: entry, name: entry } : { id: entry.slug ?? entry.id, name: entry.display_name ?? entry.name ?? entry.slug }),
+        ...(Array.isArray(catalog) ? catalog : Array.isArray(catalog?.models) ? catalog.models : []).map((entry) => typeof entry === "string" ? { id: entry, name: entry, variants: {} } : { id: entry.slug ?? entry.id, name: entry.display_name ?? entry.name ?? entry.slug, variants: codexVariants(entry) }),
       ]);
       const files = { main, content, catalogPath, catalogContent, authPath, auth, home, token, baseUrl, envKey, secrets: runtime === "claude"
         ? Object.entries(env).filter(([key, value]) => /(?:TOKEN|API_KEY|SECRET|PASSWORD)/i.test(key) && typeof value === "string").map(([, value]) => value)
@@ -82,7 +89,10 @@ export class CliProfileResolver {
       // model that has disappeared upstream must not be offered as a working
       // default just because it remains in the administrator's settings.
       const remoteListed = runtime === "claude" && remote?.length > 0;
-      const models = unique([...local, ...(remote ?? []), ...(runtime === "claude" && !remoteListed ? Object.values(alias).filter(validModel).map((id) => ({ id, name: id })) : []), ...(validModel(defaultModel) && !remoteListed ? [{ id: defaultModel, name: defaultModel }] : [])]);
+      // Claude's --effort help and effortLevel setting do not establish which
+      // levels a relay model accepts. Keep those variants hidden without a catalog.
+      const models = unique([...local, ...(remote ?? []), ...(runtime === "claude" && !remoteListed ? Object.values(alias).filter(validModel).map((id) => ({ id, name: id })) : []), ...(validModel(defaultModel) && !remoteListed ? [{ id: defaultModel, name: defaultModel }] : [])])
+        .map((model) => ({ ...model, variants: local.find((item) => item.id === model.id)?.variants ?? {} }));
       const status = remote?.length || (local.length && (!previous || previous.identityRevision === identityRevision)) ? "ready" : models.length ? "limited" : "unavailable";
       const selectedDefault = models.some((item) => item.id === defaultModel) ? defaultModel
         : models.find((item) => !item.id.includes(":batch"))?.id ?? models[0]?.id ?? null;

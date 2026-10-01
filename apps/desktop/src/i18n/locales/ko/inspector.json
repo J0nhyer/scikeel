@@ -57,6 +57,12 @@
     "contentNotCaptured": "이 버전의 콘텐츠가 캡처되지 않았습니다 (바이너리 쓰기 또는 diff만 기록된 수정)."
   },
   "filePreview": {
+    "pdfPrevious": "이전 페이지",
+    "pdfNext": "다음 페이지",
+    "pdfPageNumber": "페이지 번호",
+    "pdfZoomIn": "확대",
+    "pdfZoomOut": "축소",
+    "pdfPage": "PDF {{total}}페이지 중 {{page}}페이지",
     "historyAria": "기록",
     "historyTitle": "기록 — 코드와 대화가 포함된 모든 기록된 버전",
     "openExternally": "외부에서 열기",

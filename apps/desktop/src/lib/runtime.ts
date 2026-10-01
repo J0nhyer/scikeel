@@ -2337,10 +2337,10 @@ export function getClient(): OpenCodeClient | null {
 }
 
 /** The reasoning variant to send with a turn: the user's pick, but only when the
- *  current default model actually exposes it. Variant vocabularies differ per
+ *  selected model actually exposes it. Variant vocabularies differ per
  *  model (OpenAI has "minimal", Anthropic has "max", many models have none), so
  *  switching to a model without the chosen level cleanly sends nothing and lets
- *  OpenCode apply that model's default effort. */
+ *  the runtime apply that model's default effort. */
 function variantExposed(
   providers: RuntimeState["providers"],
   model: string | null,
@@ -2375,8 +2375,8 @@ export function agentForTurn(
 function modelForSession(state: RuntimeState, key: string): { model: string | null; variant: string | undefined } {
   if (isGatewayWeb && state.gatewayRuntime) {
     const model = state.sessionModels[key] ?? state.defaultModel;
-    return { model, variant: state.gatewayRuntime === "opencode"
-      ? variantExposed(state.providers, model, state.sessionVariants[key] ?? state.reasoningVariant) : undefined };
+    return { model, variant: variantExposed(state.providers, model,
+      state.sessionVariants[key] !== undefined ? state.sessionVariants[key] : state.reasoningVariant) };
   }
   // An agent carrying its own configured model OWNS the turn: sending an
   // explicit per-turn model would override exactly that setting, which is why
@@ -2681,6 +2681,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     set((s) => {
       const sessionModels = { ...s.sessionModels, [sessionId]: model };
       saveRecord(SESSION_MODELS_KEY, sessionModels);
+      if (isGatewayWeb) {
+        const effort = s.sessionVariants[sessionId] !== undefined ? s.sessionVariants[sessionId] : s.reasoningVariant;
+        if (effort && !variantExposed(s.providers, model, effort)) {
+          // Keep an explicit default so an old global effort cannot return.
+          const sessionVariants = { ...s.sessionVariants, [sessionId]: null };
+          saveRecord(SESSION_VARIANTS_KEY, sessionVariants);
+          return { sessionModels, sessionVariants };
+        }
+      }
       return { sessionModels };
     }),
   clearSessionModel: (sessionId) =>

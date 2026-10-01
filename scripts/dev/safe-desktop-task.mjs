@@ -111,12 +111,13 @@ if (mode === "probe") {
   if (args.length) throw new Error("Build options are not supported by the guarded build");
   run(process.execPath, [join(desktop, "node_modules/typescript/bin/tsc"), "--noEmit"]);
   run(process.execPath, [join(root, "scripts/build-acp-server.mjs")]);
+  run(process.execPath, [join(root, "scripts/dev/build-web-vendor.mjs")]);
 
   // Never empty a deployed dist directory before a successful replacement.
   const stage = smallLinuxHost ? await mkdtemp(join(stagingRoot, "web-build-")) : null;
   try {
     run(process.execPath, [
-      `--max-old-space-size=${smallLinuxHost ? 1350 : 4096}`,
+      `--max-old-space-size=${smallLinuxHost ? 1024 : 4096}`,
       join(desktop, "node_modules/vite/bin/vite.js"), "build",
       ...(stage ? ["--outDir", stage, "--emptyOutDir"] : []),
     ]);

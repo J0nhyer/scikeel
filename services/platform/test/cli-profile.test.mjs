@@ -5,6 +5,40 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CliProfileResolver } from "../src/cli-profile.mjs";
 
+test("Codex exposes only catalog reasoning levels and revisions track capability changes", async (t) => {
+  const root = await fs.mkdtemp(join(tmpdir(), "osd-reasoning-profile-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(join(root, "config.toml"), 'model = "reasoner"\nmodel_reasoning_effort = "high"\nmodel_catalog_json = "models.json"\n');
+  const catalog = (effort) => JSON.stringify({ models: [
+    { slug: "reasoner", supported_reasoning_levels: [{ effort: "low" }, { effort }, { effort: 'bad"\nvalue' }, { effort: "__proto__" }, {}] },
+    { slug: "plain" }, "legacy",
+  ] });
+  await fs.writeFile(join(root, "models.json"), catalog("ultra"));
+  const resolver = new CliProfileResolver({ codexHome: root });
+  const profile = await resolver.refresh("codex");
+  assert.deepEqual(profile.models.map(({ id, variants }) => ({ id, variants })), [
+    { id: "reasoner", variants: { low: { reasoningEffort: "low" }, ultra: { reasoningEffort: "ultra" } } },
+    { id: "plain", variants: {} }, { id: "legacy", variants: {} },
+  ]);
+  assert.deepEqual(resolver.publicOption(profile).models, profile.models);
+  await fs.writeFile(join(root, "models.json"), catalog("max"));
+  const changed = await resolver.refresh("codex");
+  assert.notEqual(changed.catalogRevision, profile.catalogRevision);
+  assert.equal(changed.identityRevision, profile.identityRevision);
+});
+
+test("Claude effort defaults do not establish per-model relay capabilities", async (t) => {
+  const root = await fs.mkdtemp(join(tmpdir(), "osd-claude-effort-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(join(root, "settings.json"), JSON.stringify({ model: "opus", effortLevel: "xhigh", env: {
+    ANTHROPIC_BASE_URL: "https://fixture.example/v1", ANTHROPIC_DEFAULT_OPUS_MODEL: "relay-opus",
+  } }));
+  const resolver = new CliProfileResolver({ claudeConfigDir: root, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [
+    { id: "relay-opus" }, { id: "relay-other" },
+  ] }) }) });
+  assert.deepEqual((await resolver.refresh("claude")).models.map(({ variants }) => variants), [{}, {}]);
+});
+
 test("resolves native catalogs, aliases and private identity revisions", async (t) => {
   const root = await fs.mkdtemp(join(tmpdir(), "osd-profiles-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

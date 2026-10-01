@@ -1,5 +1,21 @@
 # Progress
 
+2026-10-01 16:27 · Prepared the SciKeel public-source snapshot with Web features and deployment/collaboration documentation; typecheck, lint, documentation checks, and current/history credential-pattern scans passed, while GitHub publication requires renewed account authentication.
+
+2026-10-01 16:16 · Rewrote the SciKeel README around browser research workflows, Web hosting, and source collaboration with one desktop-retention note; added manual Windows hosting and unattended-operation limits, verified documentation links/shell examples/environment names, and explicitly left native Windows acceptance unverified.
+
+2026-10-01 16:11 · Adopted SciKeel branding and the J0nhyer/scikeel public repository target in README, deployment instructions, and agent guidance; verified documentation links and shell examples while retaining upstream attribution and marking GitHub publication as pending authentication.
+
+2026-10-01 16:03 · Added the English Web deployment and public GitHub collaboration guide with pending repository naming; verified local links, shell syntax, environment names, and isolated package-script startup/login/account authorization without changing the deployed service.
+
+2026-10-01 15:39 · Deployed an icon-only reasoning-effort companion on the right of the Web model picker with accessible selection labels and minimum button widths; 48 affected component tests, lint and the bounded build/typecheck passed, and production browser acceptance verified adjacent controls and in-bounds menus at 320/390/480/768/1024/1280/1440/1920px without page overflow.
+
+2026-10-01 15:05 · Repaired and deployed private Web workspace roots without moving existing papers, streamed original-file downloads and visible file errors, added phone-safe PDF page rendering/navigation/zoom and per-session model-supported reasoning effort; 38 platform tests and 1683 frontend tests passed (8 skipped), typecheck/lint and the bounded 1024 MiB build passed, production browser acceptance verified both CNN PDFs and notes at 1280px/390px with matching download hashes and workspace isolation, and two real Codex turns verified explicit effort followed by model default.
+
+2026-09-30 15:56 · Completed and deployed bounded Web builds by separately bundling Monaco, its classic workers and the PPTX/ECharts dependency graph while retaining the 1350 MiB V8 heap and existing cgroup/pressure guards; 1662 Web tests passed (6 skipped), typecheck and lint passed, both Chinese workflow entry points and content-hashed vendor assets passed focused checks, and production browser acceptance verified 1280px/390px layouts, editor changes, TypeScript/JSON diagnostics and PPTX charts without failed assets; Claude relay configuration remains unchanged.
+
+2026-09-30 02:10 · Reviewed the current delivery documents: the public Web deployment remains blocked on a bounded production build that exceeds this host's safe footprint, the retired Claude relay needs administrator replacement, and the internal platform still lacks HTTPS, quotas/idle-worker recovery and richer operations; `TECHNICAL_DESIGN.md`'s 2026-07-02 status is stale and must not be used as current delivery evidence.
+
 2026-09-30 01:37 · Added enforced cgroup memory/swap limits, serialized Web build/test/typecheck/lint tasks, host-pressure stop, and staged Web deployment; all 1658 Web tests passed (6 skipped), typecheck and lint passed, while bounded Vite builds stopped safely before deployment because the current bundle exceeds this host's safe build footprint; SSH, platform, and the existing Web bundle remained available.
 
 2026-09-30 00:25 · Confirmed three global OOM events since September 28, including exhausted 2 GiB swap and a 2.54 GiB build-process kill on September 29 at 22:19; development remains paused while correlating the later loss of remote access before the user's manual reboot.

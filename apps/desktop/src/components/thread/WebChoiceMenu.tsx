@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Check, ChevronDown, Loader2, X } from "lucide-react";
@@ -12,13 +12,15 @@ export interface WebChoice {
   reason?: string;
 }
 
-export function WebChoiceMenu({ label, value, choices, onSelect, busy = false, compact = false }: {
+export function WebChoiceMenu({ label, value, choices, onSelect, busy = false, compact = false, triggerIcon }: {
   label: string;
   value: string;
   choices: WebChoice[];
   onSelect: (key: string) => void | Promise<void>;
   busy?: boolean;
   compact?: boolean;
+  /** Icon-only companion control; the accessible label includes its selection. */
+  triggerIcon?: ReactNode;
 }) {
   const mobile = useIsMobile();
   const { t } = useTranslation("session");
@@ -28,12 +30,14 @@ export function WebChoiceMenu({ label, value, choices, onSelect, busy = false, c
   const close = () => setOpen(false);
   const button = (
     <button type="button" disabled={busy} aria-label={`${label}: ${selected?.label ?? value}`}
-      aria-expanded={open}
-      className="flex h-10 min-w-0 max-w-full items-center gap-2 rounded-md border border-border bg-surface px-3 text-xs text-text hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50">
+      aria-expanded={open} title={triggerIcon ? `${label}: ${selected?.label ?? value}` : undefined}
+      className={`flex h-10 min-w-0 max-w-full items-center rounded-md border border-border bg-surface text-xs text-text hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50 ${triggerIcon ? "w-10 shrink-0 justify-center" : "gap-2 px-3"}`}>
       {busy && <Loader2 size={14} className="shrink-0 animate-spin" />}
-      {!compact && <span className="shrink-0 text-muted">{label}</span>}
-      <span className="truncate font-medium">{selected?.label ?? value}</span>
-      <ChevronDown size={14} className="shrink-0 text-muted" />
+      {triggerIcon ? (!busy && triggerIcon) : <>
+        {!compact && <span className="shrink-0 text-muted">{label}</span>}
+        <span className="truncate font-medium">{selected?.label ?? value}</span>
+        <ChevronDown size={14} className="shrink-0 text-muted" />
+      </>}
     </button>
   );
   if (mobile) return <Dialog.Root open={open} onOpenChange={setOpen}>

@@ -1103,7 +1103,7 @@ export function Composer({
         )}
         {/* Model picker + send kept together, pushed right (and wrapping as a
             unit) so the send button is always reachable on a narrow pane. */}
-        <div className="ml-auto flex min-w-0 items-center gap-1.5">
+        <div className={cn("ml-auto flex min-w-0 items-center gap-1.5", isGatewayWeb && "max-w-full flex-wrap justify-end")}>
           {onCompactContext && (
             <button
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"

@@ -399,6 +399,70 @@ describe("gateway runtime selection", () => {
     kind: "server" as const, managed: true, label: "Codex", enabled: true, models,
     defaultModel: models[0] ?? null, selectedModel, status: "ready" as const });
 
+  describe("Web reasoning effort", () => {
+    beforeEach(() => {
+      mocks.isGatewayWeb = true;
+      mocks.isTauri = false;
+      useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready", modelSwitching: false,
+        gatewayRuntimes: [codexCatalog(["gpt-deep", "big-pickle"], "gpt-deep")],
+        providers: [{ id: "codex", name: "Codex", models: [
+          { id: "gpt-deep", name: "GPT Deep", variants: ["low", "high"] },
+          { id: "big-pickle", name: "Big Pickle", variants: [] },
+        ] }], defaultModel: "codex/gpt-deep", sessionModels: {}, sessionVariants: {},
+        reasoningVariant: null, currentId: "ses_a" });
+    });
+
+    it("sends the effort chosen in the Web picker only for that session", async () => {
+      render(createElement(WebModelPicker, { sessionId: "ses_a" }));
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Reasoning effort: Model default" }));
+      await user.click(screen.getByRole("menuitem", { name: "High" }));
+      await act(() => useRuntimeStore.getState().sendPrompt("research", "ses_a"));
+      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, "codex/gpt-deep", "high");
+      await act(() => useRuntimeStore.getState().sendPrompt("other", "ses_b"));
+      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_b", "other", undefined, "codex/gpt-deep", undefined);
+    });
+
+    it.each(["codex", "claude", "opencode"] as const)("keeps explicit default over global effort for %s", async (runtime) => {
+      useRuntimeStore.setState({ gatewayRuntime: runtime,
+        gatewayRuntimes: [{ runtime, kind: runtime === "opencode" ? "opencode" : "server", managed: runtime !== "opencode",
+          label: runtime, enabled: true, models: ["reasoner"], defaultModel: "reasoner", selectedModel: "reasoner" }],
+        providers: [{ id: runtime, name: runtime, models: [{ id: "reasoner", name: "Reasoner", variants: ["high"] }] }],
+        defaultModel: `${runtime}/reasoner`, reasoningVariant: "high" });
+      useRuntimeStore.getState().setSessionVariant("ses_a", null);
+      await useRuntimeStore.getState().sendPrompt("research", "ses_a");
+      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, `${runtime}/reasoner`, undefined);
+    });
+
+    it("sends no effort for managed Claude when its actual catalog has no variants", async () => {
+      useRuntimeStore.setState({ gatewayRuntime: "claude", defaultModel: "claude/opus",
+        gatewayRuntimes: [{ runtime: "claude", kind: "server", managed: true, label: "Claude", enabled: true,
+          models: ["opus"], defaultModel: "opus", selectedModel: "opus" }],
+        providers: [{ id: "claude", name: "Claude", models: [{ id: "opus", name: "Opus", variants: [] }] }] });
+      useRuntimeStore.getState().setSessionVariant("ses_a", "max");
+      await useRuntimeStore.getState().sendPrompt("research", "ses_a");
+      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, "claude/opus", undefined);
+    });
+
+    it("clears invalid effort on model switch and persists explicit default", async () => {
+      useRuntimeStore.setState({ reasoningVariant: "high", sessionVariants: { ses_a: "high", ses_b: "low" } });
+      useRuntimeStore.getState().setSessionModel("ses_a", "codex/big-pickle");
+      expect(useRuntimeStore.getState().sessionVariants).toEqual({ ses_a: null, ses_b: "low" });
+      expect(JSON.parse(window.localStorage.getItem("ai4s.session.variants.v1")!)).toEqual({ ses_a: null, ses_b: "low" });
+      await useRuntimeStore.getState().sendPrompt("research", "ses_a");
+      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, "codex/big-pickle", undefined);
+      useRuntimeStore.getState().setSessionModel("ses_a", "codex/gpt-deep");
+      await useRuntimeStore.getState().sendPrompt("again", "ses_a");
+      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "again", undefined, "codex/gpt-deep", undefined);
+    });
+
+    it("preserves a compatible effort on model switch", () => {
+      useRuntimeStore.getState().setSessionVariant("ses_a", "low");
+      useRuntimeStore.getState().setSessionModel("ses_a", "codex/gpt-deep");
+      expect(useRuntimeStore.getState().sessionVariants.ses_a).toBe("low");
+    });
+  });
+
   it("sends exactly the model selected and displayed by the Web conversation picker", async () => {
     mocks.isGatewayWeb = true;
     mocks.isTauri = false;

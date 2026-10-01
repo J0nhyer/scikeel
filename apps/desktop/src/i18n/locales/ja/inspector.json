@@ -57,6 +57,12 @@
     "contentNotCaptured": "このバージョンの内容はキャプチャされていません（バイナリの書き込み、または差分のみが記録された編集）。"
   },
   "filePreview": {
+    "pdfPrevious": "前のページ",
+    "pdfNext": "次のページ",
+    "pdfPageNumber": "ページ番号",
+    "pdfZoomIn": "拡大",
+    "pdfZoomOut": "縮小",
+    "pdfPage": "PDF {{total}} ページ中 {{page}} ページ",
     "historyAria": "履歴",
     "historyTitle": "履歴 — コードと会話を伴う、記録されたすべてのバージョン",
     "openExternally": "外部で開く",

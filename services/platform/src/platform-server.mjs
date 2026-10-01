@@ -493,9 +493,18 @@ export class PlatformServer {
         headers,
       },
       (upstreamResponse) => {
+        const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
+        const download = parsed.pathname === "/v1/fs/read" && request.method === "GET"
+          ? parsed.searchParams.get("download") : null;
+        if (download && upstreamResponse.statusCode === 200) {
+          const filename = Array.from(download.split(/[\\/]/).pop().replace(/[\r\n\x00]/g, "").toWellFormed()).slice(0, 240).join("") || "download";
+          const ascii = filename.replace(/[^\x20-\x7e]|["\\]/g, "_");
+          const encoded = encodeURIComponent(filename).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+          responseHeaders["content-disposition"] = `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+        }
         response.writeHead(
           upstreamResponse.statusCode ?? 502,
-          filterResponseHeaders(upstreamResponse.headers),
+          responseHeaders,
         );
         upstreamResponse.pipe(response);
       },

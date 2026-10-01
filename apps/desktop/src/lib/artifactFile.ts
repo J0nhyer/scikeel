@@ -17,6 +17,11 @@ export interface ArtifactFile {
   size: number;
 }
 
+async function fileRequestError(response: Response): Promise<Error> {
+  const body = await response.json().catch(() => null) as { error?: string } | null;
+  return new Error(body?.error || `File request failed (${response.status})`);
+}
+
 /** Read a root-relative file. Returns null outside the desktop app or on error paths. */
 export async function readArtifact(path: string, root?: FileRoot): Promise<ArtifactFile | null> {
   if (!isTauri) return null;
@@ -41,13 +46,29 @@ export async function previewUrl(path: string, root?: FileRoot, dir?: string): P
     const res = await fetch(`${gatewayOrigin()}/v1/fs/ticket?${query}`, {
       headers: t ? { authorization: `Bearer ${t}` } : {},
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw await fileRequestError(res);
     const { ticket } = (await res.json()) as { ticket?: string };
-    return ticket ? `${gatewayOrigin()}/v1/fs/read?ticket=${encodeURIComponent(ticket)}` : null;
+    if (!ticket) throw new Error("The server did not provide a file preview URL");
+    return `${gatewayOrigin()}/v1/fs/read?ticket=${encodeURIComponent(ticket)}`;
   }
   if (!isTauri) return null;
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("preview_url", { path, root });
+}
+
+/** Download the original file without buffering it in browser memory. Refresh
+ * the ticket on each click so a long-open preview can still be downloaded. */
+export async function downloadArtifact(path: string, root?: FileRoot, dir?: string): Promise<void> {
+  if (!isGatewayWeb) return openArtifactExternally(path, root);
+  const url = await previewUrl(path, root, dir);
+  if (!url) throw new Error("File download is unavailable");
+  const filename = path.split(/[\\/]/).pop() || "download";
+  const link = document.createElement("a");
+  link.href = `${url}&download=${encodeURIComponent(filename)}`;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 /** Resolve a file mentioned in an agent message to a real workspace-relative
@@ -175,12 +196,9 @@ export async function listDir(rel: string, root?: FileRoot, dir?: string): Promi
     const url =
       `${gatewayOrigin()}/v1/fs/list?path=${encodeURIComponent(rel)}` +
       `${root ? `&root=${root}` : ""}${dir ? `&dir=${encodeURIComponent(dir)}` : ""}`;
-    try {
-      const r = await fetch(url, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
-      return r.ok ? ((await r.json()) as DirEntry[]) : [];
-    } catch {
-      return [];
-    }
+    const r = await fetch(url, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
+    if (!r.ok) throw await fileRequestError(r);
+    return (await r.json()) as DirEntry[];
   }
   if (!isTauri) return [];
   const { invoke } = await import("@tauri-apps/api/core");

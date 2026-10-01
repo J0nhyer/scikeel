@@ -1,8 +1,11 @@
-# Open Science Desktop
+# SciKeel
 
-Brand name: **Open Science Desktop** — "Local-first, model-agnostic AI research
-workbench for macOS, Windows & Linux." Formerly Open Science. Bundle identifier stays
-`com.ai4s.workbench` and internal `@ai4s/*` package names are unchanged.
+Brand name: **SciKeel** — "A model-agnostic AI research workbench for reproducible,
+collaborative science." Public repository target: `J0nhyer/scikeel`. Derived from
+Open Science Desktop (formerly Open Science), retaining its MIT license and upstream
+attribution. Inherited UI/desktop labels may still use the original name while
+branding is migrated. Bundle identifier stays `com.ai4s.workbench` and internal
+`@ai4s/*` package names are unchanged.
 
 Project rules and working context for AI agents (Claude Code, Cursor, Codex, etc.).
 `CLAUDE.md` is a symlink to this file — edit only `AGENTS.md`.

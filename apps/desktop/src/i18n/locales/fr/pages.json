@@ -45,6 +45,7 @@
     }
   },
   "files": {
+    "refresh": "Actualiser les fichiers",
     "loading": "Chargement…",
     "folderEmpty": "Ce dossier est vide.",
     "explorerUnavailableWeb": "L'explorateur de fichiers est disponible dans l'application de bureau.",

@@ -58,6 +58,12 @@
     "contentNotCaptured": "Content not captured for this version (a binary write, or an edit that recorded only a diff)."
   },
   "filePreview": {
+    "pdfPrevious": "Previous page",
+    "pdfNext": "Next page",
+    "pdfPageNumber": "Page number",
+    "pdfZoomIn": "Zoom in",
+    "pdfZoomOut": "Zoom out",
+    "pdfPage": "PDF page {{page}} of {{total}}",
     "historyAria": "History",
     "historyTitle": "History — every recorded version with its code and conversation",
     "openExternally": "Open externally",

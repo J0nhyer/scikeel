@@ -240,8 +240,15 @@ export class WorkerManager {
     // their app data root from XDG_DATA_HOME. The current source uses
     // <state-dir>/runtime instead. Creating both parents lets one manager work
     // with the deployed binary and with a rebuilt binary during rollout.
-    await ensureDirectory(join(paths.stateDir, "runtime"));
-    await ensureDirectory(join(paths.stateDir, "com.ai4s.workbench", "runtime"));
+    for (const runtimeRoot of [join(paths.stateDir, "runtime"), join(paths.stateDir, "com.ai4s.workbench", "runtime")]) {
+      await ensureDirectory(runtimeRoot);
+      // --workspace sets the active folder only. Pin the base as well so file
+      // browsing and session-directory checks use this user's private tree.
+      const destination = join(runtimeRoot, "base-workspace.txt");
+      const temporary = `${destination}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+      await fs.writeFile(temporary, paths.workspaceDir, { mode: 0o600 });
+      await fs.rename(temporary, destination);
+    }
     const port = await this.portAllocator(this.reservedPorts);
     record.status = "starting";
     record.port = port;

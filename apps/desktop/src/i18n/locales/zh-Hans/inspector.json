@@ -57,6 +57,12 @@
     "contentNotCaptured": "此版本的内容未被捕获（可能是二进制写入，或仅记录了差异的编辑）。"
   },
   "filePreview": {
+    "pdfPrevious": "上一页",
+    "pdfNext": "下一页",
+    "pdfPageNumber": "页码",
+    "pdfZoomIn": "放大",
+    "pdfZoomOut": "缩小",
+    "pdfPage": "PDF 第 {{page}} 页，共 {{total}} 页",
     "historyAria": "历史记录",
     "historyTitle": "历史记录 — 每个记录的版本及其代码和对话",
     "openExternally": "在外部打开",

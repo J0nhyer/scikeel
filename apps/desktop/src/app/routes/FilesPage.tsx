@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
   Dna,
+  Download,
   FileText,
   Film,
   FlaskConical,
@@ -11,11 +12,13 @@ import {
   Highlighter,
   Loader2,
   NotebookPen,
+  RefreshCw,
   Sheet,
   X,
 } from "lucide-react";
 import { extOf, extToKind, previewKindForName, type PreviewKind } from "@/lib/artifacts";
-import { listDir, type DirEntry } from "@/lib/artifactFile";
+import { downloadArtifact, listDir, type DirEntry } from "@/lib/artifactFile";
+import { toast } from "@/lib/toast";
 import { isTauri, workspaceBase } from "@/lib/tauri";
 import { isGatewayWeb } from "@/lib/webMode";
 import { useIsMobile } from "@/lib/useIsMobile";
@@ -85,6 +88,23 @@ function humanSize(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FileDownloadButton({ entry, root, directory }: { entry: DirEntry; root: "workspace" | "base"; directory?: string }) {
+  const { t } = useTranslation("inspector");
+  const [busy, setBusy] = useState(false);
+  if (!isGatewayWeb || entry.isDir) return null;
+  const download = async () => {
+    setBusy(true);
+    try { await downloadArtifact(entry.path, root, directory); }
+    catch (e) { toast.error(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+  return <button type="button" onClick={() => void download()} disabled={busy}
+    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
+    aria-label={`${t("filePreview.download")}: ${entry.name}`} title={t("filePreview.download")}>
+    {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+  </button>;
 }
 
 /**
@@ -198,6 +218,10 @@ export function FilesPage({
               </span>
             );
           })}
+          <button type="button" className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center text-muted hover:text-text"
+            aria-label={t("files.refresh")} title={t("files.refresh")} disabled={entries === null} onClick={() => void load(dir)}>
+            <RefreshCw size={14} />
+          </button>
           {onClose && (
             <>
               <div className="flex-1" />
@@ -226,10 +250,11 @@ export function FilesPage({
           )}
           {entries?.map((entry) => (
             <FileContextMenu key={entry.path} entry={entry} root="base">
+              <div className="flex min-w-0 items-center">
               <button
                 onClick={() => open(entry)}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-input px-2 py-1.5 text-left text-[13px] hover:bg-surface-2",
+                  "flex min-w-0 flex-1 items-center gap-2 rounded-input px-2 py-1.5 text-left text-[13px] hover:bg-surface-2",
                   selected?.path === entry.path ? "bg-surface-2 text-text" : "text-text/90",
                 )}
               >
@@ -238,6 +263,8 @@ export function FilesPage({
                 {!entry.isDir && <span className="shrink-0 text-[11px] text-muted">{humanSize(entry.size)}</span>}
                 {entry.isDir && <ChevronRight size={14} className="shrink-0 text-muted" />}
               </button>
+              <FileDownloadButton entry={entry} root="base" />
+              </div>
             </FileContextMenu>
           ))}
         </div>
@@ -263,11 +290,13 @@ function FilePreview({
   root,
   onClose,
   controls,
+  workspaceDirectory,
 }: {
   entry: DirEntry;
   root: "workspace" | "base";
   onClose: () => void;
   controls?: React.ReactNode;
+  workspaceDirectory?: string;
 }) {
   const ext = extOf(entry.name);
   if (ext === "ipynb")
@@ -285,6 +314,7 @@ function FilePreview({
       }}
       onClose={onClose}
       controls={controls}
+      workspaceDirectory={workspaceDirectory}
     />
   );
 }
@@ -314,6 +344,7 @@ export function SessionFilesPane({
   const [entries, setEntries] = useState<DirEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<DirEntry | null>(null);
+  const [reload, setReload] = useState(0);
 
   const setDir = (next: string) => {
     setSelected(null);
@@ -343,7 +374,7 @@ export function SessionFilesPane({
     return () => {
       cancelled = true;
     };
-  }, [dir, locationKey, sessionDir]);
+  }, [dir, locationKey, sessionDir, reload]);
 
   if (selected) {
     return (
@@ -352,6 +383,7 @@ export function SessionFilesPane({
         root="workspace"
         onClose={() => setSelected(null)}
         controls={controls}
+        workspaceDirectory={sessionDir}
       />
     );
   }
@@ -372,6 +404,10 @@ export function SessionFilesPane({
           {t("files.pane.subtitle")}
         </span>
         <div className="flex-1" />
+        <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center text-muted hover:text-text"
+          aria-label={t("files.refresh")} title={t("files.refresh")} disabled={entries === null} onClick={() => setReload((value) => value + 1)}>
+          <RefreshCw size={14} />
+        </button>
         {controls}
         <button className="text-text hover:opacity-60" aria-label={t("files.pane.closeAria")} onClick={onClose}>
           <X size={14} strokeWidth={1.5} />
@@ -410,16 +446,19 @@ export function SessionFilesPane({
           <div className="p-2 text-sm text-muted">{t("files.folderEmpty")}</div>
         )}
         {entries?.map((entry) => (
-          <FileContextMenu key={entry.path} entry={entry} root="workspace">
+          <FileContextMenu key={entry.path} entry={entry} root="workspace" directory={sessionDir}>
+            <div className="flex min-w-0 items-center">
             <button
               onClick={() => (entry.isDir ? setDir(entry.path) : setSelected(entry))}
-              className="flex w-full items-center gap-2 rounded-input px-2 py-1.5 text-left text-[13px] text-text/90 hover:bg-surface-2"
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-input px-2 py-1.5 text-left text-[13px] text-text/90 hover:bg-surface-2"
             >
               {iconFor(entry)}
               <span className="flex-1 truncate">{entry.name}</span>
               {!entry.isDir && <span className="shrink-0 text-[11px] text-muted">{humanSize(entry.size)}</span>}
               {entry.isDir && <ChevronRight size={14} className="shrink-0 text-muted" />}
             </button>
+            <FileDownloadButton entry={entry} root="workspace" directory={sessionDir} />
+            </div>
           </FileContextMenu>
         ))}
       </div>

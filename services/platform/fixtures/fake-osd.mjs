@@ -1,4 +1,6 @@
 import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 
 const args = process.argv.slice(2);
 
@@ -17,7 +19,7 @@ if (!port || !token || !workspace || !stateDir) {
   process.exit(2);
 }
 
-const server = createServer((request, response) => {
+const server = createServer(async (request, response) => {
   if (request.url === "/v1/health") {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true, service: "fake-osd" }));
@@ -70,6 +72,24 @@ const server = createServer((request, response) => {
       directory: workspace,
       stateDir,
     }));
+    return;
+  }
+  const parsed = new URL(request.url, "http://worker.invalid");
+  if (parsed.pathname === "/v1/fs/read") {
+    const full = resolve(workspace, parsed.searchParams.get("path") ?? "");
+    if (!full.startsWith(`${resolve(workspace)}${sep}`)) {
+      response.writeHead(403);
+      response.end();
+      return;
+    }
+    try {
+      const content = await readFile(full);
+      response.writeHead(200, { "content-type": "application/pdf" });
+      response.end(content);
+    } catch {
+      response.writeHead(404);
+      response.end();
+    }
     return;
   }
   response.writeHead(404);

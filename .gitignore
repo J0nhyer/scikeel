@@ -34,6 +34,7 @@ venv/
 # Logs & caches
 *.log
 .cache/
+.deploy/
 .eslintcache
 .superpowers/
 .worktrees/

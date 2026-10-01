@@ -1,9 +1,10 @@
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { Copy, ExternalLink, FolderOpen } from "lucide-react";
+import { Copy, Download, ExternalLink, FolderOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FileRoot } from "@ai4s/shared";
 import {
   absoluteArtifactPath,
+  downloadArtifact,
   openArtifactExternally,
   revealArtifact,
   type DirEntry,
@@ -11,6 +12,7 @@ import {
 import { copyText } from "@/lib/clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { isGatewayWeb } from "@/lib/webMode";
 
 // The reveal action is the same everywhere; only its NAME matches the platform's
 // file manager (label-only — the Rust side reveals correctly on all three).
@@ -36,13 +38,15 @@ async function copy(text: string, what: string) {
 export function FileContextMenu({
   entry,
   root,
+  directory,
   children,
 }: {
   entry: DirEntry;
   root: FileRoot;
+  directory?: string;
   children: React.ReactNode;
 }) {
-  const { t } = useTranslation(["pages", "common"]);
+  const { t } = useTranslation(["pages", "common", "inspector"]);
 
   const copyAbsolute = async () => {
     const abs = await absoluteArtifactPath(entry.path, root).catch(() => null);
@@ -63,19 +67,24 @@ export function FileContextMenu({
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content className="z-50 min-w-[190px] rounded-card border border-border bg-surface p-1 text-[13px] text-text shadow-pop">
-          <Item icon={<FolderOpen size={14} />} onSelect={() => void reveal()}>
+          {!isGatewayWeb && <Item icon={<FolderOpen size={14} />} onSelect={() => void reveal()}>
             {REVEAL_LABEL}
-          </Item>
-          <Item icon={<Copy size={14} />} onSelect={() => void copyAbsolute()}>
+          </Item>}
+          {!isGatewayWeb && <Item icon={<Copy size={14} />} onSelect={() => void copyAbsolute()}>
             {t("files.contextMenu.copyPath")}
-          </Item>
+          </Item>}
           <Item
             icon={<Copy size={14} />}
             onSelect={() => void copy(entry.path, t("files.contextMenu.relativePathLabel"))}
           >
             {t("files.contextMenu.copyRelativePath")}
           </Item>
-          {!entry.isDir && (
+          {!entry.isDir && isGatewayWeb && (
+            <Item icon={<Download size={14} />} onSelect={() => void downloadArtifact(entry.path, root, directory).catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))}>
+              {t("inspector:filePreview.download")}
+            </Item>
+          )}
+          {!entry.isDir && !isGatewayWeb && (
             <Item icon={<ExternalLink size={14} />} onSelect={() => void openArtifactExternally(entry.path, root)}>
               {t("files.contextMenu.openInDefaultApp")}
             </Item>

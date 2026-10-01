@@ -45,6 +45,7 @@
     }
   },
   "files": {
+    "refresh": "Dateien aktualisieren",
     "loading": "Wird geladen…",
     "folderEmpty": "Dieser Ordner ist leer.",
     "explorerUnavailableWeb": "Der Datei-Explorer ist in der Desktop-App verfügbar.",
