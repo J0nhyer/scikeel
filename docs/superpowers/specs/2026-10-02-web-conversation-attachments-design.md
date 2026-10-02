@@ -1,6 +1,6 @@
 # Web Conversation Attachments Design
 
-**Status:** Product design approved on 2026-10-02; written specification awaiting user review.
+**Status:** Approved for implementation planning on 2026-10-02 after user review.
 
 ## Goal and scope
 
