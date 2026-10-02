@@ -19,3 +19,10 @@ test("the sandbox profile contains only scoped broker credentials and manual too
   assert.equal(profile.provider.fixture.options.baseURL, "http://172.31.240.1:4792/v1");
   assert.equal(calls[0].generation, 1); assert.ok(calls[0].expiresAt <= 901000);
 });
+
+test("fixed administrator HTTP providers remain compatible without accepting tenant URL overrides",()=>{
+  const configured={...config,providers:{fixture:{...config.providers.fixture,baseUrl:"http://47.109.76.66:18001/v1"}}};
+  assert.equal(validateBrokerConfiguration(configured),configured);
+  for(const baseUrl of ["file:///etc/passwd","http://user:secret@provider.example/v1","http://provider.example/v1?override=peer"])
+    assert.throws(()=>validateBrokerConfiguration({...config,providers:{fixture:{...config.providers.fixture,baseUrl}}}));
+});

@@ -663,6 +663,14 @@ test("managed runtime proxy rejects raw paths, peer directories, unknown session
     "content-type": "application/json", origin: "https://foreign.invalid" }, body: "{}" })).status, 403);
   assert.equal((await client.request("/global/config")).status, 200);
   assert.deepEqual(await json(await client.request("/global/config")), { model: null });
+  const context={userId:user.id,instanceId,generation:1};
+  policy.registerSession(context,{id:"owned",directory:worker.workspaceDir});
+  const deletion={method:"DELETE",headers:{origin:fixture.base}};
+  assert.equal((await client.request("/session/owned",deletion)).status,403);
+  const approved=await client.request("/session/owned",{...deletion,headers:{...deletion.headers,"x-scikeel-manual-approval":"1"}});
+  assert.notEqual(approved.status,403);
+  const foreign=await client.request("/session/owned",{...deletion,headers:{origin:"https://foreign.invalid","x-scikeel-manual-approval":"1"}});
+  assert.equal(foreign.status,403);
   // Secret-bearing diagnostic SSE from this legacy fixture must not pass through.
   const events = await client.request("/event");
   assert.equal(events.status, 200);

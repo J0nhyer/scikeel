@@ -114,7 +114,7 @@ export class TenantGateway {
   #child;
   constructor({ manifest, token, address, port = 4790, spawnImpl = spawn }) {
     this.manifest = validateManifest(manifest);
-    if (!/^[a-f0-9]{64}$/.test(token ?? "") || !/^(?:127\.0\.0\.1|172\.31\.240\.\d{1,3})$/.test(address ?? "") ||
+    if (!/^[a-f0-9]{64}$/.test(token ?? "") || !/^(?:127\.0\.0\.[12]|172\.31\.240\.\d{1,3})$/.test(address ?? "") ||
         !Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("invalid gateway identity");
     Object.assign(this, { token, address, port, spawnImpl });
   }

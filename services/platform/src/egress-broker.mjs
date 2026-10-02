@@ -198,7 +198,13 @@ export class EgressBroker {
     this.server = createServer({ maxHeaderSize: 16384, requestTimeout: 15000, headersTimeout: 5000 }, (req, res) => void this.#http(req, res));
     this.server.on("connect", (req, socket, head) => void this.#connect(req, socket, head));
     this.server.on("clientError", (_error, socket) => socket.destroy());
-    this.server.on("connection", (socket) => { this.#clients.add(socket); socket.once("close", () => this.#clients.delete(socket)); });
+    this.server.on("connection", (socket) => {
+      this.#clients.add(socket);
+      // CONNECT transfers ownership away from HTTP's socket error handler.
+      // Keep one listener after tunnel cleanup, including late peer resets.
+      socket.on("error", () => socket.destroy());
+      socket.once("close", () => this.#clients.delete(socket));
+    });
     this.server.maxConnections = this.maxConnections * 2;
     try {
       await new Promise((resolve, reject) => {

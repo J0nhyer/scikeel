@@ -17,6 +17,7 @@ PrivateMounts=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/run/scikeel /run/netns /var/lib/scikeel/launcher
+ReadWritePaths=-/var/lib/scikeel/production-launcher -/var/lib/scikeel/tenant-data
 ReadWritePaths=-/var/lib/scikeel/fixture-data -/srv/osd/platform/workers/instances -/srv/osd/platform/cli-runtime/users
 ReadWritePaths=-/opt/open-science-desktop/.deploy/platform-data/workers/instances -/opt/open-science-desktop/.deploy/platform-data/cli-runtime/users
 NoNewPrivileges=yes

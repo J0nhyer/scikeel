@@ -1,17 +1,18 @@
 import { spawn } from "node:child_process";
-import {CodexAppServer} from "/opt/scikeel/tools/cli-jobs.mjs";
 import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
 
 // CI-only acceptance driver; never copied into an installed scientific image.
 const token = "a".repeat(64);
+// An alternate loopback address catches accidental fallback to 127.0.0.1.
+const address = "127.0.0.2";
 const identity = { instanceId: "sandbox-test-ci", generation: 1 };
 const child = spawn("/opt/scikeel/tools/bin/node", ["/opt/scikeel/tools/runner.mjs"], {
-  env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", SCIKEEL_BIND_ADDRESS: "127.0.0.1" },
+  env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", SCIKEEL_BIND_ADDRESS: address },
   detached: true, stdio: ["ignore", "ignore", "ignore"],
 });
 let spawnFailed = false; child.once("error", () => spawnFailed = true);
 async function request(path, body, grant = token) {
-  return fetch(`http://127.0.0.1:4791${path}`, { method: "POST", headers: {
+  return fetch(`http://${address}:4791${path}`, { method: "POST", headers: {
     authorization: `Bearer ${grant}`, "content-type": "application/json" },
     body: JSON.stringify({ ...identity, ...body }), signal: AbortSignal.timeout(15000) });
 }
@@ -19,7 +20,7 @@ try {
   const deadline = Date.now() + 30000; let ready = false;
   while (Date.now() < deadline && !spawnFailed && child.exitCode === null && child.signalCode === null) {
     try {
-      const response = await fetch("http://127.0.0.1:4791/health", { signal: AbortSignal.timeout(500) });
+      const response = await fetch(`http://${address}:4791/health`, { signal: AbortSignal.timeout(500) });
       if (response.ok) { ready = true; break; }
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -46,14 +47,7 @@ try {
   const hooks=await scienceEnvironment({directory:projectDir},{imageDigest});const output={env:{}};
   await hooks["shell.env"]({cwd:projectDir},output);
   if(!output.env.PATH.startsWith("/opt/scikeel/science/bin:"))throw new Error("shared science shell environment missing");
-  const native=new CodexAppServer({spawnImpl:spawn,emit:async()=>{},timeoutMs:15000,requestTimeoutMs:10000});
-  let started;
-  try {
-    started=await native.start({privateHome:"/fixture/home",projectDir,environment:{kind:"base",python:"/opt/scikeel/science/bin/python"},
-      brokers:{modelToken:"c".repeat(64)},model:"approved",text:"Offline protocol initialization only"});
-    if(!started.nativeSessionId || !started.turnId)throw new Error("native protocol initialization failed");
-  }finally{await native.close();}
-  console.log(JSON.stringify({ nativeAppServer:true,scienceShellEnvironment:true,productionRunner: true, realGateway: true, realFileHelper: true,
+  console.log(JSON.stringify({ assignedAddress:address,scienceShellEnvironment:true,productionRunner: true, realGateway: true, realFileHelper: true,
     authentication: true, generationBinding: true, workspaceEscapeDenied: true, profileRestart: true }));
 } finally {
   const closed = new Promise((done) => child.once("close", done));

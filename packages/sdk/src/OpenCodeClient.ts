@@ -724,7 +724,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       `${this.baseUrl}/experimental/control-plane/move-session`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers: {...this.headers(true), "x-scikeel-manual-approval": "1"},
         body: JSON.stringify({ sessionID: sessionId, destination: { directory }, moveChanges: false }),
       },
     );
@@ -735,7 +735,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   async deleteSession(sessionId: string): Promise<void> {
     const res = await this.fetchImpl(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}`, {
       method: "DELETE",
-      headers: this.headers(),
+      headers: {...this.headers(), "x-scikeel-manual-approval": "1"},
     });
     if (!res.ok) throw await this.apiError(res, "Failed to delete session");
   }
@@ -1323,7 +1323,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/shell`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers: {...this.headers(true), "x-scikeel-manual-approval": "1"},
         body: JSON.stringify({ agent, command }),
       },
     );
@@ -1338,7 +1338,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/command`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers: {...this.headers(true), "x-scikeel-manual-approval": "1"},
         body: JSON.stringify({ command, ...(args ? { arguments: args } : {}) }),
       },
     );

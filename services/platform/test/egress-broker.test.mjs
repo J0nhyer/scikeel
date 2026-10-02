@@ -57,6 +57,23 @@ test("a failed bind can be retried after the port becomes available", async (t) 
   assert.equal(broker.server.address().port, port);
 });
 
+test("a reset proxy connection cannot terminate the broker", async (t) => {
+  const { broker, grant, seen } = await fixture(t, (_req, res) => res.end("still available"));
+  const accepted = once(broker.server, "connection");
+  const client = createConnection({ host: "127.0.0.1", port: broker.server.address().port });
+  client.on("error", () => {});
+  client.on("data", () => client.end());
+  t.after(() => client.destroy());
+  const [socket] = await accepted;
+  const closed = once(socket, "close");
+  client.write("CONNECT science.example:443 HTTP/1.1\r\nHost: science.example:443\r\n\r\n");
+  await closed;
+  socket.emit("error", Object.assign(new Error("peer reset"), { code: "ECONNRESET" }));
+  assert.equal(socket.destroyed, true);
+  assert.equal((await fetchThrough(broker, grant)).body, "still available");
+  assert.equal(seen.length, 1);
+});
+
 test("HTTP transport pins DNS and TLS identity and never forwards broker credentials", async (t) => {
   const { broker, grant, seen } = await fixture(t, (req, res) => {
     assert.equal(req.headers.host, "science.example");

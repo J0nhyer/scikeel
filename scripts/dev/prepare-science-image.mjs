@@ -48,7 +48,7 @@ export async function prepareImage(args) {
     uv: (await readFile(join(artifacts, "uv-image.txt"), "utf8")).trim() });
   validateBuildContext(await files(context));
   const tools = {};
-  for (const name of ["osd", "opencode", "node", "uv", "codex"]) {
+  for (const name of ["osd", "opencode", "node", "uv"]) {
     const path = join(context, "tools/bin", name);
     const version = run(path, toolVersionArguments(name)).match(/\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?/)?.[0];
     if (!version) throw new Error("unmeasured CI tool version");
@@ -86,7 +86,7 @@ print(json.dumps(out))`;
   const manifest = { schema: 1, name: "science-v1", variant, architecture: "linux/amd64",
     rootfsSha256: digest, imageDigest: `sha256:${digest}`, python: tools.python.version, uv: tools.uv.version,
     baselineLockSha256: await sha256(join(artifacts, "uv.lock")), toolLockSha256: await sha256(join(artifacts, "tool-lock.json")),
-    fileCount: inventory.fileCount, uncompressedBytes: inventory.uncompressedBytes, tools, enabledRuntimes: ["opencode", "codex"],
+    fileCount: inventory.fileCount, uncompressedBytes: inventory.uncompressedBytes, tools, enabledRuntimes: ["opencode"],
     ...(variant === "probe" ? { testEntryPoint: "/opt/scikeel/tools/probe-entry.mjs" } : { runnerFiles }),
     provenance: { repository: "J0nhyer/scikeel", commit: process.env.GITHUB_SHA, workflow: "sandbox-image.yml" } };
   validateImageManifest(manifest);

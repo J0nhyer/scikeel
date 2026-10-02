@@ -114,7 +114,7 @@ export async function copyColdTenant({source,destination,kind,assertDrained}) {
     throw new Error("conflicting legacy state layout");
   const map=name=>flatten && (name===prefix || name.startsWith(`${prefix}/`)) ? `state${name.slice(prefix.length)}` : name;
   const credential=name=>kind==="worker" ? /^state\/runtime\/(xdg-config\/opencode(?:\/|$)|xdg-data\/opencode\/auth\.json$)/.test(name) :
-    /^(codex-home\/(?:auth\.json|config\.toml|codex-models\.json|codex-gateway-models\.json|rules(?:\/|$))|claude-config(?:\/|$))/.test(name);
+    /^(?:codex-home\/(?:.*\/)?(?:auth\.json|config\.toml|codex-models\.json|codex-gateway-models\.json|rules(?:\/|$))|claude-config(?:\/|$)|home\/\.(?:codex|claude)\/(?:.*\/)?(?:auth\.json|config\.toml|settings\.json|rules(?:\/|$)))/.test(name);
   const omittedCredentials=before.files.filter(file=>credential(map(file.path))).map(file=>map(file.path));
   const expected=before.files.filter(file=>!credential(map(file.path))).map(file=>({...file,path:map(file.path),sourcePath:file.path}));
   const originals=new Map(expected.map(file=>[file.path,file]));

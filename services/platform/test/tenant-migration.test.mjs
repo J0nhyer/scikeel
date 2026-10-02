@@ -68,10 +68,13 @@ test("cold migration refuses live sources, reused destinations and native creden
   const source=join(root,"source"),destination=join(root,"destination");await mkdir(join(source,"codex-home"),{recursive:true});
   await writeFile(join(source,"codex-home","auth.json"),"secret");
   await writeFile(join(source,"codex-home","config.toml"),"old unsafe provider");
+  await mkdir(join(source,"codex-home","profiles","revision","snapshot"),{recursive:true});
+  await writeFile(join(source,"codex-home","profiles","revision","snapshot","auth.json"),"nested administrator credential");
+  await writeFile(join(source,"codex-home","profiles","revision","snapshot","config.toml"),"nested provider secret");
   await writeFile(join(source,"sessions.json"),"{\"version\":1}");
   await assert.rejects(copyColdTenant({source,destination,kind:"native",assertDrained:async()=>false}),/drained/);
   const result=await copyColdTenant({source,destination,kind:"native",assertDrained:async()=>true});
-  assert.equal(result.omittedCredentials.length,2);assert.equal(result.copiedFiles,1);
+  assert.equal(result.omittedCredentials.length,4);assert.equal(result.copiedFiles,1);
   await assert.rejects(copyColdTenant({source,destination,kind:"native",assertDrained:async()=>true}),/destination/);
 });
 

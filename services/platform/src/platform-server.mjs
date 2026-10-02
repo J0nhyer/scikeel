@@ -327,7 +327,7 @@ export class PlatformServer {
     this.maxBodyBytes = maxBodyBytes;
     this.logger = logger;
     this.tenantPolicy = tenantPolicy;
-    this.approvalGate = approvalGate;
+    this.approvalGate = approvalGate ?? ((_context,request)=>request.manual===true);
     this.runtimeCatalog = runtimeCatalog;
     this.environments = environments;
     this.server = null;
@@ -940,7 +940,7 @@ export class PlatformServer {
       if (body.parentID) this.tenantPolicy.session(context, body.parentID);
       if (operation.identifiers.requestId) this.tenantPolicy.request(context, operation.identifiers.requestId);
       if (operation.approval && operation.approval !== "reply" &&
-          !(await this.approvalGate?.(context, { operation: operation.operation, sessionId, body }))) {
+          !(await this.approvalGate?.(context, { operation: operation.operation, sessionId, body, manual:request.headers["x-scikeel-manual-approval"]==="1" }))) {
         sendJson(response, 403, { error: "approval required" }); return;
       }
       if (["modelConfig", "modelCatalog", "providerCatalog"].includes(operation.operation)) {

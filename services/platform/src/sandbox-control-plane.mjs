@@ -20,7 +20,7 @@ export function validateBrokerConfiguration(config) {
   for (const [name, provider] of Object.entries(config.providers)) {
     let url;
     try { url = new URL(provider.baseUrl); } catch { throw new Error("invalid managed provider configuration"); }
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || url.protocol !== "https:" || url.username || url.password || url.hash || url.search ||
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || !["http:","https:"].includes(url.protocol) || url.username || url.password || url.hash || url.search ||
         Object.keys(provider).some((key) => !["baseUrl", "credential", "authMode", "enabledModels", "routes"].includes(key)) ||
         typeof provider.credential !== "string" || !provider.credential || /[\0\r\n]/.test(provider.credential) ||
         !["bearer", "x-api-key"].includes(provider.authMode) || !Array.isArray(provider.enabledModels) || !provider.enabledModels.length ||
@@ -102,7 +102,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy});
   const nativeProfileResolver={refresh:async(runtime)=>{
     const provider=config.providers[config.defaultProvider];
-    const enabled=runtime==="codex" && provider.authMode==="bearer" && provider.routes.includes("/v1/responses");
+    const enabled=configuration.enabledRuntimes?.includes(runtime) && runtime==="codex" && provider.authMode==="bearer" && provider.routes.includes("/v1/responses");
     const revision=createHash("sha256").update(JSON.stringify({image:configuration.imageDigest,provider:config.defaultProvider,
       endpoint:provider.baseUrl,models:provider.enabledModels})).digest("hex");
     return {runtime,identityRevision:revision,catalogRevision:revision,sourceRevision:revision,
