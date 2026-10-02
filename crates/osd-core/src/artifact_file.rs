@@ -106,6 +106,11 @@ pub fn resolve_under(root: &Path, rel: &str) -> Result<PathBuf, String> {
 /// Pages declare their scope explicitly — no fallback guessing between the
 /// two, so an identical relative path can never resolve ambiguously.
 pub fn scope_root(env: &Env, root: Option<&str>) -> Result<PathBuf, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = env.managed_files() {
+        if !matches!(root.unwrap_or("workspace"), "workspace" | "base") { return Err("unknown root scope".into()); }
+        return policy.root_path("account").map_err(|_| "managed root unavailable".into());
+    }
     match root.unwrap_or("workspace") {
         "workspace" => workspace_dir(env),
         "base" => crate::runtime::base_workspace_dir(env),
@@ -189,12 +194,28 @@ pub fn locate_under(root: &Path, rel: &str) -> Option<String> {
 /// files into seconds of "Not Responding" on every pane switch (#92) — the same
 /// reason `read_artifact` below is async.
 pub fn resolve_artifact(env: &Env, path: &str) -> Result<Option<String>, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = env.managed_files() {
+        let base = policy.root_path("account").map_err(|_| "managed root unavailable")?;
+        return policy.locate(&base, path).map(|found| found.map(|(_, relative)| relative))
+            .map_err(|_| "managed artifact unavailable".into());
+    }
     Ok(locate_under(&workspace_dir(env)?, path))
 }
 
 /// Read a workspace file for preview. Text types come back as UTF-8, binary as
 /// base64. `async`: previews read multi-MB files — never on the UI thread.
 pub fn read_artifact(env: &Env, path: String, root: Option<String>) -> Result<ArtifactFile, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = env.managed_files() {
+        let base = scope_root(env, root.as_deref())?;
+        let (id, relative) = policy.scoped_path(&base, &path).map_err(|_| "invalid managed path")?;
+        let bytes = policy.read(&id, &relative, PREVIEW_CAP_BYTES).map_err(|_| "managed file unavailable")?;
+        let size = bytes.len() as u64;
+        let (mime, text) = mime_for(Path::new(&path).extension().and_then(|value| value.to_str()).unwrap_or(""));
+        let (mime, encoding, data) = encode_for_preview(mime, text, bytes);
+        return Ok(ArtifactFile { path, mime: mime.into(), encoding, data, size });
+    }
     let full = resolve_under(&scope_root(env, root.as_deref())?, &path)?;
     let ext = full
         .extension()
@@ -286,6 +307,20 @@ pub struct NotebookEntry {
 /// search), newest first. `root: "base"` spans every session folder.
 pub fn list_notebooks(env: &Env, root: Option<String>) -> Result<Vec<NotebookEntry>, String> {
     let root = scope_root(env, root.as_deref())?;
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = env.managed_files() {
+        let (id, relative) = policy.scoped_path(&root, "probe").map_err(|_| "invalid managed root")?;
+        let prefix = relative.strip_suffix("probe").unwrap().trim_end_matches('/');
+        let mut found = Vec::new();
+        for (relative, entry) in policy.inventory(&id, prefix).map_err(|_| "managed inventory unavailable")? {
+            if !entry.is_dir && entry.name.ends_with(".ipynb") && policy.open_regular(&id, &relative, u64::MAX).is_ok() {
+                let path = if prefix.is_empty() { relative } else { relative[prefix.len() + 1..].to_owned() };
+                found.push(NotebookEntry { path, modified: entry.modified_at / 1000 });
+            }
+        }
+        found.sort_by_key(|entry| std::cmp::Reverse(entry.modified));
+        return Ok(found);
+    }
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let mut found = Vec::new();
     let mut stack = vec![(root.clone(), 0usize)];
@@ -405,6 +440,16 @@ pub fn write_workspace_file(
     root: Option<String>,
 ) -> Result<(), String> {
     let scope = scope_root(env, root.as_deref())?;
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = env.managed_files() {
+        let (id, relative) = policy.scoped_path(&scope, &path).map_err(|_| "invalid managed path")?;
+        if let Some((parent, _)) = relative.rsplit_once('/') {
+            policy.mkdir_all(&id, parent).map_err(|_| "managed parent unavailable")?;
+        }
+        policy.write_atomic(&id, &relative, content.as_bytes()).map_err(|_| "managed write unavailable")?;
+        crate::git_snapshot::request_snapshot(&scope);
+        return Ok(());
+    }
     let rel = Path::new(&path);
     if rel.is_absolute()
         || rel

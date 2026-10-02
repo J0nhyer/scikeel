@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-02 18:08 · Implemented descriptor-rooted managed reads, bounded inventories/run indexes, atomic control writes and root/account/generation-bound tickets; 240 Rust core tests pass (one existing ignored test) and osd-cli checks successfully, with production cutover still disabled.
+
 2026-10-02 17:46 · Added platform-owned tenant/session authority and the managed runtime proxy allowlist, scoped directories, origin checks and credential scrubbing; all 51 platform tests pass with production managed mode still disabled.
 
 2026-10-02 17:33 · Added guarded Rust/sandbox entrypoints and a shared cross-worktree resource lock; eight harness/worker checks pass, while real preflight correctly fails on missing root-owned synthetic sandbox configuration.

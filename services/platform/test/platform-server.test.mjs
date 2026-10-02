@@ -569,7 +569,7 @@ test("managed runtime proxy rejects raw paths, peer directories, unknown session
   policy.registerAccount({ userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir });
   // The fake legacy worker has no managed generation and must never be trusted.
   fixture.manager.getWorker = ((original) => (id) => ({ ...original.call(fixture.manager, id), generation: 1 }))(fixture.manager.getWorker);
-  for (const path of ["/file/content", "/find/file", "/path", "/pty", "/global/config/auth", "/session/a%252fb"])
+  for (const path of ["/file/content", "/find/file", "/path", "/pty", "/global/config/auth", "/session/a%252fb", "/v1/sessions", "/v1/events"])
     assert.equal((await client.request(path)).status, 404, path);
   assert.equal((await client.request("/event?directory=%2Fetc")).status, 403);
   assert.equal((await client.request("/session/unknown")).status, 404);

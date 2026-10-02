@@ -109,3 +109,19 @@ export function scrubRuntimeSecrets(value, depth = 0) {
     .filter(([key]) => !/^(api[_-]?key|authorization|password|secret|access[_-]?token|refresh[_-]?token|credential|headers|env)$/i.test(key))
     .map(([key, item]) => [key, scrubRuntimeSecrets(item, depth + 1)]));
 }
+
+const gatewayReads = new Map([
+  ["/v1/health", { operation: "health", query: [] }],
+  ["/v1/whoami", { operation: "identity", query: [] }],
+  ["/v1/fs/list", { operation: "fileList", query: ["path", "dir", "root"] }],
+  ["/v1/fs/read", { operation: "fileRead", query: ["path", "dir", "root", "ticket", "download"] }],
+  ["/v1/fs/ticket", { operation: "fileTicket", query: ["path", "dir", "root"] }],
+  ["/v1/projects", { operation: "projectsList", query: [] }],
+  ["/v1/runs", { operation: "runsList", query: [] }],
+  ["/v1/runs/query", { operation: "runsQuery", query: ["q"] }],
+  ["/v1/runs/log", { operation: "runsLog", query: ["hash"] }],
+]);
+export function classifyGatewayRoute(method, path) {
+  const entry = method === "GET" && gatewayReads.get(path);
+  return entry ? { ...entry, path } : null;
+}

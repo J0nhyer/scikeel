@@ -164,7 +164,7 @@ export function relativeInput(value) {
 
 **Files:** Create `crates/osd-core/src/file_policy.rs`. Modify `crates/osd-core/{Cargo.toml,src/lib.rs,src/artifact_file.rs,src/gateway.rs,src/project.rs}`. Add unit tests in `file_policy.rs` and integration tests in `services/platform/test/workspace-file-boundary.test.mjs`.
 
-- [ ] Add Rust tests using temporary synthetic roots: internal relative link allowed for a data read, outside/absolute/magic link denied, FIFO/socket/device denied promptly, root/session prefix collision denied, rename/symlink swapping cannot read B. Tickets bind account, generation, selected root and relative path; redemption securely opens the file again.
+- [x] Add Rust tests using temporary synthetic roots: internal relative link allowed for a data read, outside/absolute/magic link denied, FIFO/socket/device denied promptly, root/session prefix collision denied, rename/symlink swapping cannot read B. Tickets bind account, generation, selected root and relative path; redemption securely opens the file again.
 
 ```rust
 #[test]
@@ -181,8 +181,8 @@ fn rejects_escape_and_non_regular_files() {
 }
 ```
 
-- [ ] Define `FileBoundaryFixture` in the test module: use `std::env::temp_dir()` with getrandom IDs, owned/peer sibling directories, Unix symlink/mkfifo, and Drop cleanup. Run `pnpm sandbox:core:test --package osd-core file_policy`: expected FAIL before the module is implemented.
-- [ ] Add Linux-only `libc` dependency/use and managed policy carrying already-open root descriptors. `openat2` uses `RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS`, `O_CLOEXEC | O_NONBLOCK`; check returned descriptor is a regular file and enforce byte limits. Managed mode rejects absolute paths before syscall. Metadata/control writes additionally prohibit symlinks and use securely opened parent descriptors with `renameat`/`unlinkat`. Non-Linux desktop keeps its existing policy. Essential syscall contract:
+- [x] Define `FileBoundaryFixture` in the test module: use `std::env::temp_dir()` with getrandom IDs, owned/peer sibling directories, Unix symlink/mkfifo, and Drop cleanup. Run `pnpm sandbox:core:test --package osd-core file_policy`: expected FAIL before the module is implemented.
+- [x] Add Linux-only `libc` dependency/use and managed policy carrying already-open root descriptors. `openat2` uses `RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS`, `O_CLOEXEC | O_NONBLOCK`; check returned descriptor is a regular file and enforce byte limits. Managed mode rejects absolute paths before syscall. Metadata/control writes additionally prohibit symlinks and use securely opened parent descriptors with `renameat`/`unlinkat`. Non-Linux desktop keeps its existing policy. Essential syscall contract:
 
 ```rust
 #[cfg(target_os = "linux")]
@@ -209,8 +209,8 @@ fn open_regular_beneath(root: &std::fs::File, relative: &str) -> std::io::Result
 }
 ```
 
-- [ ] Introduce the file-policy interface to list/read/tickets/project metadata paths without redesigning desktop import behavior. Preserve `/v1/runs`, `/v1/runs/query`, `/v1/runs/log` with account-owned indexes and bounded query/log-hash lookup; a log hash never authorizes a public arbitrary path. Preserve artifact basename resolution within the selected owned tree with current search bounds and hidden-file filters. No managed host `canonicalize` fallback. Stream tickets from opened descriptors; bind expiry and account at issuance/redemption, returning 404/403 instead of leaking another root. Inventory/directory pagination also uses descriptor-relative iteration, bounded names and no-follow metadata checks. Public roots come from trusted startup policy, not editable workspace marker files.
-- [ ] Run guarded core tests and `pnpm platform:test test/workspace-file-boundary.test.mjs`. Expect PASS for traversal/link/special-file/ticket tests. Task 7's real probe must establish `openat2` support in gVisor; if unavailable, implement an equivalently race-safe descriptor-walk resolver and repeat the same behavioral tests before rollout. Commit `fix: use scoped descriptor based file operations`.
+- [x] Introduce the file-policy interface to list/read/tickets/project metadata paths without redesigning desktop import behavior. Preserve `/v1/runs`, `/v1/runs/query`, `/v1/runs/log` with account-owned indexes and bounded query/log-hash lookup; a log hash never authorizes a public arbitrary path. Preserve artifact basename resolution within the selected owned tree with current search bounds and hidden-file filters. No managed host `canonicalize` fallback. Stream tickets from opened descriptors; bind expiry and account at issuance/redemption, returning 404/403 instead of leaking another root. Inventory/directory pagination also uses descriptor-relative iteration, bounded names and no-follow metadata checks. Public roots come from trusted startup policy, not editable workspace marker files.
+- [x] Run guarded core tests and the real HTTP gateway tests in `crates/osd-core/src/gateway.rs` (these replace a duplicate Node wrapper fixture). Expect PASS for traversal/link/special-file/ticket tests. Task 7's real probe must establish `openat2` support in gVisor; if unavailable, implement an equivalently race-safe descriptor-walk resolver and repeat the same behavioral tests before rollout. Commit `fix: use scoped descriptor based file operations`.
 
 ## Task 4: Build and identify one immutable scientific baseline
 

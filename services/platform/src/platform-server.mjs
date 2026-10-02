@@ -2,7 +2,8 @@ import { request as httpRequest, createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { URL } from "node:url";
-import { classifyRuntimeRoute, validateRuntimeInput, scrubRuntimeSecrets } from "./runtime-route-policy.mjs";
+import { relativeInput } from "./tenant-policy.mjs";
+import { classifyRuntimeRoute, classifyGatewayRoute, validateRuntimeInput, scrubRuntimeSecrets } from "./runtime-route-policy.mjs";
 
 const SESSION_COOKIE = "osd_session";
 const BOOTSTRAP_COOKIE = "osd_worker_bootstrap";
@@ -475,6 +476,24 @@ export class PlatformServer {
     if (this.tenantPolicy && !(request.url ?? "").startsWith("/v1/")) {
       await this.#managedRuntimeProxy(request, response, access, user, worker);
       return;
+    }
+    if (this.tenantPolicy) {
+      const operation = classifyGatewayRoute(request.method, (request.url ?? "").split("?")[0]);
+      if (!operation) { sendJson(response, 404, { error: "not found" }); return; }
+      try {
+        const context = { userId: user.id, instanceId: workerIdForUser(user.id), generation: worker.generation };
+        this.tenantPolicy.account(context);
+        const url = new URL(request.url, "http://platform.invalid");
+        for (const key of url.searchParams.keys()) if (!operation.query.includes(key) || url.searchParams.getAll(key).length !== 1)
+          throw Object.assign(new Error("invalid gateway input"), { statusCode: 400 });
+        if (url.searchParams.has("dir")) this.tenantPolicy.directory(context, url.searchParams.get("dir"));
+        if (url.searchParams.has("root") && !["workspace", "base"].includes(url.searchParams.get("root")))
+          throw Object.assign(new Error("invalid file scope"), { statusCode: 400 });
+        const path = url.searchParams.get("path");
+        if (path) relativeInput(path);
+        if (operation.operation === "runsLog" && !/^[a-fA-F0-9]{1,128}$/.test(url.searchParams.get("hash") ?? ""))
+          throw Object.assign(new Error("invalid log id"), { statusCode: 400 });
+      } catch (error) { sendJson(response, error.statusCode ?? 403, { error: error.message }); return; }
     }
     if (this.cliRuntime && !this.tenantPolicy) {
       const handled = await this.cliRuntime.handle(request, response, {

@@ -48,3 +48,11 @@ test("current SDK move-session and text-part persistence contracts remain suppor
   assert.throws(() => validateRuntimeInput(part, { body: { id: "prt_b", sessionID: "ses_a",
     messageID: "msg_a", type: "text", text: "owned" } }), { statusCode: 400 });
 });
+
+test("the managed v1 surface cannot bypass runtime session authority", async () => {
+  const { classifyGatewayRoute } = await import("../src/runtime-route-policy.mjs");
+  for (const path of ["/v1/sessions", "/v1/sessions/foreign/prompt", "/v1/events", "/v1/permissions", "/v1/zen-models"])
+    assert.equal(classifyGatewayRoute("GET", path), null);
+  assert.equal(classifyGatewayRoute("GET", "/v1/fs/read").operation, "fileRead");
+  assert.equal(classifyGatewayRoute("GET", "/v1/runs/query").operation, "runsQuery");
+});

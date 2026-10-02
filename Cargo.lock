@@ -2816,6 +2816,7 @@ name = "osd-core"
 version = "0.5.2"
 dependencies = [
  "getrandom 0.4.3",
+ "libc",
  "notify",
  "reqwest",
  "rusqlite",

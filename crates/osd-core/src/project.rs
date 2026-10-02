@@ -569,6 +569,8 @@ fn project_dir_by_id(base: &Path, id: &str) -> Option<PathBuf> {
 /// registered in-place project is the one safe exception: accept its exact
 /// canonical workspace root, never an arbitrary external path.
 pub fn is_registered_project_path(env: &Env, path: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    if env.managed_files().is_some() { return false; }
     let Ok(base) = base_workspace_dir(env) else {
         return false;
     };
