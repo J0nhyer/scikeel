@@ -1,9 +1,11 @@
+import { claudeUserInput, codexImageArgs } from "./attachment-input.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
-import { spawn as nodeSpawn } from "node:child_process";
+import { spawn as nodeSpawn, execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { CliProfileResolver } from "./cli-profile.mjs";
+import { discoverSkills, seedSkills } from "./skills.mjs";
 
 const RUNTIME_ORDER = ["opencode", "claude", "codex"];
 const RUNTIMES = new Set(RUNTIME_ORDER);
@@ -300,6 +302,7 @@ export class CliRuntimeManager {
     codexArgs = [],
     claudeConfigDir = join(homedir(), ".claude"),
     codexHome = join(homedir(), ".codex"),
+    resourcesDir = null,
     turnTimeoutMs = DEFAULT_TURN_TIMEOUT_MS,
     spawnImpl = nodeSpawn,
     logger = () => {},
@@ -321,6 +324,8 @@ export class CliRuntimeManager {
     this.codexArgs = [...codexArgs];
     this.claudeConfigDir = resolve(claudeConfigDir);
     this.codexHome = resolve(codexHome);
+    this.resourcesDir = resourcesDir;
+    this.skillSeeds = new Map();
     this.profileResolver = profileResolver ?? new CliProfileResolver({ claudeConfigDir, codexHome });
     this.externalProfileResolver = Boolean(profileResolver);
     this.profiles = new Map();
@@ -619,6 +624,17 @@ export class CliRuntimeManager {
     await next;
   }
 
+  async ensureSkills(state) {
+    if (!this.skillSeeds.has(state.userId)) {
+      const seed = seedSkills(state.paths.home, this.resourcesDir).catch((error) => {
+        this.skillSeeds.delete(state.userId);
+        throw error;
+      });
+      this.skillSeeds.set(state.userId, seed);
+    }
+    return this.skillSeeds.get(state.userId);
+  }
+
   async syncCredentials(state, runtime) {
     const { paths } = state;
     await ensureDirectory(paths.home);
@@ -684,7 +700,7 @@ export class CliRuntimeManager {
     return env;
   }
 
-  commandFor(state, session, text, nativeSessionId = session.nativeSessionId) {
+  commandFor(state, session, text, nativeSessionId = session.nativeSessionId, attachmentInput) {
     const runtime = session.runtime;
     const model = session.model ?? this.modelForUser(session.userId, runtime);
     if (!model) {
@@ -694,7 +710,7 @@ export class CliRuntimeManager {
       const args = [
         ...this.claudeArgs,
         "-p",
-        text,
+        ...(attachmentInput?.images?.length ? ["--input-format", "stream-json"] : [text]),
         "--model",
         model,
         "--output-format",
@@ -706,6 +722,7 @@ export class CliRuntimeManager {
         "--add-dir",
         session.directory,
       ];
+      if (attachmentInput?.files?.length) args.push("--add-dir", ...new Set(attachmentInput.files.map((f) => f.workDir)));
       if (session.variant) args.push("--effort", session.variant);
       if (nativeSessionId) args.push("--resume", nativeSessionId);
       else args.push("--session-id", randomUUID());
@@ -723,7 +740,10 @@ export class CliRuntimeManager {
       "--model",
       model,
       ...(session.variant ? ["-c", `model_reasoning_effort=${JSON.stringify(session.variant)}`] : []),
+      ...(attachmentInput?.files?.length ? [...new Set(attachmentInput.files.map((f) => f.workDir))].flatMap((dir) => ["--add-dir", dir]) : []),
       ...(nativeSessionId ? ["resume", nativeSessionId] : []),
+      ...codexImageArgs((attachmentInput?.images ?? []).map((image) => image.path)),
+      ...(attachmentInput?.images?.length ? ["--"] : []),
       text,
     ];
     return { command: this.codexCommand, args };
@@ -842,11 +862,11 @@ export class CliRuntimeManager {
     });
   }
 
-  async reservePrompt({ userId, sessionId, text, model, variant }) {
+  async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput }) {
     const { state, session } = await this.getOwnedSession(userId, sessionId);
     if (session.status === "running" || this.turnReservations.has(session.id)) throw issue("session_busy", "session is already running", 409);
     if (typeof text !== "string" || !text.trim()) throw issue("empty_prompt", "prompt is empty");
-    const turn = { userId, state, session, text, model, cancelled: false };
+    const turn = { userId, state, session, text, displayText, model, attachmentInput, cancelled: false };
     this.turnReservations.set(session.id, turn);
     session.status = "running";
     delete session._pendingNativeSessionId;
@@ -862,6 +882,10 @@ export class CliRuntimeManager {
     if (model !== undefined && !profile.models.some((item) => item.id === model)) throw issue("model_not_enabled", "model is unavailable", 400);
     const chosen = profile.models.some((item) => item.id === selected) ? selected : profile.defaultModel;
     if (!chosen) throw issue("model_not_enabled", "model is unavailable", 400);
+    const selectedModel = profile.models.find((item) => item.id === chosen);
+    if (attachmentInput?.images?.length && selectedModel?.inputModalities && !selectedModel.inputModalities.includes("image")) {
+      throw issue("image_model_unsupported", "This model cannot read images. Select a model with image support, or remove the image attachments.", 400);
+    }
     const variants = profile.models.find((item) => item.id === chosen)?.variants ?? {};
     if (variant !== undefined && variant !== null && (typeof variant !== "string" || !Object.hasOwn(variants, variant))) {
       throw issue("invalid_variant", "reasoning variant is unavailable for this model", 400);
@@ -905,12 +929,13 @@ export class CliRuntimeManager {
   }
 
   async startReservedPrompt(turn) {
-    const { userId, state, session, text, profile, chosen, chosenVariant } = turn;
+    const { userId, state, session, text, displayText, profile, chosen, chosenVariant, attachmentInput } = turn;
+    await this.ensureSkills(state);
     const pinned = await this.profileResolver.copyForTurn(profile, { paths: state.paths });
     if (turn.cancelled) throw issue("turn_cancelled", "turn was cancelled", 409);
     const stale = Boolean(session.nativeSessionId && session.identityRevision !== profile.identityRevision);
     const prompt = `${stale ? handoverText(session.history) : ""}${text}`;
-    const childSpec = this.commandFor(state, { ...session, model: chosen, variant: chosenVariant }, prompt, stale ? null : session.nativeSessionId);
+    const childSpec = this.commandFor(state, { ...session, model: chosen, variant: chosenVariant }, prompt, stale ? null : session.nativeSessionId, attachmentInput);
     const redact = (value) => {
       let result = String(value ?? "");
       let authValues = [];
@@ -930,12 +955,13 @@ export class CliRuntimeManager {
     const timestamp = now();
     const userMessage = {
       info: {
-        id: `msg_cli_${randomUUID()}`,
+        id: attachmentInput?.turn?.messageID ?? `msg_cli_${randomUUID()}`,
         role: "user",
         sessionID: session.id,
         time: { created: timestamp, completed: timestamp },
       },
-      parts: [textPart(text, `msg_cli_user_${randomUUID()}`, session.id)],
+      ...(attachmentInput ? { attachments: attachmentInput.metadata } : {}),
+      parts: [textPart(displayText ?? text, `msg_cli_user_${randomUUID()}`, session.id)],
     };
     session.history.push(userMessage);
     session.history = session.history.slice(-MAX_HISTORY_MESSAGES);
@@ -958,7 +984,8 @@ export class CliRuntimeManager {
       child = this.spawnImpl(childSpec.command, childSpec.args, {
         cwd: session.directory,
         env: this.childEnvironment(state, session.runtime, pinned),
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [attachmentInput?.images?.length && session.runtime === "claude" ? "pipe" : "ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
       });
     } catch (error) {
       const completed = now();
@@ -983,11 +1010,15 @@ export class CliRuntimeManager {
       this.logger({ type: "cli.turn.error", userId, sessionId: session.id, runtime: session.runtime, error: message });
       return;
     }
+    if (attachmentInput?.images?.length && session.runtime === "claude") {
+      child.stdin.on("error", () => {});
+      child.stdin.end(claudeUserInput(prompt, attachmentInput.images));
+    }
     this.processes.set(session.id, child);
     const output = { stderr: "", stdout: "" };
     let settled = false;
     const timeout = setTimeout(() => {
-      if (!settled) child.kill("SIGTERM");
+      if (!settled) this.terminate(child);
     }, this.turnTimeoutMs);
     const finish = async (code, signal) => {
       if (settled) return;
@@ -1001,7 +1032,7 @@ export class CliRuntimeManager {
       // Only a terminal turn failure should override that successful result.
       const recoveredCodex = session.runtime === "codex" && code === 0 && !session._turnFailed
         && assistantMessage.parts.some((part) => part.type === "text" && part.text);
-      const errorText = diagnostic((recoveredCodex ? null : session._error) ?? (code === 0 ? "" : output.stderr.trim() || `agent exited (code=${code ?? "null"}, signal=${signal ?? "none"})`));
+      const errorText = turn.cancelled ? "" : diagnostic((recoveredCodex ? null : session._error) ?? (code === 0 ? "" : output.stderr.trim() || `agent exited (code=${code ?? "null"}, signal=${signal ?? "none"})`));
       delete session._error;
       delete session._turnFailed;
       if (errorText) {
@@ -1150,15 +1181,34 @@ export class CliRuntimeManager {
     this.emitText(userId, session, assistantMessage, part);
   }
 
-  async abortSession(userId, sessionId) {
-    const { session } = await this.getOwnedSession(userId, sessionId);
+  async abortSession(userId, sessionId, includeOtherRuntimes = false) {
+    const state = await this.ensureUser(userId);
+    assertSessionId(sessionId);
+    const session = state.sessions.get(sessionId);
+    if (!session || !includeOtherRuntimes && session.runtime !== this.runtimeForUser(userId)) throw issue("unknown_session", "session not found", 404);
     const turn = this.turnReservations.get(session.id);
     if (turn) turn.cancelled = true;
     const child = this.processes.get(session.id);
-    if (child) child.kill("SIGTERM");
+    if (child) this.terminate(child);
   }
 
-  async handle(request, response, { userId, workspaceDir }) {
+  terminate(child) {
+    if (process.platform === "win32" && child.pid) {
+      execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], () => {});
+      return;
+    }
+    const kill = (signal) => {
+      try {
+        if (child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch (error) { if (error.code !== "ESRCH") throw error; }
+    };
+    kill("SIGTERM");
+    const escalation = setTimeout(() => kill("SIGKILL"), 2000);
+    escalation.unref();
+  }
+
+  async handle(request, response, { userId, workspaceDir, promptBody, attachmentInput }) {
     await this.init();
     if (!this.isManaged(userId)) return false;
     const parsed = new URL(request.url ?? "/", "http://platform.invalid");
@@ -1233,21 +1283,21 @@ export class CliRuntimeManager {
         } else if (!route && request.method === "DELETE") {
           const { state, session } = await this.getOwnedSession(userId, sessionId);
           const child = this.processes.get(session.id);
-          if (child) child.kill("SIGTERM");
+          if (child) this.terminate(child);
           state.sessions.delete(session.id);
           await this.persistUser(state);
           sendJson(response, 200, true);
         } else if (route === "prompt_async" && request.method === "POST") {
-          const body = await jsonBody(request);
+          const body = promptBody ?? await jsonBody(request);
           const text = Array.isArray(body.parts)
-            ? body.parts.filter((part) => part?.type === "text").map((part) => part.text ?? "").join("\n")
+            ? body.parts.filter((part) => part?.type === "text" && !part.synthetic).map((part) => part.text ?? "").join("\n")
             : "";
           let model;
           if (body.model !== undefined) {
             if (body.model?.providerID !== this.runtimeForUser(userId)) throw issue("invalid_model", "model belongs to another AI assistant");
             model = normalizeModelId(body.model.modelID);
           }
-          const turn = await this.reservePrompt({ userId, sessionId, text, model, variant: body.variant });
+          const turn = await this.reservePrompt({ userId, sessionId, text: body.system ? `${body.system}\n${text || "Attached files"}` : text, displayText: attachmentInput?.displayText ?? (promptBody ? text : undefined), model, variant: body.variant, attachmentInput });
           void this.runReservedPrompt(turn).catch(() => {
             this.logger({ type: "cli.turn.error", userId, sessionId });
           });
@@ -1270,6 +1320,7 @@ export class CliRuntimeManager {
           const { session } = await this.getOwnedSession(userId, sessionId);
           const copy = await this.createSession({ userId, workspaceDir, directory: session.directory, title: `${session.title} (fork)` });
           const target = await this.getOwnedSession(userId, copy.id);
+          target.session.parentId = session.id;
           target.session.history = session.history.slice();
           await this.persistUser(target.state);
           sendJson(response, 200, { id: copy.id });
@@ -1292,7 +1343,19 @@ export class CliRuntimeManager {
       return true;
     }
     if (path === "/skill" && request.method === "GET") {
-      sendJson(response, 200, []);
+      try {
+        const state = await this.ensureUser(userId);
+        const bundled = await this.ensureSkills(state);
+        sendJson(response, 200, await discoverSkills({
+          home: state.paths.home,
+          runtime: this.runtimeForUser(userId),
+          workspaceDir,
+          directory: parsed.searchParams.get("directory") ?? workspaceDir,
+          bundled,
+        }));
+      } catch (error) {
+        sendJson(response, error.status ?? 500, { error: "Could not load skills for this workspace" });
+      }
       return true;
     }
     if (path === "/global/config" && request.method === "GET") {
@@ -1356,7 +1419,7 @@ export class CliRuntimeManager {
     this.closed = true;
     for (const child of this.processes.values()) {
       try {
-        child.kill("SIGTERM");
+        this.terminate(child);
       } catch {
         // Already exited.
       }

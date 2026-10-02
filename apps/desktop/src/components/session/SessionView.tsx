@@ -1,3 +1,5 @@
+import { ProjectEnvironmentPanel } from "./ProjectEnvironmentPanel";
+import type { AttachmentPromptContext } from "@ai4s/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -46,6 +48,7 @@ import { GoalPill } from "@/components/thread/GoalPill";
 import { GOAL_RESUME_NUDGE } from "@/lib/goalPrompts";
 import { baseName } from "@/components/thread/WorkspaceChip";
 import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
+import { researchRequest } from "@/lib/research";
 import { SplitMenu } from "@/components/session/SplitMenu";
 import {
   ContextMenu,
@@ -273,9 +276,15 @@ export function SessionView({
     const created = dockSession(leafId, edge, null);
     if (created && folder) aimDraft(draftKeyFor(created), folder);
   };
-  const onSend = async (text: string, attachments?: string[]) => {
+  const onSend = async (text: string, attachments?: string[], context?: AttachmentPromptContext) => {
     pinEphemeral();
-    bindIfCreated(await sendPrompt(text, sid ?? undefined, draftKey, attachments));
+    const accepted = await sendPrompt(text, sid ?? undefined, draftKey, attachments, undefined, context);
+    bindIfCreated(accepted);
+    return accepted !== null;
+  };
+  const onStopResearch = () => {
+    if (isGatewayWeb && eid) void researchRequest(eid, { action: "stop" }).catch(() => {});
+    void interrupt(sid ?? undefined);
   };
   const onRunShell = async (command: string) => {
     pinEphemeral();
@@ -911,13 +920,15 @@ export function SessionView({
           )}
         </div>
 
-        {inspectorFillsPane ? (
+        {inspectorFillsPane && (
           // Tiled pane: the inspector fills the pane (chat/composer hidden), so a
           // narrow pane isn't squeezed and nothing overflows. Its own header's
           // close (and the pressed folder/runs toggle) returns to the chat.
           <div className="min-h-0 flex-1 overflow-hidden">{inspectorNode}</div>
-        ) : (
-          <>
+        )}
+        {(!inspectorFillsPane || isGatewayWeb) && (
+          <div className={inspectorFillsPane ? "hidden" : "contents"}>
+        {isGatewayWeb && eid && <ProjectEnvironmentPanel sessionId={eid} running={running} visible={visible} />}
         {finding && (
           <FindBar
             scope={chatRef}
@@ -1190,7 +1201,7 @@ export function SessionView({
               commands={composerCommands}
               disabled={!connected || working || webReadOnly}
               working={running}
-              onStop={() => void interrupt(sid ?? undefined)}
+              onStop={onStopResearch}
               placeholder={
                 webReadOnly
                   ? t("live.placeholder.readOnly")
@@ -1236,7 +1247,7 @@ export function SessionView({
             />
           </div>
         </div>
-          </>
+          </div>
         )}
       </div>
 

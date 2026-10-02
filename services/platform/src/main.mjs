@@ -63,6 +63,7 @@ const workerManager = controlPlane?.manager ?? new WorkerManager({
 });
 const cliRuntime = controlPlane ? null : new CliRuntimeManager({
   rootDir: join(dataDir, "cli-runtime"),
+  resourcesDir: env("OSD_RESOURCES") || null,
   // OpenCode remains every user's default. Claude Code and Codex are optional
   // per-user selections; no environment variable may flip the whole platform.
   runtime: "opencode",
@@ -84,6 +85,7 @@ const platform = new PlatformServer({
   tenantPolicy: controlPlane?.tenantPolicy,
   runtimeCatalog: controlPlane?.runtimeCatalog,
   environments: controlPlane?.environments,
+  workspaceFiles: controlPlane?.files,
   webRoot: optionalPath("PLATFORM_WEB_ROOT", join(process.cwd(), "apps/desktop/dist")),
   // The current internal deployment is still plain HTTP; set this to true
   // when the reverse proxy terminates HTTPS.

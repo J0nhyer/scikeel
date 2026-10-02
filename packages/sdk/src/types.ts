@@ -1,3 +1,5 @@
+import type { ConversationAttachment } from "@ai4s/shared";
+export type { AttachmentPromptContext } from "@ai4s/shared";
 import type { MessageUsage, RuntimeStatus, ToolCallStatus } from "@ai4s/shared";
 
 export type { RuntimeStatus, ToolCallStatus };
@@ -262,6 +264,7 @@ export interface SkillInfo {
   name: string;
   description: string;
   location?: string;
+  source?: "builtin" | "project" | "user";
 }
 
 export interface AgentInfo {
@@ -288,6 +291,7 @@ export interface CommandInfo {
 
 /** A message loaded from history (GET /session/:id/message). */
 export interface HistoryMessage {
+  attachments?: ConversationAttachment[];
   role: "user" | "assistant";
   /** OpenCode's message id — the handle for reverting/editing a user message
    *  (`POST /session/:id/revert`). Absent only on synthetic/mock messages. */

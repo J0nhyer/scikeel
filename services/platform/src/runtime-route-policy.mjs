@@ -123,5 +123,12 @@ const gatewayReads = new Map([
 ]);
 export function classifyGatewayRoute(method, path) {
   const entry = method === "GET" && gatewayReads.get(path);
-  return entry ? { ...entry, path } : null;
+  if(entry)return {...entry,path};
+  if(method === "POST" && path === "/v1/projects")return {operation:"projectCreate",query:[],fields:["name"],path};
+  const match=/^\/v1\/projects\/([a-f0-9]{16})(?:\/(pin))?$/.exec(path);
+  if(!match)return null;
+  if(method === "PATCH" && !match[2])return {operation:"projectRename",query:[],fields:["name"],path};
+  if(method === "POST" && match[2])return {operation:"projectPin",query:[],fields:["pinned"],path};
+  if(method === "DELETE" && !match[2])return {operation:"projectRemove",query:[],fields:[],path};
+  return null;
 }

@@ -75,7 +75,19 @@ export async function downloadArtifact(path: string, root?: FileRoot, dir?: stri
  *  path. Agent prose may name a file without its directory ("index.html" for
  *  "canvas-project/index.html"); the backend finds it by basename. Returns
  *  null when no such file exists; echoes the path back in browser dev. */
-export async function resolveArtifactPath(path: string): Promise<string | null> {
+export async function resolveArtifactPath(path: string, dir?: string): Promise<string | null> {
+  if (isGatewayWeb) {
+    // The file-ticket endpoint resolves bare names inside this workspace too.
+    // Never turn a planned filename into a download without checking it exists.
+    // Only share pending lookups: a missing file may be created on the next turn.
+    const key = JSON.stringify([gatewayOrigin(), dir, path]);
+    const pending = webResolvedPaths.get(key);
+    if (pending) return pending;
+    const lookup = previewUrl(path, undefined, dir).then(() => path).catch(() => null);
+    webResolvedPaths.set(key, lookup);
+    void lookup.finally(() => webResolvedPaths.delete(key));
+    return lookup;
+  }
   if (!isTauri) return path;
   const inflight = resolvedPaths.get(path);
   if (inflight) return inflight;
@@ -98,6 +110,7 @@ export async function resolveArtifactPath(path: string): Promise<string | null> 
  * that costs a full walk to produce.
  */
 const resolvedPaths = new Map<string, Promise<string | null>>();
+const webResolvedPaths = new Map<string, Promise<string | null>>();
 
 /** Forget every resolution — they are only valid for one workspace folder. */
 export function clearResolvedPaths(): void {

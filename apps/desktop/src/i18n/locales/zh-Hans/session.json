@@ -1,4 +1,74 @@
 {
+  "research": {
+    "issues": {
+      "changed_inputs": "原始输入材料发生变化或缺失，请检查版本后再接受结果。",
+      "missing_outputs": "部分预期成果缺失，需要继续任务生成。",
+      "failed_checks": "检查未通过、依据缺失或尚未完成，请查看检查记录。",
+      "missing_progress": "执行已结束，但没有有效的最终进度记录。请查看会话并手动继续。"
+    },
+    "startFailed": "科研任务启动失败，请重试。",
+    "title": "科研任务",
+    "start": "开始一个科研任务",
+    "intro": "把毕业论文、毕业设计或科研想法变成清晰的计划、决策与经过检查的成果。",
+    "loading": "正在加载科研任务…",
+    "retry": "重试",
+    "objective": "科研目标",
+    "goal": "科研用途",
+    "goals": {
+      "thesis": "本科毕业论文 / 毕业设计",
+      "publication": "尝试发表论文"
+    },
+    "mode": "工作模式",
+    "modes": {
+      "guided": "引导式",
+      "collaborative": "协作式",
+      "delegated": "委托式"
+    },
+    "modeHints": {
+      "guided": "理解并确认每一个重要科研步骤，再继续下一步。",
+      "collaborative": "先确认计划，助手连续完成常规步骤，重要变化由你决定。",
+      "delegated": "助手连续完成并检查已确认的任务，缺少信息或遇到新决策时再询问你。"
+    },
+    "inputs": "输入文件（可选，每行一个路径）",
+    "deliverables": "预期成果文件（每行一个路径）",
+    "pathsHint": "填写当前会话工作区内的路径。保留原始材料，工具操作仍遵循现有授权。",
+    "confirmScope": "我确认科研目标、输入材料与预期成果，任务在当前会话工作区内进行。",
+    "confirmStart": "确认范围并开始",
+    "yourDecision": "你的决定",
+    "confirmDecision": "确认决定",
+    "continue": "继续科研任务",
+    "stop": "停止科研任务",
+    "pageBound": "关闭此页面会停止执行。",
+    "awaitingPlan": "助手会在这里记录计划和实际进度。",
+    "missingArtifact": "尚未生成：{{path}}",
+    "checkAttribution": "检查结论由助手报告；文件是否存在由 SciKeel 验证。",
+    "missingEvidence": "检查依据文件缺失",
+    "requestedOutputs": "预期成果：{{paths}}",
+    "inputFiles": "输入材料：{{paths}}",
+    "noInputs": "未提供",
+    "states": {
+      "ready": "待继续",
+      "running": "进行中",
+      "waiting_input": "等待你的决定",
+      "paused": "已停止",
+      "completed": "成果已检查",
+      "failed": "需要处理",
+      "cancelled": "已取消"
+    },
+    "steps": {
+      "pending": "待完成",
+      "running": "进行中",
+      "completed": "已完成",
+      "failed": "失败"
+    },
+    "checks": {
+      "passed": "通过",
+      "failed": "未通过",
+      "pending": "尚未检查"
+    },
+    "startPrompt": "开始已确认的科研任务，按所选工作模式推进，记录计划、科研决策、成果和检查结果。请主要用中文与我交流。",
+    "continuePrompt": "依据我已记录的决定继续科研任务，解释结果并更新实际进度和检查记录。请主要用中文与我交流。"
+  },
   "notFound": {
     "title": "未找到会话",
     "hint": "从侧边栏选择一个会话。"
@@ -45,6 +115,7 @@
     "commandsAria": "命令",
     "runtime": {
       "aria": "AI 助手",
+      "select": "请选择助手",
       "modelLabel": "模型",
       "title": "选择此对话使用的 AI 助手",
       "unavailable": "此 AI 助手暂不可用"
@@ -156,6 +227,17 @@
       "confirmTitle": "压缩上下文？",
       "confirmBody": "先前的对话会被替换为一段摘要，让接下来的回复在有限的上下文里运行。完整的原始对话仍然保存在本地。",
       "confirmAction": "压缩"
+    },
+    "attachments": {
+      "add": "Attach files",
+      "preview": "Preview {{name}}",
+      "download": "Download {{name}}",
+      "retry": "Retry {{name}}",
+      "remove": "Remove {{name}}",
+      "close": "Close preview",
+      "imageResized": "Image resized for the model; original retained.",
+      "imageStill": "A still image is sent to the model; original retained.",
+      "unavailable": "Preview unavailable for this file. Download the original to open it."
     }
   },
   "localCommand": {
@@ -164,6 +246,10 @@
     "cleared": "聊天记录已清空。文件内容仍保留在同一个文件夹下。"
   },
   "starters": {
+    "research-idea": {
+      "title": "从想法开始科研",
+      "description": "从选题、明确问题到制定研究计划，一步步开始。"
+    },
     "newSession": "新建会话",
     "heading": "我们该研究什么？",
     "subheading": "在下方描述您的分析——或从以下选项开始。",
@@ -517,5 +603,21 @@
     "close": "关闭查找",
     "none": "无结果",
     "find": "查找…"
+  },
+  "environment": {
+    "title": "Python 环境",
+    "absent": "共享科学环境",
+    "valid": "项目私人环境",
+    "broken": "私人环境需要修复",
+    "explanation": "常用科学库已预装。额外依赖安装在这个项目自己的环境中。",
+    "lockRequired": "请在项目中添加 requirements.lock，包含准确版本和 SHA256 校验值，再准备私人环境。",
+    "failed": "环境准备失败。请检查依赖锁定文件后重试；原环境会保留。",
+    "stopFirst": "安装依赖前，请先完成或停止当前任务。",
+    "confirm": "是否批准在这个项目中安装以下锁定依赖？",
+    "approve": "批准并安装",
+    "cancel": "取消",
+    "installing": "正在安装…",
+    "loading": "正在准备…",
+    "prepare": "准备私人依赖"
   }
 }

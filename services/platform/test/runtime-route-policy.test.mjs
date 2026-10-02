@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyRuntimeRoute, validateRuntimeInput, scrubRuntimeSecrets } from "../src/runtime-route-policy.mjs";
+import { classifyGatewayRoute, classifyRuntimeRoute, validateRuntimeInput, scrubRuntimeSecrets } from "../src/runtime-route-policy.mjs";
 
 test("raw routes, ambiguous encodings and unsupported methods are denied", () => {
   for (const path of ["/file/content", "/find/file", "/path", "/pty", "/global/config/auth",
@@ -55,4 +55,12 @@ test("the managed v1 surface cannot bypass runtime session authority", async () 
     assert.equal(classifyGatewayRoute("GET", path), null);
   assert.equal(classifyGatewayRoute("GET", "/v1/fs/read").operation, "fileRead");
   assert.equal(classifyGatewayRoute("GET", "/v1/runs/query").operation, "runsQuery");
+});
+test("Web project mutations have fixed methods and identifiers without arbitrary filesystem paths",()=>{
+  assert.equal(classifyGatewayRoute("POST","/v1/projects").operation,"projectCreate");
+  assert.equal(classifyGatewayRoute("PATCH","/v1/projects/abcdef0123456789").operation,"projectRename");
+  assert.equal(classifyGatewayRoute("POST","/v1/projects/abcdef0123456789/pin").operation,"projectPin");
+  assert.equal(classifyGatewayRoute("DELETE","/v1/projects/abcdef0123456789").operation,"projectRemove");
+  for(const path of ["/v1/projects/../peer","/v1/projects/abcdef0123456789/delete-files","/v1/projects/%2fetc"])
+    assert.equal(classifyGatewayRoute("DELETE",path),null);
 });

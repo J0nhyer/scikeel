@@ -22,3 +22,10 @@ test("helper cancellation terminates the process group and releases the caller",
   const pending = helper.call({ operation: "read", root: "workspace", path: "a" }, { signal: controller.signal });
   controller.abort(); await assert.rejects(pending, /cancel/); assert.ok(child.signalCode);
 });
+test("binary chunks and private working-copy cleanup have bounded fixed contracts", () => {
+  assert.deepEqual(fileRequest({operation:"writeChunk",root:"workspace",path:"attachments/owned",offset:0,bytes:[0,255]}).bytes,[0,255]);
+  assert.equal(fileRequest({operation:"readChunk",root:"workspace",path:"attachments/owned",offset:0,limit:256*1024}).limit,256*1024);
+  for (const value of [{operation:"writeChunk",offset:0,bytes:[256]}, {operation:"writeChunk",offset:25*1024**2,bytes:[1]},
+    {operation:"readChunk",offset:-1,limit:1},{operation:"readChunk",offset:0,limit:256*1024+1},
+    {operation:"remove",text:"extra"}])assert.throws(()=>fileRequest({root:"workspace",path:"attachments/owned",...value}));
+});

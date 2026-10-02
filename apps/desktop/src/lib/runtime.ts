@@ -1,3 +1,5 @@
+import type { AttachmentPromptContext } from "@ai4s/shared";
+import { attachmentRequestKey, claimAttachments, listConversationAttachments } from "./conversationAttachments";
 import { create } from "zustand";
 import {
   OpenCodeClient,
@@ -60,6 +62,7 @@ import {
   type ToolStatus,
 } from "./tauri";
 import { isGatewayWeb, gatewayToken, gatewayOrigin } from "./webMode";
+import { createResearchTask, type ResearchBrief } from "./research";
 import { activeAcpAgent } from "./acpAgents";
 import { acpTransport } from "./acpTransport";
 import { samePath } from "./workspacePath";
@@ -303,6 +306,7 @@ interface RuntimeState {
   currentId: string | null;
   threads: Record<string, Thread>;
   skills: SkillInfo[];
+  skillsStatus: "idle" | "loading" | "ready" | "error";
   agents: AgentInfo[];
   /** Per-agent model / reasoning effort from OpenCode's config (Settings →
    *  Models → per agent). Consulted when a pane has no explicit pick, so a
@@ -544,6 +548,8 @@ interface RuntimeState {
     sessionId?: string,
     draftKey?: string,
     attachments?: string[],
+    researchBrief?: ResearchBrief,
+    attachmentContext?: AttachmentPromptContext,
   ) => Promise<string | null>;
   /** Run a "!" shell command directly in the session's workspace folder —
    *  no model turn; the output folds into the thread as a bash tool row. */
@@ -633,6 +639,8 @@ let bootstrapInFlight: Promise<void> | null = null;
  *  whole instruction block instead of the one line the user typed). Awaiting
  *  the in-flight load costs no extra request — it is already running. */
 let catalogInFlight: Promise<void> | null = null;
+let skillsCatalogVersion = 0;
+let skillsCatalogClient: AgentRuntime | null = null;
 // A switch or reconnect invalidates any older metadata request, even if it
 // finishes after the new assistant has already connected.
 let gatewayCatalogVersion = 0;
@@ -821,6 +829,17 @@ function clientForSession(get: StoreGet, sid: string): AgentRuntime | null {
     if (bg) return bg;
   }
   return client;
+}
+
+async function sessionRunning(get: StoreGet, sid: string): Promise<boolean | null> {
+  const runtime = clientForSession(get, sid);
+  const root = rootSessionOf(get().sessionParents, sid);
+  const directory = get().sessions.find((session) => session.id === root)?.directory;
+  try {
+    return await runtime?.isSessionRunning?.(sid, directory) ?? null;
+  } catch {
+    return null;
+  }
 }
 const emptyThread = (): Thread => ({ blocks: [], index: {}, loaded: false });
 
@@ -1751,6 +1770,7 @@ async function performTurn(
         }
         return {
           currentId: id,
+          ...(isGatewayWeb ? { sessions: s.sessions.some((session) => session.id === id) ? s.sessions : [{ id: id!, title: "New session", directory: s.workspace ?? undefined, created: Date.now(), updated: Date.now() }, ...s.sessions] } : {}),
           threads,
           panes,
           sessionAgents,
@@ -1761,6 +1781,11 @@ async function performTurn(
         };
       });
       lockKey = id;
+      if (isGatewayWeb && draftKey?.startsWith("draft:")) {
+        // Session creation succeeded independently of prompt acceptance. Keep
+        // this pane on that session so retries reuse its claimed attachments.
+        useLayoutStore.getState().bindSession(draftKey.slice("draft:".length), id);
+      }
       // A fresh ACP session reports the agent's own selectors — surface them.
       syncAcpConfig(set, id);
       // The draft's model/effort override moved onto the real id — repersist so
@@ -1862,7 +1887,7 @@ async function performTurn(
         },
       };
     });
-    return target ?? get().currentId;
+    return isGatewayWeb ? null : target ?? get().currentId;
   } finally {
     // Clear the lock under its CURRENT key (`lockKey` follows the draft→session
     // graft, so this never leaks a stale DRAFT_KEY lock).
@@ -2526,6 +2551,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         currentId: null,
         threads: {},
         skills: [],
+        skillsStatus: "idle",
         agents: [],
         commands: [],
         providers: [],
@@ -2570,6 +2596,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   currentId: null,
   threads: {},
   skills: [],
+  skillsStatus: "idle",
   agents: [],
   agentModels: {},
   agentVariants: {},
@@ -2865,11 +2892,29 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   loadCatalog: async () => {
     if (!client) return;
     const source = client;
+    const skillsVersion = ++skillsCatalogVersion;
+    const currentSkillsLoad = () => source === client && skillsVersion === skillsCatalogVersion;
+    const retryEmptySkills = get().runtimeKind === "opencode" && (!isGatewayWeb || get().gatewayRuntime === "opencode");
+    set({ skillsStatus: "loading", ...(skillsCatalogClient !== source ? { skills: [] } : {}) });
+    skillsCatalogClient = source;
+    const skillLoad = (async () => {
+      try {
+        let skills = await source.listSkills();
+        // OpenCode can answer before its initial workspace scan has finished.
+        for (let i = 0; retryEmptySkills && skills.length === 0 && i < 4; i++) {
+          await sleep(400);
+          if (!currentSkillsLoad()) return;
+          skills = await source.listSkills();
+        }
+        if (currentSkillsLoad()) set({ skills, skillsStatus: "ready" });
+      } catch {
+        if (currentSkillsLoad()) set({ skillsStatus: "error" });
+      }
+    })();
     const run = (async () => {
     void get().refreshAgentModels();
     try {
-      const [firstSkills, agents, defaultModel, commands, providers] = await Promise.all([
-        source.listSkills(),
+      const [agents, defaultModel, commands, providers] = await Promise.all([
         source.listAgents(),
         source.getDefaultModel().catch(() => null),
         source.listCommands().catch(() => []),
@@ -2918,16 +2963,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
           }
         }
       }
-      let skills = firstSkills;
-      // The first workspace-scoped /api/skill call triggers OpenCode's lazy
-      // instance init and can answer before the scan finishes — poll briefly.
-      for (let i = 0; skills.length === 0 && i < 4; i++) {
-        await sleep(400);
-        skills = await client.listSkills();
-      }
-      set({ skills });
     } catch {
       /* ignore transient failures */
+    } finally {
+      await skillLoad;
     }
     })();
     catalogInFlight = run;
@@ -4404,6 +4443,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     }
     try {
       const messages = await client.getMessages(id);
+      const streaming = turnStillStreaming(messages, get().runtimeStartedAt);
+      const serverIdle = streaming && await sessionRunning(get, id) === false;
       // The command templates are what turn a stored expansion back into the
       // "/name args" the user typed. connect() starts the catalog without
       // awaiting it, so on a cold open this can still be in flight — join it
@@ -4414,23 +4455,21 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // A replayed ACP session reports its selectors during the load — show the
       // model it is actually on, not the one the last session used.
       syncAcpConfig(set, id);
-      set((s) => ({
-        threads: {
-          ...s.threads,
-          [id]: { ...historyToThread(messages, s.commands), loaded: true },
-        },
-        // Seed the agent pill from history: a session that was planning when
-        // the app closed (or whose plan_exit flip fell into an SSE gap) must
-        // reopen in the mode the server is actually in.
-        sessionAgents: { ...s.sessionAgents, [id]: lastAgentMode(messages) },
-        // …and seed the running lock the same way. The locks are in-memory, so
-        // a session still mid-answer would otherwise reopen with no "Working…"
-        // and no way to stop it — a silent long tool call streams no event to
-        // re-lock it either (#59).
-        ...(turnStillStreaming(messages, get().runtimeStartedAt)
-          ? { runningSessions: { ...s.runningSessions, [id]: true as const } }
-          : {}),
-      }));
+      set((s) => {
+        const runningSessions = { ...s.runningSessions };
+        if (serverIdle) delete runningSessions[id];
+        else if (streaming) runningSessions[id] = true;
+        return {
+          threads: {
+            ...s.threads,
+            [id]: { ...historyToThread(messages, s.commands, serverIdle), loaded: true },
+          },
+          // Restore the agent and activity without treating old unfinished
+          // history as proof that the current runtime is still executing it.
+          sessionAgents: { ...s.sessionAgents, [id]: lastAgentMode(messages) },
+          runningSessions,
+        };
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (seq !== openSessionSeq || get().currentId !== id) return;
@@ -4474,6 +4513,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // getMessages is session-scoped (server routes by the session's folder),
       // so any connected client works — no folder switch, unlike openSession.
       const messages = await c.getMessages(id);
+      const streaming = turnStillStreaming(messages, get().runtimeStartedAt);
+      const serverIdle = streaming && await sessionRunning(get, id) === false;
       // Same reason as openSession: without the command templates a stored
       // slash-command expansion renders raw.
       if (catalogInFlight && get().commands.length === 0) await catalogInFlight;
@@ -4483,15 +4524,16 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // and marker in place.
       const latest = get().threads[id];
       if (latest?.loaded && !latest?.historyError) return;
-      set((s) => ({
-        threads: { ...s.threads, [id]: { ...historyToThread(messages, s.commands), loaded: true } },
-        sessionAgents: { ...s.sessionAgents, [id]: lastAgentMode(messages) },
-        // Same server-truth seeding as openSession — a background pane must not
-        // adopt a still-running session as idle (#59).
-        ...(turnStillStreaming(messages, get().runtimeStartedAt)
-          ? { runningSessions: { ...s.runningSessions, [id]: true as const } }
-          : {}),
-      }));
+      set((s) => {
+        const runningSessions = { ...s.runningSessions };
+        if (serverIdle) delete runningSessions[id];
+        else if (streaming) runningSessions[id] = true;
+        return {
+          threads: { ...s.threads, [id]: { ...historyToThread(messages, s.commands, serverIdle), loaded: true } },
+          sessionAgents: { ...s.sessionAgents, [id]: lastAgentMode(messages) },
+          runningSessions,
+        };
+      });
     } catch {
       /* best-effort: a never-loaded pane keeps its skeleton; a thread that had
        * already failed keeps its retryable error line. Either way a later
@@ -4502,7 +4544,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   // The send lifecycle (new → input → send → response) is shared by plain
   // prompts, "!" shell commands and "/" slash commands — see performTurn.
-  sendPrompt: (text, sessionId, draftKey, attachments) => {
+  sendPrompt: (text, sessionId, draftKey, attachments, researchBrief, attachmentContext) => {
     // Capture the mode BEFORE performTurn: on a draft, currentId is still null
     // here (the session is created inside), so this reads the pane's draft slot
     // correctly. Pin "plan" only when the catalog actually has it — a stale mode
@@ -4525,15 +4567,16 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // This pane's own model + effort (falling back to the global default),
     // captured now so a draft's later graft still sends the pane's choice.
     const { model, variant } = modelForSession(s, key);
+    let researchCreated = false;
     return performTurn(
       set,
       get,
-      text,
+      text || (attachmentContext?.attachmentIds.length ? "Attached files" : ""),
       // Attachment bytes are read INSIDE the send, not before performTurn: the
       // echo and the spinner must appear on click, not after a multi-MB read.
       (sid) =>
         withRetry(async () => {
-          const { parts, dropped } = await imageAttachmentParts(attachments ?? []);
+          const { parts, dropped } = isGatewayWeb ? { parts: [], dropped: [] } : await imageAttachmentParts(attachments ?? []);
           // A picture that could not be read is NOT sent, and the prompt still
           // names the file — so without this the model answers about a figure
           // it never saw, and nothing anywhere says so.
@@ -4548,7 +4591,28 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
               !webModelChoices(latest.gatewayRuntime, latest.providers, latest.gatewayRuntimes).some((item) => item.key === model)))) {
             throw new Error("AI assistant model catalog changed. Refresh and select a model again.");
           }
-          await client!.sendPrompt(sid, text, agent, model, variant, parts);
+          if (isGatewayWeb && researchBrief && !researchCreated) {
+            await createResearchTask(sid, researchBrief);
+            researchCreated = true;
+          }
+          if (isGatewayWeb && attachmentContext?.draftId && attachmentContext.attachmentIds.length) {
+            await claimAttachments(attachmentContext.draftId, sid, attachmentContext.attachmentIds);
+          }
+          await client!.sendPrompt(sid, text || (attachmentContext?.attachmentIds.length ? "Attached files" : ""), agent, model, variant, parts, attachmentContext);
+          if (isGatewayWeb && attachmentContext?.attachmentIds.length) {
+            const listing = await listConversationAttachments(sid).catch(() => null);
+            if (!listing) return;
+            const turn = listing.turns.find((item) => item.turnId === attachmentContext.turnId);
+            const metadata = listing.attachments.filter((file) => attachmentContext.attachmentIds.includes(file.id));
+            set((state) => {
+              const thread = state.threads[sid]; if (!thread) return {};
+              let attached = false;
+              return { threads: { ...state.threads, [sid]: { ...thread, blocks: [...thread.blocks].reverse().map((block) => {
+                if (!attached && block.kind === "user") { attached = true; return { ...block, attachments: metadata, ...(turn ? { messageID: turn.messageID } : {}) }; }
+                return block;
+              }).reverse() } } };
+            });
+          }
         }),
       // An ACP turn is a SYNC turn: `session/prompt` is one JSON-RPC request that
       // answers when the turn is over, where OpenCode's `prompt_async` answers as
@@ -4712,8 +4776,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   },
 
   editMessage: async (messageID, newText, sessionId) => {
-    if (await revertToMessage(set, get, messageID, sessionId))
-      await get().sendPrompt(newText, sessionId);
+    const sid = sessionId ?? get().currentId;
+    const block = sid ? get().threads[sid]?.blocks.find((item) => item.kind === "user" && item.messageID === messageID) : undefined;
+    const ids = block?.kind === "user" ? block.attachments?.map((file) => file.id) : undefined;
+    if (await revertToMessage(set, get, messageID, sessionId)) {
+      if (isGatewayWeb && ids?.length) {
+        await get().sendPrompt(newText, sessionId, undefined, undefined, undefined, { turnId: attachmentRequestKey(), attachmentIds: ids });
+      } else await get().sendPrompt(newText, sessionId);
+    }
   },
 
   revertMessage: async (messageID, sessionId) => revertToMessage(set, get, messageID, sessionId),
@@ -4724,9 +4794,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     if (!c || running.length === 0) return;
     for (const sid of running) {
       try {
+        const observedThread = get().threads[sid];
         const messages = await c.getMessages(sid);
+        const serverIdle = !turnIsOver(messages) && await sessionRunning(get, sid) === false;
         // Still ours to answer for? The lock may have cleared while we fetched.
-        if (!turnIsOver(messages) || !get().runningSessions[sid]) continue;
+        if ((!turnIsOver(messages) && !serverIdle) || !get().runningSessions[sid] ||
+            get().sendingSessions[sid] || get().threads[sid] !== observedThread) continue;
         void logDebug(`reconcile: missed idle for ${sid} — unlocking`);
         set((s) => {
           const runningSessions = { ...s.runningSessions };
@@ -4740,7 +4813,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
             // the thread with the full history rather than leave it stale.
             threads: {
               ...s.threads,
-              [sid]: { ...historyToThread(messages, s.commands), loaded: true },
+              [sid]: { ...historyToThread(messages, s.commands, serverIdle), loaded: true },
             },
             // Same for the agent pill (a plan_exit flip may have been missed).
             sessionAgents: { ...s.sessionAgents, [sid]: lastAgentMode(messages) },
@@ -4758,6 +4831,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         await client.deleteSession(id);
       } catch (err) {
         set({ error: err instanceof Error ? err.message : String(err) });
+        if (isGatewayWeb) return;
       }
     }
     // A queued review for a session that no longer exists would send into a
@@ -4904,7 +4978,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // Both texts are localized: the thread shows one short ask around what the
       // user typed, the model gets the full install instructions.
       const echo = i18n.t("pages:skills.install.echo", { input: text });
-      const prompt = i18n.t("pages:skills.install.agentPrompt", { input: text });
+      const skillsDirectory = isGatewayWeb && get().gatewayRuntime === "claude"
+        ? ".claude/skills"
+        : isGatewayWeb && get().gatewayRuntime === "codex" ? ".agents/skills" : ".opencode/skills";
+      const prompt = i18n.t(isGatewayWeb ? "pages:skills.install.agentPromptWorkspace" : "pages:skills.install.agentPrompt", { input: text, skillsDirectory });
       const model = modelForSession(get(), id).model;
       // Deliberately not awaited: the caller opens the new pane immediately and
       // watches the turn there (performTurn reports failures into the thread).
@@ -5285,7 +5362,11 @@ export function lastAgentMode(messages: HistoryMessage[]): AgentMode {
   return "build";
 }
 
-export function historyToThread(messages: HistoryMessage[], commands?: CommandInfo[]): FoldState {
+export function historyToThread(
+  messages: HistoryMessage[],
+  commands?: CommandInfo[],
+  serverIdle = false,
+): FoldState {
   const blocks: ThreadBlock[] = [];
   // OpenCode stores a slash command's EXPANDED template as the user message —
   // show the "/name args" the user actually typed instead. Templates either
@@ -5370,7 +5451,7 @@ export function historyToThread(messages: HistoryMessage[], commands?: CommandIn
       // A "/command" echo keeps the id too — editing re-runs the command.
       const id = m.id ? { messageID: m.id } : {};
       if (command) blocks.push({ kind: "user", text: command, ...id });
-      else if (text) blocks.push({ kind: "user", text, ...id });
+      else if (text || m.attachments?.length) blocks.push({ kind: "user", text, ...id, ...(m.attachments?.length ? { attachments: m.attachments } : {}) });
     } else {
       // Same accounting the live stream stamps on, recovered from the stored
       // message so a reopened conversation shows the identical meta line.
@@ -5414,7 +5495,7 @@ export function historyToThread(messages: HistoryMessage[], commands?: CommandIn
           blocks.push({
             kind: "tool-call",
             title,
-            status: frozen ? "pending" : status,
+            status: frozen ? (serverIdle ? "failed" : "pending") : status,
             tool: p.tool,
             ...(verb ? { verb } : {}),
             ...(command ? { command } : {}),

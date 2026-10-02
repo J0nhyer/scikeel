@@ -3,7 +3,7 @@
 // flag alone cannot protect the host. Other platforms keep their normal build.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -170,7 +170,10 @@ if (mode === "probe") {
   run(process.execPath, [join(root, "scripts/dev/build-web-vendor.mjs")]);
 
   // Never empty a deployed dist directory before a successful replacement.
-  const stage = smallLinuxHost ? await mkdtemp(join(stagingRoot, "web-build-")) : null;
+  const stageOnly = process.env.OSD_WEB_STAGE_ONLY === "1";
+  if (stageOnly) await mkdir(stagingRoot, { recursive: true });
+  const stage = smallLinuxHost || stageOnly ? await mkdtemp(join(stagingRoot, "web-build-")) : null;
+  let retainedStage = false;
   try {
     run(process.execPath, [
       `--max-old-space-size=${smallLinuxHost ? 1024 : 4096}`,
@@ -182,18 +185,24 @@ if (mode === "probe") {
           !(await readdir(join(stage, "assets"))).length) {
         throw new Error("Staged build is incomplete; the deployed site was not changed");
       }
-      const dist = join(desktop, "dist");
-      const backup = join(stagingRoot, `web-before-${Date.now()}-${process.pid}`);
-      if (existsSync(dist)) await rename(dist, backup);
-      try {
-        await rename(stage, dist);
-      } catch (error) {
-        if (existsSync(backup)) await rename(backup, dist);
-        throw error;
+      if (stageOnly) {
+        retainedStage = true;
+        await writeFile(join(stagingRoot, "attachments-build-path"), stage + "\n");
+        console.log(`Web build staged at ${stage}; deployed bundle unchanged`);
+      } else {
+        const dist = join(desktop, "dist");
+        const backup = join(stagingRoot, `web-before-${Date.now()}-${process.pid}`);
+        if (existsSync(dist)) await rename(dist, backup);
+        try {
+          await rename(stage, dist);
+        } catch (error) {
+          if (existsSync(backup)) await rename(backup, dist);
+          throw error;
+        }
+        console.log(`Web build deployed; previous bundle saved at ${backup}`);
       }
-      console.log(`Web build deployed; previous bundle saved at ${backup}`);
     }
   } finally {
-    if (stage && existsSync(stage)) await rm(stage, { recursive: true });
+    if (stage && !retainedStage && existsSync(stage)) await rm(stage, { recursive: true });
   }
 }

@@ -57,7 +57,27 @@ export interface CompactionBlock {
   at?: number;
 }
 
+export interface ConversationAttachment {
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+  sha256: string;
+  createdAt: number;
+  sessionId?: string;
+  messageID?: string;
+  imageDelivery?: "original" | "resized" | "still" | "unavailable";
+}
+export interface AttachmentPromptContext {
+  turnId: string;
+  messageID?: string;
+  draftId?: string;
+  attachmentIds: string[];
+}
+export interface AttachmentOwner { draftId?: string; sessionId?: string; }
+
 export interface UserMessageBlock {
+  attachments?: ConversationAttachment[];
   kind: "user";
   text: string;
   /** OpenCode message id, when known — the handle for editing this message

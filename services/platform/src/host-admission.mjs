@@ -23,16 +23,19 @@ export class HostAdmission {
     const file = await open(this.lockPath, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     const info = await file.stat();
     if (!info.isFile()) { await file.close(); throw unavailable(); }
-    let child;
+    let child; let closed = false; let startError; let completion;
     try {
       // Pass an already-open descriptor: flock cannot follow a replaced pathname.
       child = spawn("/usr/bin/flock", ["-n", "-F", "/proc/self/fd/3", process.execPath, "-e",
         'process.stdin.resume();process.stdin.on("end",()=>process.exit(0));process.stdout.write("ready\\n");'], {
         env: { PATH: "/usr/bin:/bin" }, stdio: ["pipe", "pipe", "ignore", file.fd],
       });
+      // Subscribe before yielding: a rejected flock can exit while the fd closes.
+      completion = new Promise((done) => child.once("close", () => { closed = true; done(); }));
+      child.once("error", error => { startError = error; });
+      child.stdin.on("error", () => {});
     } finally { await file.close(); }
-    let released; let closed = false;
-    const completion = new Promise((done) => child.once("close", () => { closed = true; done(); }));
+    let released;
     const release = () => released ??= (async () => {
       if (closed) return;
       child.stdin.end();
@@ -40,6 +43,7 @@ export class HostAdmission {
       try { await completion; } finally { clearTimeout(timer); }
     })();
     try {
+      if (closed || startError) throw unavailable();
       await new Promise((resolve, reject) => {
         const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); child.off("error", fail); child.off("close", fail); child.stdout.off("data", ready); };
         const fail = () => { cleanup(); reject(unavailable()); };

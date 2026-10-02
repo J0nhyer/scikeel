@@ -77,7 +77,9 @@
       "installed": "Installed “{{name}}” — available in every workspace.",
       "agentPrompt": "The user typed this into the Skills install box:\n\n---\n{{input}}\n---\n\nPlease help them install it patiently: work out which skill they mean (fetch the URL, search for it, or ask them if it is ambiguous), then save it as a skill file at .opencode/skills/<name>/SKILL.md inside this workspace — never outside it; the app then makes it available in every workspace. The customize-opencode skill documents the format. Finally reply with the installed skill's name.",
       "echo": "Please help me install this skill:\n\n{{input}}",
-      "adoptFailed": "The skill was written but could not be moved into your profile, so it will disappear when this session's folder is replaced: {{detail}}"
+      "adoptFailed": "The skill was written but could not be moved into your profile, so it will disappear when this session's folder is replaced: {{detail}}",
+      "hintWorkspace": "Installed in the current workspace; available only in this workspace.",
+      "agentPromptWorkspace": "The user wants to install this skill:\n\n---\n{{input}}\n---\n\nConfirm its content and source, then save the skill and any required helper files at {{skillsDirectory}}/<name>/SKILL.md inside the current workspace. SKILL.md must have YAML frontmatter with name and description. Keep every file within this workspace; do not write to the user home or another workspace. This installation is available only in the current workspace. Reply with the installed name when complete; report failures accurately without claiming success."
     },
     "environment": {
       "sectionTitle": "Scientific environment",
@@ -109,7 +111,11 @@
     "search": "Search skills and agents",
     "filter": "Kind",
     "all": "All ({{count}})",
-    "noMatch": "Nothing matches “{{query}}”."
+    "noMatch": "Nothing matches “{{query}}”.",
+    "refresh": "Refresh skills",
+    "loading": "Loading skills…",
+    "loadFailed": "Could not load skills. Please retry.",
+    "retry": "Retry"
   },
   "notFound": {
     "title": "404 — Not found",

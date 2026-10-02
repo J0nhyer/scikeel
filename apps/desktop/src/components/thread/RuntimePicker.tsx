@@ -13,8 +13,9 @@ export function RuntimePicker({ compact = false }: { compact?: boolean }) {
 
   if (!runtime || runtimes.length === 0) return null;
 
-  return <WebChoiceMenu label={t("composer.runtime.aria")} value={runtime} compact={compact} busy={switching}
-    choices={runtimes.map((option) => ({ key: option.runtime, label: option.label, disabled: !option.enabled,
-      reason: option.enabled ? undefined : t("composer.runtime.unavailable") }))}
+  const available = runtimes.filter((option) => option.enabled);
+  const value = available.some((option) => option.runtime === runtime) ? runtime : t("composer.runtime.select");
+  return <WebChoiceMenu label={t("composer.runtime.aria")} value={value} compact={compact} busy={switching || available.length === 0}
+    choices={available.map((option) => ({ key: option.runtime, label: option.label }))}
     onSelect={(key) => selectRuntime(key as GatewayRuntimeId)} />;
 }

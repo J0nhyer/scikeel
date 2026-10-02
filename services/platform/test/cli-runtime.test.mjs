@@ -56,6 +56,58 @@ async function waitForIdle(manager, userId, sessionId) {
   throw new Error("CLI turn did not finish");
 }
 
+test("starts a managed CLI in a cancellable process group and aborts the group", async () => {
+  const { root, options } = await makeManager("codex");
+  const calls = [];
+  const manager = new CliRuntimeManager({ ...options, spawnImpl: (command, args, spawnOptions) => {
+    calls.push(spawnOptions);
+    return spawn(command, args, spawnOptions);
+  } });
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  await manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "hello" });
+  await waitForIdle(manager, "usr_a", session.id);
+  assert.equal(calls[0].detached, process.platform !== "win32");
+  await manager.close();
+});
+
+test("aborting research stops both the CLI and its workspace child process", async () => {
+  const { root, options } = await makeManager("codex");
+  const manager = new CliRuntimeManager({ ...options, codexArgs: [fileURLToPath(new URL("../fixtures/research-cli.mjs", import.meta.url))] });
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(join(workspace, ".scikeel"), { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  const task = { directory: workspace, objective: "long-running research", reportPath: ".scikeel/report.json", execution: 1 };
+  await manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: `SciKeel research task (version 1).\n${JSON.stringify(task)}` });
+  let pid;
+  for (let n = 0; n < 50; n++) {
+    try { pid = Number(await readFile(join(workspace, "child.pid"), "utf8")); break; }
+    catch { await new Promise((done) => setTimeout(done, 20)); }
+  }
+  assert.ok(pid);
+  process.kill(pid, 0);
+  await manager.abortSession("usr_a", session.id);
+  for (let n = 0; n < 150 && session.status === "running"; n++) await new Promise((done) => setTimeout(done, 20));
+  assert.equal(session.status, "idle");
+  assert.equal(session.history.at(-1)?.info.error, undefined);
+  // Linux may briefly retain an exited orphan as a zombie until it is reaped.
+  const gone = async () => {
+    try {
+      process.kill(pid, 0);
+      if (process.platform === "linux") return /\) Z /.test(await readFile(`/proc/${pid}/stat`, "utf8"));
+      return false;
+    } catch { return true; }
+  };
+  for (let n = 0; n < 50 && !await gone(); n++) await new Promise((done) => setTimeout(done, 20));
+  assert.ok(await gone());
+  await manager.close();
+});
+
 async function managedRequest(manager, workspaceDir, method, url, body) {
   const request = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]);
   Object.assign(request, { method, url, headers: {} });
@@ -66,6 +118,52 @@ async function managedRequest(manager, workspaceDir, method, url, body) {
   };
   assert.equal(await manager.handle(request, response, { userId: "usr_a", workspaceDir }), true);
   return response;
+}
+
+for (const runtime of ["claude", "codex"]) {
+  test(`${runtime} exposes usable bundled skills and rejects another workspace`, async () => {
+    const { root, manager } = await makeManager(runtime);
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    try {
+      const response = await managedRequest(manager, workspace, "GET", "/skill");
+      assert.equal(response.status, 200);
+      assert.ok(response.body.some((item) => item.name === "publication-figures" && item.source === "builtin"));
+      assert.ok(response.body.some((item) => item.name === "traceability-review"));
+      assert.ok(!response.body.some((item) => item.name === "computer-use"));
+      const forbidden = await managedRequest(manager, workspace, "GET", `/skill?directory=${encodeURIComponent(root)}`);
+      assert.equal(forbidden.status, 403);
+      const state = await manager.ensureUser("usr_a");
+      const pinned = await manager.profileResolver.copyForTurn(await manager.profileResolver.refresh(runtime), { paths: state.paths });
+      assert.match(await readFile(join(pinned.configDir, "skills", "publication-figures", "SKILL.md"), "utf8"), /Publication Figures/);
+    } finally { await manager.close(); }
+  });
+  test(`${runtime} access switches persist, preserve accepted turns and history, and reject subsequent calls`, async () => {
+    const { root, manager, options } = await makeManager(runtime);
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await manager.init();
+    const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+    const turn = await manager.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "accepted research task" });
+    await manager.setAssistantEnabled(runtime, false);
+    assert.equal(manager.describe("usr_a").available.find((item) => item.runtime === runtime).enabled, false);
+    await manager.runReservedPrompt(turn);
+    const finished = await waitForIdle(manager, "usr_a", session.id);
+    assert.equal(finished.history.length, 2);
+    assert.equal(finished.history.at(-1).info.error, undefined);
+    await assert.rejects(manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "blocked" }), { code: "runtime_unconfigured" });
+    await assert.rejects(manager.setUserRuntime("usr_b", runtime), { code: "runtime_unconfigured" });
+    assert.equal(finished.history.length, 2);
+    const restarted = new CliRuntimeManager(options);
+    await restarted.init();
+    assert.equal(restarted.adminDescribe().assistantEnabled[runtime], false);
+    await restarted.close();
+    await manager.setAssistantEnabled(runtime, true);
+    await manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "continue" });
+    await waitForIdle(manager, "usr_a", session.id);
+    assert.equal(finished.history.length, 4);
+    await manager.close();
+  });
 }
 
 test("managed prompt variants validate per model, reach CLI args, and persist across resume and handover", async () => {
@@ -450,4 +548,47 @@ test("migrates version 3 assistant flags while preserving account selections", a
   assert.equal(saved.version, 4);
   assert.deepEqual(saved.assistantEnabled, { claude: false, codex: true });
   assert.equal(manager.modelForUser("usr_a", "codex"), "gpt-deep");
+});
+
+for (const runtime of ["claude", "codex"]) test(`${runtime} delivers images on fresh and resumed attachment turns and reads actual CSV bytes`, async () => {
+  const { root, options } = await makeManager(runtime);
+  const { AttachmentStore } = await import("../src/attachments.mjs"); const { AttachmentTurns } = await import("../src/attachment-turns.mjs");
+  const fixture = fileURLToPath(new URL("../fixtures/attachment-cli.mjs", import.meta.url));
+  const manager = new CliRuntimeManager({ ...options, claudeArgs: [fixture, "claude"], codexArgs: [fixture, "codex"] });
+  const workspace = join(root, "workspace"); await mkdir(workspace); const store = new AttachmentStore({ rootDir: join(root, "attachments") }); await store.init();
+  await manager.init(); await manager.setUserRuntime("usr_a", runtime); const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  const user = { id: "usr_a" }, owner = { sessionId: session.id }; const draft = await store.createDraft(user.id);
+  const imageBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aDAAAAAASUVORK5CYII=", "base64");
+  const image = await store.upload(user.id, { draftId: draft.id }, "figure.png", Readable.from([imageBytes]));
+  const csv = await store.upload(user.id, { draftId: draft.id }, "data.csv", Readable.from(["value\n2\n4\n"]));
+  const turns = new AttachmentTurns({ store, readHistory: async () => session.history });
+  try {
+    for (const turnId of ["turn_fresh", "turn_resumed"]) {
+      const prepared = await turns.prepare(user, owner, { parts: [{ type: "text", text: "Read image and compute mean" }], attachmentTurn: { turnId, draftId: draft.id, attachmentIds: [image.id, csv.id] } });
+      if (runtime === "codex") {
+        const state = await manager.ensureUser(user.id);
+        const command = manager.commandFor(state, session, "describe", session.nativeSessionId, prepared);
+        assert.equal(command.args.at(-2), "--", "image arguments must terminate before the positional prompt");
+      }
+      await manager.sendPrompt({ userId: user.id, sessionId: session.id, text: `${prepared.body.system}\n${prepared.displayText}`, displayText: prepared.displayText, attachmentInput: prepared });
+      await prepared.finish(true); const completed = await waitForIdle(manager, user.id, session.id);
+      const answer = completed.history.at(-1).parts.map((p) => p.text ?? "").join("");
+      assert.match(answer, /CSV mean: 3/); assert.match(answer, /Image input verified:/); assert.match(answer, new RegExp(image.sha256));
+      assert.equal(completed.history.filter((m) => m.info.role === "user").at(-1).info.id, prepared.body.messageID);
+    }
+  } finally { await manager.close(); await store.close(); }
+});
+
+test("rejects images for a catalogued text-only model before accepting the turn", async () => {
+  const { root, manager } = await makeManager("codex");
+  await writeFile(join(root, "admin-codex", "codex-models.json"), JSON.stringify({ models: [{ slug: "admin-model", input_modalities: ["text"] }] }));
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  await assert.rejects(manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "Read this image", attachmentInput: { images: [{ path: join(root, "image.png") }] } }), { code: "image_model_unsupported" });
+  assert.equal(session.status, "idle");
+  assert.equal(session.history.length, 0);
+  await manager.close();
 });

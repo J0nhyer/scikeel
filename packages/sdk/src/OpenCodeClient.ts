@@ -1,3 +1,4 @@
+import type { AttachmentPromptContext, ConversationAttachment } from "@ai4s/shared";
 import type {
   AgentInfo,
   CommandInfo,
@@ -28,6 +29,18 @@ import { DEFAULT_OPENCODE_URL } from "./types";
 import type { AgentRuntime } from "./runtime";
 import { BaseAgentRuntime } from "./base-runtime";
 
+export interface ProjectEnvironmentInfo {
+  imageDigest: string;
+  inputHash: string | null;
+  packages: string[];
+  venvState: "absent" | "valid" | "broken";
+}
+export interface ProjectEnvironmentApproval {
+  id: string;
+  expiresAt: number;
+  patterns: string[];
+  metadata: { project: string; operation: "install" | "rebuild"; inputHash: string };
+}
 export type CustomProviderModality = "text" | "audio" | "image" | "video" | "pdf";
 
 /** A model on a custom endpoint. A caller that knows nothing but the id passes
@@ -315,6 +328,25 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  private async projectEnvironmentRequest<T>(sessionId: string, operation?: "request" | "install", body: Record<string, unknown> = {}): Promise<T> {
+    const path = `/api/environments/${encodeURIComponent(sessionId)}${operation ? `/${operation}` : ""}`;
+    const response = await this.fetchWithTimeout(`${this.baseUrl}${path}`, {
+      method: operation ? "POST" : "GET", headers: this.headers(!!operation),
+      ...(operation ? {body: JSON.stringify(body)} : {}),
+    }, operation === "install" ? 360000 : this.requestTimeoutMs);
+    if (!response.ok) throw await this.apiError(response, "Project environment request failed");
+    return response.json() as Promise<T>;
+  }
+  describeProjectEnvironment(sessionId: string): Promise<ProjectEnvironmentInfo> {
+    return this.projectEnvironmentRequest(sessionId);
+  }
+  requestProjectEnvironment(sessionId: string): Promise<ProjectEnvironmentApproval> {
+    return this.projectEnvironmentRequest(sessionId, "request");
+  }
+  approveProjectEnvironment(sessionId: string, approvalId: string): Promise<{selection: {kind: "private"}}> {
+    return this.projectEnvironmentRequest(sessionId, "install", {id: approvalId, manual: true});
   }
 
   /** Open the SSE event stream. Resolves once the server acknowledges. */
@@ -708,6 +740,26 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     if (!res.ok) throw await this.apiError(res, "Failed to delete session");
   }
 
+  async isSessionRunning(sessionId: string, directory?: string): Promise<boolean | null> {
+    const query = directory
+      ? `?${new URLSearchParams({ directory })}`
+      : this.dirQuery();
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/session/status${query}`, {
+      headers: this.headers(),
+    });
+    if (res.status === 404 || res.status === 501) return null;
+    if (!res.ok) throw await this.apiError(res, "Failed to load session status");
+    const statuses: unknown = await res.json();
+    if (!statuses || typeof statuses !== "object" || Array.isArray(statuses)) {
+      throw new Error("Invalid session status response");
+    }
+    if (!Object.prototype.hasOwnProperty.call(statuses, sessionId)) return false;
+    const status = (statuses as Record<string, { type?: string } | null>)[sessionId];
+    if (status?.type === "idle") return false;
+    if (status?.type === "busy" || status?.type === "retry") return true;
+    throw new Error("Unknown session status");
+  }
+
   /** Load a session's message history. */
   async getMessages(sessionId: string): Promise<HistoryMessage[]> {
     const res = await this.fetchWithTimeout(
@@ -725,6 +777,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         cost?: number;
         tokens?: RawTokens;
       };
+      attachments?: ConversationAttachment[];
       parts: HistoryMessage["parts"];
     }>;
     return arr.map((m) => {
@@ -732,6 +785,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       const usage = toUsage(m.info.tokens, m.info.cost);
       return {
         role: m.info.role,
+        ...(m.attachments ? { attachments: m.attachments } : {}),
         ...(m.info.id ? { id: m.info.id } : {}),
         completed: m.info.time?.completed,
         created: m.info.time?.created,
@@ -1310,6 +1364,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     model?: string | null,
     variant?: string | null,
     files?: PromptFile[],
+    attachmentContext?: AttachmentPromptContext,
   ): Promise<void> {
     const m = parseModel(model);
     const res = await this.fetchWithTimeout(
@@ -1330,6 +1385,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
               url: f.url,
             })),
           ],
+          ...(attachmentContext ? { attachmentTurn: attachmentContext } : {}),
           ...(agent ? { agent } : {}),
           ...(m ? { model: m } : {}),
           system: ARTIFACT_PRESENTATION_SYSTEM,

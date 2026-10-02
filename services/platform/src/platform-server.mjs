@@ -4,6 +4,13 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { URL } from "node:url";
 import { relativeInput } from "./tenant-policy.mjs";
 import { classifyRuntimeRoute, classifyGatewayRoute, validateRuntimeInput, scrubRuntimeSecrets } from "./runtime-route-policy.mjs";
+import { loginPage } from "./login-page.mjs";
+import { ResearchTasks } from "./research-tasks.mjs";
+import { AttachmentTurns } from "./attachment-turns.mjs";
+import { ManagedResearchFiles } from "./managed-research-files.mjs";
+import { ManagedAttachmentCopies } from "./managed-attachment-copies.mjs";
+import { AttachmentStore } from "./attachments.mjs";
+import { createAttachmentRouter } from "./attachment-routes.mjs";
 
 const SESSION_COOKIE = "osd_session";
 const BOOTSTRAP_COOKIE = "osd_worker_bootstrap";
@@ -242,16 +249,6 @@ function booleanValue(value, fallback = false) {
   return Boolean(value);
 }
 
-function loginPage(error = "", next = "/") {
-  const errorMarkup = error
-    ? `<p role="alert" style="color:#a33d2e;margin:0 0 16px">${escapeHtml(error)}</p>`
-    : "";
-  return `<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Open Science Desktop</title>
-<style>body{margin:0;background:#f5f4f1;color:#252321;font:16px system-ui,sans-serif}main{box-sizing:border-box;width:min(100% - 32px,420px);margin:12vh auto;padding:32px;border:1px solid #d9d5cf;background:#fff;border-radius:8px;box-shadow:0 12px 40px #25232112}h1{margin:0 0 8px;font-size:22px}p{color:#6b6660;line-height:1.5}label{display:block;margin:16px 0 6px;font-size:14px}input{box-sizing:border-box;width:100%;height:42px;padding:0 12px;border:1px solid #c8c3bc;border-radius:6px;font:inherit}button{width:100%;height:42px;margin-top:22px;border:0;border-radius:6px;background:#2f5fa8;color:#fff;font:inherit;cursor:pointer}button:hover{background:#254f8f}</style>
-</head><body><main><h1>Open Science Desktop</h1><p>Sign in to your research workspace.</p>${errorMarkup}<form method="post" action="/auth/login"><input type="hidden" name="next" value="${escapeHtml(next)}"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Sign in</button></form></main></body></html>`;
-}
 
 function upstreamRequestPath(requestUrl, workerToken) {
   const parsed = new URL(requestUrl ?? "/", "http://platform.invalid");
@@ -295,6 +292,7 @@ export class PlatformServer {
     approvalGate = null,
     runtimeCatalog = null,
     environments = null,
+    workspaceFiles = null,
   } = {}) {
     if (!authStore) throw new Error("authStore is required");
     if (!workerManager) throw new Error("workerManager is required");
@@ -303,6 +301,27 @@ export class PlatformServer {
     this.authStore = authStore;
     this.workerManager = workerManager;
     this.cliRuntime = cliRuntime;
+    const resolveContext=async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
+      if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("managed worker unavailable");
+      return {userId,instanceId:worker.id,generation:worker.generation};};
+    this.researchTasks = new ResearchTasks({
+      rootDir: resolve(workerManager.rootDir, "../research"),
+      cancel: (task) => this.#cancelResearch(task),
+      running: (task) => this.#researchRunning(task),
+      logger,
+      workspace:tenantPolicy && workspaceFiles ? new ManagedResearchFiles({files:workspaceFiles,tenantPolicy,resolveContext}) : null,
+    });
+    const copies = tenantPolicy && workspaceFiles ? new ManagedAttachmentCopies({files:workspaceFiles,tenantPolicy,
+      resolveContext:async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
+        if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("attachment worker unavailable");
+        return {userId,instanceId:worker.id,generation:worker.generation};}}) : null;
+    this.attachments = new AttachmentStore({ rootDir: resolve(workerManager.rootDir, "../attachments"),
+      materializeCopies:copies ? input=>copies.materialize(input) : null });
+    this.attachmentTurns = new AttachmentTurns({ store: this.attachments, readHistory: (user, owner) => this.#attachmentHistory(user, owner.sessionId) });
+    this.attachmentRouter = createAttachmentRouter({ store: this.attachments, resolveOwner: async (user, sessionId) => {
+      const { access, worker } = await this.#ensureWorker(user);
+      return this.#researchOwner(user, sessionId, access, worker);
+    } });
     this.webRoot = webRoot ? resolve(webRoot) : null;
     this.secureCookies = secureCookies;
     this.maxBodyBytes = maxBodyBytes;
@@ -319,12 +338,24 @@ export class PlatformServer {
     await this.authStore.init();
     await this.workerManager.init();
     await this.cliRuntime?.init();
+    await this.attachments.init();
   }
 
   async listen() {
     if (this.server?.listening) return this.address();
     if (this.listenPromise) return this.listenPromise;
     await this.init();
+    this.researchTimer = setInterval(() => {
+      if (this.researchTick) return;
+      this.researchTick = this.researchTasks.tick().catch((error) => {
+        this.logger({ type: "research.monitor_error", error: error.message });
+      }).finally(() => { this.researchTick = null; });
+    }, 2000);
+    this.researchTimer.unref();
+    this.attachmentTimer = setInterval(() => {
+      if (!this.attachmentSweep) this.attachmentSweep = this.attachments.expire().catch(() => {}).finally(() => { this.attachmentSweep = null; });
+    }, 60000);
+    this.attachmentTimer.unref();
     this.server = createServer((request, response) => {
       void this.#handle(request, response);
     });
@@ -355,6 +386,12 @@ export class PlatformServer {
   }
 
   async close() {
+    clearInterval(this.researchTimer);
+    clearInterval(this.attachmentTimer);
+    await this.attachmentSweep;
+    await this.attachments.close();
+    await this.researchTick;
+    await this.researchTasks.close();
     if (!this.server) return;
     const server = this.server;
     this.server = null;
@@ -517,6 +554,7 @@ export class PlatformServer {
       await this.#managedRuntimeProxy(request, response, access, user, worker);
       return;
     }
+    let gatewayBody;
     if (this.tenantPolicy) {
       const operation = classifyGatewayRoute(request.method, (request.url ?? "").split("?")[0]);
       if (!operation) { sendJson(response, 404, { error: "not found" }); return; }
@@ -531,22 +569,139 @@ export class PlatformServer {
           throw Object.assign(new Error("invalid file scope"), { statusCode: 400 });
         const path = url.searchParams.get("path");
         if (path) relativeInput(path);
+        if(!["GET","HEAD"].includes(request.method)) {
+          const origin=`${this.secureCookies ? "https" : "http"}://${request.headers.host}`;
+          if(request.headers.origin!==origin || request.headers["sec-fetch-site"]==="cross-site")
+            throw Object.assign(new Error("foreign origin"),{statusCode:403});
+          gatewayBody=await this.#readPayload(request,response);if(!gatewayBody)return;
+          if(Object.keys(gatewayBody).some(key=>!operation.fields.includes(key)) ||
+              (operation.fields.includes("name") && (typeof gatewayBody.name!=="string" || !gatewayBody.name.trim() || gatewayBody.name.length>240)) ||
+              (operation.fields.includes("pinned") && typeof gatewayBody.pinned!=="boolean"))
+            throw Object.assign(new Error("invalid project input"),{statusCode:400});
+        }
         if (operation.operation === "runsLog" && !/^[a-fA-F0-9]{1,128}$/.test(url.searchParams.get("hash") ?? ""))
           throw Object.assign(new Error("invalid log id"), { statusCode: 400 });
       } catch (error) { sendJson(response, error.statusCode ?? 403, { error: error.message }); return; }
+    }
+    const parsed = new URL(request.url ?? "/", "http://platform.invalid");
+    const sessionRoute = parsed.pathname.match(/^\/session\/([^/]+)(?:\/(message|fork))?$/);
+    if (sessionRoute && request.method === "GET" && sessionRoute[2] === "message") {
+      const sessionId = decodeURIComponent(sessionRoute[1]);
+      const owner = await this.#researchOwner(user, sessionId, access, worker);
+      const listing = await this.attachments.list(user.id, sessionId);
+      if (listing.attachments.length) {
+        const history = await this.#attachmentHistory(user, sessionId, access);
+        sendJson(response, 200, await this.attachmentTurns.decorate(user, owner, history));
+        return;
+      }
+    }
+    const lifecycle = sessionRoute && ((request.method === "DELETE" && !sessionRoute[2]) || (request.method === "POST" && sessionRoute[2] === "fork"));
+    if (lifecycle) {
+      const sessionId = decodeURIComponent(sessionRoute[1]);
+      const owner = await this.#researchOwner(user, sessionId, access, worker);
+      const listing = await this.attachments.list(user.id, sessionId);
+      if (listing.attachments.length) {
+        await this.#attachmentLifecycle(request, response, user, owner, access, worker, sessionRoute[2]);
+        return;
+      }
+    }
+    const promptMatch = parsed.pathname.match(/^\/session\/([^/]+)\/(prompt_async|message|command|shell)$/);
+    let promptBody;
+    let serializedBody=gatewayBody===undefined ? undefined : JSON.stringify(gatewayBody);
+    let preparedAttachments;
+    if (promptMatch && request.method === "POST") {
+      const sessionId = decodeURIComponent(promptMatch[1]);
+      if (promptMatch[2] === "prompt_async") {
+        promptBody = await this.#readPayload(request, response);
+        if (!promptBody) return;
+      }
+      const task = await this.researchTasks.get(user.id, sessionId);
+      if (!task) {
+        // A forked review inherits the page lifetime and research boundary.
+        let parentId;
+        if (this.cliRuntime?.isManaged(user.id)) {
+          const state = await this.cliRuntime.ensureUser(user.id);
+          parentId = state.sessions.get(sessionId)?.parentId;
+        } else {
+          if(this.tenantPolicy) {
+      const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+      try { this.tenantPolicy.session(context,sessionId); }
+      catch { throw Object.assign(new Error("research session not found"),{status:404}); }
+    }
+    const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}`, access.url), {
+            headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(5000),
+          });
+          if (result.ok) parentId = (await result.json()).parentID;
+        }
+        for (let depth = 0; parentId && depth < 20; depth++) {
+          const parent = await this.researchTasks.get(user.id, parentId);
+          if (parent) {
+            if (!this.researchTasks.alive(user.id, parentId) || ["paused", "waiting_input", "cancelled"].includes(parent.status)) {
+              sendJson(response, 409, { error: "the owning research page is stopped or waiting for a decision" });
+              return;
+            }
+            break;
+          }
+          if (this.cliRuntime?.isManaged(user.id)) parentId = (await this.cliRuntime.ensureUser(user.id)).sessions.get(parentId)?.parentId;
+          else {
+            const result = await fetch(new URL(`/session/${encodeURIComponent(parentId)}`, access.url), {
+              headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(5000),
+            });
+            parentId = result.ok ? (await result.json()).parentID : null;
+          }
+        }
+      }
+      if (task) {
+        if (promptMatch[2] !== "prompt_async") {
+          sendJson(response, 409, { error: "use the research conversation to continue this task" });
+          return;
+        }
+        const body = promptBody ?? await this.#readPayload(request, response);
+        if (!body) return;
+        try {
+          const owner = await this.#researchOwner(user, sessionId, access, worker);
+          if (owner.runtime !== task.runtime || resolve(owner.directory) !== task.directory) throw Object.assign(new Error("research task belongs to a different assistant or workspace"), { status: 409 });
+          promptBody = await this.researchTasks.prepare(user.id, sessionId, body);
+          serializedBody = JSON.stringify(promptBody);
+        } catch (error) {
+          sendJson(response, error.status ?? 400, { error: error.message });
+          return;
+        }
+        response.once("finish", () => {
+          if (response.statusCode >= 400) void this.researchTasks.settled(user.id, sessionId).catch(() => {});
+        });
+      }
+    }
+    if (promptBody && promptMatch?.[2] === "prompt_async") {
+      try {
+        const owner = await this.#researchOwner(user, decodeURIComponent(promptMatch[1]), access, worker);
+        preparedAttachments = await this.attachmentTurns.prepare(user, owner, promptBody);
+        if (preparedAttachments?.replayAccepted) { sendJson(response, 202, {}); return; }
+        if (preparedAttachments) promptBody = preparedAttachments.body;
+        serializedBody = JSON.stringify(promptBody);
+        if (preparedAttachments) {
+          response.once("finish", () => { void preparedAttachments.finish(response.statusCode < 400).catch(() => {}); });
+          response.once("close", () => { if (!response.writableFinished) preparedAttachments.abandon(); });
+        }
+      } catch (error) { sendJson(response, error.status ?? 400, { error: error.message, code: error.code }); return; }
     }
     if (this.cliRuntime && !this.tenantPolicy) {
       const handled = await this.cliRuntime.handle(request, response, {
         userId: user.id,
         workspaceDir: worker.workspaceDir,
+        promptBody,
+        attachmentInput: preparedAttachments,
       });
       if (handled) return;
     }
     const workerUrl = new URL(access.url);
-    const parsed = new URL(request.url ?? "/", "http://platform.invalid");
     const isV1 = parsed.pathname.startsWith("/v1/");
     const token = isV1 ? `Bearer ${access.token}` : `Basic ${workerBasicToken(access.token)}`;
     const headers = { ...request.headers };
+    if (serializedBody !== undefined) {
+      headers["content-length"] = String(Buffer.byteLength(serializedBody));
+      delete headers["transfer-encoding"];
+    }
     delete headers.host;
     delete headers.connection;
     delete headers.cookie;
@@ -598,7 +753,146 @@ export class PlatformServer {
     response.on("close", () => {
       if (!response.writableEnded) upstream.destroy();
     });
-    request.pipe(upstream);
+    if (serializedBody !== undefined) upstream.end(serializedBody);
+    else request.pipe(upstream);
+  }
+
+  async #attachmentHistory(user, sessionId, access) {
+    if (this.cliRuntime?.isManaged(user.id)) {
+      const { session } = await this.cliRuntime.getOwnedSession(user.id, sessionId);
+      return structuredClone(session.history);
+    }
+    access ??= (await this.#ensureWorker(user)).access;
+    const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}/message`, access.url), {
+      headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(10000),
+    });
+    if (!result.ok) throw Object.assign(new Error("Conversation history is unavailable"), { status: result.status });
+    return result.json();
+  }
+  async #attachmentLifecycle(request, response, user, owner, access, worker, route) {
+    let result;
+    if (this.cliRuntime?.isManaged(user.id)) {
+      if (!route) { await this.cliRuntime.abortSession(user.id, owner.sessionId); const { state } = await this.cliRuntime.getOwnedSession(user.id, owner.sessionId); state.sessions.delete(owner.sessionId); await this.cliRuntime.persistUser(state); result = true; }
+      else {
+        const { session } = await this.cliRuntime.getOwnedSession(user.id, owner.sessionId);
+        const copy = await this.cliRuntime.createSession({ userId: user.id, workspaceDir: worker.workspaceDir, directory: session.directory, title: `${session.title} (fork)` });
+        const target = await this.cliRuntime.getOwnedSession(user.id, copy.id); target.session.parentId = session.id; target.session.history = structuredClone(session.history); await this.cliRuntime.persistUser(target.state); result = { id: copy.id };
+      }
+    } else {
+      const payload = route ? await this.#readPayload(request, response) : undefined;
+      if (route && !payload) return;
+      const native = await fetch(new URL(request.url, access.url), { method: request.method,
+        headers: { authorization: `Basic ${workerBasicToken(access.token)}`, "content-type": "application/json" },
+        ...(payload ? { body: JSON.stringify(payload) } : {}), signal: AbortSignal.timeout(10000) });
+      if (!native.ok) { sendJson(response, native.status, { error: "Conversation operation failed" }); return; }
+      result = await native.json();
+    }
+    if (!route) await this.attachments.deleteSession(user.id, owner.sessionId);
+    else {
+      const history = await this.#attachmentHistory(user, result.id, access);
+      const markers = history.flatMap((m) => (m.parts ?? []).filter((p) => p.synthetic && p.text?.startsWith("SciKeel attachment turn: ")).map((p) => p.text.slice("SciKeel attachment turn: ".length)));
+      const listing = await this.attachments.list(user.id, owner.sessionId);
+      const ids = listing.turns.filter((t) => markers.includes(t.turnId) || history.some((m) => m.info?.id === t.messageID)).map((t) => t.messageID);
+      await this.attachments.cloneSession(user.id, owner.sessionId, result.id, ids);
+    }
+    sendJson(response, 200, result);
+  }
+  async #workerResearchRequest(task, path, method = "GET") {
+    const access = this.workerManager.getWorkerAccess(workerIdForUser(task.userId));
+    if (!access) throw new Error("research worker is unavailable");
+    const url = new URL(path, access.url);
+    url.searchParams.set("directory", task.directory);
+    const result = await fetch(url, {
+      method, headers: { authorization: `Basic ${workerBasicToken(access.token)}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!result.ok) throw Object.assign(new Error("research session is unavailable"), { status: result.status });
+    return result.json();
+  }
+  async #researchOwner(user, sessionId, access, worker) {
+    if (this.cliRuntime?.isManaged(user.id)) {
+      const { session } = await this.cliRuntime.getOwnedSession(user.id, sessionId);
+      return { userId: user.id, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime };
+    }
+    if(this.tenantPolicy) {
+      const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+      try { this.tenantPolicy.session(context,sessionId); }
+      catch { throw Object.assign(new Error("research session not found"),{status:404}); }
+    }
+    const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}`, access.url), {
+      headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(5000),
+    });
+    if (!result.ok) throw Object.assign(new Error("research session not found"), { status: 404 });
+    const session = await result.json();
+    if (session.id !== sessionId || typeof session.directory !== "string") throw Object.assign(new Error("research session not found"), { status: 404 });
+    if(this.tenantPolicy) {
+      const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+      const registered=this.tenantPolicy.session(context,sessionId);
+      if(this.tenantPolicy.directory(context,session.directory)!==registered.directory)throw Object.assign(new Error("research session changed"),{status:409});
+    }
+    return { userId: user.id, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: "opencode", revertMessageID: session.revert?.messageID };
+  }
+  async #researchRunning(task) {
+    if (task.runtime !== "opencode") {
+      const state = await this.cliRuntime.ensureUser(task.userId);
+      return [...state.sessions.values()].some((session) => (session.id === task.sessionId || session.parentId === task.sessionId) && session.status === "running");
+    }
+    const statuses = await this.#workerResearchRequest(task, "/session/status");
+    const busy = (sid) => statuses[sid]?.type === "busy" || statuses[sid]?.type === "retry";
+    if (busy(task.sessionId)) return true;
+    if (!Object.values(statuses).some((status) => status?.type === "busy" || status?.type === "retry")) return false;
+    const visit = async (sessionId, depth = 0) => {
+      if (depth > 20) return false;
+      const children = await this.#workerResearchRequest(task, `/session/${encodeURIComponent(sessionId)}/children`);
+      for (const child of Array.isArray(children) ? children : []) if (busy(child.id) || await visit(child.id, depth + 1)) return true;
+      return false;
+    };
+    return visit(task.sessionId);
+  }
+  async #cancelResearch(task) {
+    if (task.runtime !== "opencode") {
+      const state = await this.cliRuntime?.ensureUser(task.userId);
+      for (const session of state?.sessions.values() ?? []) if (session.parentId === task.sessionId) await this.cliRuntime.abortSession(task.userId, session.id, true);
+      await this.cliRuntime?.abortSession(task.userId, task.sessionId, true);
+      return;
+    }
+    // Forked reviews and subagents are ordinary session descendants.
+    const visit = async (sessionId, depth = 0) => {
+      if (depth > 20) return;
+      let children = [];
+      try { children = await this.#workerResearchRequest(task, `/session/${encodeURIComponent(sessionId)}/children`); }
+      catch (error) { this.logger({ type: "research.children_unavailable", error: error.message }); }
+      for (const child of Array.isArray(children) ? children : []) {
+        try { await visit(child.id, depth + 1); }
+        catch (error) { this.logger({ type: "research.child_abort_error", error: error.message }); }
+      }
+      await this.#workerResearchRequest(task, `/session/${encodeURIComponent(sessionId)}/abort`, "POST");
+    };
+    await visit(task.sessionId);
+  }
+
+  async #researchApi(request, response, user, sessionId) {
+    try {
+      if (request.method === "GET") {
+        sendJson(response, 200, { task: await this.researchTasks.refresh(user.id, sessionId) });
+        return;
+      }
+      if (request.method !== "POST") {
+        sendJson(response, 405, { error: "method not allowed" }, { allow: "GET, POST" });
+        return;
+      }
+      const body = await this.#readPayload(request, response);
+      if (!body) return;
+      let task;
+      if (body.action === "create") {
+        const { access, worker } = await this.#ensureWorker(user);
+        const owner = await this.#researchOwner(user, sessionId, access, worker);
+        task = await this.researchTasks.create(owner, body);
+      } else if (body.action === "heartbeat") task = await this.researchTasks.heartbeat(user.id, sessionId, body.pageId);
+      else if (body.action === "release") task = await this.researchTasks.release(user.id, sessionId, body.pageId);
+      else task = await this.researchTasks.action(user.id, sessionId, body);
+      sendJson(response, body.action === "create" ? 201 : 200, { task });
+    } catch (error) { sendJson(response, error.status ?? 400, { error: error.message }); }
   }
 
   async #managedRuntimeProxy(request, response, access, user, worker) {
@@ -622,7 +916,9 @@ export class PlatformServer {
         try { body = parseBody(request, bytes); }
         catch { throw Object.assign(new Error("invalid runtime body"), { statusCode: 400 }); }
       }
-      const input = validateRuntimeInput(operation, { query: parsed.searchParams, body, headers: request.headers });
+      const checkedBody = {...body};
+      if(operation.operation==="sessionPrompt_async")delete checkedBody.attachmentTurn;
+      const input = validateRuntimeInput(operation, { query: parsed.searchParams, body:checkedBody, headers: request.headers });
       let directory = this.tenantPolicy.directory(context, input.directory);
       const sessionId = operation.identifiers.sessionId ?? body.sessionID;
       if (sessionId) {
@@ -643,6 +939,20 @@ export class PlatformServer {
           : operation.operation === "providerCatalog" ? { all: catalog?.providers ?? [], connected: catalog?.connected ?? [] }
           : { providers: catalog?.providers ?? [], default: catalog?.defaults ?? {} };
         sendJson(response, 200, scrubRuntimeSecrets(safe)); return;
+      }
+      let attachmentTurn;
+      if(operation.operation === "sessionPrompt_async") {
+        const owner=await this.#researchOwner(user,sessionId,access,worker);
+        const task=await this.researchTasks.get(user.id,sessionId);
+        if(task)body=await this.researchTasks.prepare(user.id,sessionId,body);
+        attachmentTurn=await this.attachmentTurns.prepare(user,owner,body);
+        if(attachmentTurn?.replayAccepted){sendJson(response,202,{});return;}
+        if(attachmentTurn) {
+          body=attachmentTurn.body;
+          response.once("finish",()=>{void attachmentTurn.finish(response.statusCode<400).catch(()=>{});});
+          response.once("close",()=>{if(!response.writableFinished)attachmentTurn.abandon();});
+        }
+        validateRuntimeInput(operation,{query:parsed.searchParams,body,headers:request.headers});
       }
       parsed.searchParams.delete("token");
       parsed.searchParams.delete("auth_token");
@@ -715,6 +1025,18 @@ export class PlatformServer {
             this.tenantPolicy.registerSessionList(context, value);
           if (["permissionList", "questionList"].includes(operation.operation) && Array.isArray(value))
             for (const pending of value) this.tenantPolicy.registerRequest(context, pending);
+          if(operation.operation === "sessionMessage" && operation.method === "GET" && Array.isArray(value)) {
+            const owner=await this.#researchOwner(user,sessionId,access,worker);
+            value=await this.attachmentTurns.decorate(user,owner,value);
+          }
+          if(operation.operation === "sessionDelete")await this.attachments.deleteSession(user.id,sessionId);
+          if(operation.operation === "sessionFork" && value?.id) {
+            const history=await this.#attachmentHistory(user,value.id,access);
+            const listing=await this.attachments.list(user.id,sessionId);
+            const ids=listing.turns.filter(turn=>history.some(message=>message.info?.id===turn.messageID ||
+              message.parts?.some(part=>part.synthetic && part.text===`SciKeel attachment turn: ${turn.turnId}`))).map(turn=>turn.messageID);
+            await this.attachments.cloneSession(user.id,sessionId,value.id,ids);
+          }
           if (operation.operation === "sessionDelete") this.tenantPolicy.removeSession(context, sessionId);
           if (operation.operation === "sessionMove") this.tenantPolicy.registerSession(context, { id: sessionId, directory });
         }
@@ -796,7 +1118,11 @@ export class PlatformServer {
           sendJson(response, 405, { error: "method not allowed" }, { allow: "GET" });
           return;
         }
-        sendHtml(response, 200, loginPage("", safeNextPath(parsed.searchParams.get("next"))));
+        sendHtml(response, 200, loginPage({
+          next: safeNextPath(parsed.searchParams.get("next")),
+          locale: parsed.searchParams.get("lang"),
+          explicitLocale: parsed.searchParams.has("lang"),
+        }));
         return;
       }
 
@@ -811,7 +1137,12 @@ export class PlatformServer {
             sendHtml(
               response,
               401,
-              loginPage("Invalid username or password.", safeNextPath(payload.next)),
+              loginPage({
+                invalidCredentials: true,
+                next: safeNextPath(payload.next),
+                username: typeof payload.username === "string" ? payload.username : "",
+                locale: payload.lang,
+              }),
             );
           }
           return;
@@ -863,8 +1194,14 @@ export class PlatformServer {
           const {worker} = await this.#ensureWorker(user);
           await this.#environmentRequest(request, response, user, worker); return;
         }
+        if (await this.attachmentRouter(request, response, user)) return;
         if (path === "/api/me" && request.method === "GET") {
           sendJson(response, 200, { user });
+          return;
+        }
+        const researchMatch = path.match(/^\/api\/research\/([^/]+)$/);
+        if (researchMatch) {
+          await this.#researchApi(request, response, user, decodeURIComponent(researchMatch[1]));
           return;
         }
         if (path === "/api/runtime") {

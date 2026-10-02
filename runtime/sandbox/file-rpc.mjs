@@ -2,14 +2,19 @@ import { spawn } from "node:child_process";
 import { posix } from "node:path";
 
 export function fileRequest(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["operation", "root", "path", "text"].includes(key)) ||
-      !["read", "write", "list", "mkdir"].includes(value.operation) || value.root !== "workspace" ||
-      typeof value.path !== "string" || value.path.length > 4096 || /[\0\\]/.test(value.path) ||
-      value.path.startsWith("/") || posix.normalize(value.path || ".") !== (value.path || ".") ||
-      value.path.split("/").some((part) => part === "..") ||
-      (value.operation === "write" ? typeof value.text !== "string" || Buffer.byteLength(value.text) > 2 * 1024 ** 2 : Object.hasOwn(value, "text")))
-    throw new Error("file operation denied");
-  return { ...value };
+  const fields = { read:["operation","root","path"], list:["operation","root","path"], mkdir:["operation","root","path"],
+    mkdirAll:["operation","root","path"], remove:["operation","root","path"], write:["operation","root","path","text"],
+    readChunk:["operation","root","path","offset","limit"], writeChunk:["operation","root","path","offset","bytes"] };
+  const allowed = fields[value?.operation];
+  if (!value || typeof value !== "object" || Array.isArray(value) || !allowed || Object.keys(value).some(key => !allowed.includes(key)) ||
+      value.root !== "workspace" || typeof value.path !== "string" || value.path.length > 4096 || /[\0\\]/.test(value.path) ||
+      value.path.startsWith("/") || posix.normalize(value.path || ".") !== (value.path || ".") || value.path.split("/").some(part => part === "..") ||
+      (value.operation === "write" && (typeof value.text !== "string" || Buffer.byteLength(value.text) > 1024 ** 2)) ||
+      (["readChunk","writeChunk"].includes(value.operation) && (!Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > 25*1024**2)) ||
+      (value.operation === "readChunk" && (!Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 256*1024)) ||
+      (value.operation === "writeChunk" && (!Array.isArray(value.bytes) || value.bytes.length > 256*1024 || value.offset+value.bytes.length > 25*1024**2 ||
+        value.bytes.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)))) throw new Error("file operation denied");
+  return {...value};
 }
 export class FileRpc {
   constructor({ spawnImpl = spawn, timeoutMs = 15000, maxOutputBytes = 4 * 1024 ** 2 } = {}) {

@@ -1,3 +1,4 @@
+2026-10-03 01:06 · Preserved current Web attachments, research tasks and skills in the isolation worktree; added owned binary working-copy transfer and sandbox research-file reads, explicit dependency approval UI, descriptor-scoped project mutations and admission exit-race repair; 213 platform tests, 51 Web control tests and 15 project core tests pass, with production migration still pending.
 2026-10-03 00:29 · Added owned-session private Python environment transactions with manual one-use approvals, atomic maintenance locking and scoped package grants; all 163 platform tests and the two-tenant real mirror probe pass, with on-demand public package lookup reducing mirror memory to 41 MiB; production cutover and existing Web feature integration remain pending.
 # Progress
 

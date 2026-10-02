@@ -22,7 +22,7 @@ export class WorkspaceRpc {
   async #send(context,request,path,signal) {
     this.#owned(context);
     if(signal?.aborted)throw denied("workspace operation cancelled");
-    const lease=this.workerManager.retainWorker(context.instanceId, { maintenance: path === "/environments", readOnly: ["read", "list", "inspect"].includes(request.operation) });
+    const lease=this.workerManager.retainWorker(context.instanceId, { maintenance: path === "/environments", readOnly: ["read", "readChunk", "list", "inspect"].includes(request.operation) });
     try {
       if(lease.generation!==context.generation)throw denied("workspace generation changed");
       const access=this.workerManager.getWorkerAccess(context.instanceId);

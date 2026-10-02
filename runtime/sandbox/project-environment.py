@@ -70,8 +70,11 @@ def inventory(python, project, env):
     return json.loads(run([python, '-I', '-c', code], project, env, timeout=10))
 
 def inspect(project, project_path, image_digest):
-    source = read(project, 'requirements.lock')
-    packages = requirements(source)
+    try:
+        source = read(project, 'requirements.lock')
+    except FileNotFoundError:
+        source = None
+    packages = requirements(source) if source is not None else []
     state = 'absent'
     try:
         environment = secure(project, '.venv', True)
@@ -97,7 +100,7 @@ def inspect(project, project_path, image_digest):
         finally:
             os.close(environment)
     return {'owned': True, 'projectDir': project_path, 'imageDigest': image_digest, 'basePython': BASE,
-            'inputHash': hashlib.sha256(source).hexdigest(), 'packages': packages, 'venvState': state,
+            'inputHash': hashlib.sha256(source).hexdigest() if source is not None else None, 'packages': packages, 'venvState': state,
             **({'venvPython': project_path+'/.venv/bin/python'} if state == 'valid' else {})}
 
 def transaction(request, manifest):

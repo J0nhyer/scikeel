@@ -126,7 +126,7 @@ export function AppShell() {
     // download's live output survives navigating between pages.
     ensureSetupProgressListener();
     void useSshStore.getState().init();
-    if (!import.meta.env.TEST) {
+    if (!isGatewayWeb && !import.meta.env.TEST) {
       void useUpdateStore.getState().maybeAutoCheck();
     }
   }, [webReady]);

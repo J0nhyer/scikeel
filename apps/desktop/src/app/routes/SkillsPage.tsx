@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { Bot, Check, Plus, Puzzle, Search, X } from "lucide-react";
+import { Bot, Check, Loader2, Plus, Puzzle, RefreshCw, Search, X } from "lucide-react";
 import { useRuntimeStore } from "@/lib/runtime";
 import { cn } from "@/lib/cn";
 import { isGatewayWeb } from "@/lib/webMode";
@@ -22,9 +22,11 @@ export function SkillsPage() {
   // this page on every unrelated store mutation, including the SSE fold storm of
   // an active session (#34).
   const skills = useRuntimeStore((s) => s.skills);
+  const skillsStatus = useRuntimeStore((s) => s.skillsStatus);
   const agents = useRuntimeStore((s) => s.agents);
   const tools = useRuntimeStore((s) => s.tools);
   const status = useRuntimeStore((s) => s.status);
+  const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
   const loadCatalog = useRuntimeStore((s) => s.loadCatalog);
   const detectTools = useRuntimeStore((s) => s.detectTools);
   const connected = status === "ready";
@@ -35,7 +37,7 @@ export function SkillsPage() {
 
   useEffect(() => {
     if (connected) void loadCatalog();
-    void detectTools();
+    if (!isGatewayWeb) void detectTools();
   }, [connected, loadCatalog, detectTools]);
 
   /** Skills and agents as one list: the reader is looking for a capability and
@@ -46,7 +48,7 @@ export function SkillsPage() {
         kind: "skill" as const,
         name: s.name,
         description: s.description,
-        tag: sourceOf(s.location),
+        tag: s.source ?? sourceOf(s.location),
       })),
       ...agents.map((a) => ({
         kind: "agent" as const,
@@ -71,13 +73,23 @@ export function SkillsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-8 py-7">
+      <div className="mx-auto max-w-5xl px-4 py-7 sm:px-8">
         <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <h1 className="font-serif text-xl text-text">{t("skills.title")}</h1>
-          <p className="min-w-0 flex-1 truncate text-[13px] text-muted" title={summaryLine(t)}>
+          {!isGatewayWeb && <p className="min-w-0 flex-1 truncate text-[13px] text-muted" title={summaryLine(t)}>
             {summaryLine(t)}
-          </p>
-          <InstallSkill installing={installing} setInstalling={setInstalling} connected={connected} />
+          </p>}
+          <button
+            type="button"
+            onClick={() => void loadCatalog()}
+            disabled={!connected || skillsStatus === "loading"}
+            aria-label={t("skills.refresh")}
+            title={t("skills.refresh")}
+            className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
+          >
+            {skillsStatus === "loading" ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+          </button>
+          {!webReadOnly && <InstallSkill installing={installing} setInstalling={setInstalling} connected={connected} />}
         </header>
 
         {/* The toolchain, on one line. These are facts you glance at, not rows
@@ -147,7 +159,7 @@ export function SkillsPage() {
         ) : (
           <>
             <div className="mt-5 flex flex-wrap items-center gap-2">
-              <label className="relative min-w-[16rem] flex-1">
+              <label className="relative min-w-0 basis-full sm:basis-auto sm:flex-1">
                 <Search
                   size={14}
                   className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted"
@@ -160,7 +172,7 @@ export function SkillsPage() {
                   className="h-8 w-full rounded-input border border-border bg-surface pl-8 pr-2 text-[13px] text-text outline-none placeholder:text-muted focus:border-accent/50"
                 />
               </label>
-              <div role="radiogroup" aria-label={t("skills.filter")} className="flex gap-0.5 rounded-input bg-surface-2 p-0.5">
+              <div role="radiogroup" aria-label={t("skills.filter")} className="flex max-w-full gap-0.5 overflow-x-auto rounded-input bg-surface-2 p-0.5">
                 {/* eslint-disable i18next/no-literal-string -- filter ids, not UI copy */}
                 <FilterTab active={kind === "all"} onSelect={() => setKind("all")}>
                   {t("skills.all", { count: skills.length + agents.length })}
@@ -175,11 +187,22 @@ export function SkillsPage() {
               </div>
             </div>
 
-            {entries.length === 0 ? (
+            {skillsStatus === "error" && (
+              <div role="alert" className="mt-4 flex flex-wrap items-center gap-3 text-sm text-error">
+                <span>{t("skills.loadFailed")}</span>
+                <button type="button" onClick={() => void loadCatalog()} className="inline-flex min-h-9 items-center gap-1.5 text-link">
+                  <RefreshCw size={14} /> {t("skills.retry")}
+                </button>
+              </div>
+            )}
+            {skillsStatus === "loading" && skills.length === 0 && kind !== "agent" && (
+              <p role="status" className="mt-4 text-sm text-muted">{t("skills.loading")}</p>
+            )}
+            {entries.length === 0 && skillsStatus !== "loading" && skillsStatus !== "error" ? (
               <p className="mt-10 text-center text-sm text-muted">
-                {query ? t("skills.noMatch", { query }) : t("skills.skillsListSection.empty")}
+                {query ? t("skills.noMatch", { query }) : kind === "agent" ? t("skills.agentsSection.empty") : t("skills.skillsListSection.empty")}
               </p>
-            ) : (
+            ) : entries.length > 0 ? (
               // Two columns on a wide window: thirty capabilities in one screen
               // rather than thirty scrolls.
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -187,7 +210,7 @@ export function SkillsPage() {
                   <EntryCard key={`${entry.kind}:${entry.name}`} entry={entry} />
                 ))}
               </div>
-            )}
+            ) : null}
           </>
         )}
       </div>
@@ -221,7 +244,7 @@ function EntryCard({ entry }: { entry: Entry }) {
       )}
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <h3 className="min-w-0 flex-1 truncate text-[13px] font-medium text-text">{entry.name}</h3>
+          <h3 className="min-w-0 flex-1 break-words text-[13px] font-medium text-text">{entry.name}</h3>
           {label && (
             <span className="shrink-0 whitespace-nowrap rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
               {label}
@@ -302,7 +325,7 @@ function InstallSkill({
         title={connected ? undefined : t("skills.install.hintDisconnected")}
         className="inline-flex shrink-0 items-center gap-1.5 rounded-input border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text hover:bg-surface-2 disabled:opacity-40"
       >
-        <Plus size={13} strokeWidth={1.5} />
+          <Plus size={13} strokeWidth={1.5} />
         {t("skills.install.cta")}
       </button>
     );
@@ -334,7 +357,7 @@ function InstallSkill({
           {t("common:actions.cancel", "Cancel")}
         </button>
         <span className="min-w-0 flex-1 text-[11px] text-muted">
-          {t("skills.install.hintConnected")}
+        {t(isGatewayWeb ? "skills.install.hintWorkspace" : "skills.install.hintConnected")}
         </span>
       </div>
     </div>

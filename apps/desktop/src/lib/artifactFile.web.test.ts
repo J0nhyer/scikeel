@@ -7,7 +7,7 @@ vi.mock("./webMode", () => ({
   gatewayOrigin: () => "http://localhost",
 }));
 
-const { listDir, previewUrl, downloadArtifact } = await import("./artifactFile");
+const { listDir, previewUrl, downloadArtifact, resolveArtifactPath } = await import("./artifactFile");
 
 describe("gateway workspace files", () => {
   beforeEach(() => { vi.restoreAllMocks(); });
@@ -21,6 +21,25 @@ describe("gateway workspace files", () => {
   it("reports an expired or missing preview instead of returning a blank document", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: "file not found" }), { status: 404 }));
     await expect(previewUrl("papers/paper.pdf")).rejects.toThrow("file not found");
+  });
+
+  it("checks that a prose file exists in its owning workspace before offering it", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ticket: "existing" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "file not found" }), { status: 404 }));
+    expect(await resolveArtifactPath("results.json", "/user/session")).toBe("results.json");
+    expect(await resolveArtifactPath("planned_report.md", "/user/session")).toBeNull();
+    expect(fetchMock.mock.calls[0][0]).toContain("dir=%2Fuser%2Fsession");
+    expect(fetchMock.mock.calls[0][1]?.headers).toEqual({ authorization: "Bearer test-token" });
+  });
+
+  it("rechecks missing files when later messages mention them after creation", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "file not found" }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ticket: "created" })));
+    expect(await resolveArtifactPath("new.md", "/user/session")).toBeNull();
+    expect(await resolveArtifactPath("new.md", "/user/session")).toBe("new.md");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("requests a fresh file ticket for every download and supplies the original filename", async () => {

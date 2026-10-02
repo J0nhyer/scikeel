@@ -28,6 +28,15 @@ mod tests {
             serde_json::json!({"operation":"read","root":"workspace","path":"owned.txt","command":"evil"})] {
             assert!(dispatch(&policy,request).is_err());
         }
+        assert!(dispatch(&policy,serde_json::json!({"operation":"writeChunk","root":"workspace","path":"binary","offset":0,"bytes":[0,255]})).is_ok());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"writeChunk","root":"workspace","path":"binary","offset":0,"bytes":[1]})).is_err());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"writeChunk","root":"workspace","path":"binary","offset":1,"bytes":[1]})).is_err());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"writeChunk","root":"workspace","path":"binary","offset":2,"bytes":[42]})).is_ok());
+        let binary=dispatch(&policy,serde_json::json!({"operation":"readChunk","root":"workspace","path":"binary","offset":1,"limit":2})).unwrap();
+        assert_eq!(binary["bytes"],serde_json::json!([255,42]));assert_eq!(binary["size"],3);
+        assert!(dispatch(&policy,serde_json::json!({"operation":"writeChunk","root":"workspace","path":"escape","offset":0,"bytes":[1]})).is_err());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"writeChunk","root":"workspace","path":"binary","offset":u64::MAX,"bytes":[1]})).is_err());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"remove","root":"workspace","path":"binary"})).is_ok());
         std::fs::remove_file(root.join("escape")).unwrap();std::fs::remove_file(root.join("owned.txt")).unwrap();std::fs::remove_dir(root).unwrap();
     }
 }
@@ -85,11 +94,33 @@ pub fn policy(value:&Value)->Result<ManagedFilePolicy,String> {
 }
 fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
     let object=value.as_object().ok_or("invalid file operation")?;
-    if object.keys().any(|key|!["operation","root","path","text"].contains(&key.as_str())) || value["root"]!="workspace" {
+    if object.keys().any(|key|!["operation","root","path","text","offset","limit","bytes"].contains(&key.as_str())) || value["root"]!="workspace" {
         return Err("invalid file operation".into());
     }
     let path=value["path"].as_str().ok_or("invalid file path")?;
+    let allowed: &[&str] = match value["operation"].as_str() {
+        Some("readChunk") => &["operation","root","path","offset","limit"],
+        Some("writeChunk") => &["operation","root","path","offset","bytes"],
+        Some("write") => &["operation","root","path","text"],
+        _ => &["operation","root","path"],
+    };
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {return Err("invalid file fields".into());}
     let result=match value["operation"].as_str() {
+        Some("readChunk") => {
+            let offset=value["offset"].as_u64().ok_or("invalid chunk offset")?;
+            let limit=value["limit"].as_u64().filter(|value|*value>0 && *value<=256*1024).ok_or("invalid chunk size")?;
+            let (bytes,size)=policy.read_chunk("workspace",path,offset,limit as usize).map_err(|_|"file chunk read denied")?;
+            json!({"bytes":bytes,"size":size,"offset":offset})
+        },
+        Some("writeChunk") => {
+            let offset=value["offset"].as_u64().ok_or("invalid chunk offset")?;
+            let values=value["bytes"].as_array().filter(|values|values.len()<=256*1024).ok_or("invalid chunk bytes")?;
+            let bytes=values.iter().map(|value|value.as_u64().filter(|value|*value<=255).map(|value|value as u8).ok_or("invalid chunk byte")).collect::<Result<Vec<_>,_>>()?;
+            policy.write_chunk("workspace",path,offset,&bytes).map_err(|_|"file chunk write denied")?;
+            json!({"written":bytes.len(),"offset":offset})
+        },
+        Some("mkdirAll") => {policy.mkdir_all("workspace",path).map_err(|_|"directory creation denied")?;json!({"created":true})},
+        Some("remove") => {policy.unlink("workspace",path).map_err(|_|"file removal denied")?;json!({"removed":true})},
         Some("read") if !object.contains_key("text")=> {
             let bytes=policy.read("workspace",path,2*1024*1024).map_err(|_|"file read denied")?;
             json!({"text":String::from_utf8(bytes).map_err(|_|"file is not UTF-8")?})

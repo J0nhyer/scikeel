@@ -4,6 +4,36 @@ import { OpenCodeClient } from "@ai4s/sdk";
 
 const BASE = "http://127.0.0.1:9999";
 
+describe("OpenCodeClient.isSessionRunning", () => {
+  it.each([
+    [{}, false],
+    [{ ses_live: { type: "idle" } }, false],
+    [{ ses_live: { type: "busy" } }, true],
+    [{ ses_live: { type: "retry", attempt: 2 } }, true],
+  ])("reads live status independently of unfinished history", async (statuses, running) => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response(JSON.stringify(statuses)));
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl });
+    expect(await client.isSessionRunning("ses_live", "/research/project")).toBe(running);
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(
+      `${BASE}/session/status?directory=%2Fresearch%2Fproject`,
+    );
+  });
+
+  it.each([404, 501])("leaves unsupported runtimes unknown (%s)", async (status) => {
+    const client = new OpenCodeClient({
+      baseUrl: BASE, fetchImpl: async () => new Response("not supported", { status }),
+    });
+    expect(await client.isSessionRunning("ses_live")).toBeNull();
+  });
+
+  it.each([[], null, { ses_live: null }, { ses_live: { type: "unknown" } }])("rejects ambiguous responses", async (body) => {
+    const client = new OpenCodeClient({
+      baseUrl: BASE, fetchImpl: async () => new Response(JSON.stringify(body)),
+    });
+    await expect(client.isSessionRunning("ses_live")).rejects.toThrow(/session status/);
+  });
+});
+
 interface ServerSession {
   id: string;
   title: string;
@@ -287,5 +317,17 @@ describe("OpenCodeClient session edits", () => {
     const id = await client.createSession();
     expect(id).toBe("ses_new");
     expect(calls).toEqual(["/session"]);
+  });
+});
+describe("OpenCodeClient private environment transport",()=>{
+  it("uses owned session identifiers and sends explicit manual approval without filesystem paths",async()=>{
+    const fetchImpl=vi.fn(async(_input: RequestInfo | URL, _init?: RequestInit)=>new Response(JSON.stringify({id:"a".repeat(64)})));
+    const client=new OpenCodeClient({baseUrl:BASE,fetchImpl});
+    await client.describeProjectEnvironment("owned");
+    await client.requestProjectEnvironment("owned");
+    await client.approveProjectEnvironment("owned","a".repeat(64));
+    expect(fetchImpl.mock.calls.map(call=>String(call[0]))).toEqual([
+      BASE+"/api/environments/owned",BASE+"/api/environments/owned/request",BASE+"/api/environments/owned/install"]);
+    expect(JSON.parse(String(fetchImpl.mock.calls[2][1]?.body))).toEqual({id:"a".repeat(64),manual:true});
   });
 });

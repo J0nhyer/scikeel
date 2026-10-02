@@ -167,6 +167,28 @@ mod linux {
             }
             Ok(file)
         }
+        pub fn read_chunk(&self, root: &str, name: &str, offset: u64, limit: usize) -> io::Result<(Vec<u8>, u64)> {
+            use std::io::{Seek, SeekFrom};
+            if limit == 0 || limit > 256 * 1024 || offset > 25 * 1024 * 1024 { return Err(denied()); }
+            let mut file = self.open_regular(root, name, 25 * 1024 * 1024)?;
+            let size = file.metadata()?.len();
+            if offset > size { return Err(denied()); }
+            file.seek(SeekFrom::Start(offset))?;
+            let mut bytes = Vec::new(); file.take(limit as u64).read_to_end(&mut bytes)?;
+            Ok((bytes, size))
+        }
+        pub fn write_chunk(&self, root: &str, name: &str, offset: u64, bytes: &[u8]) -> io::Result<()> {
+            use std::io::{Seek, SeekFrom};
+            use std::os::unix::fs::MetadataExt;
+            if bytes.len() > 256 * 1024 || offset > 25 * 1024 * 1024 || offset + bytes.len() as u64 > 25 * 1024 * 1024 { return Err(denied()); }
+            let (parent, leaf) = self.parent(root, name)?;
+            let flags = libc::O_WRONLY | if offset == 0 {libc::O_CREAT | libc::O_EXCL} else {0};
+            let mut file = self.open(&parent, &leaf, flags, if offset == 0 {0o600} else {0}, true)?;
+            if unsafe {libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)} != 0 { return Err(denied()); }
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() != offset { return Err(denied()); }
+            file.seek(SeekFrom::Start(offset))?; file.write_all(bytes)?; file.sync_all()?; parent.sync_all()
+        }
         pub fn read(&self, root: &str, name: &str, maximum: u64) -> io::Result<Vec<u8>> {
             if maximum > 25 * 1024 * 1024 {
                 return Err(denied());

@@ -57,3 +57,8 @@ test("failed installation releases maintenance and revokes only its own package 
   assert.deepEqual(f.events,["locked","released"]);
   assert.equal(f.grants.authorize(f.account,{kind:"index",package:"other"},other),true);
 });
+test("a project without a lock cannot obtain dependency installation authority",async()=>{
+  const f=fixture();f.environments.files.environment=async()=>({owned:true,inputHash:null,packages:[],venvState:"absent"});
+  assert.equal((await f.environments.describe(f.account,"session-a")).inputHash,null);
+  await assert.rejects(f.environments.request(f.account,"session-a"),/approval/);assert.deepEqual(f.events,[]);
+});

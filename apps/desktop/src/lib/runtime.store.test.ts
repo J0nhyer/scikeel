@@ -62,6 +62,9 @@ const mocks = vi.hoisted(() => ({
    *  "aborted" error and one or more session.idle events. Empty by default. */
   abortTrailing: [] as unknown[],
   getMessages: vi.fn(),
+  sessionRunning: null as boolean | null,
+  failSessionStatus: false,
+  failSkills: false,
   /** Records setDefaultModel calls; `currentModel` is what getDefaultModel returns. */
   setDefaultModelSpy: vi.fn(),
   currentModel: null as string | null,
@@ -199,6 +202,7 @@ vi.mock("@ai4s/sdk", () => {
       mocks.moveSessionSpy(id, directory);
     }
     async listSkills() {
+      if (mocks.failSkills) throw new Error("skill discovery failed");
       return [{ name: "stub" }];
     }
     async listAgents() {
@@ -293,6 +297,10 @@ vi.mock("@ai4s/sdk", () => {
       if (mocks.messagesGate) await mocks.messagesGate;
       return mocks.messages;
     }
+    async isSessionRunning() {
+      if (mocks.failSessionStatus) throw new Error("status unavailable");
+      return mocks.sessionRunning;
+    }
     async revert(sid: string, messageID: string, partID?: string) {
       mocks.revertSpy(sid, messageID, partID);
       if (mocks.failReverts > 0) {
@@ -344,6 +352,9 @@ beforeEach(async () => {
   mocks.messages = [];
   mocks.messagesGate = null;
   mocks.failMessages = false;
+  mocks.sessionRunning = null;
+  mocks.failSessionStatus = false;
+  mocks.failSkills = false;
   mocks.failReverts = 0;
   mocks.approvalMode = "approve";
   mocks.currentModel = null;
@@ -395,6 +406,57 @@ afterEach(() => {
 });
 
 describe("gateway runtime selection", () => {
+  it("binds a Web draft to its created session even when its first prompt fails", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    const source = makeLeaf(null);
+    useLayoutStore.setState({ groups: [{ id: "retry-group", name: "", tree: source, focusedLeafId: source.id, zoomedLeafId: null }], activeGroupId: "retry-group", tree: source, focusedLeafId: source.id, zoomedLeafId: null });
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready" });
+    mocks.sessionList = [{ id: "ses_new", title: "New session" }];
+    const brief = { objective: "Rejected", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-first-retry" };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "reject fixture" }), { status: 400 })));
+    expect(await useRuntimeStore.getState().sendPrompt("Keep my text", undefined, `draft:${source.id}`, undefined, brief)).toBeNull();
+    expect(leaves(useLayoutStore.getState().tree!)[0].sessionId).toBe("ses_new");
+    expect(useRuntimeStore.getState().sessions.some((session) => session.id === "ses_new")).toBe(true);
+    expect(useRuntimeStore.getState().sendingSessions).toEqual({});
+  });
+  it("returns no acceptance when a Web prompt is rejected so the composer retains its draft", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready" });
+    const brief = { objective: "Invalid fixture", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-rejected" };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "reject fixture" }), { status: 400 })));
+    expect(await useRuntimeStore.getState().sendPrompt("Keep my text", "ses_rejected", undefined, undefined, brief)).toBeNull();
+    expect(useRuntimeStore.getState().error).toMatch(/reject fixture/);
+  });
+
+  it("creates a confirmed research record before posting its first prompt and refuses a failed record", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready" });
+    const brief = { objective: "Traceable baseline", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-test" };
+    const fetchMock = vi.fn(async () => {
+      expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+      return new Response(JSON.stringify({ task: { ...brief, sessionId: "ses_a" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().sendPrompt("Start research", "ses_a", undefined, undefined, brief);
+    expect(fetchMock).toHaveBeenCalledWith("http://gateway.test/api/research/ses_a", expect.objectContaining({ method: "POST", body: expect.stringContaining('"action":"create"') }));
+    expect(mocks.sendPromptSpy).toHaveBeenCalledWith("ses_a", "Start research", undefined);
+    mocks.sendPromptSpy.mockClear();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "invalid scope" }), { status: 400 })));
+    await useRuntimeStore.getState().sendPrompt("Start again", "ses_b", undefined, undefined, brief);
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().error).toContain("invalid scope");
+  });
+  it("reports failed skill discovery independently and recovers on retry", async () => {
+    mocks.failSkills = true;
+    await useRuntimeStore.getState().loadCatalog();
+    expect(useRuntimeStore.getState().skillsStatus).toBe("error");
+    expect(useRuntimeStore.getState().agents.some((agent) => agent.name === "build")).toBe(true);
+    mocks.failSkills = false;
+    await useRuntimeStore.getState().loadCatalog();
+    expect(useRuntimeStore.getState().skillsStatus).toBe("ready");
+    expect(useRuntimeStore.getState().skills).toEqual([{ name: "stub" }]);
+  });
   const codexCatalog = (models: string[], selectedModel: string) => ({ runtime: "codex" as const,
     kind: "server" as const, managed: true, label: "Codex", enabled: true, models,
     defaultModel: models[0] ?? null, selectedModel, status: "ready" as const });
@@ -1815,6 +1877,81 @@ describe("stale running locks and interrupt", () => {
     expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBe(true);
   });
 
+  const unfinishedHistory = [
+    { role: "user", parts: [{ type: "text", text: "analyze data" }] },
+    { role: "assistant", parts: [
+      { type: "text", text: "Checking fonts" },
+      { type: "tool", callID: "stale-tool", tool: "bash", state: {
+        status: "running", input: { command: "python analysis.py" }, time: { start: 1 },
+      } },
+    ] },
+  ];
+
+  it("reopening an unfinished history does not lock an idle server session", async () => {
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState().openSession("ses_stale");
+    const state = useRuntimeStore.getState();
+    expect(state.runningSessions["ses_stale"]).toBeUndefined();
+    expect(state.threads["ses_stale"].blocks.find((b) => b.kind === "tool-call"))
+      .toMatchObject({ status: "failed" });
+    expect(state.threads["ses_stale"].blocks.some((b) =>
+      b.kind === "status-line" && b.text.includes("did not finish"))).toBe(true);
+    expect(mocks.abortSession).not.toHaveBeenCalled();
+  });
+
+  it("a background pane does not restore an idle session as running", async () => {
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState().loadHistory("ses_stale");
+    expect(useRuntimeStore.getState().runningSessions["ses_stale"]).toBeUndefined();
+    expect(useRuntimeStore.getState().threads["ses_stale"].blocks.find((b) => b.kind === "tool-call"))
+      .toMatchObject({ status: "failed" });
+  });
+
+  it("reconciliation releases an unfinished history when the runtime is idle", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBeUndefined();
+    expect(useRuntimeStore.getState().threads["ses_new"].blocks.find((b) => b.kind === "tool-call"))
+      .toMatchObject({ status: "failed" });
+  });
+
+  it("keeps a genuinely busy session locked with unfinished history", async () => {
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = true;
+    await useRuntimeStore.getState().openSession("ses_busy");
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().runningSessions["ses_busy"]).toBe(true);
+    expect(useRuntimeStore.getState().threads["ses_busy"].blocks.find((b) => b.kind === "tool-call"))
+      .toMatchObject({ status: "pending" });
+  });
+
+  it("does not unlock an unfinished turn when the status request fails", async () => {
+    mocks.messages = unfinishedHistory;
+    mocks.failSessionStatus = true;
+    await useRuntimeStore.getState().openSession("ses_unknown");
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().runningSessions["ses_unknown"]).toBe(true);
+  });
+
+  it("does not clear a new live event while reconciling an older history", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = false;
+    let release!: () => void;
+    mocks.messagesGate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = useRuntimeStore.getState().reconcileRunning();
+    mocks.fireEvent({ type: "text.updated", sessionId: "ses_new", text: "New live answer", partId: "live" });
+    release();
+    await pending;
+    expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBe(true);
+    expect(useRuntimeStore.getState().threads["ses_new"].blocks.some((b) =>
+      b.kind === "agent" && b.markdown === "New live answer")).toBe(true);
+  });
+
   it("connect() reconciles running locks left over from before the reconnect", async () => {
     await useRuntimeStore.getState().sendPrompt("hi");
     mocks.messages = doneHistory;
@@ -2601,6 +2738,26 @@ describe("plan agent mode", () => {
 // skills dir. Writing it into the session's own .opencode/skills/ loses it with
 // that dated folder (#61).
 describe("skill install", () => {
+  it.each([
+    ["opencode", ".opencode/skills"],
+    ["claude", ".claude/skills"],
+    ["codex", ".agents/skills"],
+  ] as const)("installs Web skills inside the current %s workspace", async (runtime, directory) => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: runtime });
+    const result = await useRuntimeStore.getState().installSkill("Install a statistical review skill");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(result?.kind).toBe("session");
+    expect(mocks.newDatedWorkspace).not.toHaveBeenCalled();
+    expect(mocks.installSkillMarkdown).not.toHaveBeenCalled();
+    const calls = mocks.sendPromptSpy.mock.calls;
+    const prompt = calls[calls.length - 1]?.[1] as string;
+    expect(prompt).toContain(`${directory}/<name>/SKILL.md`);
+    expect(prompt).toContain("available only in the current workspace");
+    expect(prompt).not.toContain("available in every workspace");
+  });
+
   it("installs a pasted SKILL.md itself — no session, no model turn", async () => {
     const skill = "---\nname: pasted-skill\ndescription: Say hi.\n---\n\nhi\n";
     const result = await useRuntimeStore.getState().installSkill(skill);

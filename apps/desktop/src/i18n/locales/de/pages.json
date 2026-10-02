@@ -77,7 +77,9 @@
       "installed": "„{{name}}“ installiert — in jedem Arbeitsbereich verfügbar.",
       "agentPrompt": "Der Nutzer hat dies in das Feld zum Installieren von Skills eingegeben:\n\n---\n{{input}}\n---\n\nBitte hilf geduldig bei der Installation: Finde heraus, welcher Skill gemeint ist (URL abrufen, suchen oder bei Unklarheit nachfragen), und speichere ihn dann als Skill-Datei unter .opencode/skills/<name>/SKILL.md innerhalb dieses Arbeitsbereichs — niemals außerhalb; die App stellt ihn danach in jedem Arbeitsbereich bereit. Das Format ist im Skill customize-opencode beschrieben. Antworte am Ende mit dem Namen des installierten Skills.",
       "echo": "Bitte hilf mir, diesen Skill zu installieren:\n\n{{input}}",
-      "adoptFailed": "Der Skill wurde geschrieben, ließ sich aber nicht in dein Profil verschieben — er verschwindet, sobald der Ordner dieser Sitzung ersetzt wird: {{detail}}"
+      "adoptFailed": "Der Skill wurde geschrieben, ließ sich aber nicht in dein Profil verschieben — er verschwindet, sobald der Ordner dieser Sitzung ersetzt wird: {{detail}}",
+      "hintWorkspace": "Im aktuellen Arbeitsbereich installiert; nur dort verfügbar.",
+      "agentPromptWorkspace": "The user wants to install this skill:\n\n---\n{{input}}\n---\n\nConfirm its content and source, then save the skill and any required helper files at {{skillsDirectory}}/<name>/SKILL.md inside the current workspace. SKILL.md must have YAML frontmatter with name and description. Keep every file within this workspace; do not write to the user home or another workspace. This installation is available only in the current workspace. Reply with the installed name when complete; report failures accurately without claiming success."
     },
     "environment": {
       "sectionTitle": "Wissenschaftliche Umgebung",
@@ -109,7 +111,11 @@
     "search": "Skills und Agents durchsuchen",
     "filter": "Art",
     "all": "Alle ({{count}})",
-    "noMatch": "Nichts passt zu „{{query}}“."
+    "noMatch": "Nichts passt zu „{{query}}“.",
+    "refresh": "Skills aktualisieren",
+    "loading": "Skills werden geladen…",
+    "loadFailed": "Skills konnten nicht geladen werden. Bitte erneut versuchen.",
+    "retry": "Erneut versuchen"
   },
   "notFound": {
     "title": "404 — Nicht gefunden",

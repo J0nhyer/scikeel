@@ -77,7 +77,9 @@
       "installed": "「{{name}}」をインストールしました — すべてのワークスペースで使えます。",
       "agentPrompt": "ユーザーがスキルのインストール欄に次の内容を入力しました：\n\n---\n{{input}}\n---\n\n根気よくインストールを手伝ってください：まずどのスキルを指しているかを特定し（URL の取得、検索、曖昧な場合はユーザーへの確認）、次にスキルファイルとして .opencode/skills/<name>/SKILL.md に保存します。必ずこのワークスペース内に保存し、外には書き込まないでください（その後アプリがすべてのワークスペースで使えるようにします）。形式は customize-opencode スキルに説明があります。最後にインストールしたスキル名を返答してください。",
       "echo": "このスキルのインストールを手伝ってください：\n\n{{input}}",
-      "adoptFailed": "スキルは書き込まれましたが、プロファイルへ移動できませんでした。このセッションのフォルダーが置き換わると消えます: {{detail}}"
+      "adoptFailed": "スキルは書き込まれましたが、プロファイルへ移動できませんでした。このセッションのフォルダーが置き換わると消えます: {{detail}}",
+      "hintWorkspace": "現在のワークスペースにインストールされ、このワークスペース内でのみ利用できます。",
+      "agentPromptWorkspace": "The user wants to install this skill:\n\n---\n{{input}}\n---\n\nConfirm its content and source, then save the skill and any required helper files at {{skillsDirectory}}/<name>/SKILL.md inside the current workspace. SKILL.md must have YAML frontmatter with name and description. Keep every file within this workspace; do not write to the user home or another workspace. This installation is available only in the current workspace. Reply with the installed name when complete; report failures accurately without claiming success."
     },
     "environment": {
       "sectionTitle": "科学計算環境",
@@ -109,7 +111,11 @@
     "search": "スキルとエージェントを検索",
     "filter": "種類",
     "all": "すべて（{{count}}）",
-    "noMatch": "「{{query}}」に一致するものはありません。"
+    "noMatch": "「{{query}}」に一致するものはありません。",
+    "refresh": "スキルを更新",
+    "loading": "スキルを読み込み中…",
+    "loadFailed": "スキルを読み込めませんでした。再試行してください。",
+    "retry": "再試行"
   },
   "notFound": {
     "title": "404 — 見つかりません",

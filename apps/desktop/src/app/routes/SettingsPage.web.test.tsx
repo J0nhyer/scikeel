@@ -115,6 +115,23 @@ describe("Providers in the gateway web client", () => {
     useRuntimeStore.setState(initialRuntime, true);
   });
 
+  it("keeps useful Web general settings and hides local workspace and release updates", async () => {
+    view?.unmount();
+    await renderAt("/settings/general");
+    expect(screen.getByText("Review", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Workspace", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("App updates", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText(/GitHub/)).not.toBeInTheDocument();
+  });
+
+  it("keeps stall monitoring available when the Web assistant is managed", async () => {
+    view?.unmount();
+    useRuntimeStore.setState({ runtimeKind: "server", gatewayRuntime: "codex" });
+    await renderAt("/settings/general");
+    expect(screen.getByText("Stall guard", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Review", { exact: true })).not.toBeInTheDocument();
+  });
+
   it("shows only an AI assistant and a default model, with no provider connection details", () => {
     expect(screen.getByRole("button", { name: /AI assistant: OpenCode/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Model: GPT-5.2/ })).toBeInTheDocument();
@@ -147,12 +164,19 @@ describe("Providers in the gateway web client", () => {
     expect(screen.queryByRole("heading", { level: 2, name: "Providers" })).not.toBeInTheDocument();
   });
 
-  it("does not show managed catalog configuration to an ordinary user", () => {
+  it("does not show managed catalog or Agent administration to an ordinary user", () => {
     expect(screen.queryByRole("heading", { name: "Managed CLI models" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Agent access management" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Allow Codex" })).not.toBeInTheDocument();
   });
 
-  it("hides the obsolete managed catalog editor for administrators too", () => {
+  it("shows Agent switches to administrators while hiding the obsolete catalog editor", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ assistantEnabled: { claude: true, codex: true } })));
+    vi.stubGlobal("fetch", fetchMock);
     act(() => useRuntimeStore.setState({ gatewayUserRole: "admin" }));
+    expect(await screen.findByRole("heading", { name: "Agent access management" })).toBeInTheDocument();
+    expect(await screen.findByRole("switch", { name: "Allow Codex" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/admin/runtime"), expect.objectContaining({ credentials: "same-origin" }));
     expect(screen.queryByLabelText("Codex enabled models")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Managed CLI models" })).not.toBeInTheDocument();
   });

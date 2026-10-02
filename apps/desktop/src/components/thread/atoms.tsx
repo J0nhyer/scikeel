@@ -1,3 +1,4 @@
+import { ConversationAttachmentCard } from "./ConversationAttachmentCard";
 import { memo, useEffect, useRef, useState } from "react";
 import { Check, Copy, Loader2, Paperclip, Pencil, RotateCcw, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -142,6 +143,7 @@ export const UserMessage = memo(function UserMessage({
 
   return (
     <div {...{ [HOVER_HOST]: "" }} className="relative flex flex-col items-end">
+      {block.attachments?.length ? <div className="mb-2 grid w-full max-w-[85%] grid-cols-1 gap-2 sm:grid-cols-2">{block.attachments.map((file) => <ConversationAttachmentCard key={file.id} attachment={file} owner={{ sessionId: file.sessionId }} />)}</div> : null}
       <div className="w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-card bg-surface-2 px-4 py-2.5 text-[15px] leading-relaxed text-text">
         {block.text}
       </div>
@@ -190,6 +192,7 @@ export const AgentMessage = memo(function AgentMessage({
   usage,
   contextLimit,
   onOpenArtifact,
+  workspaceDirectory,
 }: {
   markdown: string;
   /** Turn timings and token accounting, when the runtime reported them —
@@ -199,6 +202,7 @@ export const AgentMessage = memo(function AgentMessage({
   usage?: MessageUsage;
   contextLimit?: number;
   onOpenArtifact?: (a: ArtifactBlock) => void;
+  workspaceDirectory?: string;
 }) {
   const { t } = useTranslation(["session", "common"]);
   const [copied, setCopied] = useState(false);
@@ -216,11 +220,11 @@ export const AgentMessage = memo(function AgentMessage({
   const mentionedKey = mentioned.join("\n");
   useEffect(() => {
     let cancelled = false;
+    setRefs([]);
     if (!mentionedKey) {
-      setRefs([]);
       return;
     }
-    void Promise.all(mentionedKey.split("\n").map((p) => resolveArtifactPath(p).catch(() => null))).then(
+    void Promise.all(mentionedKey.split("\n").map((p) => resolveArtifactPath(p, workspaceDirectory).catch(() => null))).then(
       (resolved) => {
         if (cancelled) return;
         setRefs([...new Set(resolved.filter((p): p is string => p !== null))]);
@@ -229,7 +233,7 @@ export const AgentMessage = memo(function AgentMessage({
     return () => {
       cancelled = true;
     };
-  }, [mentionedKey]);
+  }, [mentionedKey, workspaceDirectory]);
 
   const copy = async () => {
     try {

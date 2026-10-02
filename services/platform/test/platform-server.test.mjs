@@ -63,7 +63,7 @@ function makeClient(base) {
   };
 }
 
-async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null } = {}) {
+async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null } = {}) {
   const root = providedRoot ?? (await mkdtemp(join(tmpdir(), "osd-platform-server-")));
   const authStore = new AuthStore({
     filePath: join(root, "platform", "auth.json"),
@@ -76,7 +76,7 @@ async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRo
     startupTimeoutMs: 5_000,
     stopTimeoutMs: 1_000,
   });
-  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments });
+  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles });
   const address = await server.listen();
   const fixture = { root, authStore, manager, server, cliRuntime, base: `http://${address.host}:${address.port}` };
   fixtures.push(fixture);
@@ -96,6 +96,80 @@ async function login(client, username, password) {
   assert.equal(response.status, 200);
   return json(response);
 }
+
+test("localized login keeps credentials private and preserves the destination on retries", async () => {
+  const f = await makeFixture();
+  const page = await fetch(`${f.base}/login?next=${encodeURIComponent('/files?view="recent"')}`);
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get("cache-control"), "no-store");
+  const html = await page.text();
+  assert.match(html, /<html lang="zh-Hans">/);
+  assert.match(html, /name="next" value="\/files\?view=&quot;recent&quot;"/);
+  const english = await fetch(`${f.base}/login?lang=en`);
+  assert.match(await english.text(), /<html lang="en">/);
+  const username = '<img src=x onerror="alert(1)">';
+  const invalid = await fetch(`${f.base}/auth/login`, {
+    method: "POST",
+    body: new URLSearchParams({ username, password: "never-render-this-password", lang: "en", next: "/files" }),
+  });
+  assert.equal(invalid.status, 401);
+  const retry = await invalid.text();
+  assert.match(retry, /role="alert"/);
+  assert.match(retry, /value="&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;"/);
+  assert.doesNotMatch(retry, /never-render-this-password/);
+  assert.match(retry, /name="next" value="\/files"/);
+  const success = await fetch(`${f.base}/auth/login`, {
+    method: "POST", redirect: "manual",
+    body: new URLSearchParams({ username: "admin", password: "admin-password", lang: "zh-Hans", next: "/files" }),
+  });
+  assert.equal(success.status, 303);
+  assert.equal(success.headers.get("location"), "/files");
+  assert.match(success.headers.get("set-cookie"), /osd_session=/);
+});
+
+test("research tasks validate ownership, bind context to a confirmed brief, and stop on page release", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-research-platform-"));
+  const home = join(root, "admin-codex");
+  await mkdir(home, { recursive: true });
+  await writeFile(join(home, "auth.json"), '{"auth":true}');
+  await writeFile(join(home, "config.toml"), 'model = "gpt-fast"\nmodel_catalog_json = "models.json"\n');
+  await writeFile(join(home, "models.json"), JSON.stringify({ models: ["gpt-fast"] }));
+  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: home, codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
+  const f = await makeFixture({ root, cliRuntime });
+  const admin = makeClient(f.base);
+  const account = await login(admin, "admin", "admin-password");
+  await cliRuntime.setUserRuntime(account.user.id, "codex", "gpt-fast");
+  const post = (path, body) => admin.request(path, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(body) });
+  const session = await json(await post("/session", { title: "Research task" }));
+  const path = `/api/research/${session.id}`;
+  assert.equal((await fetch(`${f.base}${path}`, { headers: { accept: "application/json" } })).status, 401);
+  assert.equal((await admin.request(path)).status, 200);
+  assert.equal((await post("/api/research/ses_cli_foreign_session_fixture_1234", { action: "create" })).status, 404);
+  const created = await post(path, { action: "create", objective: "Make a traceable baseline report", mode: "guided", goal: "thesis", inputs: [], deliverables: ["report.md"], pageId: "page-test", directory: "/another/account" });
+  assert.equal(created.status, 201);
+  const task = (await json(created)).task;
+  assert.notEqual(task.directory, "/another/account");
+  assert.equal(task.authorization, "existing-runtime-workspace-policy");
+  assert.equal((await post(`/session/${session.id}/prompt_async`, { parts: [{ type: "text", text: "Begin" }] })).status, 202);
+  await admin.request("/");
+  const answer = await waitForAssistant(admin, session.id);
+  assert.match(answer.parts.find((part) => part.type === "text").text, /research-workflow/);
+  assert.match(answer.parts.find((part) => part.type === "text").text, /guided/);
+  assert.match(answer.parts.find((part) => part.type === "text").text, /Make a traceable baseline report/);
+  const history = await json(await admin.request(`/session/${session.id}/message`));
+  assert.equal(history[0].parts[0].text, "Begin");
+  assert.equal((await post(path, { action: "release", pageId: "page-test" })).status, 200);
+  assert.equal((await post(`/session/${session.id}/prompt_async`, { parts: [{ type: "text", text: "Continue" }] })).status, 409);
+  const reopened = await post(path, { action: "heartbeat", pageId: "page-new" });
+  assert.equal(reopened.status, 200);
+  const stopped = (await json(await admin.request(path))).task;
+  assert.notEqual(stopped.status, "running");
+  assert.equal(stopped.execution, 1);
+  const fork = await json(await post(`/session/${session.id}/fork`, {}));
+  await post(path, { action: "release", pageId: "page-new" });
+  f.server.researchTasks.records.clear();
+  assert.equal((await post(`/session/${fork.id}/prompt_async`, { parts: [{ type: "text", text: "Detached research review" }] })).status, 409);
+});
 
 async function waitForAssistant(client, sessionId) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -337,6 +411,16 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     }),
   });
   assert.equal(studentAdminAttempt.status, 403);
+
+  const studentSwitchAttempt = await student.request("/api/admin/runtime", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ runtime: "codex", enabled: false }),
+  });
+  assert.equal(studentSwitchAttempt.status, 403);
+  assert.equal((await json(await admin.request("/api/admin/runtime", {
+    headers: { accept: "application/json" },
+  }))).assistantEnabled.codex, true);
 
   const selectClaude = await admin.request("/api/runtime", {
     method: "POST",
@@ -629,4 +713,59 @@ test("private environment endpoints require an owned session and explicit manual
   assert.equal((await post("/api/environments/owned/install",{id:"a".repeat(64),manual:true})).status,200);
   assert.deepEqual(calls.map(value=>value[0]),["describe","request","install"]);
   assert.ok(calls.every(([,owner])=>owner.userId===user.id && owner.instanceId===instanceId && owner.generation===1));
+});
+test("conversation attachments persist on real managed messages and reject another user", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-attachment-platform-"));
+  const home = join(root, "codex-home"); await mkdir(home);
+  await writeFile(join(home, "auth.json"), '{"auth":true}');
+  await writeFile(join(home, "config.toml"), 'model = "fixture-model"\n');
+  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: home,
+    codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
+  const f = await makeFixture({ root, cliRuntime }); const client = makeClient(f.base);
+  const account = await login(client, "admin", "admin-password"); await client.request("/"); await cliRuntime.setUserRuntime(account.user.id, "codex");
+  const post = (path, value) => client.request(path, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(value) });
+  const draft = await json(await post("/api/attachments/drafts", {}));
+  const upload = await client.request(`/api/attachments/upload?draftId=${draft.id}&name=data.csv`, { method: "POST", body: "value\n2\n4\n" });
+  assert.equal(upload.status, 201); const file = await upload.json();
+  const session = await json(await post("/session", { title: "Attachment fixture" }));
+  const prompt = { parts: [{ type: "text", text: "Read data.csv" }], attachmentTurn: { draftId: draft.id, turnId: "turn_fixture", attachmentIds: [file.id] } };
+  assert.equal((await post(`/session/${session.id}/prompt_async`, prompt)).status, 202);
+  let history;
+  for (let n = 0; n < 100; n++) {
+    history = await json(await client.request(`/session/${session.id}/message`));
+    if (history.length > 1) break; await new Promise((done) => setTimeout(done, 20));
+  }
+  assert.equal(history[0].attachments[0].id, file.id); assert.equal(history[0].parts[0].text, "Read data.csv");
+  assert.equal((await post(`/session/${session.id}/prompt_async`, prompt)).status, 202);
+  assert.equal((await cliRuntime.getOwnedSession(account.user.id, session.id)).session.history.filter((m) => m.info.role === "user").length, 1);
+  const follow = await post(`/session/${session.id}/prompt_async`, { parts: [{ type: "text", text: "Read it again" }], attachmentTurn: { turnId: "turn_follow", attachmentIds: [] } });
+  assert.equal(follow.status, 202);
+  await f.authStore.createUser({ username: "other", password: "other-password" }); const other = makeClient(f.base); await login(other, "other", "other-password");
+  assert.equal((await other.request(`/api/attachments?sessionId=${session.id}`)).status, 404);
+  const copy = await json(await post(`/session/${session.id}/fork`, {}));
+  const removed = await client.request(`/session/${session.id}`, { method: "DELETE" }); assert.equal(removed.status, 200);
+  assert.equal((await client.request(`/api/attachments?sessionId=${session.id}`)).status, 404);
+  const forked = await json(await client.request(`/api/attachments?sessionId=${copy.id}`)); assert.equal(forked.attachments[0].sha256, file.sha256);
+});
+test("sandbox conversations send owned attachment copies and retain decorated history through the managed runtime proxy",async()=>{
+  const policy=new TenantPolicy();const writes=[];
+  const workspaceFiles={call:async(context,value)=>{assert.ok(policy.account(context));writes.push(value);return {};}};
+  const f=await makeFixture({tenantPolicy:policy,workspaceFiles});const client=makeClient(f.base);
+  const {user}=await login(client,"admin","admin-password");const instanceId=`user-${user.id}`;
+  const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+  f.manager.getWorker=((original)=>(id)=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+  const account={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir};policy.registerAccount(account);
+  policy.registerSession(account,{id:"owned",directory:worker.workspaceDir+"/project"});
+  const post=(path,value)=>client.request(path,{method:"POST",headers:{"content-type":"application/json",origin:f.base},body:JSON.stringify(value)});
+  const draft=await json(await post("/api/attachments/drafts",{}));
+  const file=await json(await client.request(`/api/attachments/upload?draftId=${draft.id}&name=data.csv`,{method:"POST",body:"x,y\n1,2\n"}));
+  const prompt={parts:[{type:"text",text:"Read the actual data"}],attachmentTurn:{draftId:draft.id,turnId:"turn-a",attachmentIds:[file.id]}};
+  const response=await post("/session/owned/prompt_async",prompt);assert.equal(response.status,202,await response.text());
+  const history=await json(await client.request("/session/owned/message"));
+  assert.equal(history[0].attachments[0].id,file.id);
+  assert.ok(history[0].fixtureSystem.includes(`${worker.workspaceDir}/.scikeel/attachments/owned/`));
+  assert.ok(!history[0].fixtureSystem.includes("/attachments/users/"));
+  const chunks=writes.filter(value=>value.operation==="writeChunk");assert.equal(Buffer.from(chunks[0].bytes).toString(),"x,y\n1,2\n");
+  assert.equal((await post("/session/owned/prompt_async",prompt)).status,202);
+  assert.equal((await json(await client.request("/session/owned/message"))).length,1);
 });
