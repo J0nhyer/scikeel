@@ -3,6 +3,14 @@ name: sandbox-image
 # Explicit CI-only baseline selection. Outputs must be reviewed and the exact
 # generated locks committed before the launcher can accept a production image.
 on:
+  push:
+    branches: [feat/tenant-science-isolation]
+    paths:
+      - runtime/sandbox/image/**
+      - runtime/sandbox/probe-entry.mjs
+      - scripts/dev/prepare-science-image.mjs
+      - scripts/dev/stage-sandbox-image.mjs
+      - .github/workflows/sandbox-image.yml
   workflow_dispatch:
     inputs:
       python_image:
@@ -45,8 +53,8 @@ jobs:
             node scripts/dev/safe-desktop-task.mjs core-build --guarded --package osd-cli
       - name: Resolve exact source image digests
         env:
-          PYTHON_SOURCE: ${{ inputs.python_image }}
-          UV_SOURCE: ${{ inputs.uv_image }}
+          PYTHON_SOURCE: ${{ inputs.python_image || 'python:3.12.12-slim-bookworm' }}
+          UV_SOURCE: ${{ inputs.uv_image || 'ghcr.io/astral-sh/uv:0.11.26' }}
         shell: bash
         run: |
           node --input-type=module -e 'for (const key of ["PYTHON_SOURCE","UV_SOURCE"]) { const value=process.env[key]; if (!/^[a-zA-Z0-9._/:@-]+$/.test(value) || value.endsWith(":latest")) process.exit(1); }'
