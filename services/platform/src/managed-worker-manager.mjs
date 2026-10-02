@@ -4,11 +4,12 @@ const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0
 const unavailable = (message) => Object.assign(new Error(message), { statusCode: 503, retryable: true });
 export class ManagedWorkerManager {
   #workers = new Map(); #starting = new Map(); #queue = Promise.resolve(); #closed = false; #admissions = new Map();
-  constructor({ rootDir, imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker, admitWorker, refreshWorker } = {}) {
+  constructor({ rootDir, instancesDir = posix.join(rootDir ?? "", "instances"), imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker, admitWorker, refreshWorker } = {}) {
     if (typeof rootDir !== "string" || !rootDir.startsWith("/") || rootDir === "/" || posix.normalize(rootDir) !== rootDir ||
+        !instancesDir.startsWith("/") || instancesDir === "/" || posix.normalize(instancesDir) !== instancesDir ||
         !/^sha256:[a-f0-9]{64}$/.test(imageDigest ?? "") || !client || !tenantPolicy || typeof fetchImpl !== "function")
       throw new Error("invalid managed worker configuration");
-    Object.assign(this, { rootDir, imageDigest, client, tenantPolicy, fetchImpl, configureWorker, revokeWorker, admitWorker, refreshWorker });
+    Object.assign(this, { rootDir, instancesDir, imageDigest, client, tenantPolicy, fetchImpl, configureWorker, revokeWorker, admitWorker, refreshWorker });
   }
   async init() { if (this.#closed) throw unavailable("worker manager closed"); }
   #serialized(operation) {
@@ -16,7 +17,7 @@ export class ManagedWorkerManager {
   }
   instancePaths(instanceId) {
     if (!identifier(instanceId)) throw new Error("invalid instanceId");
-    const instanceRoot = posix.join(this.rootDir, "instances", instanceId);
+    const instanceRoot = posix.join(this.instancesDir, instanceId);
     return { instanceRoot, workspaceDir: posix.join(instanceRoot, "workspace"), stateDir: posix.join(instanceRoot, "state") };
   }
   ensureWorker({ instanceId, userId }) {

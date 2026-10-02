@@ -44,4 +44,10 @@ test("launcher activation requires an explicit flag and complete fixed configura
   assert.equal(sandboxConfiguration({ ...values, PLATFORM_MANAGED_SANDBOX: "1" }, "/srv/platform").enabled, true);
   for (const value of ["true", "yes", "unexpected"]) assert.throws(() => sandboxConfiguration({ ...values, PLATFORM_MANAGED_SANDBOX: value }, "/srv/platform"));
   assert.throws(() => sandboxConfiguration({ PLATFORM_MANAGED_SANDBOX: "1" }, "/srv/platform"));
+  const separated = sandboxConfiguration({ ...values, PLATFORM_MANAGED_SANDBOX: "1",
+    PLATFORM_SANDBOX_INSTANCES_DIR: "/var/lib/scikeel/tenant-data/instances",
+    PLATFORM_SANDBOX_NATIVE_DIR: "/var/lib/scikeel/tenant-data/native" }, "/srv/platform");
+  assert.equal(separated.roots.instances, "/var/lib/scikeel/tenant-data/instances");
+  assert.equal(separated.layout.workspaceDir, "/var/lib/scikeel/tenant-data/instances/config-validation/workspace");
+  assert.throws(() => sandboxConfiguration({ ...values, PLATFORM_SANDBOX_INSTANCES_DIR: "/other/instances" }, "/srv/platform"));
 });

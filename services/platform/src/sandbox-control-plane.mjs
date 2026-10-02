@@ -68,6 +68,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   const admission = new HostAdmission();
   const scheduler = new SandboxScheduler({ pressure: hostPressure, admission: (input) => admission.acquire(input) });
   const manager = new ManagedWorkerManager({ rootDir: `${dataDir}/workers`, imageDigest: configuration.imageDigest, client, tenantPolicy,
+    instancesDir: configuration.roots?.instances,
     admitWorker: (context) => scheduler.acquire({ context, kind: "job" }),
     configureWorker: async ({ context, access }) => {
       const address = new URL(access.url).hostname;

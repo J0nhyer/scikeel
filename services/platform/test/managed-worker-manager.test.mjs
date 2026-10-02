@@ -15,6 +15,13 @@ function fixture(options = {}) {
     fetchImpl: async () => ({ ok: true, json: async () => ({}) }), ...options });
   return { manager, calls, policy };
 }
+test("quota tenant directories remain separate from writable platform metadata", async (t) => {
+  const { manager } = fixture({ instancesDir: "/var/lib/scikeel/tenant-data/instances" });
+  t.after(() => manager.close());
+  const worker = await manager.ensureWorker({ instanceId: "user-a", userId: "a" });
+  assert.equal(worker.workspaceDir, "/var/lib/scikeel/tenant-data/instances/user-a/workspace");
+  assert.equal(manager.rootDir, "/private/workers");
+});
 test("managed workers use launcher endpoints, generations and private internal credentials", async (t) => {
   const { manager, calls, policy } = fixture(); t.after(() => manager.close());
   const worker = await manager.ensureWorker({ instanceId: "user-a", userId: "a" });

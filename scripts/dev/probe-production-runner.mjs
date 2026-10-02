@@ -7,8 +7,8 @@ const token = "a".repeat(64);
 const address = "127.0.0.2";
 const identity = { instanceId: "sandbox-test-ci", generation: 1 };
 const child = spawn("/opt/scikeel/tools/bin/node", ["/opt/scikeel/tools/runner.mjs"], {
-  env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", SCIKEEL_BIND_ADDRESS: address },
-  detached: true, stdio: ["ignore", "ignore", "ignore"],
+  env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", SCIKEEL_BIND_ADDRESS: address, SCIKEEL_CI_DIAGNOSTICS: "1" },
+  detached: true, stdio: ["ignore", "ignore", "inherit"],
 });
 let spawnFailed = false; child.once("error", () => spawnFailed = true);
 async function request(path, body, grant = token) {

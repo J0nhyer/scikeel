@@ -41,10 +41,13 @@ export function sandboxConfiguration(environment, dataDir) {
   if (!["0", "1"].includes(flag)) throw new Error("managed sandbox flag must be 0 or 1");
   const enabled = flag === "1";
   const names = ["PLATFORM_SANDBOX_SOCKET", "PLATFORM_SANDBOX_IMAGE_DIGEST", "PLATFORM_SANDBOX_IMAGES_DIR"];
+  const separated = [environment.PLATFORM_SANDBOX_INSTANCES_DIR, environment.PLATFORM_SANDBOX_NATIVE_DIR];
+  if (separated.some(Boolean) && !separated.every(Boolean)) throw new Error("incomplete sandbox tenant roots");
   if (!enabled && !names.some((name) => environment[name])) return null;
   if (names.some((name) => !environment[name])) throw new Error("incomplete sandbox configuration");
-  const layout = deriveTenantLayout({ roots: { instances: posix.join(root(dataDir), "workers/instances"),
-    native: posix.join(dataDir, "cli-runtime/users"), images: environment.PLATFORM_SANDBOX_IMAGES_DIR },
+  const roots = { instances: environment.PLATFORM_SANDBOX_INSTANCES_DIR ?? posix.join(root(dataDir), "workers/instances"),
+    native: environment.PLATFORM_SANDBOX_NATIVE_DIR ?? posix.join(dataDir, "cli-runtime/users"), images: environment.PLATFORM_SANDBOX_IMAGES_DIR };
+  const layout = deriveTenantLayout({ roots,
     record: { id: "config-validation", userId: "config-validation" }, image: { digest: environment.PLATFORM_SANDBOX_IMAGE_DIGEST } });
-  return Object.freeze({ enabled, socketPath: root(environment.PLATFORM_SANDBOX_SOCKET), imageDigest: layout.imageDigest, layout });
+  return Object.freeze({ enabled, socketPath: root(environment.PLATFORM_SANDBOX_SOCKET), imageDigest: layout.imageDigest, roots: Object.freeze(roots), layout });
 }

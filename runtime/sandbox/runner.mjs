@@ -145,7 +145,8 @@ export class TenantGateway {
     const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", this.address,
       "--port", String(this.port), "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,
       "--resources", "/opt/scikeel/tools/resources", "--token", this.token], {
-      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir }, detached: true, stdio: ["ignore", "ignore", "ignore"],
+      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir }, detached: true,
+      stdio: ["ignore", "ignore", process.env.SCIKEEL_CI_DIAGNOSTICS === "1" ? "inherit" : "ignore"],
     });
     this.#child = child; let failed = false; child.once("error", () => failed = true);
     const deadline = Date.now() + 20000;
@@ -178,5 +179,9 @@ async function startTenant() {
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { await startTenant(); }
-  catch { console.error("Managed tenant runner unavailable"); process.exitCode = 1; }
+  catch (error) {
+    console.error("Managed tenant runner unavailable");
+    if (process.env.SCIKEEL_CI_DIAGNOSTICS === "1") console.error(error.message);
+    process.exitCode = 1;
+  }
 }
