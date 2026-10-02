@@ -2,7 +2,7 @@
   "name": "ai4s-workbench",
   "version": "0.5.2",
   "private": true,
-  "description": "Open Science Desktop — local-first, model-agnostic AI research workbench for macOS, Windows and Linux.",
+  "description": "Open Science Desktop \u2014 local-first, model-agnostic AI research workbench for macOS, Windows and Linux.",
   "license": "MIT",
   "scripts": {
     "dev": "pnpm --filter @ai4s/desktop dev",
@@ -11,7 +11,11 @@
     "platform:test": "pnpm --filter @ai4s/platform test",
     "platform:start": "pnpm --filter @ai4s/platform start",
     "typecheck": "pnpm --filter @ai4s/desktop typecheck",
-    "lint": "pnpm --filter @ai4s/desktop lint"
+    "lint": "pnpm --filter @ai4s/desktop lint",
+    "sandbox:core:test": "node scripts/dev/safe-desktop-task.mjs core-test",
+    "sandbox:core:check": "node scripts/dev/safe-desktop-task.mjs core-check",
+    "sandbox:probe": "node scripts/dev/safe-desktop-task.mjs sandbox-probe",
+    "sandbox:image:stage": "node scripts/dev/safe-desktop-task.mjs sandbox-image-stage"
   },
   "engines": {
     "node": ">=20"

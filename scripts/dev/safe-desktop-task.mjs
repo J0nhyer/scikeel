@@ -12,6 +12,11 @@ const script = fileURLToPath(import.meta.url);
 const root = resolve(dirname(script), "../..");
 const desktop = join(root, "apps/desktop");
 const stagingRoot = join(root, ".deploy");
+// Linked worktrees must serialize with the main checkout, not just themselves.
+const gitCommon = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+  { cwd: root, encoding: "utf8" });
+const sharedTaskRoot = gitCommon.status === 0
+  ? join(dirname(gitCommon.stdout.trim()), ".deploy") : stagingRoot;
 const mode = process.argv[2];
 const guarded = process.argv[3] === "--guarded";
 const args = process.argv.slice(guarded ? 4 : 3);
@@ -21,13 +26,14 @@ const memoryHigh = 1850 * mib;
 const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
-if (!["build", "test", "typecheck", "lint", "probe"].includes(mode)) {
-  console.error("Usage: safe-desktop-task.mjs build|test|typecheck|lint|probe [args]");
+if (!["build", "test", "typecheck", "lint", "probe", "platform-test",
+  "core-test", "core-check", "sandbox-probe", "sandbox-image-stage"].includes(mode)) {
+  console.error("Unknown guarded task mode");
   process.exit(2);
 }
 
-function run(command, commandArgs) {
-  const result = spawnSync(command, commandArgs, { cwd: desktop, stdio: "inherit" });
+function run(command, commandArgs, cwd = desktop) {
+  const result = spawnSync(command, commandArgs, { cwd, stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.signal) throw new Error(`${command} terminated by ${result.signal}`);
   if (result.status !== 0) throw new Error(`${command} exited with status ${result.status}`);
@@ -48,11 +54,11 @@ function verifyLimits() {
 if (smallLinuxHost && !guarded) {
   // This lock includes tests and builds, so they cannot compete for the host.
   // Fail closed if either flock or the user systemd manager is unavailable.
-  await mkdir(stagingRoot, { recursive: true });
+  await mkdir(sharedTaskRoot, { recursive: true });
   const unit = `osd-task-${process.pid}-${Date.now()}.scope`;
   await new Promise((done, fail) => {
     const child = spawn("flock", [
-      "-n", join(stagingRoot, "desktop-task.lock"),
+      "-n", join(sharedTaskRoot, "desktop-task.lock"),
       "systemd-run", "--user", "--scope", `--unit=${unit}`,
       "-p", "MemoryHigh=1850M", "-p", "MemoryMax=2200M", "-p", "MemorySwapMax=256M",
       "nice", "-n", "10", process.execPath, script, mode, "--guarded", ...args,
@@ -96,9 +102,28 @@ if (smallLinuxHost && !guarded) {
   process.exit(0);
 }
 
+function coreArgs() {
+  // Never permit the desktop package, arbitrary Cargo flags or manifest paths.
+  const [flag, name, filter, ...extra] = args;
+  if (flag !== "--package" || !["osd-core", "osd-cli", "osd-sandbox-host"].includes(name) ||
+      extra.length || (filter !== undefined &&
+        (mode !== "core-test" || !/^[A-Za-z0-9_:]+$/.test(filter)))) {
+    throw new Error("Core tasks require --package osd-core|osd-cli|osd-sandbox-host and an optional test filter");
+  }
+  return [mode === "core-test" ? "test" : "check", "--locked", "--jobs", "1", "--package", name,
+    ...(filter ? [filter] : []), ...(mode === "core-test" ? ["--", "--test-threads=1"] : [])];
+}
+
 if (smallLinuxHost) verifyLimits();
 if (mode === "probe") {
   console.log(smallLinuxHost ? "Resource limits active" : "Host does not need cloud resource limits");
+} else if (mode === "platform-test") {
+  run(process.execPath, ["--test", "--test-concurrency=1", ...args], join(root, "services/platform"));
+} else if (mode === "core-test" || mode === "core-check") {
+  run("cargo", coreArgs(), root);
+} else if (mode === "sandbox-probe" || mode === "sandbox-image-stage") {
+  const entry = mode === "sandbox-probe" ? "sandbox-probe.mjs" : "stage-sandbox-image.mjs";
+  run(process.execPath, [join(root, "scripts/dev", entry), ...args], root);
 } else if (mode === "typecheck") {
   run(process.execPath, [join(desktop, "node_modules/typescript/bin/tsc"), "--noEmit", ...args]);
 } else if (mode === "lint") {

@@ -18,7 +18,7 @@ Work sequentially in an isolated worktree established with `superpowers:using-gi
 
 All new files are English. The deliverable is the gateway Web client at desktop and phone widths; preserve shared desktop compilation and existing desktop filesystem behavior. Do not introduce a Web Jupyter kernel or broad desktop redesign. Do not create another planning document. Record actual milestones in `PROGRESS.md`, newest first, and commit only this task's lines when that file has independent edits.
 
-Every heavy command below goes through a package script and the existing bounded guard. Task 1 adds the missing bounded Rust and sandbox-probe entrypoints; do not run raw Cargo, Vite, Vitest, parallel heavyweight tasks or an unconstrained local Docker build. Image construction runs on an isolated CI builder. Production deployment is a final separately authorized action after the reviewable implementation and all release gates exist.
+Every heavy command below goes through a package script and the existing bounded guard. Task 1 adds the missing bounded Rust and sandbox-probe entrypoints; do not run raw Cargo, Vite, Vitest, parallel heavyweight tasks or an unconstrained local Docker build. Image construction runs on an isolated CI builder. Claude is unavailable per the October 2 user-confirmed runtime rule: preserve deterministic adapter tests, exclude Claude from live cases and release gates, and do not probe alternate Claude models/endpoints. Production deployment is a final separately authorized action after the reviewable implementation and all release gates exist.
 
 The tasks form one dependency chain, not independent feature launches. Keep `managedSandbox` disabled for production until Tasks 1–18 pass. Intermediate commits are testable without making claims about production isolation.
 
@@ -89,7 +89,7 @@ New paths in this table are planned files, not current capabilities. Add each to
 
 **Files:** Modify `package.json`, `scripts/dev/safe-desktop-task.mjs`. Create `scripts/dev/sandbox-probe.mjs`, `services/platform/fixtures/sandbox-rig.mjs`, `services/platform/test/sandbox-harness.test.mjs`.
 
-- [ ] Write the first harness test. Export `assertScopeLimits(actual)` from the probe: accept numeric parsed cgroup values, not systemd command success. Reject `max`, missing controllers and a child outside the owned cgroup.
+- [x] Write the first harness test. Export `assertScopeLimits(actual)` from the probe: accept numeric parsed cgroup values, not systemd command success. Reject `max`, missing controllers and a child outside the owned cgroup.
 
 ```js
 import test from 'node:test';
@@ -104,8 +104,8 @@ test('a successful command is insufficient without enforced limits', () => {
 });
 ```
 
-- [ ] Run `pnpm platform:test test/sandbox-harness.test.mjs`. Expect FAIL because the exported validator does not exist; this is a cheap guarded test, not a launch.
-- [ ] Add root scripts `sandbox:core:test`, `sandbox:core:check`, `sandbox:probe`, `sandbox:image:stage`. Extend the guard with fixed `core-test`, `core-check`, `sandbox-probe`, `sandbox-image-stage` branches. Rust test/check allow only `osd-core`, `osd-cli`, `osd-sandbox-host`; no desktop Cargo build. Preserve the lock, existing limits and host-pressure stop. Implement validator:
+- [x] Run `pnpm platform:test test/sandbox-harness.test.mjs`. Expect FAIL because the exported validator does not exist; this is a cheap guarded test, not a launch.
+- [x] Add root scripts `sandbox:core:test`, `sandbox:core:check`, `sandbox:probe`, `sandbox:image:stage`. Extend the guard with fixed `core-test`, `core-check`, `sandbox-probe`, `sandbox-image-stage` branches. Rust test/check allow only `osd-core`, `osd-cli`, `osd-sandbox-host`; no desktop Cargo build. Preserve the lock, existing limits and host-pressure stop. Implement validator:
 
 ```js
 export function assertScopeLimits(v) {
@@ -118,8 +118,8 @@ export function assertScopeLimits(v) {
 }
 ```
 
-- [ ] Implement the rig using temporary synthetic account roots under `.deploy/tenant-sandbox-acceptance`, with A/B canary files, image configuration from a root-owned test config and generation-checked cleanup in `finally`. Its exported `createSandboxRig({caseName})` returns `{a,b,client,files,brokers,close,evidence}` after verifying configured services. `a/b` contain platform-owned contexts; all launch/files/model calls use the real planned interfaces. Refuse production paths, missing config, missing quota/controller or real admin credentials. Never silently skip a requested integration case. The CLI case registry initially supports `preflight`; Tasks 4–18 add cases named in their commands. Keep imports free of CLI side effects by checking `import.meta.url` against argv.
-- [ ] Run the harness test again: PASS. Run `pnpm sandbox:probe --case preflight`: expect either verified controller/filesystem evidence or an explicit nonzero prerequisite failure, never fabricated PASS. Commit only these files with `test: add bounded tenant sandbox acceptance harness`.
+- [x] Implement the rig using temporary synthetic account roots under `.deploy/tenant-sandbox-acceptance`, with A/B canary files, image configuration from a root-owned test config and generation-checked cleanup in `finally`. Its exported `createSandboxRig({caseName})` returns `{a,b,client,files,brokers,close,evidence}` after verifying configured services. `a/b` contain platform-owned contexts; all launch/files/model calls use the real planned interfaces. Refuse production paths, missing config, missing quota/controller or real admin credentials. Never silently skip a requested integration case. The CLI case registry initially supports `preflight`; Tasks 4–18 add cases named in their commands. Keep imports free of CLI side effects by checking `import.meta.url` against argv.
+- [x] Run the harness test again: PASS. Run `pnpm sandbox:probe --case preflight`: expect either verified controller/filesystem evidence or an explicit nonzero prerequisite failure, never fabricated PASS. Commit only these files with `test: add bounded tenant sandbox acceptance harness`.
 
 ## Task 2: Make tenant, directory and runtime-route authority explicit
 

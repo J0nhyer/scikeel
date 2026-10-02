@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-02 17:35 · Added guarded Rust/sandbox entrypoints and a shared cross-worktree resource lock; eight harness/worker checks pass, while real preflight correctly fails on missing root-owned synthetic sandbox configuration.
+
 2026-10-01 17:11 · Published SciKeel to the public J0nhyer/scikeel GitHub repository with main as the default branch, preserved the complete upstream history and upstream remote, and verified the remote commit after a clean scan of 4750 historical file objects.
 
 2026-10-01 16:33 · Verified the public-source snapshot with 239 focused Web tests and all 38 platform tests under the small-host cgroup limits; local commits are ready for J0nhyer/scikeel and publication is waiting for GitHub device authorization.

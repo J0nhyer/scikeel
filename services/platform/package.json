@@ -6,7 +6,7 @@
   "description": "Internal multi-user control plane for Open Science workers.",
   "scripts": {
     "start": "node src/main.mjs",
-    "test": "node --test"
+    "test": "node ../../scripts/dev/safe-desktop-task.mjs platform-test"
   },
   "engines": {
     "node": ">=20"
