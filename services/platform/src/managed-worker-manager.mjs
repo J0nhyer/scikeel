@@ -3,12 +3,12 @@ import { posix } from "node:path";
 const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
 const unavailable = (message) => Object.assign(new Error(message), { statusCode: 503, retryable: true });
 export class ManagedWorkerManager {
-  #workers = new Map(); #starting = new Map(); #queue = Promise.resolve(); #closed = false;
-  constructor({ rootDir, imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker } = {}) {
+  #workers = new Map(); #starting = new Map(); #queue = Promise.resolve(); #closed = false; #admissions = new Map();
+  constructor({ rootDir, imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker, admitWorker, refreshWorker } = {}) {
     if (typeof rootDir !== "string" || !rootDir.startsWith("/") || rootDir === "/" || posix.normalize(rootDir) !== rootDir ||
         !/^sha256:[a-f0-9]{64}$/.test(imageDigest ?? "") || !client || !tenantPolicy || typeof fetchImpl !== "function")
       throw new Error("invalid managed worker configuration");
-    Object.assign(this, { rootDir, imageDigest, client, tenantPolicy, fetchImpl, configureWorker, revokeWorker });
+    Object.assign(this, { rootDir, imageDigest, client, tenantPolicy, fetchImpl, configureWorker, revokeWorker, admitWorker, refreshWorker });
   }
   async init() { if (this.#closed) throw unavailable("worker manager closed"); }
   #serialized(operation) {
@@ -28,7 +28,8 @@ export class ManagedWorkerManager {
       record = { id: instanceId, userId, ...this.instancePaths(instanceId), status: "stopped", generation: null, activeOperations: 0 };
       this.#workers.set(instanceId, record);
     }
-    if (record.status === "running") return Promise.resolve(this.getWorker(instanceId));
+    if (record.status === "running") return Promise.resolve(this.refreshWorker?.({ userId, instanceId, generation: record.generation }))
+      .then(() => this.getWorker(instanceId));
     if (this.#starting.has(instanceId)) return this.#starting.get(instanceId);
     const starting = this.#serialized(async () => {
       if (this.#closed) throw unavailable("worker manager closed");
@@ -39,10 +40,12 @@ export class ManagedWorkerManager {
       const registered = await this.client.register({ instanceId, userId });
       record.generation = registered.generation; record.status = "starting";
       try {
+        const context = { userId, instanceId, generation: record.generation, workspaceDir: record.workspaceDir };
+        const admission = await this.admitWorker?.(context);
+        if (admission) this.#admissions.set(instanceId, admission);
         const started = await this.client.start({ instanceId, generation: record.generation, imageDigest: this.imageDigest });
         if (!/^[a-f0-9]{64}$/.test(started.internalToken ?? "")) throw unavailable("managed worker authentication unavailable");
         record.url = started.endpoint; record.runnerUrl = started.runnerEndpoint; record.token = started.internalToken;
-        const context = { userId, instanceId, generation: record.generation, workspaceDir: record.workspaceDir };
         await this.configureWorker?.({ context, access: { url: record.url, runnerUrl: record.runnerUrl, token: record.token } });
         const response = await this.fetchImpl(`${record.url}/v1/health`, { headers: { authorization: `Bearer ${record.token}` }, signal: AbortSignal.timeout(5000) });
         if (!response.ok) throw unavailable("managed worker health unavailable");
@@ -52,6 +55,7 @@ export class ManagedWorkerManager {
         record.status = "unavailable";
         try { await this.client.stop({ instanceId, generation: record.generation, reason: "managed-start-failed" }); }
         catch { throw unavailable("managed worker cleanup unverified"); }
+        await this.#admissions.get(instanceId)?.release(); this.#admissions.delete(instanceId);
         await this.revokeWorker?.({ userId, instanceId, generation: record.generation }); delete record.token;
         throw error;
       }
@@ -78,6 +82,7 @@ export class ManagedWorkerManager {
     if (!["running", "starting"].includes(record.status)) return;
     const context = { userId: record.userId, instanceId: record.id, generation: record.generation };
     await this.client.stop({ instanceId: record.id, generation: record.generation, reason: "managed-stop" });
+    await this.#admissions.get(record.id)?.release(); this.#admissions.delete(record.id);
     this.tenantPolicy.registerAccount({ ...context, generation: record.generation + 1, workspaceDir: record.workspaceDir });
     await this.revokeWorker?.(context);
     record.status = "stopped"; delete record.token; delete record.url; delete record.runnerUrl;

@@ -36,15 +36,15 @@ export function deriveTenantLayout({ roots, record, image }) {
       options: Object.freeze(["bind", "rw", "nosuid", "nodev"]) })) });
 }
 
-// Validate rollout configuration now; Task 12 replaces the explicit activation block.
 export function sandboxConfiguration(environment, dataDir) {
-  if (environment.PLATFORM_MANAGED_SANDBOX && environment.PLATFORM_MANAGED_SANDBOX !== "0")
-    throw new Error("managed sandbox cutover is not installed");
+  const flag = environment.PLATFORM_MANAGED_SANDBOX ?? "0";
+  if (!["0", "1"].includes(flag)) throw new Error("managed sandbox flag must be 0 or 1");
+  const enabled = flag === "1";
   const names = ["PLATFORM_SANDBOX_SOCKET", "PLATFORM_SANDBOX_IMAGE_DIGEST", "PLATFORM_SANDBOX_IMAGES_DIR"];
-  if (!names.some((name) => environment[name])) return null;
+  if (!enabled && !names.some((name) => environment[name])) return null;
   if (names.some((name) => !environment[name])) throw new Error("incomplete sandbox configuration");
   const layout = deriveTenantLayout({ roots: { instances: posix.join(root(dataDir), "workers/instances"),
     native: posix.join(dataDir, "cli-runtime/users"), images: environment.PLATFORM_SANDBOX_IMAGES_DIR },
     record: { id: "config-validation", userId: "config-validation" }, image: { digest: environment.PLATFORM_SANDBOX_IMAGE_DIGEST } });
-  return Object.freeze({ socketPath: root(environment.PLATFORM_SANDBOX_SOCKET), imageDigest: layout.imageDigest, layout });
+  return Object.freeze({ enabled, socketPath: root(environment.PLATFORM_SANDBOX_SOCKET), imageDigest: layout.imageDigest, layout });
 }

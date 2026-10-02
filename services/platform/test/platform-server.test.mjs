@@ -594,3 +594,14 @@ test("worker operation leases cover proxy responses and release when they finish
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(retained, 1); assert.equal(released, 1);
 });
+test("managed users can load the Web client without admitting a sandbox or exposing its token", async () => {
+  const root = await mkdtemp(join(tmpdir(), "osd-static-managed-"));
+  const webRoot = join(root, "web"); await mkdir(webRoot);
+  await writeFile(join(webRoot, "index.html"), "<html><head></head><body>static client</body></html>");
+  const fixture = await makeFixture({ root, webRoot, tenantPolicy: new TenantPolicy() });
+  const client = makeClient(fixture.base); await login(client, "admin", "admin-password");
+  fixture.manager.ensureWorker = async () => { throw new Error("sandbox must not start for static assets"); };
+  const response = await client.request("/");
+  assert.equal(response.status, 200); assert.match(await response.text(), /static client/);
+  assert.equal(response.headers.get("location"), null);
+});

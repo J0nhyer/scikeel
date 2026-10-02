@@ -19,6 +19,7 @@
     "sandbox:core:build": "node scripts/dev/safe-desktop-task.mjs core-build",
     "sandbox:network:test": "node scripts/dev/safe-desktop-task.mjs sandbox-network-test",
     "sandbox:mirror:lock": "node scripts/dev/safe-desktop-task.mjs sandbox-mirror-lock",
+    "sandbox:mirror:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-mirror-prepare",
     "sandbox:storage:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-storage-prepare",
     "sandbox:host:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-host-prepare"
   },

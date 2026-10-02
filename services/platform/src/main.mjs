@@ -5,6 +5,7 @@ import { AuthStore } from "./auth-store.mjs";
 import { CliRuntimeManager } from "./cli-runtime.mjs";
 import { PlatformServer } from "./platform-server.mjs";
 import { sandboxConfiguration } from "./sandbox-manifest.mjs";
+import { createSandboxControlPlane } from "./sandbox-control-plane.mjs";
 import { WorkerManager } from "./worker-manager.mjs";
 
 function env(name, fallback = "") {
@@ -43,14 +44,15 @@ function optionalPath(name, fallback) {
 }
 
 const dataDir = resolve(env("PLATFORM_DATA_DIR", "/srv/osd/platform"));
-sandboxConfiguration(process.env, dataDir);
+const sandbox = sandboxConfiguration(process.env, dataDir);
 const adminUsername = env("PLATFORM_ADMIN_USERNAME", "admin");
 const adminPassword = env("PLATFORM_ADMIN_PASSWORD");
 const authStore = new AuthStore({
   filePath: join(dataDir, "auth.json"),
   bootstrapAdmin: adminPassword ? { username: adminUsername, password: adminPassword } : null,
 });
-const workerManager = new WorkerManager({
+const controlPlane = sandbox?.enabled ? await createSandboxControlPlane({ configuration: sandbox, dataDir }) : null;
+const workerManager = controlPlane?.manager ?? new WorkerManager({
   rootDir: join(dataDir, "workers"),
   osdCommand: env("OSD_BIN", "osd"),
   osdArgs: optionalJsonArray("OSD_ARGS_JSON"),
@@ -59,7 +61,7 @@ const workerManager = new WorkerManager({
   stopTimeoutMs: numberEnv("OSD_STOP_TIMEOUT_MS", 5_000),
   logger: (event) => console.log(JSON.stringify(event)),
 });
-const cliRuntime = new CliRuntimeManager({
+const cliRuntime = controlPlane ? null : new CliRuntimeManager({
   rootDir: join(dataDir, "cli-runtime"),
   // OpenCode remains every user's default. Claude Code and Codex are optional
   // per-user selections; no environment variable may flip the whole platform.
@@ -79,6 +81,8 @@ const platform = new PlatformServer({
   authStore,
   workerManager,
   cliRuntime,
+  tenantPolicy: controlPlane?.tenantPolicy,
+  runtimeCatalog: controlPlane?.runtimeCatalog,
   webRoot: optionalPath("PLATFORM_WEB_ROOT", join(process.cwd(), "apps/desktop/dist")),
   // The current internal deployment is still plain HTTP; set this to true
   // when the reverse proxy terminates HTTPS.
@@ -92,8 +96,9 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(JSON.stringify({ type: "platform.stopping", signal }));
   await platform.close().catch((error) => console.error(error));
-  await cliRuntime.close().catch((error) => console.error(error));
-  await workerManager.close().catch((error) => console.error(error));
+  await cliRuntime?.close().catch((error) => console.error(error));
+  if (controlPlane) await controlPlane.close().catch((error) => console.error(error));
+  else await workerManager.close().catch((error) => console.error(error));
   await authStore.close().catch((error) => console.error(error));
 }
 

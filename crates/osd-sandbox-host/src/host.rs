@@ -130,7 +130,8 @@ pub fn run()->Result<()> {
     let config=Config::load(Path::new(&args[1]))?;
     let mut host=Host::load(config)?;
     // Bind first to exclude a second launcher, then reconcile interrupted generations.
-    let listener=socket(&host.config)?;host.reconcile()?;notify_ready()?;
+    let listener=socket(&host.config)?;host.reconcile()?;
+    crate::network::ensure_broker_address()?;notify_ready()?;
     for connection in listener.incoming() {
         let mut stream=connection.map_err(|_|"socket_accept_failed")?;
         let uid=match peer_uid(&stream) {Ok(uid) if uid==host.config.platform_uid=>uid,_=>continue};

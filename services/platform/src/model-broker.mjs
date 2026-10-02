@@ -89,6 +89,17 @@ export class ModelBroker {
     const key = hash(token); this.#grants.delete(key);
     for (const operation of this.#operations) if (operation.grantKey === key) operation.controller.abort(failure("model_grant_revoked"));
   }
+  renew(token, context) {
+    identity(context);
+    if (typeof token !== "string") throw failure("model_grant_denied");
+    const key = hash(token); const grant = this.#grants.get(key);
+    const policy = grant && this.#providers.get(grant.provider);
+    if (!grant || identity(grant) !== identity(context) || grant.expiresAt <= this.now() || !policy || policy.revoked ||
+        grant.models.some((model) => !policy.enabledModels.includes(model))) throw failure("model_grant_denied");
+    const expiresAt = this.now() + 900000;
+    this.#grants.set(key, Object.freeze({ ...grant, expiresAt }));
+    return expiresAt;
+  }
   revokeContext(context) {
     const key = identity(context);
     for (const [grantKey, grant] of this.#grants) if (identity(grant) === key) {
@@ -135,7 +146,10 @@ export class ModelBroker {
       if (this.#operations.size > this.maxConnections) throw failure("model_capacity", 429);
       if (req.method !== "POST" || !ROUTES.has(req.url) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
           req.headers["content-encoding"] || req.headers.expect) throw failure("model_request_denied");
-      const token = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
+      const bearer = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
+      const apiKey = /^[a-f0-9]{64}$/.test(req.headers["x-api-key"] ?? "") ? req.headers["x-api-key"] : undefined;
+      if (bearer && apiKey && bearer !== apiKey) throw failure("model_grant_denied");
+      const token = bearer ?? apiKey;
       if (!token) throw failure("model_grant_denied");
       const grantKey = hash(token); const capability = this.#grants.get(grantKey);
       if (!capability) throw failure("model_grant_denied");
@@ -179,7 +193,8 @@ export class ModelBroker {
       budget.requests++; budget.tokens += reserved; budget.bytes += bytes; budget.active++; active = true;
       operation.provider = capability.provider; operation.model = body.model;
       if (controller.signal.aborted || !this.#grants.has(grantKey)) throw controller.signal.reason ?? failure("model_grant_revoked");
-      const url = new URL(provider.url); url.pathname = `${url.pathname.replace(/\/$/, "")}${req.url}`;
+      const url = new URL(provider.url); const prefix = url.pathname.replace(/\/$/, "");
+      url.pathname = `${prefix}${prefix.endsWith("/v1") ? req.url.slice(3) : req.url}`;
       const payload = JSON.stringify(body);
       const headers = { "content-type": "application/json", "content-length": Buffer.byteLength(payload), accept: body.stream ? "text/event-stream" : "application/json" };
       if (provider.authMode === "x-api-key") headers["x-api-key"] = provider.credential;

@@ -8,6 +8,18 @@ const IP: &str = "/usr/bin/ip";
 const NFT: &str = "/usr/sbin/nft";
 const BROKER_ADDRESS: &str = "172.31.240.1";
 
+pub fn ensure_broker_address()->Result<()> {
+    // Brokers must be able to bind before the first tenant veth exists.
+    let (ok,bytes)=run(IP,&["-j","-4","address","show","dev","lo"],None)?;
+    if !ok {return Err("broker_address_unavailable");}
+    let values:Value=serde_json::from_slice(&bytes).map_err(|_|"broker_address_unavailable")?;
+    if values.as_array().is_some_and(|interfaces|interfaces.iter().any(|interface|
+        interface["addr_info"].as_array().is_some_and(|addresses|addresses.iter().any(|address|
+            address["local"]==BROKER_ADDRESS && address["prefixlen"]==32)))) {return Ok(());}
+    if !run(IP,&["address","add","172.31.240.1/32","dev","lo"],None)?.0 {return Err("broker_address_unavailable");}
+    Ok(())
+}
+
 pub fn environment() -> Vec<String> {
     // Job-specific short-lived grants are added by the approved tool adapter.
     // A plain inherited proxy cannot turn networking on.
@@ -155,6 +167,7 @@ fn network_collision(policy: &Policy) -> Result<bool> {
         if u32::from(ip) & mask == base & mask && bits <= 24 { return Ok(true); }
         if u32::from(ip) & 0xffffff00 == base {
             let device = route["dev"].as_str().unwrap_or("");
+            if ip.to_string()==BROKER_ADDRESS && bits==32 && device=="lo" && route["type"]=="local" {continue;}
             if !device.starts_with("skh") || dst == policy.address || dst == format!("{}/32", policy.address) { return Ok(true); }
         }
     }
@@ -291,6 +304,7 @@ mod tests {
             assert_ne!(fs::metadata(format!("/proc/self/ns/{namespace}")).unwrap().ino(),
                 fs::metadata(format!("/proc/1/ns/{namespace}")).unwrap().ino(), "probe cannot change the host namespace");
         }
+        ensure_broker_address().unwrap(); ensure_broker_address().unwrap();
         use std::os::unix::fs::PermissionsExt;
         let directory = PathBuf::from(format!("/run/scikeel-network-probe-{}", std::process::id()));
         fs::create_dir(&directory).unwrap(); fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();

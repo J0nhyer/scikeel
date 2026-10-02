@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-02 23:01 · Managed platform wiring, authenticated profile restart, renewable scoped model capabilities and a kernel lock shared with heavy builds pass 144 platform tests and 21 launcher tests; production image acceptance, approved installs and account migration are still pending.
+
 2026-10-02 21:45 · Two synthetic tenants passed real gVisor offline scientific imports/plotting against one immutable image, with enforced resource/project quotas, working openat2 and hidden host controls; scoped model streams, single-use dependency approvals and bounded scheduler tests pass, while production runner integration remains pending.
 
 2026-10-02 20:50 · Reclaimed about 9 GiB of unused Docker build cache, excess journals, an inactive project's frontend build cache and verified download fragments; the platform remains active and the attested synthetic science image is now installed.

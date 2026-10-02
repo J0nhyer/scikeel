@@ -1,0 +1,21 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { validateBrokerConfiguration, brokerProfile } from "../src/sandbox-control-plane.mjs";
+
+const context = { userId: "a", instanceId: "user-a", generation: 1 };
+const config = { schema: 1, providers: { fixture: { baseUrl: "https://provider.example/v1", credential: "synthetic-upstream-secret", authMode: "bearer", enabledModels: ["approved"], routes: ["/v1/responses", "/v1/chat/completions"] } }, defaultProvider: "fixture", defaultModel: "approved", mirrorUrl: "http://127.0.0.1:3141" };
+test("only a fixed administrator configuration can create broker destinations", () => {
+  assert.equal(validateBrokerConfiguration(config), config);
+  for (const patch of [{ defaultModel: "other" }, { mirrorUrl: "http://peer:3141" }, { unknown: "secret" },
+    { providers: { fixture: { ...config.providers.fixture, baseUrl: "https://user:pass@provider.example/v1" } } }])
+    assert.throws(() => validateBrokerConfiguration({ ...config, ...patch }));
+});
+test("the sandbox profile contains only scoped broker credentials and manual tool permissions", () => {
+  const calls = [];
+  const broker = { issue: (grant) => { calls.push(grant); return "a".repeat(64); } };
+  const profile = brokerProfile({ config, broker, context, now: 1000 });
+  assert.ok(!JSON.stringify(profile).includes("upstream-secret"));
+  assert.equal(profile.permission.bash, "ask"); assert.equal(profile.permission.external_directory, "deny");
+  assert.equal(profile.provider.fixture.options.baseURL, "http://172.31.240.1:4792/v1");
+  assert.equal(calls[0].generation, 1); assert.ok(calls[0].expiresAt <= 901000);
+});

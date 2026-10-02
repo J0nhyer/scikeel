@@ -6,6 +6,19 @@ import { ModelBroker, authorizeModelRequest } from "../src/model-broker.mjs";
 const context = { userId: "a", instanceId: "user-a", generation: 1 };
 const capability = { ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"], expiresAt: 2000 };
 const policy = { enabledModels: ["approved"], revoked: false };
+test("only the trusted owner can renew a live model capability without changing its token", async (t) => {
+  let now = 1000;
+  const broker = new ModelBroker({ now: () => now, identify: () => context, providers: { fixture: {
+    baseUrl: "https://provider.example/v1", credential: "synthetic-secret", enabledModels: ["approved"], routes: ["/v1/responses"] } } });
+  t.after(() => broker.close());
+  const token = broker.issue(capability);
+  assert.throws(() => broker.renew(token, { ...context, userId: "b" }), /denied/);
+  assert.throws(() => broker.renew(token, { ...context, generation: 2 }), /denied/);
+  now = 1500; assert.equal(broker.renew(token, context), 901500);
+  now = 901500; assert.throws(() => broker.renew(token, context), /denied/);
+  const fresh = broker.issue({ ...capability, expiresAt: now + 1000 }); broker.revoke(fresh);
+  assert.throws(() => broker.renew(fresh, context), /denied/);
+});
 test("inference capabilities bind account, generation, provider, model, route and expiry", () => {
   const args = { capability, policy, now: 1000, request: { ...context, provider: "fixture", method: "POST", path: "/v1/responses", model: "approved" } };
   assert.equal(authorizeModelRequest(args), true);
@@ -18,19 +31,20 @@ test("inference capabilities bind account, generation, provider, model, route an
 });
 
 async function fixture(t, handler, options = {}) {
+  const { basePath = "", authMode = "bearer", ...limits } = options;
   const upstream = createServer(handler);
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   t.after(() => { upstream.closeAllConnections(); return new Promise((resolve) => upstream.close(resolve)); });
   const broker = new ModelBroker({ identify: () => context, providers: { fixture: {
-    baseUrl: `http://127.0.0.1:${upstream.address().port}`, credential: "administrator-secret-canary",
+    baseUrl: `http://127.0.0.1:${upstream.address().port}${basePath}`, credential: "administrator-secret-canary", authMode,
     enabledModels: ["approved"], routes: ["/v1/responses", "/v1/chat/completions", "/v1/messages"],
-  } }, ...options });
+  } }, ...limits });
   t.after(() => broker.close());
   await broker.listen({ host: "127.0.0.1", port: 0 });
   const token = broker.issue({ ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 });
-  const fetch = (body = { model: "approved", input: "synthetic", max_output_tokens: 16 }, { grant = token, path = "/v1/responses" } = {}) => new Promise((resolve, reject) => {
+  const fetch = (body = { model: "approved", input: "synthetic", max_output_tokens: 16 }, { grant = token, path = "/v1/responses", apiKeyHeader = false } = {}) => new Promise((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port: broker.server.address().port, method: "POST", path, agent: false,
-      headers: { authorization: `Bearer ${grant}`, "content-type": "application/json", cookie: "private", "x-forwarded-for": "peer" } }, (res) => {
+      headers: { ...(apiKeyHeader ? { "x-api-key": grant } : { authorization: `Bearer ${grant}` }), "content-type": "application/json", cookie: "private", "x-forwarded-for": "peer" } }, (res) => {
       let body = ""; res.setEncoding("utf8"); res.on("data", (chunk) => body += chunk);
       res.on("error", reject); res.on("end", () => resolve({ status: res.statusCode, body, headers: res.headers }));
     });
@@ -104,4 +118,11 @@ test("revoking an active capability cancels the fixed upstream stream", async (t
   }));
   client.end(JSON.stringify({ model: "approved", stream: true, max_output_tokens: 16 }));
   await received; await closed; client.destroy();
+});
+test("fixed provider API prefixes are joined once and Anthropic-style capabilities are authenticated", async (t) => {
+  const { fetch } = await fixture(t, (req, res) => {
+    assert.equal(req.url, "/v1/responses"); assert.equal(req.headers["x-api-key"], "administrator-secret-canary");
+    assert.equal(req.headers.authorization, undefined); res.setHeader("content-type", "application/json"); res.end("{}");
+  }, { basePath: "/v1", authMode: "x-api-key" });
+  assert.equal((await fetch(undefined, { apiKeyHeader: true })).status, 200);
 });

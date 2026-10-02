@@ -172,12 +172,16 @@ pub fn inspect(config:&Config,account:&Account)->Result<(Limits,QuotaEvidence)> 
     let quota=quota::verify(&config.quota_device,account.project_id,config.quota_bytes,config.quota_inodes,&config.source_descriptors(account)?)?;
     Ok((limits,quota))
 }
-fn health(address:u8,port:u16)->bool {
+fn health_request(port:u16,synthetic:bool,token:&str)->String {
+    let path=if port==4790 && !synthetic {"/v1/health"} else {"/health"};
+    format!("GET {path} HTTP/1.1\r\nHost: sandbox\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n")
+}
+fn health(address:u8,port:u16,synthetic:bool,token:&str)->bool {
     use std::net::{SocketAddr,TcpStream};
     let address:SocketAddr=match format!("172.31.240.{address}:{port}").parse() {Ok(a)=>a,Err(_)=>return false};
     let mut stream=match TcpStream::connect_timeout(&address,Duration::from_millis(250)) {Ok(s)=>s,Err(_)=>return false};
     let _=stream.set_read_timeout(Some(Duration::from_millis(250)));let _=stream.set_write_timeout(Some(Duration::from_millis(250)));
-    if stream.write_all(b"GET /health HTTP/1.1\r\nHost: sandbox\r\nConnection: close\r\n\r\n").is_err() {return false;}
+    if stream.write_all(health_request(port,synthetic,token).as_bytes()).is_err() {return false;}
     let mut bytes=[0;64];match stream.read(&mut bytes) {Ok(n)=>bytes[..n].starts_with(b"HTTP/1.1 200 "),Err(_)=>false}
 }
 pub fn start(config:&Config,account:&Account)->Result<()> {
@@ -191,9 +195,11 @@ pub fn start(config:&Config,account:&Account)->Result<()> {
         "--directfs=false".into(),"--ignore-cgroups".into(),"--file-access=exclusive".into(),"--file-access-mounts=exclusive".into(),
         "run".into(),"--bundle".into(),bundle.display().to_string(),container_id(account)]);
     command("/usr/bin/systemd-run",&args,5)?;
+    let credentials=endpoints(config,account)?;
+    let token=credentials["internalToken"].as_str().ok_or("invalid_runner_token")?;
     let deadline=Instant::now()+Duration::from_secs(20);
     while Instant::now()<deadline {
-        if health(account.address,4790) && health(account.address,4791) {inspect(config,account)?;return Ok(());}
+        if health(account.address,4790,config.synthetic,token) && health(account.address,4791,config.synthetic,token) {inspect(config,account)?;return Ok(());}
         std::thread::sleep(Duration::from_millis(100));
     }Err("sandbox_readiness_failed")
 }
@@ -248,5 +254,8 @@ mod tests {
         assert_eq!(super::entrypoint(false),vec!["/opt/scikeel/tools/bin/node","/opt/scikeel/tools/runner.mjs"]);
         assert_eq!(super::bind_environment(2).unwrap(),"SCIKEEL_BIND_ADDRESS=172.31.240.2");
         assert!(super::bind_environment(1).is_err());assert!(super::bind_environment(255).is_err());
+        assert!(super::health_request(4790,false,"token").starts_with("GET /v1/health "));
+        assert!(super::health_request(4790,true,"token").starts_with("GET /health "));
+        assert!(super::health_request(4791,false,"token").contains("Authorization: Bearer token\r\n"));
     }
 }

@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { readFile, lstat, mkdir, writeFile } from "node:fs/promises";
+import { readFile, lstat, mkdir, writeFile, rename } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { resolve, posix } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,10 +18,10 @@ function validateManifest(value) {
 }
 export class TenantRunner {
   #active = new Set();
-  constructor({ manifest, token, files = new FileRpc(), timeoutMs = 30000 } = {}) {
+  constructor({ manifest, token, files = new FileRpc(), configureProfile, timeoutMs = 30000 } = {}) {
     this.manifest = validateManifest(manifest);
     if (!/^[a-f0-9]{64}$/.test(token ?? "") || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new Error("invalid tenant runner configuration");
-    this.token = token; this.files = files; this.timeoutMs = timeoutMs;
+    this.token = token; this.files = files; this.configureProfile = configureProfile; this.timeoutMs = timeoutMs;
     this.server = createServer((req, res) => { void this.#handle(req, res); });
     this.server.maxHeadersCount = 24; this.server.headersTimeout = 5000; this.server.requestTimeout = 10000;
     this.server.on("clientError", (_error, socket) => socket.destroy());
@@ -47,7 +47,7 @@ export class TenantRunner {
     if (req.method === "GET" && req.url === "/health") { send(200, { ready: true }); return; }
     const credential = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
     if (!credential || !timingSafeEqual(Buffer.from(credential), Buffer.from(this.token))) { send(403, { error: "runner_denied" }); return; }
-    if (req.method !== "POST" || req.url !== "/files") { send(404, { error: "runner_route_unavailable" }); return; }
+    if (req.method !== "POST" || !["/files", "/profile"].includes(req.url)) { send(404, { error: "runner_route_unavailable" }); return; }
     if (this.#active.size) { send(429, { error: "runner_busy" }); return; }
     const controller = new AbortController(); this.#active.add(controller);
     const cancel = () => controller.abort();
@@ -62,51 +62,98 @@ export class TenantRunner {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if (body.instanceId !== this.manifest.instanceId || body.generation !== this.manifest.generation) throw new Error("foreign runner context");
       const { instanceId: _instanceId, generation: _generation, ...operation } = body;
-      const result = await this.files.call(fileRequest(operation), { signal: controller.signal });
+      let result;
+      if (req.url === "/profile") {
+        if (Object.keys(operation).join(",") !== "profile" || !this.configureProfile) throw new Error("profile unavailable");
+        await this.configureProfile(validateProfile(operation.profile), { signal: controller.signal }); result = { configured: true };
+      } else result = await this.files.call(fileRequest(operation), { signal: controller.signal });
       if (!controller.signal.aborted) send(200, result);
     } catch { if (!controller.signal.aborted) send(403, { error: "runner_operation_denied" }); }
     finally { clearTimeout(timeout); req.off("aborted", cancel); res.off("close", cancel); this.#active.delete(controller); }
   }
+}
+function validateProfile(value) {
+  if (!value || Object.keys(value).sort().join(",") !== ["model", "enabled_providers", "provider", "permission"].sort().join(",") ||
+      !Array.isArray(value.enabled_providers) || value.enabled_providers.length !== 1) throw new Error("invalid managed profile");
+  const name = value.enabled_providers[0]; const provider = value.provider?.[name];
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || Object.keys(value.provider).join(",") !== name || !provider ||
+      Object.keys(provider).sort().join(",") !== ["npm", "name", "options", "models"].sort().join(",") || provider.name !== name ||
+      !["@ai-sdk/openai-compatible", "@ai-sdk/anthropic"].includes(provider.npm) ||
+      Object.keys(provider.options ?? {}).sort().join(",") !== "apiKey,baseURL" || provider.options.baseURL !== "http://172.31.240.1:4792/v1" ||
+      !/^[a-f0-9]{64}$/.test(provider.options.apiKey ?? "") || !provider.models || Array.isArray(provider.models) ||
+      Object.entries(provider.models).some(([model, entry]) => !model || model.length > 160 || /[\0\r\n]/.test(model) || Object.keys(entry).join(",") !== "name" || entry.name !== model) ||
+      !Object.hasOwn(provider.models, String(value.model).slice(name.length + 1)) || !String(value.model).startsWith(`${name}/`)) throw new Error("invalid managed provider");
+  const permissions = { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" };
+  if (!value.permission || Object.keys(value.permission).length !== Object.keys(permissions).length ||
+      Object.entries(permissions).some(([key, mode]) => value.permission[key] !== mode)) throw new Error("invalid managed permission policy");
+  return value;
 }
 async function trustedJson(path) {
   const metadata = await lstat(path);
   if (!metadata.isFile() || metadata.uid !== 0 || (metadata.mode & 0o022) || metadata.size > 65536) throw new Error("untrusted runner configuration");
   return JSON.parse(await readFile(path, "utf8"));
 }
+export class TenantGateway {
+  #child;
+  constructor({ manifest, token, address, port = 4790, spawnImpl = spawn }) {
+    this.manifest = validateManifest(manifest);
+    if (!/^[a-f0-9]{64}$/.test(token ?? "") || !/^(?:127\.0\.0\.1|172\.31\.240\.\d{1,3})$/.test(address ?? "") ||
+        !Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("invalid gateway identity");
+    Object.assign(this, { token, address, port, spawnImpl });
+  }
+  async stop() {
+    const child = this.#child; if (!child) return; this.#child = undefined;
+    if (child.pid) { try { process.kill(-child.pid, "SIGTERM"); } catch {} }
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise((done) => {
+      const timer = setTimeout(() => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} } }, 3000);
+      child.once("close", () => { clearTimeout(timer); done(); });
+    });
+  }
+  async start(profile) {
+    await this.stop();
+    const manifest = this.manifest;
+    const env = buildJobEnvironment({ privateHome: manifest.home, projectDir: manifest.workspaceDir,
+      environment: { kind: "base", python: "/opt/scikeel/science/bin/python" } });
+    const config = `${manifest.stateDir}/runtime/xdg-config/opencode`;
+    await mkdir(config, { recursive: true, mode: 0o700 });
+    await writeFile(`${manifest.stateDir}/runtime/base-workspace.txt`, manifest.workspaceDir, { mode: 0o600 });
+    try { await lstat(`${config}/opencode.jsonc`); throw new Error("legacy managed profile requires migration"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    const temporary = `${config}/profile-${process.pid}-${Date.now()}.tmp`;
+    await writeFile(temporary, JSON.stringify(profile ?? { permission: { bash: "ask", edit: "ask", external_directory: "deny" } }), { flag: "wx", mode: 0o600 });
+    await rename(temporary, `${config}/opencode.json`);
+    const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", this.address,
+      "--port", String(this.port), "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,
+      "--resources", "/opt/scikeel/tools/resources", "--token", this.token], {
+      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir }, detached: true, stdio: ["ignore", "ignore", "ignore"],
+    });
+    this.#child = child; let failed = false; child.once("error", () => failed = true);
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline && !failed && child.exitCode === null && child.signalCode === null) {
+      try {
+        const response = await fetch(`http://${this.address}:${this.port}/v1/health`, { headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(500) });
+        if (response.ok) return;
+      } catch {}
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    await this.stop(); throw new Error("managed gateway unavailable");
+  }
+}
 async function startTenant() {
   const manifest = validateManifest(await trustedJson("/opt/scikeel/tenant.json"));
   const auth = await trustedJson("/opt/scikeel/runner-auth.json");
   if (auth.schema !== 1 || !/^[a-f0-9]{64}$/.test(auth.token ?? "")) throw new Error("invalid runner identity");
   const address = process.env.SCIKEEL_BIND_ADDRESS;
-  const env = buildJobEnvironment({ privateHome: manifest.home, projectDir: manifest.workspaceDir,
-    environment: { kind: "base", python: "/opt/scikeel/science/bin/python" } });
-  for (const path of [manifest.workspaceDir, manifest.stateDir, `${manifest.stateDir}/runtime`]) await mkdir(path, { recursive: true, mode: 0o700 });
-  await writeFile(`${manifest.stateDir}/runtime/base-workspace.txt`, manifest.workspaceDir, { mode: 0o600 });
-  const child = spawn("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", address,
-    "--port", "4790", "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,
-    "--resources", "/opt/scikeel/tools/resources", "--token", auth.token], {
-    cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir }, detached: true, stdio: ["ignore", "ignore", "ignore"],
-  });
-  const runner = new TenantRunner({ manifest, token: auth.token });
+  const gateway = new TenantGateway({ manifest, token: auth.token, address });
+  const runner = new TenantRunner({ manifest, token: auth.token, configureProfile: (profile) => gateway.start(profile) });
   let stopping;
   const stop = () => stopping ??= (async () => {
-    await runner.close(); if (child.pid) { try { process.kill(-child.pid, "SIGTERM"); } catch {} }
-    const deadline = setTimeout(() => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} } }, 3000);
-    deadline.unref();
+    await runner.close(); await gateway.stop();
   })();
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void stop(); });
-  child.once("error", () => { process.exitCode = 1; void stop(); });
-  child.once("exit", () => { if (!stopping) process.exitCode = 1; void stop(); });
   try {
-    const deadline = Date.now() + 20000; let ready = false;
-    while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
-      try {
-        const response = await fetch(`http://${address}:4790/v1/health`, { headers: { authorization: `Bearer ${auth.token}` }, signal: AbortSignal.timeout(500) });
-        if (response.ok) { ready = true; break; }
-      } catch {}
-      await new Promise((done) => setTimeout(done, 100));
-    }
-    if (!ready) throw new Error("managed gateway unavailable");
+    await gateway.start();
     await runner.listen({ host: address });
   } catch (error) { await stop(); throw error; }
 }

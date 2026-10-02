@@ -27,7 +27,7 @@ const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
 if (!["build", "test", "typecheck", "lint", "probe", "platform-test",
-  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock"].includes(mode)) {
+  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
 }
@@ -129,6 +129,13 @@ if (mode === "probe") {
   if (args.length) throw new Error("Mirror lock generation uses fixed inputs");
   run("/opt/open-science-desktop/.deploy/osd/releases/0.5.2/uv", ["pip", "compile", "--python", "/usr/bin/python3", "--generate-hashes",
     "--output-file", "runtime/sandbox/image/package-mirror.lock", "runtime/sandbox/image/package-mirror.in"], root);
+} else if (mode === "sandbox-mirror-prepare") {
+  if (args.length) throw new Error("Mirror fixture preparation uses fixed inputs");
+  const uv = "/opt/open-science-desktop/.deploy/osd/releases/0.5.2/uv";
+  const environment = join(stagingRoot, "package-mirror-fixture/venv");
+  if (!existsSync(join(environment, "bin/python"))) run(uv, ["venv", "--python", "/usr/bin/python3", environment], root);
+  run(uv, ["pip", "sync", "--require-hashes", "--only-binary", ":all:", "--python", join(environment, "bin/python"),
+    "runtime/sandbox/image/package-mirror.lock"], root);
 } else if (mode === "sandbox-host-prepare") {
   if (args.length) throw new Error("Host preparation has fixed synthetic arguments");
   run("sudo", ["-n", "/usr/bin/python3", "/usr/local/lib/scikeel/prepare-synthetic-host.py"], root);

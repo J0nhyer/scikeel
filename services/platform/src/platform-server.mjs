@@ -905,6 +905,7 @@ export class PlatformServer {
         this.#unauthorized(request, response);
         return;
       }
+      if (this.tenantPolicy && await this.#serveWeb(request, response)) return;
       const { access, worker } = await this.#ensureWorker(user);
       const lease = this.workerManager.retainWorker?.(worker.id);
       if (lease) {

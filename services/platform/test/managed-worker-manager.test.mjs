@@ -43,3 +43,22 @@ test("requests for the same user coalesce startup and active operations block ev
   lease.release();
   await manager.ensureWorker({ instanceId: "user-b", userId: "b" }); assert.equal(manager.getWorker("user-a").status, "stopped");
 });
+test("resource admission precedes sandbox start and remains held until verified cleanup", async (t) => {
+  const events = [];
+  const { manager } = fixture({ admitWorker: async () => {
+    events.push("acquired"); return { release: async () => events.push("released") };
+  } });
+  t.after(() => manager.close());
+  const start = manager.client.start; const stop = manager.client.stop;
+  manager.client.start = (input) => { events.push("start"); return start(input); };
+  manager.client.stop = (input) => { events.push("stop"); return stop(input); };
+  await manager.ensureWorker({ instanceId: "user-a", userId: "a" });
+  assert.deepEqual(events, ["acquired", "start"]);
+  await manager.stopWorker("user-a"); assert.deepEqual(events, ["acquired", "start", "stop", "released"]);
+});
+test("rejected resource admission cannot invoke the launcher start operation", async (t) => {
+  const { manager, calls } = fixture({ admitWorker: async () => { throw new Error("host capacity"); } });
+  t.after(() => manager.close());
+  await assert.rejects(manager.ensureWorker({ instanceId: "user-a", userId: "a" }), /capacity/);
+  assert.equal(calls.filter(([op]) => op === "start").length, 0);
+});

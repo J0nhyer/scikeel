@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TenantRunner } from "../../../runtime/sandbox/runner.mjs";
+import { TenantRunner, TenantGateway } from "../../../runtime/sandbox/runner.mjs";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
 
 const manifest = { schema: 1, instanceId: "user-a", generation: 1, workspaceDir: "/tenant/workspace", stateDir: "/tenant/state", home: "/tenant/home", scratchDir: "/tenant/scratch" };
 const token = "a".repeat(64);
@@ -28,4 +34,34 @@ test("runner enforces one operation and exposes no helper error contents", async
     body: JSON.stringify({ instanceId: "user-a", generation: 1, operation: "read", root: "workspace", path: "a" }) });
   const first = post(); await pending; assert.equal((await post()).status, 429);
   finish(); const result = await first; assert.equal(result.status, 403); assert.ok(!(await result.text()).includes("secret-canary"));
+});
+test("profile updates accept only platform broker credentials and manual permissions", async (t) => {
+  const profiles = [];
+  const runner = new TenantRunner({ manifest, token, configureProfile: async (profile) => profiles.push(profile) });
+  await runner.listen({ host: "127.0.0.1", port: 0 }); t.after(() => runner.close());
+  const profile = { model: "fixture/approved", enabled_providers: ["fixture"], provider: { fixture: {
+    npm: "@ai-sdk/openai-compatible", name: "fixture", models: { approved: { name: "approved" } },
+    options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: "b".repeat(64) } } },
+    permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
+  const post = (value) => fetch(`http://127.0.0.1:${runner.server.address().port}/profile`, { method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ instanceId: "user-a", generation: 1, profile: value }) });
+  assert.equal((await post({ ...profile, permission: { bash: "allow" } })).status, 403);
+  const foreign = structuredClone(profile); foreign.provider.fixture.options.baseURL = "http://peer/v1";
+  assert.equal((await post(foreign)).status, 403);
+  assert.equal((await post(profile)).status, 200); assert.deepEqual(profiles, [profile]);
+});
+test("gateway configuration is published before startup and restart preserves private state", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-gateway-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const config = { ...manifest, workspaceDir: `${root}/workspace`, stateDir: `${root}/state`, home: `${root}/home`, scratchDir: `${root}/scratch` };
+  for (const key of ["workspaceDir", "stateDir", "home", "scratchDir"]) await mkdir(config[key]);
+  const socket = createServer(); await new Promise((done) => socket.listen(0, "127.0.0.1", done)); const port = socket.address().port;
+  await new Promise((done) => socket.close(done));
+  const gateway = new TenantGateway({ manifest: config, token, address: "127.0.0.1", port, spawnImpl: (_command, _args, options) =>
+    spawn(process.execPath, [fileURLToPath(new URL("../fixtures/sandbox-gateway.mjs", import.meta.url))], { ...options, env: { ...options.env, FIXTURE_PORT: String(port) } }) });
+  t.after(() => gateway.stop());
+  await gateway.start({ model: "fixture/one" });
+  assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/one");
+  await gateway.start({ model: "fixture/two" });
+  assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/two");
+  await gateway.stop();
 });

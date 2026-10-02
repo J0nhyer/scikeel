@@ -7,6 +7,7 @@ on:
     branches: [feat/tenant-science-isolation]
     paths:
       - runtime/sandbox/**
+      - scripts/dev/probe-production-runner.mjs
       - crates/osd-cli/**
       - crates/osd-core/**
       - scripts/dev/prepare-science-image.mjs
@@ -108,6 +109,26 @@ jobs:
             -v "$PWD/.deploy/science-test:/opt/scikeel/test:ro" \
             --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
             /opt/scikeel/test/probe-entry.mjs /opt/scikeel/test/case.json
+      - name: Verify the real production runner, gateway and authenticated file helper
+        shell: bash
+        run: |
+          mkdir -p .deploy/runner-fixture/{workspace,state,home,scratch,config}
+          chmod 777 .deploy/runner-fixture/{workspace,state,home,scratch}
+          node --input-type=module -e 'import {writeFileSync} from "node:fs"; const dir=".deploy/runner-fixture/config/"; writeFileSync(dir+"tenant.json",JSON.stringify({schema:1,instanceId:"sandbox-test-ci",generation:1,workspaceDir:"/fixture/workspace",stateDir:"/fixture/state",home:"/fixture/home",scratchDir:"/fixture/scratch"})); writeFileSync(dir+"runner-auth.json",JSON.stringify({schema:1,token:"a".repeat(64)}));'
+          sudo chown root:root .deploy/runner-fixture/config/*.json
+          cp scripts/dev/probe-production-runner.mjs .deploy/science-test/
+          timeout --signal=TERM --kill-after=10s 70s docker run --rm --name scikeel-production-runner-test \
+            --network=none --read-only --memory=1024m --memory-swap=1152m --pids-limit=256 --cpus=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            -v "$PWD/.deploy/runner-fixture/workspace:/fixture/workspace" \
+            -v "$PWD/.deploy/runner-fixture/state:/fixture/state" \
+            -v "$PWD/.deploy/runner-fixture/home:/fixture/home" \
+            -v "$PWD/.deploy/runner-fixture/scratch:/fixture/scratch" \
+            -v "$PWD/.deploy/runner-fixture/config/tenant.json:/opt/scikeel/tenant.json:ro" \
+            -v "$PWD/.deploy/runner-fixture/config/runner-auth.json:/opt/scikeel/runner-auth.json:ro" \
+            -v "$PWD/.deploy/science-test:/opt/scikeel/test:ro" \
+            --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
+            /opt/scikeel/test/probe-production-runner.mjs
       - name: Export immutable artifact and measured identities
         shell: bash
         run: |
@@ -135,5 +156,5 @@ jobs:
         if: always()
         shell: bash
         run: |
-          docker rm -f scikeel-uv scikeel-science-export 2>/dev/null || true
+          docker rm -f scikeel-uv scikeel-science-export scikeel-production-runner-test 2>/dev/null || true
           docker buildx rm scikeel-science-builder 2>/dev/null || true

@@ -31,7 +31,7 @@ test("public mounts, path collisions, external image locations and malformed IDs
     assert.throws(() => deriveTenantLayout({ roots: { ...roots, ...override }, record, image }));
 });
 
-test("launcher configuration is explicit, complete and cannot enable an unfinished cutover", async () => {
+test("launcher activation requires an explicit flag and complete fixed configuration", async () => {
   const { sandboxConfiguration } = await import("../src/sandbox-manifest.mjs");
   assert.equal(sandboxConfiguration({}, "/srv/platform"), null);
   const values = { PLATFORM_SANDBOX_SOCKET: "/run/scikeel/host.sock",
@@ -41,5 +41,7 @@ test("launcher configuration is explicit, complete and cannot enable an unfinish
     const missing = { ...values }; delete missing[key];
     assert.throws(() => sandboxConfiguration(missing, "/srv/platform"));
   }
-  assert.throws(() => sandboxConfiguration({ ...values, PLATFORM_MANAGED_SANDBOX: "1" }, "/srv/platform"), /cutover/);
+  assert.equal(sandboxConfiguration({ ...values, PLATFORM_MANAGED_SANDBOX: "1" }, "/srv/platform").enabled, true);
+  for (const value of ["true", "yes", "unexpected"]) assert.throws(() => sandboxConfiguration({ ...values, PLATFORM_MANAGED_SANDBOX: value }, "/srv/platform"));
+  assert.throws(() => sandboxConfiguration({ PLATFORM_MANAGED_SANDBOX: "1" }, "/srv/platform"));
 });
