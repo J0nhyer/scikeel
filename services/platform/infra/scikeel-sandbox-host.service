@@ -17,6 +17,7 @@ PrivateMounts=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/run/scikeel /run/netns /var/lib/scikeel/launcher
+ReadWritePaths=-/var/lib/scikeel/fixture-data -/srv/osd/platform/workers/instances -/srv/osd/platform/cli-runtime/users
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

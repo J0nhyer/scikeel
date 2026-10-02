@@ -11,7 +11,9 @@ struct QuotaBlock { block_hard: u64, block_soft: u64, bytes: u64, inode_hard: u6
 #[derive(Default)]
 struct FsAttributes { flags:u32, extent_size:u32, extents:u32, project_id:u32, cow_extent_size:u32, padding:[u8;8] }
 const Q_GETQUOTA: i32 = ((0x800007u32 << 8) | 2) as i32;
+const Q_SETQUOTA: i32 = ((0x800008u32 << 8) | 2) as i32;
 const FS_IOC_FSGETXATTR: libc::c_ulong = 0x801c581f;
+const FS_IOC_FSSETXATTR: libc::c_ulong = 0x401c5820;
 const FS_XFLAG_PROJINHERIT: u32 = 0x200;
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all="camelCase")]
@@ -60,6 +62,61 @@ pub fn verify_backing_file(path:&std::path::Path,device:&str,capacity:u64)->Resu
     if std::path::Path::new(actual.trim())!=path {return Err("quota_backing_wrong_device");}
     Ok(())
 }
+fn can_assign_project(current:u32,target:u32,empty:bool)->bool {
+    current==target || (current==0 && empty)
+}
+fn directory(parent:&File,name:&str,project_id:u32,uid:u32,gid:u32)->Result<File> {
+    use std::os::{fd::FromRawFd,unix::fs::MetadataExt};
+    if !crate::protocol::identifier(name,64) {return Err("invalid_quota_directory");}
+    let name=CString::new(name).map_err(|_|"invalid_quota_directory")?;
+    let created=unsafe {libc::mkdirat(parent.as_raw_fd(),name.as_ptr(),0o700)}==0;
+    if !created && std::io::Error::last_os_error().raw_os_error()!=Some(libc::EEXIST) {return Err("quota_directory_unavailable");}
+    let fd=unsafe {libc::openat(parent.as_raw_fd(),name.as_ptr(),libc::O_RDONLY|libc::O_DIRECTORY|libc::O_CLOEXEC|libc::O_NOFOLLOW)};
+    if fd<0 {return Err("quota_directory_unavailable");}
+    let file=unsafe {File::from_raw_fd(fd)};
+    let metadata=file.metadata().map_err(|_|"quota_directory_unavailable")?;
+    if metadata.dev()!=parent.metadata().map_err(|_|"quota_directory_unavailable")?.dev() ||
+        (!created && (metadata.uid()!=uid || metadata.gid()!=gid || metadata.mode()&0o022!=0)) {return Err("quota_directory_not_owned");}
+    let mut attributes=FsAttributes::default();
+    if unsafe {libc::ioctl(fd,FS_IOC_FSGETXATTR,&mut attributes)}!=0 {return Err("quota_unavailable");}
+    let empty=std::fs::read_dir(format!("/proc/self/fd/{fd}")).map_err(|_|"quota_directory_unavailable")?.next().is_none();
+    // Existing files require explicit migration, never a shallow retag of their parent.
+    if !can_assign_project(attributes.project_id,project_id,empty) {return Err("quota_migration_required");}
+    if attributes.project_id!=project_id || attributes.flags&FS_XFLAG_PROJINHERIT==0 {
+        attributes.project_id=project_id;attributes.flags|=FS_XFLAG_PROJINHERIT;
+        if unsafe {libc::ioctl(fd,FS_IOC_FSSETXATTR,&attributes)}!=0 {return Err("quota_assignment_failed");}
+    }
+    if created && (unsafe {libc::fchmod(fd,if uid==0 {0o755} else {0o700})}!=0 || unsafe {libc::fchown(fd,uid,gid)}!=0) {
+        return Err("quota_directory_not_owned");
+    }
+    file.sync_all().map_err(|_|"quota_directory_unavailable")?;Ok(file)
+}
+pub fn provision(config:&crate::config::Config,account:&crate::registry::Account)->Result<QuotaEvidence> {
+    use std::os::unix::fs::MetadataExt;
+    if unsafe {libc::geteuid()}!=0 {return Err("root_required");}
+    verify_backing_file(&config.quota_backing_file,&config.quota_device,config.quota_capacity)?;
+    let instances=crate::secure::root_owned(&config.roots.instances,true)?;
+    let native=crate::secure::root_owned(&config.roots.native,true)?;
+    let device_metadata=std::fs::metadata(&config.quota_device).map_err(|_|"invalid_quota_device")?;
+    if [instances.metadata(),native.metadata()].iter().any(|metadata|metadata.as_ref().map_or(true,|metadata|metadata.dev()!=device_metadata.rdev())) {
+        return Err("quota_wrong_filesystem");
+    }
+    let device=CString::new(config.quota_device.as_str()).map_err(|_|"invalid_quota_device")?;
+    let mut previous=QuotaBlock::default();
+    if unsafe {libc::quotactl(Q_GETQUOTA,device.as_ptr(),account.project_id as i32,(&mut previous as *mut QuotaBlock).cast())}!=0 {
+        return Err("quota_unavailable");
+    }
+    if previous.block_hard==0 && previous.inode_hard==0 && previous.bytes==0 && previous.inodes==0 {
+        let mut quota=QuotaBlock {block_hard:config.quota_bytes/1024,inode_hard:config.quota_inodes,valid:5,..Default::default()};
+        if unsafe {libc::quotactl(Q_SETQUOTA,device.as_ptr(),account.project_id as i32,(&mut quota as *mut QuotaBlock).cast())}!=0 {return Err("quota_assignment_failed");}
+    } else {evidence(&previous,account.project_id,config.quota_bytes,config.quota_inodes)?;}
+    let instance=directory(&instances,&account.instance_id,account.project_id,0,0)?;
+    let home=directory(&native,&account.user_id,account.project_id,0,0)?;
+    for (parent,names) in [(&instance,["workspace","state","scratch"]),(&home,["home","claude-config","codex-home"])] {
+        for name in names {directory(parent,name,account.project_id,config.platform_uid,config.platform_gid)?;}
+    }
+    verify(&config.quota_device,account.project_id,config.quota_bytes,config.quota_inodes,&config.source_descriptors(account)?)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +135,11 @@ mod tests {
     fn quota_layout_matches_linux_uapi() {
         assert_eq!(std::mem::size_of::<FsAttributes>(),28);
         assert_eq!(std::mem::size_of::<QuotaBlock>(),72);
+    }
+    #[test]
+    fn existing_trees_cannot_be_retagged_to_bypass_owned_storage_migration() {
+        assert!(can_assign_project(0,10002,true));assert!(can_assign_project(10002,10002,false));
+        assert!(!can_assign_project(0,10002,false));assert!(!can_assign_project(10003,10002,true));
+        assert!(!can_assign_project(10003,10002,false));
     }
 }

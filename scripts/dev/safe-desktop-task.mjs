@@ -27,7 +27,7 @@ const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
 if (!["build", "test", "typecheck", "lint", "probe", "platform-test",
-  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare"].includes(mode)) {
+  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
 }
@@ -135,7 +135,14 @@ if (mode === "probe") {
   const environment = join(stagingRoot, "package-mirror-fixture/venv");
   if (!existsSync(join(environment, "bin/python"))) run(uv, ["venv", "--python", "/usr/bin/python3", environment], root);
   run(uv, ["pip", "sync", "--require-hashes", "--only-binary", ":all:", "--python", join(environment, "bin/python"),
+    ...(existsSync(join(stagingRoot, "mirror-wheels/wheels")) ? ["--no-index", "--find-links", join(stagingRoot, "mirror-wheels/wheels")] : []),
     "runtime/sandbox/image/package-mirror.lock"], root);
+} else if (mode === "sandbox-mirror-probe") {
+  if (args.length) throw new Error("Mirror acceptance uses fixed synthetic inputs");
+  run(process.execPath, [join(root, "scripts/dev/probe-package-mirror.mjs")], root);
+} else if (mode === "sandbox-mirror-install") {
+  if (args.length) throw new Error("Mirror setup uses fixed verified inputs");
+  run("sudo", ["-n", "/usr/bin/python3", "/usr/local/lib/scikeel/prepare-package-mirror.py"], root);
 } else if (mode === "sandbox-host-prepare") {
   if (args.length) throw new Error("Host preparation has fixed synthetic arguments");
   run("sudo", ["-n", "/usr/bin/python3", "/usr/local/lib/scikeel/prepare-synthetic-host.py"], root);

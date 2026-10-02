@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-02 23:46 · Installed a private-identity public devpi mirror with verified 2 GiB/90000-inode kernel quota and 256 MiB memory cap; two synthetic users reused one upstream archive, 154 platform tests passed, and fresh tenant provisioning/scientific probes passed while transactional sandbox installs and production migration remain pending.
+
 2026-10-02 23:01 · Managed platform wiring, authenticated profile restart, renewable scoped model capabilities and a kernel lock shared with heavy builds pass 144 platform tests and 21 launcher tests; production image acceptance, approved installs and account migration are still pending.
 
 2026-10-02 21:45 · Two synthetic tenants passed real gVisor offline scientific imports/plotting against one immutable image, with enforced resource/project quotas, working openat2 and hidden host controls; scoped model streams, single-use dependency approvals and bounded scheduler tests pass, while production runner integration remains pending.

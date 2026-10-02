@@ -7,6 +7,7 @@ import { ManagedWorkerManager } from "./managed-worker-manager.mjs";
 import { TenantPolicy } from "./tenant-policy.mjs";
 import { HostAdmission, hostPressure } from "./host-admission.mjs";
 import { SandboxScheduler } from "./sandbox-scheduler.mjs";
+import { WorkspaceRpc } from "./workspace-rpc.mjs";
 
 const routeSet = new Set(["/v1/responses", "/v1/chat/completions", "/v1/messages"]);
 export function validateBrokerConfiguration(config) {
@@ -90,7 +91,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   try {
     await model.listen(); await packages.listen({ host: "172.31.240.1", port: 4793 }); await egress.listen({ host: "172.31.240.1", port: 4794 });
   } catch { await Promise.allSettled([model.close(), packages.close(), egress.close()]); throw new Error("managed brokers unavailable"); }
-  return { manager, tenantPolicy, model, packages, egress,
+  return { manager, tenantPolicy, model, packages, egress, files: new WorkspaceRpc({ workerManager: manager, tenantPolicy }),
     runtimeCatalog: () => ({ model: `${config.defaultProvider}/${config.defaultModel}`, providers: Object.entries(config.providers).map(([id, value]) => ({
       id, name: id, models: Object.fromEntries(value.enabledModels.map((model) => [model, { id: model, name: model, providerID: id }])) })),
       connected: Object.keys(config.providers), defaults: Object.fromEntries(Object.entries(config.providers).map(([id, value]) => [id, value.enabledModels[0]])) }),

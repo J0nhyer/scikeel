@@ -40,6 +40,7 @@ impl Host {
         match operation {
             Operation::Register {instance_id,user_id}=>{
                 let account=self.registry.register(&instance_id,&user_id)?;self.save()?;
+                crate::quota::provision(&self.config,&account)?;
                 Ok(json!({"instanceId":account.instance_id,"generation":account.generation}))
             }
             Operation::Inspect {instance_id}=>{

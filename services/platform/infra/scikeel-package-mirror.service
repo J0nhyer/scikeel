@@ -1,14 +1,16 @@
 [Unit]
 Description=SciKeel disposable public Python package mirror
 After=network-online.target
+After=scikeel-package-mirror-volume.service
+Requires=scikeel-package-mirror-volume.service
 Wants=network-online.target
 RequiresMountsFor=/var/lib/scikeel/package-mirror
-ConditionPathExists=/var/lib/scikeel/package-mirror/.nodeinfo
+ConditionPathExists=/var/lib/scikeel/package-mirror/data/.nodeinfo
 
 [Service]
 User=scikeel-mirror
 Group=scikeel-mirror
-ExecStart=/usr/lib/scikeel/mirror/bin/devpi-server --serverdir /var/lib/scikeel/package-mirror --host 127.0.0.1 --port 3141 --threads 4
+ExecStart=/usr/lib/scikeel/mirror/bin/devpi-server --serverdir /var/lib/scikeel/package-mirror/data --host 127.0.0.1 --port 3141 --threads 4 --connection-limit 32 --request-timeout 60 --restrict-modify root --secretfile /var/lib/scikeel/package-mirror/data/.secret --argon2-memory-cost 65536 --argon2-parallelism 1 --argon2-time-cost 3
 MemoryHigh=192M
 MemoryMax=256M
 MemorySwapMax=64M

@@ -36,3 +36,23 @@ test("synthetic config rejects production identities, floating images and embedd
     { models: { apiKey: "synthetic-only" } }])
     assert.throws(() => validateTestConfig({ ...config, ...patch }), /prerequisite/);
 });
+test("preflight uses the actual four-operation launcher protocol and reconciles its two bounded tenants", async (t) => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
+  const root = await mkdtemp(join(tmpdir(), "scikeel-rig-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const config = { schema: 1, synthetic: true, accountPrefix: "sandbox-test-", launcherSocket: "/run/scikeel/test.sock", imageDigest: `sha256:${"a".repeat(64)}` };
+  const configPath = join(root, "test.json"); await writeFile(configPath, JSON.stringify(config));
+  const calls = [];
+  const client = { register: async (input) => { calls.push(["register",input]); return { ...input,generation:1 }; },
+    start: async (input) => { calls.push(["start",input]); return {}; },
+    inspect: async (input) => ({ ...input,generation:1,status:"ready",imageDigest:config.imageDigest,
+      limits:{memoryMax:1073741824,swapMax:134217728,pidsMax:256,cpuQuota:100000,cpuPeriod:100000,owned:true},
+      quota:{enforced:true,byteLimit:67108864,inodeLimit:1024} }),
+    stop: async (input) => { calls.push(["stop",input]); } };
+  const rig = await createSandboxRig({ caseName:"preflight",configPath,client,
+    inspectConfig:async()=>({isFile:()=>true,uid:0,mode:0o644,size:1024}) });
+  assert.equal(rig.evidence.tenants.length,2);
+  assert.equal(calls.filter(([operation])=>operation==="start").length,2);
+  await rig.close();
+  assert.equal(calls.filter(([operation])=>operation==="stop").length,2);
+});
