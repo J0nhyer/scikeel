@@ -101,6 +101,17 @@ test("cold migration refuses live sources, reused destinations and native creden
   assert.equal(result.omittedCredentials.length,4);assert.equal(result.copiedFiles,1);
   await assert.rejects(copyColdTenant({source,destination,kind:"native",assertDrained:async()=>true}),/destination/);
 });
+test("private home migration excludes inherited CLI credentials and retains user files",async(t)=>{
+  const root=await mkdtemp(join(tmpdir(),"scikeel-home-"));t.after(()=>rm(root,{recursive:true,force:true}));
+  const source=join(root,"source"),destination=join(root,"destination");
+  await mkdir(join(source,".codex"),{recursive:true});await mkdir(join(source,".config/opencode"),{recursive:true});
+  await writeFile(join(source,".codex/auth.json"),"credential-canary");await writeFile(join(source,".config/opencode/auth.json"),"credential-canary");
+  await writeFile(join(source,"notes.txt"),"owned user bytes");
+  const result=await copyColdTenant({source,destination,kind:"home",assertDrained:async()=>true});
+  assert.equal(result.omittedCredentials.length,2);assert.equal(result.copiedFiles,1);
+  assert.equal(await readFile(join(destination,"notes.txt"),"utf8"),"owned user bytes");
+  await assert.rejects(readFile(join(destination,".codex/auth.json")));
+});
 
 test("interrupted cold verification preserves the original and refuses symlinked source ancestors",async(t)=>{
   const root=await mkdtemp(join(tmpdir(),"scikeel-cold-interrupt-"));t.after(()=>rm(root,{recursive:true,force:true}));

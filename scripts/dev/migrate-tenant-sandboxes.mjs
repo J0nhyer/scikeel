@@ -3,6 +3,8 @@ import { dirname, resolve, join, relative, isAbsolute } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import { SandboxClient } from "../../services/platform/src/sandbox-client.mjs";
 
 const transitions={pending:{drain:"drained"},drained:{backup:"backedUp"},backedUp:{copy:"copied"},copied:{verify:"verified"},
   verified:{activate:"managed"},managed:{runtimeFailed:"managedUnavailable"},managedUnavailable:{runtimeRecovered:"managed"}};
@@ -86,7 +88,7 @@ export async function inventoryTenant(root,{maxEntries=100000,maxBytes=2*1024**3
 // Offline operator primitive, never exposed by the public gateway. The caller
 // must stop all source writers and keep the original in a restricted backup.
 export async function copyColdTenant({source,destination,kind,assertDrained}) {
-  if(!["worker","native"].includes(kind) || typeof assertDrained!=="function" || !(await assertDrained()))
+  if(!["worker","native","home"].includes(kind) || typeof assertDrained!=="function" || !(await assertDrained()))
     throw new Error("tenant source must be drained");
   for(const root of [source,destination])
     if(typeof root!=="string" || !isAbsolute(root) || resolve(root)!==root || root==="/")throw new Error("invalid cold migration root");
@@ -113,7 +115,7 @@ export async function copyColdTenant({source,destination,kind,assertDrained}) {
   if(flatten && before.files.some(file=>file.path.startsWith("state/") && !file.path.startsWith(`${prefix}/`)))
     throw new Error("conflicting legacy state layout");
   const map=name=>flatten && (name===prefix || name.startsWith(`${prefix}/`)) ? `state${name.slice(prefix.length)}` : name;
-  const credential=name=>kind==="worker" ? /^state\/runtime\/(xdg-config\/opencode(?:\/|$)|xdg-data\/opencode\/auth\.json$)/.test(name) :
+  const credential=name=>kind==="home" ? /^(?:\.(?:codex|claude)(?:\/|$)|\.config\/opencode(?:\/|$))/.test(name) : kind==="worker" ? /^state\/runtime\/(xdg-config\/opencode(?:\/|$)|xdg-data\/opencode\/auth\.json$)/.test(name) :
     /^(?:codex-home\/(?:.*\/)?(?:auth\.json|config\.toml|codex-models\.json|codex-gateway-models\.json|rules(?:\/|$))|claude-config(?:\/|$)|home\/\.(?:codex|claude)\/(?:.*\/)?(?:auth\.json|config\.toml|settings\.json|rules(?:\/|$)))/.test(name);
   const omittedCredentials=before.files.filter(file=>credential(map(file.path))).map(file=>map(file.path));
   const expected=before.files.filter(file=>!credential(map(file.path))).map(file=>({...file,path:map(file.path),sourcePath:file.path}));
@@ -160,7 +162,76 @@ export async function copyColdTenant({source,destination,kind,assertDrained}) {
     stateLayout:flatten?"flattened-identifier":"unchanged",omittedCredentials,repairNeeded};
 }
 
+async function productionMigration(copy) {
+  const data="/opt/open-science-desktop/.deploy/platform-data";
+  const instances="/var/lib/scikeel/tenant-data/instances",native="/var/lib/scikeel/tenant-data/native";
+  const drained=async()=>{
+    const service=spawnSync("systemctl",["show","osd-platform.service","--value","--property=ActiveState"],{encoding:"utf8",timeout:5000});
+    if(service.status!==0 || !["inactive","failed"].includes(service.stdout.trim()))return false;
+    try{return !(await readFile("/sys/fs/cgroup/system.slice/osd-platform.service/cgroup.procs","utf8")).trim();}
+    catch(error){return error.code==="ENOENT";}
+  };
+  if(copy && !(await drained()))throw new Error("production platform must be stopped before cold copying");
+  if(copy) {
+    const configPath="/etc/scikeel/sandbox-host.json",info=await lstat(configPath);
+    if(!info.isFile() || info.uid!==0 || info.mode&0o022)throw new Error("untrusted production launcher configuration");
+    const config=JSON.parse(await readFile(configPath,"utf8"));
+    if(config.synthetic || config.roots.instances!==instances || config.roots.native!==native)throw new Error("production launcher roots do not match migration destinations");
+  }
+  const reports=[],sourceRoot=join(data,"workers/instances");
+  const client=copy ? new SandboxClient({socketPath:"/run/scikeel/host.sock"}) : null;
+  const checkpointRoot=join(data,"migration");
+  for(const instanceId of (await readdir(sourceRoot)).sort()) {
+    if(!/^user-usr_[a-f0-9]{24}$/.test(instanceId))throw new Error("unexpected production account directory");
+    const userId=instanceId.slice(5),source=join(sourceRoot,instanceId),destination=join(instances,instanceId);
+    const inventory=await inventoryTenant(source);
+    if(!copy){reports.push({instanceId,bytes:inventory.bytes,files:inventory.files.length,externalLinks:inventory.externalLinks.length});continue;}
+    const checkpoint=join(checkpointRoot,`${instanceId}.json`);
+    try{await lstat(checkpoint);throw new Error("existing production migration checkpoint requires review");}catch(error){if(error.code!=="ENOENT")throw error;}
+    await mkdir(checkpointRoot,{recursive:true,mode:0o700});
+    const registered=await client.register({instanceId,userId});
+    const inspection=await client.inspect({instanceId,generation:registered.generation});
+    if(!["registered","stopped","unavailable"].includes(inspection.status))throw new Error("migration destination is running");
+    await atomic(checkpoint,{schema:1,instanceId,userId,state:"backedUp",originalRetained:true,inventory});
+    const copied=await copyColdTenant({source,destination,kind:"worker",assertDrained:drained});
+    const database=join(destination,"state/runtime/xdg-data/opencode/opencode.db");
+    let history=null;
+    try{
+      await lstat(database);
+      const rebased=spawnSync("python3",[fileURLToPath(new URL("./rebase-tenant-history.py",import.meta.url)),database,join(source,"workspace"),join(destination,"workspace")],{encoding:"utf8",timeout:30000});
+      if(rebased.status!==0)throw new Error("copied history path verification failed");
+      history=JSON.parse(rebased.stdout);
+    }catch(error){if(error.code!=="ENOENT")throw error;}
+    const homeSource=join(data,"cli-runtime/users",userId,"home");let home=null;
+    try{await lstat(homeSource);home=await copyColdTenant({source:homeSource,destination:join(native,userId,"home"),kind:"home",assertDrained:drained});}
+    catch(error){if(error.code!=="ENOENT")throw error;}
+    const sessionsSource=join(data,"cli-runtime/users",userId,"sessions.json");
+    try{
+      const metadata=JSON.parse(await readFile(sessionsSource,"utf8"));
+      for(const session of metadata.sessions??[]) {
+        const previous=join(source,"workspace"),current=join(destination,"workspace");
+        if(session.directory!==previous && !session.directory?.startsWith(`${previous}/`))throw new Error("foreign native history directory");
+        session.directory=current+session.directory.slice(previous.length);
+      }
+      await mkdir(join(data,"cli-runtime/metadata",userId),{recursive:true,mode:0o700});
+      await atomic(join(data,"cli-runtime/metadata",userId,"sessions.json"),metadata);
+    }catch(error){if(error.code!=="ENOENT")throw error;}
+    if(!(await drained()))throw new Error("production platform resumed during migration");
+    const report={schema:1,instanceId,userId,state:"verified",originalRetained:true,copied,history,home};
+    await atomic(checkpoint,{...report,inventory});reports.push(report);
+    console.log(JSON.stringify({instanceId,state:"verified",copiedFiles:copied.copiedFiles,copiedBytes:copied.copiedBytes,repairNeeded:copied.repairNeeded.length}));
+  }
+  if(copy) {
+    const path=join(data,"cli-runtime/runtime.json"),runtime=JSON.parse(await readFile(path,"utf8"));
+    await atomic(join(checkpointRoot,"runtime-before.json"),runtime);
+    runtime.defaultRuntime="opencode";runtime.userRuntimes=Object.fromEntries(Object.keys(runtime.userRuntimes??{}).map(userId=>[userId,"opencode"]));
+    runtime.assistantEnabled={codex:false,claude:false};await atomic(path,runtime);
+  }
+  console.log(JSON.stringify({schema:1,production:true,dryRun:!copy,activated:false,originalsRetained:true,accounts:reports}));
+}
 async function dryRun(args) {
+  if(args.join(" ")==="--dry-run --production")return productionMigration(false);
+  if(args.join(" ")==="--copy-stopped --production")return productionMigration(true);
   if(args.join(" ")!=="--dry-run --synthetic")throw new Error("only the read-only synthetic migration inventory is available");
   const roots=["/var/lib/scikeel/fixture-data/instances/sandbox-test-a","/var/lib/scikeel/fixture-data/instances/sandbox-test-b"];
   const reports=[];

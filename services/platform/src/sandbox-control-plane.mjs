@@ -103,7 +103,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy});
   const nativeProfileResolver={refresh:async(runtime)=>{
     const provider=config.providers[config.defaultProvider];
-    const enabled=configuration.enabledRuntimes?.includes(runtime) && runtime==="codex" && provider.authMode==="bearer" && provider.routes.includes("/v1/responses");
+    const enabled=Boolean(configuration.enabledRuntimes?.includes(runtime) && runtime==="codex" && provider.authMode==="bearer" && provider.routes.includes("/v1/responses"));
     const revision=createHash("sha256").update(JSON.stringify({image:configuration.imageDigest,provider:config.defaultProvider,
       endpoint:provider.baseUrl,models:provider.enabledModels})).digest("hex");
     return {runtime,identityRevision:revision,catalogRevision:revision,sourceRevision:revision,

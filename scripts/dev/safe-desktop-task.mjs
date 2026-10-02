@@ -141,7 +141,7 @@ if (mode === "probe") {
   if (args.length) throw new Error("Mirror acceptance uses fixed synthetic inputs");
   run(process.execPath, [join(root, "scripts/dev/probe-package-mirror.mjs")], root);
 } else if (mode === "sandbox-migrate") {
-  if (args.join(" ") !== "--dry-run --synthetic") throw new Error("Only read-only synthetic migration is available");
+  if (!["--dry-run --synthetic", "--dry-run --production", "--copy-stopped --production"].includes(args.join(" "))) throw new Error("Migration requires fixed synthetic or production arguments");
   run(process.execPath, [join(root, "scripts/dev/migrate-tenant-sandboxes.mjs"), ...args], root);
 } else if (mode === "sandbox-mirror-install") {
   if (args.length) throw new Error("Mirror setup uses fixed verified inputs");
