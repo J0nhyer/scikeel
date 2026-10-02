@@ -1,15 +1,21 @@
 # Web Tenant Execution Isolation Design
 
-**Status:** Design draft for written-spec review. The user approved the proposed
-isolation direction and requested a complete file/project compatibility audit on
-2026-10-02. Application implementation and production migration have not started.
+**Status:** Architecture direction approved by the user; integrated implementation
+planning requested on 2026-10-02, including shared scientific dependencies. This
+revision extends the reviewed isolation design with dependency ownership, cache,
+and reproducibility contracts. Application implementation and production migration
+have not started. The implementation plan is
+`docs/superpowers/plans/2026-10-02-web-tenant-isolation-and-scientific-environments.md`.
 
 ## Goal and scope
 
 Protect the authenticated multi-user Web platform from an agent reading, changing,
 or deleting another account's files or operating on the host. Preserve existing
 Web file browsing, artifact previews/downloads, project creation, session/project
-association, research reports, and local reproducibility data.
+association, research reports, and local reproducibility data. Give every new
+account a usable scientific Python environment without a per-account installation
+of the common packages. Treat dependency management as part of execution and
+storage infrastructure; it is larger than a file-explorer optimization.
 
 Use one gVisor sandbox per account, including its Open Science worker, all agent
 runtimes, local MCP servers, hooks, plugins, Git snapshots, and child processes.
@@ -331,6 +337,142 @@ GPU, native computer use and host browser profiles receive no automatic access;
 existing remote-compute capabilities require an explicit separately scoped
 connector and applicable approval. Browser/local MCP processes stay sandboxed.
 
+## Shared scientific dependencies and private project environments
+
+### Three layers, three owners
+
+| Layer | Owner and access | Purpose | What is actually shared |
+| --- | --- | --- | --- |
+| `science-v1` image | Platform builds; tenants read only | Python, scientific libraries, Git, Node, managed runtime binaries | One verified immutable root filesystem per digest on this node; no account install |
+| Public package mirror | Platform service; tenant GET/HEAD through a scoped broker | Reuse public index responses and downloaded archives | Public download artifacts; never a writable cross-account installation directory |
+| Project `.venv` and account caches | Tenant writes within its quota | Custom packages, conflicting versions, local source builds | Private environment and private installer cache; no cross-account write sharing |
+
+This separates downloaded bytes, installed files, and process memory. Shared
+archives do not guarantee deduplicated private site-packages. The base image
+avoids the dominant common-package duplication; custom environments may contain
+full repeated dependency trees in the first release. Imports and Python processes
+still consume per-sandbox RAM. Do not market cache reuse as unlimited concurrency.
+
+Ship one small general-science image initially. Include CPython 3.12, `uv`,
+NumPy, pandas, SciPy, Matplotlib, scikit-learn, statsmodels, SymPy and nbformat,
+plus the already supported OpenCode/Claude/Codex tools and their required system
+libraries. Include a compiler toolchain only after its size and package-build
+needs are measured; wheel-only installs work without it. Do not add GPU/CUDA,
+PyTorch, a Jupyter server, multiple language ecosystems or per-domain image
+selection to this release. Notebook reading remains available; this change does
+not introduce Web kernel execution.
+
+Resolve and commit exact compatible Python patch/package/tool versions and
+artifact hashes during image construction. Use a committed lock, image manifest,
+Linux architecture and rootfs digest; reject floating production tags. Build on
+an isolated CI builder, not an unconstrained Docker daemon on this small host.
+Only stage verified artifacts on the host. Whitelist image contents; never copy
+platform state, `.deploy`, account folders or administrator HOME into a build
+context. Keep `OPENCODE_VERSION` authoritative and test the actually bundled
+version rather than silently changing it to the probe's version.
+
+Mount `/opt/scikeel/science` and the tool image read-only. Disable implicit Python
+downloads. Set scientific thread limits initially to one (`OMP_NUM_THREADS`,
+`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`). Put Matplotlib
+and uv writable caches under private HOME, not the image. A clean account must
+import the common libraries and save a figure with external networking disabled.
+Base library bytes/hash and image inode identity must remain unchanged after
+another account's job and a rejected write attempt.
+
+### Project selection and installation
+
+For each job, securely select the owned project directory before choosing its
+Python environment. With no `.venv`, use `/opt/scikeel/science/bin/python`; this
+requires no install approval or initial network call. With a valid private
+`.venv`, prepend its `bin` directory to PATH and use its interpreter. Reject an
+external, malformed or broken `.venv` with an actionable rebuild message instead
+of silently running a different environment. A venv interpreter link to the
+verified image Python is valid; site-packages and environment configuration must
+remain owned and private. Validate inside the sandbox with pinned image roots,
+not a host canonicalization that legitimizes unrelated paths.
+
+Project custom environments are standalone: no default `--system-site-packages`
+and no tenant-writable links into another tenant or the common image. Record the
+complete intended custom dependencies, including any common scientific packages
+needed by that project, and resolve their compatible versions. A project with
+only one added package does not automatically inherit all undeclared image
+packages. Use uv's lock/sync for declared projects; preserve imported pip
+requirements workflows without claiming they already have a complete uv lock.
+
+Dependency installation and environment repair require the existing manual
+approval policy. A platform-managed install creates a single-use approval bound
+to account, owned directory, intended operation, lock/input hash and expiration;
+changing the input invalidates it. A fresh approved operation may resolve an
+input with no lock, record the resolved lock, and sync that same resolution.
+Source/build hooks execute in the tenant sandbox. An arbitrary shell tool still
+requires its command approval; string-matching `pip` is not a security boundary.
+If a managed CLI cannot enforce command/install/connection approval, keep that
+mode unavailable until its approval flow is supported.
+
+Serialize installs per project. Stage a new environment under the same quota,
+validate imports, and replace only while no active job uses that environment.
+Preserve the old environment on failure and preserve its previous lock/record.
+For existing user-managed `.venv` changes, observe and report the actual state;
+never falsely label arbitrary shell modifications as an approved reproducible
+platform install. Capture base image digest, Python/uv/tool versions, project
+lock hash, OS/architecture and actual environment inventory in the run record.
+Credentials and broker tokens are excluded. A base image refresh does not mutate
+active projects: retain the referenced old image until runs are drained and an
+explicit compatible migration has succeeded.
+
+### Trusted download reuse, not a shared writable uv directory
+
+Use devpi-server's existing public PyPI mirror as the initial cache service,
+behind the platform's constrained package broker. Pin its version and dependency
+lock after a measured bounded-service probe. The service runs outside tenant
+sandboxes under a dedicated OS identity; tenants receive no cache filesystem
+mount. Expose only GET/HEAD requests to the designated mirror's simple index and
+archive paths. Block upload, index creation, administration, replica APIs,
+arbitrary upstream URLs and arbitrary proxy paths. Validate archive hashes from
+locked metadata on the installer side. Never accept a user-uploaded wheel into
+the global mirror. Private registries, local wheels, VCS sources and source-built
+wheels remain private and require separately approved scoped access when needed.
+
+Each tenant's `UV_CACHE_DIR` is private. Use copy mode initially to prevent mutable
+venv bytes aliasing private cached archives; cross-account hardlinks are forbidden.
+uv's concurrency guarantees for a cooperative cache do not authorize untrusted
+tenants to edit one shared cache directory. Filesystem CoW/reflink deduplication
+can be evaluated later; it is not required for this rollout and must not weaken
+file ownership or quotas.
+
+Initial mirror budget: 256 MiB memory max, 64 MiB swap max, 64 processes and a
+2 GiB disk quota, separately counted from tenant budgets. These are proposed
+limits, not measured sufficient capacity. Reject deployment if its bounded probe
+cannot serve the agreed small-package workload within this reserve. Admission
+must account for the mirror, broker, platform, static server and build scopes.
+A full or unhealthy cache produces a bounded retriable error; it cannot hang the
+platform or trigger unbounded fetching. Approved direct public download through
+the egress broker is a visible bypass option, with the same install approval and
+integrity checks. It never grants direct network access. Until a supported mirror
+GC policy is verified, use a scheduled drain/stop/reinitialize of this disposable
+public-only cache under its hard quota; never remove live database/archive files
+or rotate a second full store beyond the configured storage budget.
+
+The first release deduplicates Python public downloads. Preinstalled Node/Git/CLI
+binaries are shared through the image; user-created npm, R and other environments
+stay private and quota-bound. Do not claim a universal multi-language package
+cache until its separate adapters and integrity tests exist.
+
+### Dependency acceptance
+
+- A clean account imports every baseline package and writes an artifact offline
+  without creating a private venv or making an install request.
+- Two accounts share the verified baseline rootfs; 100 manifests reference that
+  same digest without starting 100 workers or installing 100 environments.
+- Two approved installs of the same fixture wheel use one upstream artifact
+  fetch through the mirror; separate local installer caches and venvs are expected.
+- Two projects pin conflicting versions without changing one another or the
+  baseline; failed/revoked installs leave the prior environment usable.
+- Attempts to write the image, publish/delete mirror packages, tamper with another
+  account's cache, replay approval or run source hooks outside the sandbox fail.
+- Cache outage/full storage, incompatible locks and image migration produce
+  bounded, explicit errors; run records preserve the exact environment identity.
+
 ## Resource limits and lifecycle
 
 One scheduler owns live sandboxes and executing jobs across OpenCode/Claude/Codex.
@@ -465,6 +607,7 @@ Local offline filesystem success is sufficient to design, not to deploy.
 | Credentials | Shared API/OAuth credentials absent from mounts/env/output; broker rejects foreign tenant/model/URL/route, quota bypass and stale revoked tokens |
 | UI compatibility | File tree, scoped preview, binary download, project create/open/grouping, metadata rename/pin/remove and session move at 1280px/390px; no native-only dead controls |
 | History/data | Existing absolute paths, metadata, OpenCode SQLite and native histories reopen after cold restart; filename/Unicode/link cases preserve byte content |
+| Dependencies | Baseline imports offline, one shared image per digest, trusted repeated-download hits, private conflicting locks, install approvals, cache outage/quota and environment records pass |
 | Reproducibility | New/legacy project snapshot refs stay correct; actual nested job writes checkpoint inside sandbox; no remote, branch or staging mutation |
 | Research/attachments | Correct session report/hash and approved attachment delivery/history; generic APIs cannot access private originals or platform task state |
 | Resources | Actual cgroup/CPU/disk/inode enforcement, queue and idle eviction; controlled OOM/disk-full/process exhaustion cannot break login or deployed Web bundle |
@@ -483,6 +626,8 @@ One design covers the isolation contract; implement it as dependent bounded work
   metadata endpoints, hidden Web controls, synthetic ownership tests.
 - Sandbox lifecycle: new launcher/runner, pinned image, cgroups/quotas/network,
   `WorkerManager` and `CliRuntimeManager` adapters; no direct spawn fallback.
+- Scientific environments: one immutable locked baseline, bounded public-only
+  artifact mirror, private environment selection/install transactions and records.
 - Broker and workspace integration: sanitized profiles, scoped egress, research
   file RPC, skills/history links, previews/tickets, Git dispatch, attachments.
 - Acceptance and staged migration: offline and real-model gates, browser evidence,
@@ -499,7 +644,9 @@ independent in-progress attachment work; do not overwrite those changes. New lau
 runner, file-policy and broker modules need separate narrow responsibilities;
 do not expand the existing request router into an orchestration framework.
 
-Implementation-plan preparation follows written-spec review under Superpowers.
+The integrated implementation plan follows Superpowers writing-plans and uses
+sequential execution on this memory-constrained host. The image/cache stages
+share the same tenant trust boundary and release gates as filesystem isolation.
 Preserve other working-tree changes; commit only approved design/progress work.
 
 ## Primary references reviewed on 2026-10-02
@@ -520,3 +667,18 @@ Preserve other working-tree changes; commit only approved design/progress work.
 The gVisor sources describe its kernel boundary, resource grants, and workload
 limitations. The OCI/cgroup/network policies above are SciKeel design choices,
 not capabilities automatically supplied by installing runsc.
+
+Dependency-specific primary references:
+
+- https://docs.astral.sh/uv/concepts/cache/
+- https://docs.astral.sh/uv/pip/environments/
+- https://docs.astral.sh/uv/guides/integration/docker/
+- https://docs.docker.com/engine/storage/drivers/
+- https://modal.com/docs/guide/images
+- https://docs.e2b.dev/template/quickstart
+- https://pypi.org/project/devpi-server/
+- https://devpi.net/docs/devpi/devpi/stable/+doc/index.html
+
+These sources support image reuse, isolated environments and public artifact
+mirroring. The selected package set, limits, approval and cache exposure policies
+are SciKeel design decisions that still require implementation acceptance.
