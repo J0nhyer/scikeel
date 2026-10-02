@@ -307,6 +307,7 @@ export class CliRuntimeManager {
     spawnImpl = nodeSpawn,
     logger = () => {},
     profileResolver,
+    sandboxJobs = null,
   } = {}) {
     if (!rootDir) throw new Error("rootDir is required");
     this.rootDir = resolve(rootDir);
@@ -331,6 +332,8 @@ export class CliRuntimeManager {
     this.profiles = new Map();
     this.turnTimeoutMs = turnTimeoutMs;
     this.spawnImpl = spawnImpl;
+    this.sandboxJobs = sandboxJobs;
+    this.nativeApprovals = new Map();
     this.logger = logger;
     this.userStates = new Map();
     this.processes = new Map();
@@ -928,8 +931,50 @@ export class CliRuntimeManager {
     }
   }
 
+  async startSandboxPrompt(turn) {
+    const {userId,state,session,text,displayText,chosen,chosenVariant,profile,attachmentInput}=turn;
+    if(session.runtime!=="codex")throw issue("runtime_unavailable","sandbox native runtime unavailable",503);
+    const controller=new AbortController();this.processes.set(session.id,controller);
+    if(turn.cancelled)controller.abort();
+    const timestamp=now();const userMessage={info:{id:attachmentInput?.turn?.messageID??`msg_cli_user_${randomUUID()}`,role:"user",sessionID:session.id,
+      time:{created:timestamp,completed:timestamp}},parts:[textPart(displayText??text,`msg_cli_user_${randomUUID()}`,session.id)],
+      ...(attachmentInput?{attachments:attachmentInput.metadata}:{})};
+    session.history.push(userMessage);session.history=session.history.slice(-MAX_HISTORY_MESSAGES);await this.persistUser(state);
+    const assistant={info:{id:`msg_cli_${randomUUID()}`,role:"assistant",sessionID:session.id,time:{created:timestamp}},parts:[]};
+    this.emitMessageUpdated(userId,session,assistant);
+    const stale=Boolean(session.nativeSessionId && session.identityRevision!==profile.identityRevision);
+    try {
+      const result=await this.sandboxJobs.run({userId,session,model:chosen,variant:chosenVariant,text:`${stale?handoverText(session.history):""}${text}`,
+        images:(attachmentInput?.images??[]).map(image=>image.url),nativeSessionId:stale?undefined:session.nativeSessionId,signal:controller.signal,
+        emit:async event=>{
+          if(event.type==="text")this.appendAssistantText(userId,session,assistant,event.text);
+          else if(event.type==="approval") {
+            const pending={id:event.id,sessionID:session.id,permission:event.kind==="edit"?"edit":"bash",patterns:event.command?[event.command]:[],metadata:{}};
+            this.nativeApprovals.set(event.id,{userId,...pending});
+            this.emit(userId,{type:"permission.asked",properties:pending});
+          } else if(event.type==="tool-output") {
+            const part={id:`prt_${randomUUID()}`,type:"text",text:event.text,synthetic:true};
+            assistant.parts.push(part);this.emitText(userId,session,assistant,part);
+          }
+        }});
+      session.nativeSessionId=result.nativeSessionId;session.identityRevision=profile.identityRevision;
+      session.model=managedModelKey(session.runtime,chosen);session.variant=chosenVariant;
+    } catch {
+      if(!turn.cancelled){assistant.info.error={name:"CliRuntimeError",data:{message:"Isolated AI assistant turn failed. Retry after checking the workspace status."}};
+        this.emit(userId,{type:"session.error",properties:{sessionID:session.id,error:assistant.info.error}});}
+    } finally {
+      for(const [id,pending]of this.nativeApprovals)if(pending.userId===userId && pending.sessionID===session.id)this.nativeApprovals.delete(id);
+      assistant.info.time.completed=now();
+      if(assistant.parts.length || assistant.info.error)session.history.push(assistant);
+      session.history=session.history.slice(-MAX_HISTORY_MESSAGES);session.status="idle";session.updatedAt=now();
+      this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
+      this.emit(userId,{type:"session.idle",properties:{sessionID:session.id}});
+    }
+  }
+
   async startReservedPrompt(turn) {
     const { userId, state, session, text, displayText, profile, chosen, chosenVariant, attachmentInput } = turn;
+    if(this.sandboxJobs)return this.startSandboxPrompt(turn);
     await this.ensureSkills(state);
     const pinned = await this.profileResolver.copyForTurn(profile, { paths: state.paths });
     if (turn.cancelled) throw issue("turn_cancelled", "turn was cancelled", 409);
@@ -1193,6 +1238,7 @@ export class CliRuntimeManager {
   }
 
   terminate(child) {
+    if(child instanceof AbortController){child.abort();return;}
     if (process.platform === "win32" && child.pid) {
       execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], () => {});
       return;
@@ -1401,6 +1447,20 @@ export class CliRuntimeManager {
     }
     if (path === "/provider/auth" && request.method === "GET") {
       sendJson(response, 200, {});
+      return true;
+    }
+    if(this.sandboxJobs && path==="/permission" && request.method==="GET") {
+      sendJson(response,200,[...this.nativeApprovals.values()].filter(value=>value.userId===userId).map(({userId:_owner,...value})=>value));return true;
+    }
+    const nativeReply=this.sandboxJobs && /^\/permission\/([a-f0-9]{64})\/reply$/.exec(path);
+    if(nativeReply && request.method==="POST") {
+      try {
+        const value=await jsonBody(request);const pending=this.nativeApprovals.get(nativeReply[1]);
+        if(!pending || pending.userId!==userId || !["once","reject"].includes(value.reply))throw issue("permission_unavailable","permission unavailable",403);
+        await this.sandboxJobs.approve({userId,sessionId:pending.sessionID,id:pending.id,decision:value.reply==="once"?"accept":"decline"});
+        this.nativeApprovals.delete(pending.id);this.emit(userId,{type:"permission.replied",properties:{sessionID:pending.sessionID,requestID:pending.id,reply:value.reply}});
+        sendJson(response,200,true);
+      }catch(error){sendJson(response,error.status??403,{error:"permission unavailable"});}
       return true;
     }
     if ((path === "/question" || path === "/permission") && request.method === "GET") {

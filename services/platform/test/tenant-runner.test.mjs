@@ -65,3 +65,10 @@ test("gateway configuration is published before startup and restart preserves pr
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/two");
   await gateway.stop();
 });
+test("runner health reports an unavailable gateway rather than admitting new jobs after its child exits",async(t)=>{
+  let healthy=true;const runner=new TenantRunner({manifest,token,healthy:()=>healthy});
+  await runner.listen({host:"127.0.0.1",port:0});t.after(()=>runner.close());
+  const url=`http://127.0.0.1:${runner.server.address().port}/health`;
+  assert.equal((await fetch(url)).status,200);healthy=false;
+  const response=await fetch(url);assert.equal(response.status,503);assert.deepEqual(await response.json(),{ready:false});
+});

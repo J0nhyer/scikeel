@@ -36,9 +36,9 @@ test("credential canaries and whole-home/checkout copies are forbidden in the bu
 test("production images require the exact authenticated runner and file-helper source identities", () => {
   const production = { ...manifest(), variant: "production" };
   assert.throws(() => validateImageManifest(production), /runner/);
-  const runnerFiles = Object.fromEntries(["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py"].map((name) => [`opt/scikeel/tools/${name}`, "a".repeat(64)]));
+  const runnerFiles = Object.fromEntries(["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs"].map((name) => [`opt/scikeel/tools/${name}`, "a".repeat(64)]));
   assert.doesNotThrow(() => validateImageManifest({ ...production, runnerFiles }));
-  assert.doesNotThrow(() => validateBuildContext(["tools/runner.mjs", "tools/file-rpc.mjs", "tools/cli-jobs.mjs", "tools/project-environment.py"]));
+  assert.doesNotThrow(() => validateBuildContext(["tools/runner.mjs", "tools/file-rpc.mjs", "tools/cli-jobs.mjs", "tools/project-environment.py", "tools/science-environment.mjs"]));
   for (const patch of [{ ...runnerFiles, "opt/scikeel/tools/unknown.mjs": "a".repeat(64) }, { ...runnerFiles, "opt/scikeel/tools/runner.mjs": "" }])
     assert.throws(() => validateImageManifest({ ...production, runnerFiles: patch }), /runner/);
 });

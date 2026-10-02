@@ -63,6 +63,7 @@ export class ProjectEnvironments {
         throw new Error("unverified private environment publication");
       published=true;
       const record=Object.freeze({schema:1,imageDigest:staged.imageDigest,lockHash:staged.lockHash,kind:"private",
+        ...(staged.runtimeIdentity ? {runtimeIdentity:Object.freeze({...staged.runtimeIdentity})} : {}),
         inventory:Object.freeze(staged.inventory.map((entry)=>Object.freeze({...entry})))});
       this.#records.set(key,record);return {selection,record};
     } finally {

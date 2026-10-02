@@ -1,3 +1,4 @@
+import { jobRequest } from "../../../runtime/sandbox/cli-jobs.mjs";
 import { fileRequest, environmentRequest } from "../../../runtime/sandbox/file-rpc.mjs";
 
 const denied=(message)=>Object.assign(new Error(message),{statusCode:403});
@@ -19,10 +20,13 @@ export class WorkspaceRpc {
   async environment(context,value,{signal}={}) {
     return this.#send(context,environmentRequest(value),"/environments",signal);
   }
+  async job(context,value,{signal}={}) {
+    return this.#send(context,jobRequest(value),"/jobs",signal);
+  }
   async #send(context,request,path,signal) {
     this.#owned(context);
     if(signal?.aborted)throw denied("workspace operation cancelled");
-    const lease=this.workerManager.retainWorker(context.instanceId, { maintenance: path === "/environments", readOnly: ["read", "readChunk", "list", "inspect"].includes(request.operation) });
+    const lease=this.workerManager.retainWorker(context.instanceId, { maintenance: path === "/environments", readOnly: ["read", "readChunk", "list", "inspect", "events"].includes(request.operation) });
     try {
       if(lease.generation!==context.generation)throw denied("workspace generation changed");
       const access=this.workerManager.getWorkerAccess(context.instanceId);

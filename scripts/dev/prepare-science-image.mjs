@@ -14,7 +14,7 @@ export function validateSourceImages(sources) {
   return sources;
 }
 export function toolVersionArguments(name) {
-  if (!["osd", "opencode", "node", "uv"].includes(name)) throw new Error("unsupported measured tool");
+  if (!["osd", "opencode", "node", "uv", "codex"].includes(name)) throw new Error("unsupported measured tool");
   return [name === "osd" ? "version" : "--version"];
 }
 async function sha256(path) {
@@ -48,7 +48,7 @@ export async function prepareImage(args) {
     uv: (await readFile(join(artifacts, "uv-image.txt"), "utf8")).trim() });
   validateBuildContext(await files(context));
   const tools = {};
-  for (const name of ["osd", "opencode", "node", "uv"]) {
+  for (const name of ["osd", "opencode", "node", "uv", "codex"]) {
     const path = join(context, "tools/bin", name);
     const version = run(path, toolVersionArguments(name)).match(/\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?/)?.[0];
     if (!version) throw new Error("unmeasured CI tool version");
@@ -81,12 +81,12 @@ print(json.dumps(out))`;
   const inventory = JSON.parse(run("python3", [inspector, archive]));
   const digest = await sha256(archive);
   const runnerFiles = {};
-  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py"])
+  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs"])
     runnerFiles[`opt/scikeel/tools/${name}`] = await sha256(join(context, "tools", name));
   const manifest = { schema: 1, name: "science-v1", variant, architecture: "linux/amd64",
     rootfsSha256: digest, imageDigest: `sha256:${digest}`, python: tools.python.version, uv: tools.uv.version,
     baselineLockSha256: await sha256(join(artifacts, "uv.lock")), toolLockSha256: await sha256(join(artifacts, "tool-lock.json")),
-    fileCount: inventory.fileCount, uncompressedBytes: inventory.uncompressedBytes, tools, enabledRuntimes: ["opencode"],
+    fileCount: inventory.fileCount, uncompressedBytes: inventory.uncompressedBytes, tools, enabledRuntimes: ["opencode", "codex"],
     ...(variant === "probe" ? { testEntryPoint: "/opt/scikeel/tools/probe-entry.mjs" } : { runnerFiles }),
     provenance: { repository: "J0nhyer/scikeel", commit: process.env.GITHUB_SHA, workflow: "sandbox-image.yml" } };
   validateImageManifest(manifest);

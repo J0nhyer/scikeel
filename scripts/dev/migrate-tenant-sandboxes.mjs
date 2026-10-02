@@ -1,4 +1,4 @@
-import { open, readFile, rename, mkdir, unlink, readdir, lstat, readlink } from "node:fs/promises";
+import { open, readFile, rename, mkdir, unlink, readdir, lstat, readlink, symlink } from "node:fs/promises";
 import { dirname, resolve, join, relative, isAbsolute } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
 import { constants } from "node:fs";
@@ -52,7 +52,7 @@ export class TenantMigrations {
 export async function inventoryTenant(root,{maxEntries=100000,maxBytes=2*1024**3}={}) {
   if(typeof root!=="string" || !isAbsolute(root) || resolve(root)!==root || root==="/")throw new Error("invalid inventory root");
   const initial=await lstat(root);if(!initial.isDirectory() || initial.isSymbolicLink())throw new Error("unsafe inventory root");
-  const files=[];const externalLinks=[];const directories=[];let bytes=0;let count=0;
+  const files=[];const links=[];const externalLinks=[];const directories=[];let bytes=0;let count=0;
   async function walk(directory,depth=0) {
     if(depth>32)throw new Error("inventory directory depth exceeds budget");
     for(const entry of await readdir(directory,{withFileTypes:true})) {
@@ -61,6 +61,7 @@ export async function inventoryTenant(root,{maxEntries=100000,maxBytes=2*1024**3
       if(info.isSymbolicLink()) {
         const target=await readlink(path);const actual=resolve(directory,target);
         if(actual!==root && !actual.startsWith(`${root}/`))externalLinks.push({path:name,target});
+        else links.push({path:name,target});
         continue;
       }
       if(info.dev!==initial.dev)throw new Error("inventory crosses a filesystem boundary");
@@ -79,8 +80,86 @@ export async function inventoryTenant(root,{maxEntries=100000,maxBytes=2*1024**3
     }
   }
   await walk(root);files.sort((a,b)=>a.path.localeCompare(b.path));directories.sort();externalLinks.sort((a,b)=>a.path.localeCompare(b.path));
-  return {schema:1,root,bytes,entries:count,files,directories,externalLinks,coldCopyRequired:true};
+  links.sort((a,b)=>a.path.localeCompare(b.path));
+  return {schema:1,root,bytes,entries:count,files,directories,links,externalLinks,coldCopyRequired:true};
 }
+// Offline operator primitive, never exposed by the public gateway. The caller
+// must stop all source writers and keep the original in a restricted backup.
+export async function copyColdTenant({source,destination,kind,assertDrained}) {
+  if(!["worker","native"].includes(kind) || typeof assertDrained!=="function" || !(await assertDrained()))
+    throw new Error("tenant source must be drained");
+  for(const root of [source,destination])
+    if(typeof root!=="string" || !isAbsolute(root) || resolve(root)!==root || root==="/")throw new Error("invalid cold migration root");
+  if(source===destination || source.startsWith(`${destination}/`) || destination.startsWith(`${source}/`))
+    throw new Error("migration roots overlap");
+  async function trustedAncestors(root) {
+    let current="/";
+    for(const name of root.slice(1).split("/")){
+      current=join(current,name);
+      let info;try{info=await lstat(current);}catch(error){if(error.code==="ENOENT")break;throw error;}
+      if(info.isSymbolicLink() || !info.isDirectory())throw new Error("unsafe migration root ancestor");
+    }
+  }
+  await trustedAncestors(source);await trustedAncestors(destination);
+  async function emptyDirectories(root) {
+    let info;try{info=await lstat(root);}catch(error){if(error.code==="ENOENT")return;throw error;}
+    if(!info.isDirectory() || info.isSymbolicLink())throw new Error("unsafe migration destination");
+    for(const name of await readdir(root))await emptyDirectories(join(root,name));
+  }
+  await emptyDirectories(destination);
+  const before=await inventoryTenant(source);
+  const prefix="state/com.ai4s.workbench";
+  const flatten=kind==="worker" && before.directories.includes(prefix);
+  if(flatten && before.files.some(file=>file.path.startsWith("state/") && !file.path.startsWith(`${prefix}/`)))
+    throw new Error("conflicting legacy state layout");
+  const map=name=>flatten && (name===prefix || name.startsWith(`${prefix}/`)) ? `state${name.slice(prefix.length)}` : name;
+  const credential=name=>kind==="worker" ? /^state\/runtime\/(xdg-config\/opencode(?:\/|$)|xdg-data\/opencode\/auth\.json$)/.test(name) :
+    /^(codex-home\/(?:auth\.json|config\.toml|codex-models\.json|codex-gateway-models\.json|rules(?:\/|$))|claude-config(?:\/|$))/.test(name);
+  const omittedCredentials=before.files.filter(file=>credential(map(file.path))).map(file=>map(file.path));
+  const expected=before.files.filter(file=>!credential(map(file.path))).map(file=>({...file,path:map(file.path),sourcePath:file.path}));
+  const originals=new Map(expected.map(file=>[file.path,file]));
+  const names=new Set(expected.map(file=>file.path));
+  if(names.size!==expected.length)throw new Error("migration destination collision");
+  await mkdir(destination,{recursive:true,mode:0o700});
+  for(const name of before.directories.map(map)) {
+    if(!credential(name))await mkdir(join(destination,name),{recursive:true,mode:0o700});
+  }
+  for(const file of expected) {
+    const input=await open(join(source,file.sourcePath),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    let output;
+    try {
+      const info=await input.stat();
+      if(!info.isFile() || info.size!==file.size || info.nlink!==1)throw new Error("unsafe cold migration source file");
+      await mkdir(dirname(join(destination,file.path)),{recursive:true,mode:0o700});
+      output=await open(join(destination,file.path),"wx",0o600);
+      const hash=createHash("sha256");let copied=0;
+      for await(const chunk of input.createReadStream({autoClose:false})) {
+        copied+=chunk.length;if(copied>file.size)throw new Error("cold source changed during copy");
+        hash.update(chunk);await output.writeFile(chunk);
+      }
+      if(copied!==file.size || hash.digest("hex")!==file.sha256)throw new Error("cold source changed during copy");
+      await output.chmod(file.mode);await output.sync();
+    }finally{await output?.close();await input.close();}
+  }
+  const repairNeeded=before.externalLinks.map(link=>({path:map(link.path),reason:"external-link"}));
+  for(const link of before.links) {
+    const target=relative(source,resolve(dirname(join(source,link.path)),link.target));
+    if(credential(map(link.path)) || credential(map(target))) {repairNeeded.push({path:map(link.path),reason:"credential-link"});continue;}
+    const name=map(link.path);const mapped=map(target);
+    const targetPath=isAbsolute(link.target) ? join(destination,mapped) : relative(dirname(join(destination,name)),join(destination,mapped)) || ".";
+    await symlink(targetPath,join(destination,name));
+  }
+  if(!(await assertDrained()))throw new Error("tenant source is no longer drained");
+  const after=await inventoryTenant(source);
+  if(JSON.stringify(before)!==JSON.stringify(after))throw new Error("cold source changed during migration");
+  const copied=await inventoryTenant(destination);
+  if(copied.files.length!==expected.length || copied.files.some(file=>{const original=originals.get(file.path);
+    return !original || file.size!==original.size || file.sha256!==original.sha256 || file.mode!==original.mode;}))
+    throw new Error("cold migration verification failed");
+  return {schema:1,verified:true,copiedFiles:copied.files.length,copiedBytes:copied.bytes,
+    stateLayout:flatten?"flattened-identifier":"unchanged",omittedCredentials,repairNeeded};
+}
+
 async function dryRun(args) {
   if(args.join(" ")!=="--dry-run --synthetic")throw new Error("only the read-only synthetic migration inventory is available");
   const roots=["/var/lib/scikeel/fixture-data/instances/sandbox-test-a","/var/lib/scikeel/fixture-data/instances/sandbox-test-b"];

@@ -37,7 +37,7 @@ export function validateImageManifest(v) {
     throw new Error("pinned tool version mismatch");
   if (v.variant === "production" && v.testEntryPoint) throw new Error("invalid production test entrypoint");
   if (v.variant === "production") {
-    const paths = ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py"];
+    const paths = ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py", "opt/scikeel/tools/science-environment.mjs"];
     if (!v.runnerFiles || Object.keys(v.runnerFiles).sort().join(",") !== paths.sort().join(",") ||
         Object.values(v.runnerFiles).some((value) => !hex.test(value))) throw new Error("missing immutable runner identity");
   }
@@ -50,7 +50,7 @@ export function validateBuildContext(paths) {
     if (typeof path !== "string" || path.startsWith("/") || path.includes("\\") ||
         path.split("/").some((part) => !part || part === "." || part === "..") ||
         !(fixed.has(path) || /^tools\/bin\/(osd|opencode|node|uv|codex|claude)$/.test(path) ||
-          /^tools\/resources\/skills-core\/[^/]+\/.+/.test(path) || /^tools\/(?:probe-entry|runner|file-rpc|cli-jobs)\.mjs$/.test(path) || path === "tools/project-environment.py") ||
+          /^tools\/resources\/skills-core\/[^/]+\/.+/.test(path) || /^tools\/(?:probe-entry|runner|file-rpc|cli-jobs|science-environment)\.mjs$/.test(path) || path === "tools/project-environment.py") ||
         /(^|\/)(\.[^/]+|auth\.json|credentials?\.json|secrets?)(\/|$)|\.(key|pem|p12)$/i.test(path))
       throw new Error("forbidden image build context entry");
   }

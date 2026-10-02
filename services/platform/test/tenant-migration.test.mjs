@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nextMigrationState, TenantMigrations, inventoryTenant } from "../../../scripts/dev/migrate-tenant-sandboxes.mjs";
-import { mkdtemp, rm, mkdir, writeFile, symlink } from "node:fs/promises";
+import { nextMigrationState, TenantMigrations, inventoryTenant, copyColdTenant } from "../../../scripts/dev/migrate-tenant-sandboxes.mjs";
+import { mkdtemp, rm, mkdir, writeFile, symlink, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -40,4 +40,46 @@ test("failed migration retains its recovery checkpoint and stale generations can
   await migrations.transition(context,"copyFailed");assert.equal(migrations.get(context).checkpoint,"backedUp");
   await assert.rejects(migrations.transition({...context,generation:2},"recover"),/identity/);
   await migrations.transition(context,"recover");assert.equal(migrations.get(context).state,"backedUp");
+});
+
+test("cold migration preserves bytes and internal links, flattens legacy state and omits administrator credentials",async(t)=>{
+  const root=await mkdtemp(join(tmpdir(),"scikeel-cold-"));t.after(()=>rm(root,{recursive:true,force:true}));
+  const source=join(root,"backup"),destination=join(root,"owned");
+  await mkdir(join(source,"workspace",".git"),{recursive:true});
+  await mkdir(join(source,"state","com.ai4s.workbench","runtime","xdg-data","opencode"),{recursive:true});
+  await mkdir(join(source,"state","com.ai4s.workbench","runtime","xdg-config","opencode"),{recursive:true});
+  await writeFile(join(source,"workspace",".git","HEAD"),"ref: refs/heads/main\n");
+  await writeFile(join(source,"state","com.ai4s.workbench","runtime","xdg-data","opencode","opencode.db-wal"),"cold history bytes");
+  await writeFile(join(source,"state","com.ai4s.workbench","runtime","xdg-config","opencode","opencode.json"),"administrator secret");
+  await symlink(".git/HEAD",join(source,"workspace","head-link"));
+  await symlink("/etc/passwd",join(source,"workspace","external"));
+  const result=await copyColdTenant({source,destination,kind:"worker",assertDrained:async()=>true});
+  assert.equal(result.verified,true);assert.equal(result.copiedFiles,2);
+  assert.equal(await readFile(join(destination,"state","runtime","xdg-data","opencode","opencode.db-wal"),"utf8"),"cold history bytes");
+  assert.equal(await readlink(join(destination,"workspace","head-link")),".git/HEAD");
+  await assert.rejects(readFile(join(destination,"workspace","external")));
+  await assert.rejects(readFile(join(destination,"state","runtime","xdg-config","opencode","opencode.json")));
+  assert.equal(result.omittedCredentials.length,1);assert.equal(result.repairNeeded.length,1);
+  assert.ok(!JSON.stringify(result).includes("administrator secret"));
+  assert.equal(await readFile(join(source,"workspace",".git","HEAD"),"utf8"),"ref: refs/heads/main\n");
+});
+test("cold migration refuses live sources, reused destinations and native credentials",async(t)=>{
+  const root=await mkdtemp(join(tmpdir(),"scikeel-cold-deny-"));t.after(()=>rm(root,{recursive:true,force:true}));
+  const source=join(root,"source"),destination=join(root,"destination");await mkdir(join(source,"codex-home"),{recursive:true});
+  await writeFile(join(source,"codex-home","auth.json"),"secret");
+  await writeFile(join(source,"codex-home","config.toml"),"old unsafe provider");
+  await writeFile(join(source,"sessions.json"),"{\"version\":1}");
+  await assert.rejects(copyColdTenant({source,destination,kind:"native",assertDrained:async()=>false}),/drained/);
+  const result=await copyColdTenant({source,destination,kind:"native",assertDrained:async()=>true});
+  assert.equal(result.omittedCredentials.length,2);assert.equal(result.copiedFiles,1);
+  await assert.rejects(copyColdTenant({source,destination,kind:"native",assertDrained:async()=>true}),/destination/);
+});
+
+test("interrupted cold verification preserves the original and refuses symlinked source ancestors",async(t)=>{
+  const root=await mkdtemp(join(tmpdir(),"scikeel-cold-interrupt-"));t.after(()=>rm(root,{recursive:true,force:true}));
+  const source=join(root,"source");await mkdir(source);await writeFile(join(source,"history.db"),"original bytes");
+  let checks=0;await assert.rejects(copyColdTenant({source,destination:join(root,"partial"),kind:"native",assertDrained:async()=>++checks===1}),/drained/);
+  assert.equal(await readFile(join(source,"history.db"),"utf8"),"original bytes");
+  await symlink(source,join(root,"alias"));
+  await assert.rejects(copyColdTenant({source:join(root,"alias"),destination:join(root,"unsafe"),kind:"native",assertDrained:async()=>true}),/ancestor/);
 });

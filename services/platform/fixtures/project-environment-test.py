@@ -64,6 +64,11 @@ try:
         staged = helper.transaction(install, manifest); assert staged['standalone'] and staged['stableInterpreter']
         published = helper.transaction({**install, 'operation': 'publish', 'stageId': staged['stageId']}, manifest)
         assert published['venvState'] == 'valid'
+        recorded = json.loads((project/'.venv/scikeel-environment.json').read_text())
+        assert recorded['imageDigest'] == request['imageDigest'] and recorded['lockHash'] == staged['lockHash']
+        assert recorded['runtimeIdentity']['python'] == sys.version.split()[0]
+        assert recorded['runtimeIdentity']['os'] == 'linux' and recorded['runtimeIdentity']['architecture'] == 'x86_64'
+        assert recorded['runtimeIdentity']['uv'] and recorded['inventory'] == staged['inventory']
         code = 'import scikeel_fixture,sys;assert scikeel_fixture.VALUE=="private-environment-fixture";print(sys.prefix)'
         result = helper.subprocess.run([str(project/'.venv/bin/python'), '-I', '-c', code], capture_output=True, timeout=10)
         assert result.returncode == 0 and result.stdout.decode().strip() == str(project/'.venv')
@@ -82,6 +87,6 @@ try:
             pass
         assert (project/'.venv/bin/python').exists()
         assert not list(project.glob('.scikeel-env-*'))
-        print(json.dumps({'realUv': True, 'standalone': True, 'stableInterpreter': True, 'wheelHashes': True, 'changedInputDenied': True, 'failedInstallPreservedPrevious': True}))
+        print(json.dumps({'realUv': True, 'standalone': True, 'stableInterpreter': True, 'wheelHashes': True, 'changedInputDenied': True, 'failedInstallPreservedPrevious': True, 'persistedIdentity': True}))
 finally:
     server.shutdown(); server.server_close(); thread.join(timeout=2)

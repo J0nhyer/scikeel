@@ -10,6 +10,7 @@ on:
       - scripts/dev/probe-production-runner.mjs
       - crates/osd-cli/**
       - crates/osd-core/**
+      - scripts/dev/fetch-sandbox-codex.mjs
       - scripts/dev/prepare-science-image.mjs
       - scripts/dev/stage-sandbox-image.mjs
       - .github/workflows/sandbox-image.yml
@@ -71,7 +72,8 @@ jobs:
           cp "$(command -v node)" .deploy/science-context/tools/bin/
           bash scripts/dev/fetch-opencode.sh x86_64-unknown-linux-gnu
           cp apps/desktop/src-tauri/binaries/opencode-x86_64-unknown-linux-gnu .deploy/science-context/tools/bin/opencode
-          cp runtime/sandbox/{runner,file-rpc,cli-jobs}.mjs .deploy/science-context/tools/
+          node scripts/dev/fetch-sandbox-codex.mjs
+          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment}.mjs .deploy/science-context/tools/
           cp runtime/sandbox/project-environment.py .deploy/science-context/tools/
           mkdir -p .deploy/science-context/tools/resources/skills-core
           tar -C runtime/skills/core --exclude=.gitkeep -cf - . | tar -C .deploy/science-context/tools/resources/skills-core -xf -

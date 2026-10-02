@@ -716,6 +716,25 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str) {
                 Err(e) => respond_json(stream, 400, &err_json(&e)),
             }
         }
+        ("PATCH", ["projects", id]) => {
+            let name=json_str_field(&req.body,"name").unwrap_or_default();
+            match crate::project::rename_project(&ctx.env,id,&name) {
+                Ok(())=>respond_json(stream,200,"{\"ok\":true}"),
+                Err(error)=>respond_json(stream,400,&err_json(&error)),
+            }
+        }
+        ("POST", ["projects", id, "pin"]) => {
+            let value:serde_json::Value=match serde_json::from_slice(&req.body){Ok(value)=>value,Err(_)=>return respond_json(stream,400,&err_json("invalid pin request"))};
+            let Some(pinned)=value["pinned"].as_bool() else {return respond_json(stream,400,&err_json("invalid pin value"));};
+            match crate::project::set_project_pinned(&ctx.env,id,pinned) {
+                Ok(())=>respond_json(stream,200,"{\"ok\":true}"),
+                Err(error)=>respond_json(stream,400,&err_json(&error)),
+            }
+        }
+        ("DELETE", ["projects", id]) => match crate::project::delete_project(&ctx.env,id) {
+            Ok(())=>respond_json(stream,200,"{\"ok\":true}"),
+            Err(error)=>respond_json(stream,400,&err_json(&error)),
+        },
         ("GET", ["runs"]) => match crate::runs::list_runs(&ctx.env) {
             Ok(list) => respond_json(stream, 200, &serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())),
             Err(e) => respond_json(stream, 500, &err_json(&e)),

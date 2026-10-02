@@ -5,6 +5,7 @@ import importlib.metadata
 import json
 import os
 import pathlib
+import platform
 import re
 import secrets
 import shutil
@@ -94,8 +95,12 @@ def inspect(project, project_path, image_digest):
                 site = secure(environment, f'lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages', True); os.close(site)
             finally:
                 os.close(binary)
+            record = json.loads(read(environment, 'scikeel-environment.json', 2*1024**2))
+            identity = record.get('runtimeIdentity', {})
+            if record.get('schema') != 1 or record.get('imageDigest') != image_digest or source is None or record.get('lockHash') != hashlib.sha256(source).hexdigest() or identity.get('python') != sys.version.split()[0] or identity.get('os') != 'linux' or identity.get('architecture') != platform.machine():
+                raise ValueError('private environment identity needs repair')
             state = 'valid'
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError, AttributeError):
             state = 'broken'
         finally:
             os.close(environment)
@@ -153,7 +158,17 @@ def transaction(request, manifest):
                         file.write_bytes(content.replace(venv.encode(), (project_path+'/.venv').encode()))
                 record = {'stageId': stage_id, 'inputHash': current['inputHash'], 'imageDigest': request['imageDigest'],
                           'lockHash': hashlib.sha256(lock).hexdigest(), 'standalone': True, 'stableInterpreter': True,
-                          'validated': True, 'inventory': actual['packages'], 'projectInode': os.fstat(project).st_ino}
+                          'validated': True, 'inventory': actual['packages'], 'projectInode': os.fstat(project).st_ino,
+                          'runtimeIdentity': {'os': 'linux', 'architecture': platform.machine(), 'python': sys.version.split()[0],
+                                              'uv': run([UV, '--version'], project, env, timeout=10).decode().strip().split()[1]}}
+                installed = {'schema': 1, 'kind': 'private', **{key: record[key] for key in ['imageDigest', 'lockHash', 'inputHash', 'inventory', 'runtimeIdentity']}}
+                descriptor = secure(stage, '.venv', True)
+                try:
+                    with os.fdopen(os.open('scikeel-environment.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=descriptor), 'w') as file:
+                        json.dump(installed, file); file.flush(); os.fsync(file.fileno())
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
                 with os.fdopen(os.open('stage.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=stage), 'w') as file:
                     json.dump(record, file); file.flush(); os.fsync(file.fileno())
                 return {key: value for key, value in record.items() if key != 'projectInode'}

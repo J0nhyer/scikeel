@@ -550,7 +550,7 @@ export class PlatformServer {
   async #proxy(request, response, access, user, worker) {
     // This branch is enabled only for explicitly migrated managed accounts.
     // It never invokes the legacy host CLI adapters.
-    if (this.tenantPolicy && !(request.url ?? "").startsWith("/v1/")) {
+    if (this.tenantPolicy && !this.cliRuntime?.isManaged(user.id) && !(request.url ?? "").startsWith("/v1/")) {
       await this.#managedRuntimeProxy(request, response, access, user, worker);
       return;
     }
@@ -582,6 +582,11 @@ export class PlatformServer {
         if (operation.operation === "runsLog" && !/^[a-fA-F0-9]{1,128}$/.test(url.searchParams.get("hash") ?? ""))
           throw Object.assign(new Error("invalid log id"), { statusCode: 400 });
       } catch (error) { sendJson(response, error.statusCode ?? 403, { error: error.message }); return; }
+    }
+    if(this.tenantPolicy && this.cliRuntime?.isManaged(user.id) && !["GET","HEAD"].includes(request.method)) {
+      if(request.headers.origin!==`${this.secureCookies ? "https" : "http"}://${request.headers.host}` || request.headers["sec-fetch-site"]==="cross-site") {
+        sendJson(response,403,{error:"foreign origin"});return;
+      }
     }
     const parsed = new URL(request.url ?? "/", "http://platform.invalid");
     const sessionRoute = parsed.pathname.match(/^\/session\/([^/]+)(?:\/(message|fork))?$/);
@@ -685,7 +690,7 @@ export class PlatformServer {
         }
       } catch (error) { sendJson(response, error.status ?? 400, { error: error.message, code: error.code }); return; }
     }
-    if (this.cliRuntime && !this.tenantPolicy) {
+    if (this.cliRuntime && (!this.tenantPolicy || this.cliRuntime.sandboxJobs)) {
       const handled = await this.cliRuntime.handle(request, response, {
         userId: user.id,
         workspaceDir: worker.workspaceDir,
@@ -812,6 +817,11 @@ export class PlatformServer {
   async #researchOwner(user, sessionId, access, worker) {
     if (this.cliRuntime?.isManaged(user.id)) {
       const { session } = await this.cliRuntime.getOwnedSession(user.id, sessionId);
+      if(this.tenantPolicy) {
+        const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+        this.tenantPolicy.directory(context,session.directory);
+        this.tenantPolicy.registerSession(context,{id:sessionId,directory:session.directory});
+      }
       return { userId: user.id, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime };
     }
     if(this.tenantPolicy) {
@@ -1191,7 +1201,11 @@ export class PlatformServer {
         }
         if (path.startsWith("/api/environments/")) {
           if (!this.environments || !this.tenantPolicy) { sendJson(response, 404, {error: "not found"}); return; }
-          const {worker} = await this.#ensureWorker(user);
+          const {worker,access} = await this.#ensureWorker(user);
+          if(this.cliRuntime?.isManaged(user.id)) {
+            const id=/^\/api\/environments\/([A-Za-z0-9_-]+)/.exec(path)?.[1];
+            if(id)await this.#researchOwner(user,id,access,worker);
+          }
           await this.#environmentRequest(request, response, user, worker); return;
         }
         if (await this.attachmentRouter(request, response, user)) return;

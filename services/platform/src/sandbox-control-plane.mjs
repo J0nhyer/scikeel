@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { SandboxNativeJobs } from "./sandbox-native-jobs.mjs";
 import { lstat, readFile } from "node:fs/promises";
 import { ModelBroker } from "./model-broker.mjs";
 import { EgressBroker } from "./egress-broker.mjs";
@@ -75,7 +77,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       const token = profile.provider[config.defaultProvider].options.apiKey;
       const response = await fetch(`${access.runnerUrl}/profile`, { method: "POST", headers: {
         authorization: `Bearer ${access.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ instanceId: context.instanceId, generation: context.generation, profile }), signal: AbortSignal.timeout(15000) });
+        body: JSON.stringify({ instanceId: context.instanceId, generation: context.generation, profile, imageDigest:configuration.imageDigest }), signal: AbortSignal.timeout(15000) });
       if (!response.ok) throw new Error("managed profile unavailable");
       const timer = setInterval(() => {
         try { model.renew(token, context); }
@@ -97,7 +99,17 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   const files = new WorkspaceRpc({ workerManager: manager, tenantPolicy });
   environments = new SandboxEnvironments({ files, tenantPolicy, packageGrants, imageDigest: configuration.imageDigest,
     acquireMaintenance: (context) => manager.acquireMaintenance(context) });
-  return { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments,
+  const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy});
+  const nativeProfileResolver={refresh:async(runtime)=>{
+    const provider=config.providers[config.defaultProvider];
+    const enabled=runtime==="codex" && provider.authMode==="bearer" && provider.routes.includes("/v1/responses");
+    const revision=createHash("sha256").update(JSON.stringify({image:configuration.imageDigest,provider:config.defaultProvider,
+      endpoint:provider.baseUrl,models:provider.enabledModels})).digest("hex");
+    return {runtime,identityRevision:revision,catalogRevision:revision,sourceRevision:revision,
+      models:enabled?provider.enabledModels.map(id=>({id,name:id,variants:{},inputModalities:["text","image"]})):[],
+      defaultModel:enabled?config.defaultModel:null,status:enabled?"ready":"unavailable",enabledByProfile:enabled,files:{}};
+  }};
+  return { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, nativeJobs, nativeProfileResolver,
     runtimeCatalog: () => ({ model: `${config.defaultProvider}/${config.defaultModel}`, providers: Object.entries(config.providers).map(([id, value]) => ({
       id, name: id, models: Object.fromEntries(value.enabledModels.map((model) => [model, { id: model, name: model, providerID: id }])) })),
       connected: Object.keys(config.providers), defaults: Object.fromEntries(Object.entries(config.providers).map(([id, value]) => [id, value.enabledModels[0]])) }),

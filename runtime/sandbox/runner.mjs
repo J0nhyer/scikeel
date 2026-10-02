@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { resolve, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FileRpc, fileRequest, EnvironmentRpc, environmentRequest } from "./file-rpc.mjs";
-import { buildJobEnvironment } from "./cli-jobs.mjs";
+import { buildJobEnvironment, CliJobs, jobRequest } from "./cli-jobs.mjs";
 
 function validateManifest(value) {
   if (!value || value.schema !== 1 || !/^[A-Za-z0-9_-]{1,64}$/.test(value.instanceId ?? "") || !Number.isSafeInteger(value.generation) || value.generation < 1 ||
@@ -18,10 +18,10 @@ function validateManifest(value) {
 }
 export class TenantRunner {
   #active = new Set(); #operations = new Set();
-  constructor({ manifest, token, files = new FileRpc(), environments = new EnvironmentRpc(), configureProfile, timeoutMs = 30000 } = {}) {
+  constructor({ manifest, token, files = new FileRpc(), environments = new EnvironmentRpc(), configureProfile, healthy=()=>true, jobsFactory=options=>new CliJobs(options), timeoutMs = 30000 } = {}) {
     this.manifest = validateManifest(manifest);
     if (!/^[a-f0-9]{64}$/.test(token ?? "") || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new Error("invalid tenant runner configuration");
-    this.token = token; this.files = files; this.environments = environments; this.configureProfile = configureProfile; this.timeoutMs = timeoutMs;
+    this.token = token; this.files = files; this.environments = environments; this.configureProfile = configureProfile; this.healthy=healthy; this.jobsFactory = jobsFactory; this.timeoutMs = timeoutMs;
     this.server = createServer((req, res) => { void this.#handle(req, res); });
     this.server.maxHeadersCount = 24; this.server.headersTimeout = 5000; this.server.requestTimeout = 10000;
     this.server.on("clientError", (_error, socket) => socket.destroy());
@@ -37,6 +37,7 @@ export class TenantRunner {
   }
   async close() {
     for (const controller of this.#active) controller.abort();
+    await this.jobs?.close();
     this.server.closeAllConnections(); if (this.server.listening) await new Promise((done) => this.server.close(done));
   }
   async #handle(req, res) {
@@ -44,10 +45,10 @@ export class TenantRunner {
       if (res.destroyed) return;
       res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(JSON.stringify(body));
     };
-    if (req.method === "GET" && req.url === "/health") { send(200, { ready: true }); return; }
+    if (req.method === "GET" && req.url === "/health") { const ready=this.healthy();send(ready ? 200 : 503, {ready});return; }
     const credential = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
     if (!credential || !timingSafeEqual(Buffer.from(credential), Buffer.from(this.token))) { send(403, { error: "runner_denied" }); return; }
-    if (req.method !== "POST" || !["/files", "/profile", "/environments"].includes(req.url)) { send(404, { error: "runner_route_unavailable" }); return; }
+    if (req.method !== "POST" || !["/files", "/profile", "/environments", "/jobs"].includes(req.url)) { send(404, { error: "runner_route_unavailable" }); return; }
     if (this.#operations.has(req.url) || this.#operations.has("/profile") || (req.url === "/profile" && this.#active.size)) { send(429, { error: "runner_busy" }); return; }
     const controller = new AbortController(); this.#active.add(controller); this.#operations.add(req.url);
     const cancel = () => controller.abort();
@@ -64,9 +65,24 @@ export class TenantRunner {
       const { instanceId: _instanceId, generation: _generation, ...operation } = body;
       let result;
       if (req.url === "/profile") {
-        if (Object.keys(operation).join(",") !== "profile" || !this.configureProfile) throw new Error("profile unavailable");
-        await this.configureProfile(validateProfile(operation.profile), { signal: controller.signal }); result = { configured: true };
-      } else if(req.url==="/environments") result=await this.environments.call(environmentRequest(operation),{signal:controller.signal});
+        if (Object.keys(operation).some(key=>!["profile","imageDigest"].includes(key)) || !this.configureProfile || this.jobs?.busy) throw new Error("profile unavailable");
+        const profile=validateProfile(operation.profile);
+        if(operation.imageDigest!==undefined && !/^sha256:[a-f0-9]{64}$/.test(operation.imageDigest))throw new Error("invalid immutable job image");
+        await this.configureProfile(profile, { signal: controller.signal, imageDigest:operation.imageDigest });
+        await this.jobs?.close();this.jobs=undefined;
+        if(operation.imageDigest) {
+          this.jobs=this.jobsFactory({manifest:this.manifest,environments:this.environments,imageDigest:operation.imageDigest});
+          this.jobs.configure(profile);
+        }
+        result = { configured: true };
+      } else if(req.url==="/jobs") {
+        if(!this.jobs || !this.healthy())throw new Error("managed jobs unavailable");
+        result=await this.jobs.call(jobRequest(operation),{signal:controller.signal});
+      } else if(req.url==="/environments") {
+        const value=environmentRequest(operation);
+        if(value.operation!=="inspect" && this.jobs?.busy)throw new Error("managed environment busy");
+        result=await this.environments.call(value,{signal:controller.signal});
+      }
       else result = await this.files.call(fileRequest(operation), { signal: controller.signal });
       if (!controller.signal.aborted) send(200, result);
     } catch { if (!controller.signal.aborted) send(403, { error: "runner_operation_denied" }); }
@@ -102,6 +118,7 @@ export class TenantGateway {
         !Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("invalid gateway identity");
     Object.assign(this, { token, address, port, spawnImpl });
   }
+  get ready() {return !!this.#child && this.#child.exitCode===null && this.#child.signalCode===null;}
   async stop() {
     const child = this.#child; if (!child) return; this.#child = undefined;
     if (child.pid) { try { process.kill(-child.pid, "SIGTERM"); } catch {} }
@@ -111,7 +128,7 @@ export class TenantGateway {
       child.once("close", () => { clearTimeout(timer); done(); });
     });
   }
-  async start(profile) {
+  async start(profile, {imageDigest} = {}) {
     await this.stop();
     const manifest = this.manifest;
     const env = buildJobEnvironment({ privateHome: manifest.home, projectDir: manifest.workspaceDir,
@@ -122,7 +139,8 @@ export class TenantGateway {
     try { await lstat(`${config}/opencode.jsonc`); throw new Error("legacy managed profile requires migration"); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
     const temporary = `${config}/profile-${process.pid}-${Date.now()}.tmp`;
-    await writeFile(temporary, JSON.stringify(profile ?? { permission: { bash: "ask", edit: "ask", external_directory: "deny" } }), { flag: "wx", mode: 0o600 });
+    const configured=profile && imageDigest ? {...profile,plugin:[["file:///opt/scikeel/tools/science-environment.mjs",{imageDigest}]]} : profile;
+    await writeFile(temporary, JSON.stringify(configured ?? { permission: { bash: "ask", edit: "ask", external_directory: "deny" } }), { flag: "wx", mode: 0o600 });
     await rename(temporary, `${config}/opencode.json`);
     const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", this.address,
       "--port", String(this.port), "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,
@@ -147,7 +165,7 @@ async function startTenant() {
   if (auth.schema !== 1 || !/^[a-f0-9]{64}$/.test(auth.token ?? "")) throw new Error("invalid runner identity");
   const address = process.env.SCIKEEL_BIND_ADDRESS;
   const gateway = new TenantGateway({ manifest, token: auth.token, address });
-  const runner = new TenantRunner({ manifest, token: auth.token, configureProfile: (profile) => gateway.start(profile) });
+  const runner = new TenantRunner({ manifest, token: auth.token, configureProfile: (profile,options) => gateway.start(profile,options), healthy:()=>gateway.ready });
   let stopping;
   const stop = () => stopping ??= (async () => {
     await runner.close(); await gateway.stop();
