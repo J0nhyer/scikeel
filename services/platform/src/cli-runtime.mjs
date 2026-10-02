@@ -334,6 +334,7 @@ export class CliRuntimeManager {
     this.spawnImpl = spawnImpl;
     this.sandboxJobs = sandboxJobs;
     this.nativeApprovals = new Map();
+    this.nativeQuestions = new Map();
     this.logger = logger;
     this.userStates = new Map();
     this.processes = new Map();
@@ -955,7 +956,10 @@ export class CliRuntimeManager {
         images:(attachmentInput?.images??[]).map(image=>image.url),nativeSessionId:stale?undefined:session.nativeSessionId,signal:controller.signal,
         emit:async event=>{
           if(event.type==="text")this.appendAssistantText(userId,session,assistant,event.text);
-          else if(event.type==="approval") {
+          else if(event.type==="question") {
+            const pending={id:event.id,sessionID:session.id,questions:event.questions};
+            this.nativeQuestions.set(event.id,{userId,...pending});this.emit(userId,{type:"question.asked",properties:pending});
+          } else if(event.type==="approval") {
             const pending={id:event.id,sessionID:session.id,permission:event.kind==="edit"?"edit":"bash",patterns:event.command?[event.command]:[],metadata:{}};
             this.nativeApprovals.set(event.id,{userId,...pending});
             this.emit(userId,{type:"permission.asked",properties:pending});
@@ -971,6 +975,7 @@ export class CliRuntimeManager {
         this.emit(userId,{type:"session.error",properties:{sessionID:session.id,error:assistant.info.error}});}
     } finally {
       for(const [id,pending]of this.nativeApprovals)if(pending.userId===userId && pending.sessionID===session.id)this.nativeApprovals.delete(id);
+      for(const [id,pending]of this.nativeQuestions)if(pending.userId===userId && pending.sessionID===session.id)this.nativeQuestions.delete(id);
       assistant.info.time.completed=now();
       if(assistant.parts.length || assistant.info.error)session.history.push(assistant);
       session.history=session.history.slice(-MAX_HISTORY_MESSAGES);session.status="idle";session.updatedAt=now();
@@ -1468,6 +1473,20 @@ export class CliRuntimeManager {
         this.nativeApprovals.delete(pending.id);this.emit(userId,{type:"permission.replied",properties:{sessionID:pending.sessionID,requestID:pending.id,reply:value.reply}});
         sendJson(response,200,true);
       }catch(error){sendJson(response,error.status??403,{error:"permission unavailable"});}
+      return true;
+    }
+    if(this.sandboxJobs && path==="/question" && request.method==="GET") {
+      sendJson(response,200,[...this.nativeQuestions.values()].filter(value=>value.userId===userId).map(({userId:_owner,...value})=>value));return true;
+    }
+    const questionReply=this.sandboxJobs && /^\/question\/([a-f0-9]{64})\/(reply|reject)$/.exec(path);
+    if(questionReply && request.method==="POST") {
+      try {
+        const value=await jsonBody(request);const pending=this.nativeQuestions.get(questionReply[1]);const reject=questionReply[2]==="reject";
+        if(!pending || pending.userId!==userId || Object.keys(value).some(key=>key!=="answers"))throw issue("question_unavailable","question unavailable",403);
+        await this.sandboxJobs.answer({userId,sessionId:pending.sessionID,id:pending.id,...(reject?{reject:true}:{answers:value.answers})});
+        this.nativeQuestions.delete(pending.id);this.emit(userId,{type:reject?"question.rejected":"question.replied",properties:{sessionID:pending.sessionID,requestID:pending.id}});
+        sendJson(response,200,true);
+      }catch(error){sendJson(response,error.status??403,{error:"question unavailable"});}
       return true;
     }
     if ((path === "/question" || path === "/permission") && request.method === "GET") {

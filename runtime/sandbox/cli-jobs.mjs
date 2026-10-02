@@ -73,7 +73,7 @@ export function runtimeArgv({ runtime, model, sessionId }) {
 // One private native app-server per turn. All argv/configuration is fixed here;
 // callers cannot send a host command or choose a different transport endpoint.
 export class CodexAppServer {
-  #child; #pending=new Map(); #approvals=new Map(); #next=1; #buffer=""; #bytes=0; #closed=false; #thread; #turn; #closing;
+  #child; #pending=new Map(); #approvals=new Map(); #questions=new Map(); #next=1; #buffer=""; #bytes=0; #closed=false; #thread; #turn; #closing;
   constructor({spawnImpl,emit,onStopped=()=>{},timeoutMs=1200000,requestTimeoutMs=30000}) {
     if(typeof spawnImpl!=="function" || typeof emit!=="function" || typeof onStopped!=="function" || !Number.isSafeInteger(timeoutMs) || timeoutMs<1 || timeoutMs>1200000 ||
         !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs<1 || requestTimeoutMs>30000)throw new Error("invalid native turn configuration");
@@ -105,7 +105,7 @@ export class CodexAppServer {
     env.CODEX_HOME=posix.join(posix.dirname(privateHome),"codex-home");
     const args=["app-server","--listen","stdio://","-c",'model_provider="scikeel"',"-c",
       'model_providers.scikeel={name="SciKeel",base_url="http://172.31.240.1:4792/v1",env_key="OPENAI_API_KEY",wire_api="responses"}',
-      "-c",'approval_policy="untrusted"',"-c",'sandbox_mode="read-only"',"-c",'web_search="disabled"'];
+      "-c",'approval_policy="on-request"',"-c",'sandbox_mode="read-only"',"-c",'web_search="disabled"'];
     this.#child=this.spawnImpl("/opt/scikeel/tools/bin/codex",args,{cwd:projectDir,env,detached:true,stdio:["pipe","pipe","pipe"]});
     const child=this.#child;child.stdin.on("error",()=>{});child.stderr.resume();
     const decoder=new StringDecoder("utf8");
@@ -132,11 +132,11 @@ export class CodexAppServer {
     try {
       await this.#request("initialize",{clientInfo:{name:"scikeel",version:"1.0.0"}});
       this.#write({method:"initialized"});
-      const params={model,modelProvider:"scikeel",cwd:projectDir,approvalPolicy:"untrusted",sandbox:"read-only"};
+      const params={model,modelProvider:"scikeel",cwd:projectDir,approvalPolicy:"on-request",sandbox:"read-only"};
       const thread=await this.#request(nativeSessionId ? "thread/resume" : "thread/start",{...params,...(nativeSessionId?{threadId:nativeSessionId}:{})});
       if(!/^[A-Za-z0-9_-]{1,128}$/.test(thread.thread?.id??"") || (nativeSessionId && thread.thread.id!==nativeSessionId))throw new Error("native resume identity changed");
       this.#thread=thread.thread.id;
-      const turn=await this.#request("turn/start",{threadId:this.#thread,cwd:projectDir,model,approvalPolicy:"untrusted",
+      const turn=await this.#request("turn/start",{threadId:this.#thread,cwd:projectDir,model,approvalPolicy:"on-request",
         sandboxPolicy:{type:"readOnly",networkAccess:false},input:[{type:"text",text},...images.map(url=>({type:"image",url}))]});
       if(!/^[A-Za-z0-9_-]{1,128}$/.test(turn.turn?.id??""))throw new Error("native turn identity unavailable");
       this.#turn=turn.turn.id;
@@ -156,6 +156,25 @@ export class CodexAppServer {
     if(params.threadId && this.#thread && params.threadId!==this.#thread)throw new Error("foreign native thread");
     if(params.turnId && this.#turn && params.turnId!==this.#turn)throw new Error("foreign native turn");
     if(value.id!==undefined) {
+      if(value.method==="item/tool/requestUserInput") {
+        if(!["string","number"].includes(typeof value.id) || !this.#thread || params.threadId!==this.#thread || typeof params.turnId!=="string" ||
+            this.#questions.size>=8 || this.#questions.has(String(value.id)) || !Array.isArray(params.questions) || !params.questions.length || params.questions.length>3)
+          throw new Error("invalid native question scope");
+        const ids=new Set();const questions=params.questions.map(question=>{
+          if(!question || question.isSecret || typeof question.id!=="string" || !/^[A-Za-z0-9_-]{1,128}$/.test(question.id) || ids.has(question.id) ||
+              typeof question.header!=="string" || question.header.length>128 || typeof question.question!=="string" || question.question.length>4096 ||
+              (question.options!=null && (!Array.isArray(question.options) || question.options.length>20)))throw new Error("unsupported native question");
+          ids.add(question.id);
+          const options=(question.options??[]).map(option=>{
+            if(typeof option?.label!=="string" || !option.label || option.label.length>128 || typeof option.description!=="string" || option.description.length>2048)
+              throw new Error("unsupported native question option");
+            return {label:this.redact(option.label),description:this.redact(option.description)};
+          });
+          return {header:this.redact(question.header),question:this.redact(question.question),options,custom:question.isOther===true || !options.length,multiple:false};
+        });
+        const id=String(value.id);this.#questions.set(id,{rpcId:value.id,ids:[...ids]});
+        await this.emit({type:"question",id,questions});return;
+      }
       if(!["item/commandExecution/requestApproval","item/fileChange/requestApproval"].includes(value.method) ||
           !["string","number"].includes(typeof value.id) || this.#approvals.size>=32 || this.#approvals.has(String(value.id))) {
         this.#write({id:value.id,error:{code:-32601,message:"Native capability unavailable"}});return;
@@ -175,11 +194,17 @@ export class CodexAppServer {
     const record=this.#approvals.get(id);if(!record)throw new Error("native approval unavailable");
     this.#approvals.delete(id);this.#write({id:record.rpcId,result:{decision}});
   }
+  answer({id,answers,reject=false}) {
+    const record=this.#questions.get(id);
+    if(!record || typeof reject!=="boolean" || (!reject && (!validAnswers(answers) || answers.length!==record.ids.length)))throw new Error("native question unavailable");
+    this.#questions.delete(id);
+    this.#write({id:record.rpcId,result:{answers:Object.fromEntries(record.ids.map((key,index)=>[key,{answers:reject?[]:answers[index]}]))}});
+  }
   close() {
     if(this.#closing)return this.#closing;
     this.#closed=true;clearTimeout(this.deadline);this.signal?.removeEventListener("abort",this.abort);
     for(const pending of this.#pending.values()){clearTimeout(pending.timer);pending.reject(new Error("native runtime stopped"));}
-    this.#pending.clear();this.#approvals.clear();const child=this.#child;
+    this.#pending.clear();this.#approvals.clear();this.#questions.clear();const child=this.#child;
     this.#closing=(async()=>{
       if(!child || child.exitCode!==null || child.signalCode!==null)return;
       const stopped=new Promise(resolve=>child.once("close",resolve));
@@ -191,9 +216,13 @@ export class CodexAppServer {
   }
 }
 
+function validAnswers(value) {
+  return Array.isArray(value) && value.length>0 && value.length<=3 && value.every(answer=>Array.isArray(answer) && answer.length<=20 &&
+    answer.every(text=>typeof text==="string" && text.length<=2000 && !text.includes("\0")));
+}
 export function jobRequest(value) {
   const fields={start:["operation","sessionId","project","model","text","images","nativeSessionId"],
-    events:["operation","jobId","after"],approve:["operation","jobId","id","decision"],abort:["operation","jobId"]};
+    events:["operation","jobId","after"],approve:["operation","jobId","id","decision"],answer:["operation","jobId","id","answers","reject"],abort:["operation","jobId"]};
   const allowed=fields[value?.operation];
   if(!value || typeof value!=="object" || Array.isArray(value) || !allowed || Object.keys(value).some(key=>!allowed.includes(key)))
     throw new Error("invalid managed job operation");
@@ -207,6 +236,8 @@ export function jobRequest(value) {
   } else {
     if(!/^[a-f0-9]{64}$/.test(value.jobId??""))throw new Error("invalid managed job identity");
     if(value.operation==="events" && (!Number.isSafeInteger(value.after) || value.after<0))throw new Error("invalid managed event cursor");
+    if(value.operation==="answer" && (!/^[a-f0-9]{64}$/.test(value.id??"") || (value.reject!==undefined && typeof value.reject!=="boolean") ||
+        (value.reject!==true && !validAnswers(value.answers))))throw new Error("invalid managed question reply");
     if(value.operation==="approve" && (!/^[a-f0-9]{64}$/.test(value.id??"") || !["accept","decline","cancel"].includes(value.decision)))
       throw new Error("invalid managed job approval");
   }
@@ -226,6 +257,10 @@ export class CliJobs {
     if(request.operation==="start")return this.#start(request,signal);
     const job=this.#jobs.get(request.jobId);if(!job)throw new Error("managed job not found");
     if(request.operation==="abort"){await job.native.close();job.status="cancelled";return {stopped:true};}
+    if(request.operation==="answer") {
+      const pending=job.questions.get(request.id);if(!pending || job.status!=="running")throw new Error("managed question unavailable");
+      job.questions.delete(request.id);job.native.answer({id:pending,answers:request.answers,reject:request.reject??false});return {replied:true};
+    }
     if(request.operation==="approve") {
       const pending=job.approvals.get(request.id);if(!pending || job.status!=="running")throw new Error("managed approval unavailable");
       job.approvals.delete(request.id);job.native.approve({id:pending,decision:request.decision});return {replied:true};
@@ -247,10 +282,14 @@ export class CliJobs {
       const environment=info.venvState==="valid" ? {kind:"private",python:info.venvPython} : {kind:"base",python:info.basePython};
       if(this.#jobs.size>=16){const oldest=[...this.#jobs].find(([,job])=>job.status!=="running");if(oldest)this.#jobs.delete(oldest[0]);}
       if(this.#jobs.size>=16)throw new Error("managed job history capacity");
-      const job={id:randomBytes(32).toString("hex"),sessionId:request.sessionId,status:"running",events:[],sequence:0,bytes:0,approvals:new Map()};
+      const job={id:randomBytes(32).toString("hex"),sessionId:request.sessionId,status:"running",events:[],sequence:0,bytes:0,approvals:new Map(),questions:new Map()};
       job.native=this.nativeFactory({spawnImpl:this.spawnImpl,onStopped:()=>{
-        if(job.status==="running"){job.status="failed";job.approvals.clear();}
+        if(job.status==="running"){job.status="failed";job.approvals.clear();job.questions.clear();}
       },emit:async event=>{
+        if(event.type==="question") {
+          if(job.questions.size>=8)throw new Error("managed question capacity");
+          const id=randomBytes(32).toString("hex");job.questions.set(id,event.id);event={...event,id};
+        }
         if(event.type==="approval") {
           if(job.approvals.size>=32)throw new Error("managed approval capacity");
           const id=randomBytes(32).toString("hex");job.approvals.set(id,event.id);event={...event,id};
@@ -258,14 +297,14 @@ export class CliJobs {
         const owned={...event,sessionID:job.sessionId,sequence:++job.sequence};
         job.bytes+=Buffer.byteLength(JSON.stringify(owned));if(job.bytes>2*1024**2)throw new Error("managed event output limit");
         job.events.push(owned);
-        if(event.type==="completed"){job.status="settling";job.approvals.clear();await job.native.close();job.status=event.status;}
+        if(event.type==="completed"){job.status="settling";job.approvals.clear();job.questions.clear();await job.native.close();job.status=event.status;}
       }});
       this.#jobs.set(job.id,job);
       try {
         const result=await job.native.start({...request,privateHome:this.manifest.home,projectDir,environment,
           brokers:{modelToken:provider.options.apiKey,modelUrl:provider.options.baseURL},signal});
         job.nativeSessionId=result.nativeSessionId;return {jobId:job.id,nativeSessionId:result.nativeSessionId};
-      } catch {await job.native.close();job.status="failed";job.approvals.clear();throw new Error("managed native turn unavailable");}
+      } catch {await job.native.close();job.status="failed";job.approvals.clear();job.questions.clear();throw new Error("managed native turn unavailable");}
     } finally{this.#starting=false;}
   }
   async close() {await Promise.allSettled([...this.#jobs.values()].map(job=>job.native.close()));this.#jobs.clear();}

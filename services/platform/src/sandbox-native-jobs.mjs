@@ -38,10 +38,10 @@ export class SandboxNativeJobs {
         const batch=await this.files.job(context,{operation:"events",jobId:started.jobId,after},{signal});
         if(batch.jobId!==started.jobId || !Array.isArray(batch.events) || batch.events.length>10000)throw new Error("invalid native event batch");
         for(const event of batch.events) {
-          if(event.sessionID!==session.id || event.sequence!==after+1 || !["approval","text","tool-output","completed"].includes(event.type))
+          if(event.sessionID!==session.id || event.sequence!==after+1 || !["approval","question","text","tool-output","completed"].includes(event.type))
             throw new Error("foreign native event");
           after=event.sequence;
-          if(event.type==="approval")this.tenantPolicy.registerRequest(context,{id:event.id,sessionID:session.id});
+          if(["approval","question"].includes(event.type))this.tenantPolicy.registerRequest(context,{id:event.id,sessionID:session.id});
           await emit(event);
         }
         if(batch.status!=="running" && batch.status!=="settling") {
@@ -69,6 +69,12 @@ export class SandboxNativeJobs {
       }
       throw error;
     } finally {if(cleanupVerified){lease?.release();this.#turns.delete(key);}}
+  }
+  async answer({userId,sessionId,id,answers,reject=false}) {
+    const turn=this.#turns.get(`${userId}/${sessionId}`);
+    if(!turn?.jobId)throw new Error("native question unavailable");
+    const pending=this.tenantPolicy.request(turn.context,id);if(pending.sessionID!==sessionId)throw new Error("foreign native question");
+    return this.files.job(turn.context,{operation:"answer",jobId:turn.jobId,id,...(reject?{reject:true}:{answers})});
   }
   async approve({userId,sessionId,id,decision}) {
     const turn=this.#turns.get(`${userId}/${sessionId}`);
