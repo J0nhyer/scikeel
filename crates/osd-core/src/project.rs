@@ -536,6 +536,35 @@ pub fn project_workspace_dirs(base: &Path) -> Vec<PathBuf> {
 
 /// Every structured or legacy project, sorted by name for a stable sidebar.
 pub fn list_projects(env: &Env) -> Result<Vec<ProjectInfo>, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = env.managed_files() {
+        let root = policy.root_path("account").map_err(|_| "managed root unavailable")?;
+        let mut directories = Vec::new();
+        for entry in policy.list("account", "", 10000).map_err(|_| "managed inventory unavailable")? {
+            if !entry.is_dir { continue; }
+            if entry.name == PROJECTS_DIR_NAME {
+                for child in policy.list("account", &entry.name, 10000).map_err(|_| "managed inventory unavailable")? {
+                    if child.is_dir { directories.push(format!("{}/{}", entry.name, child.name)); }
+                }
+            } else if entry.name != SESSIONS_DIR_NAME { directories.push(entry.name); }
+            if directories.len() > 10000 { return Err("managed inventory exceeds limit".into()); }
+        }
+        let mut out = Vec::new();
+        for directory in directories {
+            let bytes = match policy.read("account", &format!("{directory}/.openscience/project.json"), 128 * 1024) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err("managed project metadata unavailable".into()),
+            };
+            let Ok(meta) = serde_json::from_slice::<ProjectMeta>(&bytes) else { continue };
+            // Editable display metadata never selects a new filesystem root.
+            out.push(ProjectInfo { id: meta.id, name: meta.name, description: meta.description,
+                created_at: meta.created_at, path: root.join(&directory).to_string_lossy().into_owned(),
+                imported: false, imported_from: None, import_mode: None, pinned: meta.pinned.unwrap_or(false) });
+        }
+        out.sort_by_key(|project| project.name.to_lowercase());
+        return Ok(out);
+    }
     let base = base_workspace_dir(env)?;
     let mut out: Vec<ProjectInfo> = Vec::new();
     for dir in project_dirs(&base) {

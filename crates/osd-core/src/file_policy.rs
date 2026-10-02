@@ -758,4 +758,19 @@ mod tests {
         .is_err());
         assert!(!f.peer.join("evil.ipynb").exists());
     }
+    #[test]
+    fn managed_project_listing_does_not_trust_external_source_metadata() {
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.owned.join("projects/study/.openscience")).unwrap();
+        let metadata = serde_json::json!({ "id":"project_owned", "name":"Study", "version":1, "createdAt":1,
+            "sourcePath": f.peer.to_string_lossy() });
+        std::fs::write(f.owned.join("projects/study/.openscience/project.json"), metadata.to_string()).unwrap();
+        let env = crate::Env::new(f.base.join("state"), f.base.join("res"), None, "test".into())
+            .with_managed_files(f.policy("a", 1));
+        let projects = crate::project::list_projects(&env).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].path, f.owned.join("projects/study").to_string_lossy());
+        assert!(projects[0].imported_from.is_none());
+    }
+
 }

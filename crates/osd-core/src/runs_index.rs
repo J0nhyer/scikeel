@@ -99,7 +99,7 @@ pub(crate) fn managed_records(env: &Env) -> Result<Vec<(String, RunRecord)>, Str
         if directories.len() > 10000 { return Err("managed inventory exceeds limit".into()); }
     }
     directories.sort();
-    let mut records = Vec::new(); let mut bytes = 0u64;
+    let mut records = Vec::new(); let mut bytes = 0u64; let mut consumed = 0usize;
     for directory in directories {
         for store in [RUNS_FILE, REMOTE_RUNS_FILE] {
             let relative = if directory.is_empty() { format!(".openscience/{store}") }
@@ -119,6 +119,8 @@ pub(crate) fn managed_records(env: &Env) -> Result<Vec<(String, RunRecord)>, Str
                 let read = std::io::Read::by_ref(&mut reader).take(1024 * 1024 + 1)
                     .read_until(b'\n', &mut line).map_err(|_| "managed run store unavailable")?;
                 if read == 0 { break; }
+                consumed += read;
+                if consumed > 25 * 1024 * 1024 { return Err("managed run inventory exceeds limit".into()); }
                 if line.len() > 1024 * 1024 { return Err("managed run record exceeds limit".into()); }
                 if !line.ends_with(b"\n") { break; }
                 if let Ok(record) = serde_json::from_slice::<RunRecord>(&line) {
