@@ -72,7 +72,7 @@ jobs:
           cp apps/desktop/src-tauri/binaries/opencode-x86_64-unknown-linux-gnu .deploy/science-context/tools/bin/opencode
           cp runtime/sandbox/{runner,file-rpc,cli-jobs}.mjs .deploy/science-context/tools/
           mkdir -p .deploy/science-context/tools/resources/skills-core
-          cp -R runtime/skills/core/. .deploy/science-context/tools/resources/skills-core/
+          tar -C runtime/skills/core --exclude=.gitkeep -cf - . | tar -C .deploy/science-context/tools/resources/skills-core -xf -
       - name: Resolve scientific dependencies on the dedicated CI host
         shell: bash
         run: |

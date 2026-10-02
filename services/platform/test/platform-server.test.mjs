@@ -585,3 +585,12 @@ test("managed runtime proxy rejects raw paths, peer directories, unknown session
   const text = await events.text();
   assert.ok(!text.includes("Basic "));
 });
+test("worker operation leases cover proxy responses and release when they finish", async () => {
+  const fixture = await makeFixture(); const client = makeClient(fixture.base);
+  await login(client, "admin", "admin-password");
+  let retained = 0; let released = 0;
+  fixture.manager.retainWorker = () => { retained++; return { release: () => released++ }; };
+  const response = await client.request("/v1/health"); assert.equal(response.status, 200); await response.text();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(retained, 1); assert.equal(released, 1);
+});

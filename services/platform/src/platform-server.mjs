@@ -906,6 +906,12 @@ export class PlatformServer {
         return;
       }
       const { access, worker } = await this.#ensureWorker(user);
+      const lease = this.workerManager.retainWorker?.(worker.id);
+      if (lease) {
+        let released = false;
+        const release = () => { if (!released) { released = true; lease.release(); } };
+        response.once("finish", release); response.once("close", release);
+      }
       if (this.#bootstrapRequired(request, user)) {
         this.#bootstrapRedirect(request, response, user, access.token);
         return;
@@ -915,7 +921,8 @@ export class PlatformServer {
     } catch (error) {
       this.logger({ type: "platform.request_error", error: error?.message ?? String(error) });
       if (!response.headersSent) {
-        sendJson(response, 500, { error: "internal server error" });
+        sendJson(response, error?.retryable && error?.statusCode === 503 ? 503 : 500,
+          { error: error?.retryable ? "workspace capacity unavailable; retry shortly" : "internal server error" });
       } else {
         response.destroy(error);
       }

@@ -27,7 +27,7 @@ const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
 if (!["build", "test", "typecheck", "lint", "probe", "platform-test",
-  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test"].includes(mode)) {
+  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
 }
@@ -125,6 +125,10 @@ if (mode === "probe") {
   if (args.length) throw new Error("Kernel network tests have fixed isolated arguments");
   run("cargo", ["test", "--locked", "--jobs", "1", "--package", "osd-sandbox-host", "--",
     "--test-threads=1", "--ignored", "network::tests::kernel_policy_blocks_bypasses_and_detects_rule_changes", "--nocapture"], root);
+} else if (mode === "sandbox-mirror-lock") {
+  if (args.length) throw new Error("Mirror lock generation uses fixed inputs");
+  run("/opt/open-science-desktop/.deploy/osd/releases/0.5.2/uv", ["pip", "compile", "--python", "/usr/bin/python3", "--generate-hashes",
+    "--output-file", "runtime/sandbox/image/package-mirror.lock", "runtime/sandbox/image/package-mirror.in"], root);
 } else if (mode === "sandbox-host-prepare") {
   if (args.length) throw new Error("Host preparation has fixed synthetic arguments");
   run("sudo", ["-n", "/usr/bin/python3", "/usr/local/lib/scikeel/prepare-synthetic-host.py"], root);
