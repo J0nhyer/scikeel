@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SciKeel immutable scientific image manifest",
+  "type": "object",
+  "required": [
+    "schema",
+    "name",
+    "variant",
+    "architecture",
+    "rootfsSha256",
+    "imageDigest",
+    "python",
+    "uv",
+    "baselineLockSha256",
+    "toolLockSha256",
+    "tools",
+    "enabledRuntimes",
+    "provenance",
+    "fileCount",
+    "uncompressedBytes"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "name": {
+      "const": "science-v1"
+    },
+    "variant": {
+      "enum": [
+        "probe",
+        "production"
+      ]
+    },
+    "architecture": {
+      "const": "linux/amd64"
+    },
+    "rootfsSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "baselineLockSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "toolLockSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "imageDigest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "python": {
+      "type": "string",
+      "pattern": "^3\\.12\\.\\d+$"
+    },
+    "uv": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "fileCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000
+    },
+    "uncompressedBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483648
+    },
+    "enabledRuntimes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "opencode",
+          "codex",
+          "claude"
+        ]
+      }
+    },
+    "tools": {
+      "type": "object",
+      "required": [
+        "osd",
+        "opencode",
+        "node",
+        "uv",
+        "python",
+        "git"
+      ],
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "version",
+          "sha256",
+          "path"
+        ],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "repository",
+        "commit",
+        "workflow"
+      ],
+      "properties": {
+        "repository": {
+          "const": "J0nhyer/scikeel"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "workflow": {
+          "const": "sandbox-image.yml"
+        }
+      },
+      "additionalProperties": false
+    },
+    "testEntryPoint": {
+      "const": "/opt/scikeel/tools/probe-entry.mjs"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "variant": {
+            "const": "production"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "testEntryPoint"
+          ]
+        }
+      }
+    }
+  ]
+}

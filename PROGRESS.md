@@ -1,5 +1,7 @@
 # Progress
 
+2026-10-02 18:29 · Added the test-only scientific image CI/attestation workflow and artifact/context/archive validators, tightened managed project metadata reads, and passed 60 platform plus 241 core tests; Task 4 remains incomplete because CI locks/signed rootfs and root-owned installation are unavailable, with no production cutover.
+
 2026-10-02 18:08 · Implemented descriptor-rooted managed reads, bounded inventories/run indexes, atomic control writes and root/account/generation-bound tickets; 240 Rust core tests pass (one existing ignored test) and osd-cli checks successfully, with production cutover still disabled.
 
 2026-10-02 17:46 · Added platform-owned tenant/session authority and the managed runtime proxy allowlist, scoped directories, origin checks and credential scrubbing; all 51 platform tests pass with production managed mode still disabled.

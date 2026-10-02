@@ -15,7 +15,8 @@
     "sandbox:core:test": "node scripts/dev/safe-desktop-task.mjs core-test",
     "sandbox:core:check": "node scripts/dev/safe-desktop-task.mjs core-check",
     "sandbox:probe": "node scripts/dev/safe-desktop-task.mjs sandbox-probe",
-    "sandbox:image:stage": "node scripts/dev/safe-desktop-task.mjs sandbox-image-stage"
+    "sandbox:image:stage": "node scripts/dev/safe-desktop-task.mjs sandbox-image-stage",
+    "sandbox:core:build": "node scripts/dev/safe-desktop-task.mjs core-build"
   },
   "engines": {
     "node": ">=20"

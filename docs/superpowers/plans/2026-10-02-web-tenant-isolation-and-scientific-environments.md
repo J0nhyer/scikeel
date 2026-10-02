@@ -105,7 +105,7 @@ test('a successful command is insufficient without enforced limits', () => {
 ```
 
 - [x] Run `pnpm platform:test test/sandbox-harness.test.mjs`. Expect FAIL because the exported validator does not exist; this is a cheap guarded test, not a launch.
-- [x] Add root scripts `sandbox:core:test`, `sandbox:core:check`, `sandbox:probe`, `sandbox:image:stage`. Extend the guard with fixed `core-test`, `core-check`, `sandbox-probe`, `sandbox-image-stage` branches. Rust test/check allow only `osd-core`, `osd-cli`, `osd-sandbox-host`; no desktop Cargo build. Preserve the lock, existing limits and host-pressure stop. Implement validator:
+- [x] Add root scripts `sandbox:core:test`, `sandbox:core:check`, `sandbox:core:build` (added for bounded CI binary compilation), `sandbox:probe`, `sandbox:image:stage`. Extend the guard with fixed `core-test`, `core-check`, `sandbox-probe`, `sandbox-image-stage` branches. Rust test/check allow only `osd-core`, `osd-cli`, `osd-sandbox-host`; no desktop Cargo build. Preserve the lock, existing limits and host-pressure stop. Implement validator:
 
 ```js
 export function assertScopeLimits(v) {
@@ -214,9 +214,11 @@ fn open_regular_beneath(root: &std::fs::File, relative: &str) -> std::io::Result
 
 ## Task 4: Build and identify one immutable scientific baseline
 
+**Execution checkpoint (October 2, 2026): IN PROGRESS.** The Dockerfile, baseline inputs, image schema, test-only science probe, CI selection/build/attestation workflow, source/build-context/archive validators and dry-run staging verification are implemented. Eight image tests, all 60 platform tests and 241 core tests pass (one existing ignored core test). Actual CI has not run: `uv.lock`, measured `tool-lock.json`, the signed rootfs and root-owned installation do not exist. Dry-run staging correctly reports missing CI artifacts. The workflow currently produces an explicitly test-only OpenCode image; native runtime inclusion, production runner and actual installation remain gated. Tasks 5–18 and production cutover have not started.
+
 **Files:** Create `runtime/sandbox/image/{Dockerfile,pyproject.toml,uv.lock,tool-lock.json}`, `runtime/sandbox/probe-entry.mjs`, `runtime/sandbox/image-manifest.schema.json`, `scripts/dev/stage-sandbox-image.mjs`, `.github/workflows/sandbox-image.yml`, `services/platform/test/science-image.test.mjs`. Modify `package.json` for the staging script wired through Task 1's guard.
 
-- [ ] Add tests rejecting a floating image, missing tool hash, changed rootfs digest and a build context containing a canary credential. Define/export `validateImageManifest(manifest)` in the staging script. Valid manifests require schema 1, architecture `linux/amd64` or verified supported host architecture, immutable SHA256 rootfs and tool identities, Python patch, uv version and baseline lock hash. The tool list includes osd, OpenCode and enabled native CLIs; its OpenCode version equals the repository's configured pinned version.
+- [x] Add tests rejecting a floating image, missing tool hash, changed rootfs digest and a build context containing a canary credential. Define/export `validateImageManifest(manifest)` in the staging script. Valid manifests require schema 1, architecture `linux/amd64` or verified supported host architecture, immutable SHA256 rootfs and tool identities, Python patch, uv version and baseline lock hash. The tool list includes osd, OpenCode and enabled native CLIs; its OpenCode version equals the repository's configured pinned version.
 
 ```js
 import test from 'node:test';

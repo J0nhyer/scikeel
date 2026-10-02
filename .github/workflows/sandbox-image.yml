@@ -1,0 +1,126 @@
+name: sandbox-image
+
+# Explicit CI-only baseline selection. Outputs must be reviewed and the exact
+# generated locks committed before the launcher can accept a production image.
+on:
+  workflow_dispatch:
+    inputs:
+      python_image:
+        description: Exact Python 3.12 image tag or digest to select
+        required: true
+        default: python:3.12.12-slim-bookworm
+      uv_image:
+        description: Image for the repository-pinned uv version
+        required: true
+        default: ghcr.io/astral-sh/uv:0.11.26
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: sandbox-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  science-probe-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 1
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the headless core in a verified bounded scope
+        shell: bash
+        run: |
+          sudo systemd-run --scope -p MemoryHigh=1850M -p MemoryMax=2200M -p MemorySwapMax=256M \
+            sudo -u "$USER" env PATH="$PATH" OSD_TASK_FORCE_LIMITS=1 CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 \
+            node scripts/dev/safe-desktop-task.mjs core-build --guarded --package osd-cli
+      - name: Resolve exact source image digests
+        env:
+          PYTHON_SOURCE: ${{ inputs.python_image }}
+          UV_SOURCE: ${{ inputs.uv_image }}
+        shell: bash
+        run: |
+          node --input-type=module -e 'for (const key of ["PYTHON_SOURCE","UV_SOURCE"]) { const value=process.env[key]; if (!/^[a-zA-Z0-9._/:@-]+$/.test(value) || value.endsWith(":latest")) process.exit(1); }'
+          mkdir -p .deploy/science-context/tools/bin .deploy/science-artifacts
+          docker pull "$PYTHON_SOURCE"
+          docker pull "$UV_SOURCE"
+          docker image inspect --format '{{index .RepoDigests 0}}' "$PYTHON_SOURCE" > .deploy/science-artifacts/python-image.txt
+          docker image inspect --format '{{index .RepoDigests 0}}' "$UV_SOURCE" > .deploy/science-artifacts/uv-image.txt
+          cp runtime/sandbox/image/{Dockerfile,pyproject.toml} .deploy/science-context/
+          cp target/debug/osd .deploy/science-context/tools/bin/
+          cp "$(command -v node)" .deploy/science-context/tools/bin/
+          bash scripts/dev/fetch-opencode.sh x86_64-unknown-linux-gnu
+          cp apps/desktop/src-tauri/binaries/opencode-x86_64-unknown-linux-gnu .deploy/science-context/tools/bin/opencode
+          cp runtime/sandbox/probe-entry.mjs .deploy/science-context/tools/
+      - name: Resolve scientific dependencies on the dedicated CI host
+        shell: bash
+        run: |
+          PYTHON_IMAGE=$(cat .deploy/science-artifacts/python-image.txt)
+          UV_IMAGE=$(cat .deploy/science-artifacts/uv-image.txt)
+          docker create --name scikeel-uv "$UV_IMAGE"
+          docker cp scikeel-uv:/uv .deploy/science-context/tools/bin/uv
+          docker rm scikeel-uv
+          docker run --rm --memory=512m --memory-swap=640m --pids-limit=128 --cpus=1 \
+            -v "$PWD/.deploy/science-context:/baseline" -w /baseline \
+            -e UV_PYTHON_DOWNLOADS=never "$PYTHON_IMAGE" /baseline/tools/bin/uv lock --python /usr/local/bin/python3.12
+          cp .deploy/science-context/uv.lock .deploy/science-artifacts/
+          node scripts/dev/prepare-science-image.mjs .deploy/science-context .deploy/science-artifacts
+      - name: Build with bounded dedicated BuildKit resources
+        shell: bash
+        run: |
+          docker buildx create --name scikeel-science-builder --driver docker-container \
+            --driver-opt memory=2g,memory-swap=2304m --use
+          docker buildx build --load --tag scikeel-science-probe:ci \
+            --build-arg "PYTHON_IMAGE=$(cat .deploy/science-artifacts/python-image.txt)" \
+            --build-arg "UV_IMAGE=$(cat .deploy/science-artifacts/uv-image.txt)" .deploy/science-context
+      - name: Verify offline imports and immutable baseline
+        shell: bash
+        run: |
+          mkdir -p .deploy/science-workspace .deploy/science-test
+          chmod 777 .deploy/science-workspace
+          node --input-type=module -e 'import {writeFileSync} from "node:fs"; writeFileSync(".deploy/science-test/case.json", JSON.stringify({schema:1,synthetic:true,case:"science-image"}));'
+          sudo chown root:root .deploy/science-test/case.json
+          docker run --rm --network=none --read-only --memory=640m --memory-swap=768m --pids-limit=256 --cpus=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            -v "$PWD/.deploy/science-workspace:/workspace" \
+            -v "$PWD/.deploy/science-test:/opt/scikeel/test:ro" \
+            --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
+            /opt/scikeel/tools/probe-entry.mjs /opt/scikeel/test/case.json
+      - name: Export immutable artifact and measured identities
+        shell: bash
+        run: |
+          docker create --name scikeel-science-export scikeel-science-probe:ci
+          docker export scikeel-science-export | gzip -n > .deploy/science-artifacts/rootfs.tar.gz
+          docker rm scikeel-science-export
+          node scripts/dev/prepare-science-image.mjs .deploy/science-context .deploy/science-artifacts --manifest
+      - uses: actions/attest-build-provenance@v2
+        id: attest
+        with:
+          subject-path: |
+            .deploy/science-artifacts/rootfs.tar.gz
+            .deploy/science-artifacts/image-manifest.json
+      - name: Save the signed attestation bundle with the artifacts
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        shell: bash
+        run: cp "$ATTESTATION_BUNDLE" .deploy/science-artifacts/attestation.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: science-v1-probe-${{ github.sha }}
+          path: .deploy/science-artifacts/
+          retention-days: 14
+      - name: Clean up dedicated CI containers
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f scikeel-uv scikeel-science-export 2>/dev/null || true
+          docker buildx rm scikeel-science-builder 2>/dev/null || true

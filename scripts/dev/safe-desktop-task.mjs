@@ -20,14 +20,14 @@ const sharedTaskRoot = gitCommon.status === 0
 const mode = process.argv[2];
 const guarded = process.argv[3] === "--guarded";
 const args = process.argv.slice(guarded ? 4 : 3);
-const smallLinuxHost = process.platform === "linux" && totalmem() < 5 * 1024 ** 3;
+const smallLinuxHost = process.platform === "linux" && (totalmem() < 5 * 1024 ** 3 || process.env.OSD_TASK_FORCE_LIMITS === "1");
 const mib = 1024 ** 2;
 const memoryHigh = 1850 * mib;
 const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
 if (!["build", "test", "typecheck", "lint", "probe", "platform-test",
-  "core-test", "core-check", "sandbox-probe", "sandbox-image-stage"].includes(mode)) {
+  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
 }
@@ -110,7 +110,7 @@ function coreArgs() {
         (mode !== "core-test" || !/^[A-Za-z0-9_:]+$/.test(filter)))) {
     throw new Error("Core tasks require --package osd-core|osd-cli|osd-sandbox-host and an optional test filter");
   }
-  return [mode === "core-test" ? "test" : "check", "--locked", "--jobs", "1", "--package", name,
+  return [mode === "core-test" ? "test" : mode === "core-build" ? "build" : "check", "--locked", "--jobs", "1", "--package", name,
     ...(filter ? [filter] : []), ...(mode === "core-test" ? ["--", "--test-threads=1"] : [])];
 }
 
@@ -119,7 +119,7 @@ if (mode === "probe") {
   console.log(smallLinuxHost ? "Resource limits active" : "Host does not need cloud resource limits");
 } else if (mode === "platform-test") {
   run(process.execPath, ["--test", "--test-concurrency=1", ...args], join(root, "services/platform"));
-} else if (mode === "core-test" || mode === "core-check") {
+} else if (mode === "core-test" || mode === "core-check" || mode === "core-build") {
   run("cargo", coreArgs(), root);
 } else if (mode === "sandbox-probe" || mode === "sandbox-image-stage") {
   const entry = mode === "sandbox-probe" ? "sandbox-probe.mjs" : "stage-sandbox-image.mjs";
