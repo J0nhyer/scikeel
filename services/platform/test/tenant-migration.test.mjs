@@ -4,6 +4,30 @@ import { nextMigrationState, TenantMigrations, inventoryTenant, copyColdTenant }
 import { mkdtemp, rm, mkdir, writeFile, symlink, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+test("copied history rebases owned paths atomically and refuses foreign sessions", async (t) => {
+  const root=await mkdtemp(join(tmpdir(),"scikeel-rebase-"));t.after(()=>rm(root,{recursive:true,force:true}));
+  const helper=fileURLToPath(new URL("../../../scripts/dev/rebase-tenant-history.py",import.meta.url));
+  const result=spawnSync("python3",["-c",`
+import importlib.util,sqlite3,sys,pathlib
+spec=importlib.util.spec_from_file_location('migration',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+p=pathlib.Path(sys.argv[2])/'copy.db';c=sqlite3.connect(p)
+c.executescript('CREATE TABLE session(directory TEXT,path TEXT);CREATE TABLE project(worktree TEXT);')
+old='/old/user_a/workspace';new='/new/user_a/workspace'
+c.executemany('INSERT INTO session VALUES (?,?)',[(old,old+'/project'),(old+'/project',None)])
+c.execute('INSERT INTO project VALUES (?)',(old,));c.commit();c.close()
+r=m.rebase(str(p),old,new);assert r['updated']['session.directory']==2
+c=sqlite3.connect(p);assert c.execute('SELECT path FROM session WHERE path IS NOT NULL').fetchone()[0]==new+'/project'
+c.execute('INSERT INTO session VALUES (?,NULL)',('/peer/workspace',));c.commit();c.close()
+try:m.rebase(str(p),new,'/third/user_a/workspace')
+except ValueError:pass
+else:raise AssertionError('foreign session accepted')
+c=sqlite3.connect(p);assert c.execute('SELECT count(*) FROM session WHERE directory=?',(new,)).fetchone()[0]==1;c.close()
+`,helper,root],{encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+});
 
 test("migration requires each verified checkpoint and never falls back after activation", () => {
   assert.equal(nextMigrationState("copied","verifyFailed"),"blocked");

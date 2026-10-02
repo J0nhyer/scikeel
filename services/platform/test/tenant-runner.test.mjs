@@ -10,6 +10,12 @@ import { fileURLToPath } from "node:url";
 
 const manifest = { schema: 1, instanceId: "user-a", generation: 1, workspaceDir: "/tenant/workspace", stateDir: "/tenant/state", home: "/tenant/home", scratchDir: "/tenant/scratch" };
 const token = "a".repeat(64);
+test("runner listens on the assigned alternate address used by production acceptance", async (t) => {
+  const runner = new TenantRunner({manifest,token});t.after(()=>runner.close());
+  await runner.listen({host:"127.0.0.2",port:0});
+  const response=await fetch(`http://127.0.0.2:${runner.server.address().port}/health`);
+  assert.equal(response.status,200);
+});
 test("runner authenticates fixed workspace RPC before dispatch and rejects foreign generations", async (t) => {
   const calls = [];
   const runner = new TenantRunner({ manifest, token, files: { call: async (request) => { calls.push(request); return { text: "owned" }; } } });

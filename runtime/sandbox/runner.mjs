@@ -28,7 +28,7 @@ export class TenantRunner {
     this.server.on("connect", (_req, socket) => socket.destroy()); this.server.on("upgrade", (_req, socket) => socket.destroy());
   }
   async listen({ host, port = 4791 }) {
-    if (!/^(?:127\.0\.0\.1|172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]))$/.test(host ?? "")) throw new Error("invalid tenant bind address");
+    if (!/^(?:127\.0\.0\.[12]|172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]))$/.test(host ?? "")) throw new Error("invalid tenant bind address");
     await new Promise((done, reject) => {
       const error = (reason) => { this.server.off("listening", ready); reject(reason); };
       const ready = () => { this.server.off("error", error); done(); };
