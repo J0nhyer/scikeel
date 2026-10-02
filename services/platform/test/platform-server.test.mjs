@@ -9,6 +9,7 @@ import { AuthStore } from "../src/auth-store.mjs";
 import { CliRuntimeManager } from "../src/cli-runtime.mjs";
 import { PlatformServer } from "../src/platform-server.mjs";
 import { WorkerManager } from "../src/worker-manager.mjs";
+import { TenantPolicy } from "../src/tenant-policy.mjs";
 
 const fakeOsd = fileURLToPath(new URL("../fixtures/fake-osd.mjs", import.meta.url));
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
@@ -62,7 +63,7 @@ function makeClient(base) {
   };
 }
 
-async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null } = {}) {
+async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null } = {}) {
   const root = providedRoot ?? (await mkdtemp(join(tmpdir(), "osd-platform-server-")));
   const authStore = new AuthStore({
     filePath: join(root, "platform", "auth.json"),
@@ -75,7 +76,7 @@ async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRo
     startupTimeoutMs: 5_000,
     stopTimeoutMs: 1_000,
   });
-  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot });
+  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy });
   const address = await server.listen();
   const fixture = { root, authStore, manager, server, cliRuntime, base: `http://${address.host}:${address.port}` };
   fixtures.push(fixture);
@@ -557,3 +558,30 @@ function expectRuntime({ runtime, model }) {
     ],
   };
 }
+
+test("managed runtime proxy rejects raw paths, peer directories, unknown sessions and foreign origins", async () => {
+  const policy = new TenantPolicy();
+  const fixture = await makeFixture({ tenantPolicy: policy });
+  const client = makeClient(fixture.base);
+  const { user } = await login(client, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  const worker = await fixture.manager.ensureWorker({ instanceId, userId: user.id });
+  policy.registerAccount({ userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir });
+  // The fake legacy worker has no managed generation and must never be trusted.
+  fixture.manager.getWorker = ((original) => (id) => ({ ...original.call(fixture.manager, id), generation: 1 }))(fixture.manager.getWorker);
+  for (const path of ["/file/content", "/find/file", "/path", "/pty", "/global/config/auth", "/session/a%252fb"])
+    assert.equal((await client.request(path)).status, 404, path);
+  assert.equal((await client.request("/event?directory=%2Fetc")).status, 403);
+  assert.equal((await client.request("/session/unknown")).status, 404);
+  assert.equal((await client.request("/event?directory=a&directory=b")).status, 400);
+  assert.equal((await client.request("/event", { headers: { "x-opencode-directory": "/etc" } })).status, 400);
+  assert.equal((await client.request("/session", { method: "POST", headers: {
+    "content-type": "application/json", origin: "https://foreign.invalid" }, body: "{}" })).status, 403);
+  assert.equal((await client.request("/global/config")).status, 200);
+  assert.deepEqual(await json(await client.request("/global/config")), { model: null });
+  // Secret-bearing diagnostic SSE from this legacy fixture must not pass through.
+  const events = await client.request("/event");
+  assert.equal(events.status, 200);
+  const text = await events.text();
+  assert.ok(!text.includes("Basic "));
+});

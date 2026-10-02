@@ -1,6 +1,8 @@
 # Progress
 
-2026-10-02 17:35 · Added guarded Rust/sandbox entrypoints and a shared cross-worktree resource lock; eight harness/worker checks pass, while real preflight correctly fails on missing root-owned synthetic sandbox configuration.
+2026-10-02 17:46 · Added platform-owned tenant/session authority and the managed runtime proxy allowlist, scoped directories, origin checks and credential scrubbing; all 51 platform tests pass with production managed mode still disabled.
+
+2026-10-02 17:33 · Added guarded Rust/sandbox entrypoints and a shared cross-worktree resource lock; eight harness/worker checks pass, while real preflight correctly fails on missing root-owned synthetic sandbox configuration.
 
 2026-10-01 17:11 · Published SciKeel to the public J0nhyer/scikeel GitHub repository with main as the default branch, preserved the complete upstream history and upstream remote, and verified the remote commit after a clean scan of 4750 historical file objects.
 

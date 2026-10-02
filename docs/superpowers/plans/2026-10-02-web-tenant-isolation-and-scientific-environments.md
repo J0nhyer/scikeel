@@ -125,7 +125,7 @@ export function assertScopeLimits(v) {
 
 **Files:** Create `services/platform/src/tenant-policy.mjs`, `services/platform/src/runtime-route-policy.mjs`, `services/platform/test/tenant-policy.test.mjs`, `services/platform/test/runtime-route-policy.test.mjs`. Modify `services/platform/src/platform-server.mjs`, `packages/sdk/src/OpenCodeClient.ts` only if route inventory reveals an actual SDK mismatch.
 
-- [ ] Add tests for ownership, lexical input rejection, unknown routes, ambiguous encodings and directory-bearing query/body/header inputs. A lexical validator filters input; Task 3 supplies the filesystem boundary.
+- [x] Add tests for ownership, lexical input rejection, unknown routes, ambiguous encodings and directory-bearing query/body/header inputs. A lexical validator filters input; Task 3 supplies the filesystem boundary.
 
 ```js
 import test from 'node:test';
@@ -143,8 +143,8 @@ test('reject traversal, raw files and ambiguous paths', () => {
 });
 ```
 
-- [ ] Run `pnpm platform:test test/tenant-policy.test.mjs test/runtime-route-policy.test.mjs`: expected missing-module FAIL.
-- [ ] Implement `relativeInput` and positive route classification. Define/export ownership checks against platform records; session IDs copied from a runtime response must be registered before public access. Unknown session => 404 without existence disclosure; a supplied foreign directory => 403. Do not use metadata `source_path`, active-workspace markers or public `userId` to generate authority.
+- [x] Run `pnpm platform:test test/tenant-policy.test.mjs test/runtime-route-policy.test.mjs`: expected missing-module FAIL.
+- [x] Implement `relativeInput` and positive route classification. Define/export ownership checks against platform records; session IDs copied from a runtime response must be registered before public access. Unknown session => 404 without existence disclosure; a supplied foreign directory => 403. Do not use metadata `source_path`, active-workspace markers or public `userId` to generate authority.
 
 ```js
 export function relativeInput(value) {
@@ -157,8 +157,8 @@ export function relativeInput(value) {
 }
 ```
 
-- [ ] Populate a finite method/path table from current SDK callers: session CRUD/list/fork/message/prompt_async/abort/summarize/revert/unrevert/shell/command; used move endpoint; event/permission/question; agent/command/skill; sanitized model catalog/config. Each classified operation declares its ID fields, directories, body schema and approval requirements. Do not forward the original URL after classifying a differently decoded path. Normalize once; reject encoded separators, dot components, extra decoding, duplicate conflicting directories and unsupported headers. Prompt file inputs accept owned attachment references/approved inline representations only. Block raw file/find/path/auth/config/PTY/unneeded control-plane APIs. Validate origin for cookie writes and scrub event/config secrets.
-- [ ] Extend authenticated proxy tests with synthetic A/B IDs and invalid directory sources. Run `pnpm platform:test test/tenant-policy.test.mjs test/runtime-route-policy.test.mjs test/platform-server.test.mjs`: PASS, existing required SDK operations still route. Commit `fix: enforce tenant authority and positive runtime routes`.
+- [x] Populate a finite method/path table from current SDK callers: session CRUD/list/fork/message/prompt_async/abort/summarize/revert/unrevert/shell/command; used move endpoint; event/permission/question; agent/command/skill; sanitized model catalog/config. Each classified operation declares its ID fields, directories, body schema and approval requirements. Do not forward the original URL after classifying a differently decoded path. Normalize once; reject encoded separators, dot components, extra decoding, duplicate conflicting directories and unsupported headers. Prompt file inputs accept owned attachment references/approved inline representations only. Block raw file/find/path/auth/config/PTY/unneeded control-plane APIs. Validate origin for cookie writes and scrub event/config secrets.
+- [x] Extend authenticated proxy tests with synthetic A/B IDs and invalid directory sources. Run `pnpm platform:test test/tenant-policy.test.mjs test/runtime-route-policy.test.mjs test/platform-server.test.mjs`: PASS, existing required SDK operations still route. Commit `fix: enforce tenant authority and positive runtime routes`.
 
 ## Task 3: Implement race-safe managed file access and owned tickets
 

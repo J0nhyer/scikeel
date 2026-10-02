@@ -2,6 +2,7 @@ import { request as httpRequest, createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { URL } from "node:url";
+import { classifyRuntimeRoute, validateRuntimeInput, scrubRuntimeSecrets } from "./runtime-route-policy.mjs";
 
 const SESSION_COOKIE = "osd_session";
 const BOOTSTRAP_COOKIE = "osd_worker_bootstrap";
@@ -254,6 +255,7 @@ function loginPage(error = "", next = "/") {
 function upstreamRequestPath(requestUrl, workerToken) {
   const parsed = new URL(requestUrl ?? "/", "http://platform.invalid");
   parsed.searchParams.delete("token");
+      parsed.searchParams.delete("auth_token");
   parsed.searchParams.delete("auth_token");
   if (parsed.pathname === "/event") {
     parsed.searchParams.set("auth_token", workerBasicToken(workerToken));
@@ -288,6 +290,9 @@ export class PlatformServer {
     secureCookies = false,
     maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
     logger = () => {},
+    tenantPolicy = null,
+    approvalGate = null,
+    runtimeCatalog = null,
   } = {}) {
     if (!authStore) throw new Error("authStore is required");
     if (!workerManager) throw new Error("workerManager is required");
@@ -300,6 +305,9 @@ export class PlatformServer {
     this.secureCookies = secureCookies;
     this.maxBodyBytes = maxBodyBytes;
     this.logger = logger;
+    this.tenantPolicy = tenantPolicy;
+    this.approvalGate = approvalGate;
+    this.runtimeCatalog = runtimeCatalog;
     this.server = null;
     this.listenPromise = null;
   }
@@ -446,7 +454,7 @@ export class PlatformServer {
   }
 
   #bootstrapRequired(request, user) {
-    if (request.method !== "GET") return false;
+    if (this.tenantPolicy || request.method !== "GET") return false;
     const path = new URL(request.url ?? "/", "http://platform.invalid").pathname;
     if (path.startsWith("/api/") || path.startsWith("/v1/") || path === "/event") return false;
     const marker = parseCookies(request.headers.cookie).get(BOOTSTRAP_COOKIE);
@@ -462,7 +470,13 @@ export class PlatformServer {
   }
 
   async #proxy(request, response, access, user, worker) {
-    if (this.cliRuntime) {
+    // This branch is enabled only for explicitly migrated managed accounts.
+    // It never invokes the legacy host CLI adapters.
+    if (this.tenantPolicy && !(request.url ?? "").startsWith("/v1/")) {
+      await this.#managedRuntimeProxy(request, response, access, user, worker);
+      return;
+    }
+    if (this.cliRuntime && !this.tenantPolicy) {
       const handled = await this.cliRuntime.handle(request, response, {
         userId: user.id,
         workspaceDir: worker.workspaceDir,
@@ -526,6 +540,132 @@ export class PlatformServer {
       if (!response.writableEnded) upstream.destroy();
     });
     request.pipe(upstream);
+  }
+
+  async #managedRuntimeProxy(request, response, access, user, worker) {
+    try {
+      const context = { userId: user.id, instanceId: workerIdForUser(user.id), generation: worker.generation };
+      this.tenantPolicy.account(context);
+      const rawPath = (request.url ?? "/").split("?")[0];
+      const operation = classifyRuntimeRoute(request.method, rawPath);
+      if (!operation) { sendJson(response, 404, { error: "not found" }); return; }
+      if (!["GET", "HEAD"].includes(request.method)) {
+        const expectedOrigin = `${this.secureCookies ? "https" : "http"}://${request.headers.host}`;
+        if (request.headers.origin !== expectedOrigin ||
+            request.headers["sec-fetch-site"] === "cross-site") {
+          sendJson(response, 403, { error: "foreign origin" }); return;
+        }
+      }
+      const parsed = new URL(request.url, "http://platform.invalid");
+      let body = {};
+      if (["POST", "PATCH", "DELETE"].includes(request.method)) {
+        const bytes = await readBody(request, this.maxBodyBytes);
+        try { body = parseBody(request, bytes); }
+        catch { throw Object.assign(new Error("invalid runtime body"), { statusCode: 400 }); }
+      }
+      const input = validateRuntimeInput(operation, { query: parsed.searchParams, body, headers: request.headers });
+      let directory = this.tenantPolicy.directory(context, input.directory);
+      const sessionId = operation.identifiers.sessionId ?? body.sessionID;
+      if (sessionId) {
+        const session = this.tenantPolicy.session(context, sessionId);
+        if (input.directory !== undefined && operation.operation !== "sessionMove" && input.directory !== session.directory)
+          throw Object.assign(new Error("directory does not match session"), { statusCode: 403 });
+        if (operation.operation !== "sessionMove") directory = session.directory;
+      }
+      if (body.parentID) this.tenantPolicy.session(context, body.parentID);
+      if (operation.identifiers.requestId) this.tenantPolicy.request(context, operation.identifiers.requestId);
+      if (operation.approval && operation.approval !== "reply" &&
+          !(await this.approvalGate?.(context, { operation: operation.operation, sessionId, body }))) {
+        sendJson(response, 403, { error: "approval required" }); return;
+      }
+      if (["modelConfig", "modelCatalog", "providerCatalog"].includes(operation.operation)) {
+        const catalog = await this.runtimeCatalog?.(context);
+        const safe = operation.operation === "modelConfig" ? { model: catalog?.model ?? null }
+          : operation.operation === "providerCatalog" ? { all: catalog?.providers ?? [], connected: catalog?.connected ?? [] }
+          : { providers: catalog?.providers ?? [], default: catalog?.defaults ?? {} };
+        sendJson(response, 200, scrubRuntimeSecrets(safe)); return;
+      }
+      parsed.searchParams.delete("token");
+      parsed.searchParams.delete("auth_token");
+      parsed.searchParams.set("directory", directory);
+      const target = new URL(`${operation.path}${parsed.search}`, access.url);
+      const controller = new AbortController();
+      request.on("aborted", () => controller.abort());
+      response.on("close", () => { if (!response.writableEnded) controller.abort(); });
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      try {
+        const upstream = await fetch(target, { method: operation.method, redirect: "error", signal: controller.signal,
+          headers: { authorization: `Basic ${workerBasicToken(access.token)}`, accept: operation.operation === "event"
+            ? "text/event-stream" : "application/json", "content-type": "application/json" },
+          ...(["POST", "PATCH", "DELETE"].includes(operation.method) ? { body: JSON.stringify(body) } : {}),
+        });
+        if (operation.operation === "event" && upstream.ok) {
+          clearTimeout(timeout);
+          response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+          const reader = upstream.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+              if (Buffer.byteLength(buffer) > this.maxBodyBytes) throw new Error("event exceeds limit");
+              let boundary;
+              while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+                const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+                const data = frame.split("\n").filter((line) => line.startsWith("data:"))
+                  .map((line) => line.slice(5).trimStart()).join("\n");
+                if (!data) continue;
+                let event;
+                try { event = scrubRuntimeSecrets(JSON.parse(data)); } catch { continue; }
+                const properties = event.properties ?? event.payload?.properties;
+                const type = event.type ?? event.payload?.type;
+                if (["session.created", "session.updated"].includes(type) && properties?.info)
+                  this.tenantPolicy.registerSession(context, properties.info);
+                if (["permission.asked", "question.asked"].includes(type) && properties)
+                  this.tenantPolicy.registerRequest(context, properties);
+                if (properties?.sessionID) this.tenantPolicy.session(context, properties.sessionID);
+                if (!response.write(`data: ${JSON.stringify(event)}\n\n`)) {
+                  await new Promise((resolve, reject) => {
+                    const onDrain = () => { cleanup(); resolve(); };
+                    const onClose = () => { cleanup(); reject(new Error("event client closed")); };
+                    const cleanup = () => { response.off("drain", onDrain); response.off("close", onClose); };
+                    response.once("drain", onDrain); response.once("close", onClose);
+                  });
+                }
+              }
+            }
+          } finally { await reader.cancel().catch(() => {}); }
+          response.end(); return;
+        }
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of upstream.body ?? []) {
+          size += chunk.length;
+          if (size > this.maxBodyBytes) throw new Error("runtime response exceeds limit");
+          chunks.push(chunk);
+        }
+        let value;
+        const text = Buffer.concat(chunks).toString("utf8");
+        if (text) { try { value = JSON.parse(text); } catch { throw new Error("invalid runtime response"); } }
+        if (upstream.ok) {
+          if (["sessionCreate", "sessionFork", "sessionRead", "sessionPatch"].includes(operation.operation) && value)
+            this.tenantPolicy.registerSession(context, { ...value, directory: value.directory ?? directory });
+          if (["sessionList", "sessionChildren"].includes(operation.operation) && Array.isArray(value))
+            this.tenantPolicy.registerSessionList(context, value);
+          if (["permissionList", "questionList"].includes(operation.operation) && Array.isArray(value))
+            for (const pending of value) this.tenantPolicy.registerRequest(context, pending);
+          if (operation.operation === "sessionDelete") this.tenantPolicy.removeSession(context, sessionId);
+          if (operation.operation === "sessionMove") this.tenantPolicy.registerSession(context, { id: sessionId, directory });
+        }
+        sendJson(response, upstream.status, scrubRuntimeSecrets(value ?? null));
+      } finally { clearTimeout(timeout); }
+    } catch (error) {
+      if (response.headersSent) { response.destroy(); return; }
+      const status = error.statusCode ?? (error.code === "body_too_large" ? 413 : 502);
+      sendJson(response, status, { error: status < 500 ? error.message : "managed runtime unavailable" });
+    }
   }
 
   async #serveWeb(request, response) {
