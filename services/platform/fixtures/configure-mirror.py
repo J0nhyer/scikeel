@@ -11,4 +11,4 @@ config = parseoptions(get_pluginmanager(), ['devpi-server', '--serverdir', str(s
 xom = xom_from_config(config)
 with xom.keyfs.write_transaction():
     stage = xom.model.getstage('root/pypi')
-    stage.modify(mirror_url=sys.argv[2], mirror_cache_expiry=3600)
+    stage.modify(mirror_url=sys.argv[2], mirror_cache_expiry=3600, mirror_no_project_list=True)

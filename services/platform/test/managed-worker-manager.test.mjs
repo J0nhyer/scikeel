@@ -62,3 +62,21 @@ test("rejected resource admission cannot invoke the launcher start operation", a
   await assert.rejects(manager.ensureWorker({ instanceId: "user-a", userId: "a" }), /capacity/);
   assert.equal(calls.filter(([op]) => op === "start").length, 0);
 });
+test("maintenance atomically blocks new mutations while permitting event streams and internal environment RPC", async (t) => {
+  let statusResolve; let checking=false;
+  const {manager}=fixture({fetchImpl:async(url)=>url.endsWith("/session/status") && checking
+    ? new Promise(resolve=>{statusResolve=()=>resolve({ok:true,json:async()=>({})});}) : {ok:true,json:async()=>({})}});
+  t.after(()=>manager.close());
+  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
+  const context={instanceId:"user-a",userId:"a",generation:1};
+  const stream=manager.retainWorker("user-a",{readOnly:true});
+  checking=true;const pending=manager.acquireMaintenance(context);
+  assert.throws(()=>manager.retainWorker("user-a"),/installation/);
+  await assert.rejects(manager.acquireMaintenance(context),/busy/);
+  statusResolve();const maintenance=await pending;
+  const helper=manager.retainWorker("user-a",{maintenance:true});helper.release();
+  await assert.rejects(manager.stopWorker("user-a"),/installation/);
+  stream.release();maintenance.release();
+  const job=manager.retainWorker("user-a");
+  await assert.rejects(manager.acquireMaintenance(context),/busy/);job.release();
+});

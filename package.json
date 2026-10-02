@@ -22,6 +22,7 @@
     "sandbox:mirror:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-mirror-prepare",
     "sandbox:mirror:probe": "node scripts/dev/safe-desktop-task.mjs sandbox-mirror-probe",
     "sandbox:mirror:install": "node scripts/dev/safe-desktop-task.mjs sandbox-mirror-install",
+    "sandbox:migrate": "node scripts/dev/safe-desktop-task.mjs sandbox-migrate",
     "sandbox:storage:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-storage-prepare",
     "sandbox:host:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-host-prepare"
   },

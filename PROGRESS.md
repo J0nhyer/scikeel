@@ -1,3 +1,4 @@
+2026-10-03 00:29 · Added owned-session private Python environment transactions with manual one-use approvals, atomic maintenance locking and scoped package grants; all 163 platform tests and the two-tenant real mirror probe pass, with on-demand public package lookup reducing mirror memory to 41 MiB; production cutover and existing Web feature integration remain pending.
 # Progress
 
 2026-10-02 23:46 · Installed a private-identity public devpi mirror with verified 2 GiB/90000-inode kernel quota and 256 MiB memory cap; two synthetic users reused one upstream archive, 154 platform tests passed, and fresh tenant provisioning/scientific probes passed while transactional sandbox installs and production migration remain pending.

@@ -12,7 +12,7 @@ const archive=Buffer.from("synthetic-public-wheel-content");
 const digest=createHash("sha256").update(archive).digest("hex");
 let downloads=0; let child;
 const upstream=createServer((req,res)=>{
-  if(req.url==="/simple/") {res.setHeader("content-type","text/html");res.end('<a href="scikeel-fixture/">scikeel-fixture</a>');}
+  if(req.url==="/simple/") {res.writeHead(503);res.end("Full public package inventory must not be fetched");}
   else if(req.url==="/simple/scikeel-fixture/") {res.setHeader("content-type","text/html");res.end(`<a href="/public/scikeel_fixture-1.0-py3-none-any.whl#sha256=${digest}">fixture</a>`);}
   else if(req.url==="/public/scikeel_fixture-1.0-py3-none-any.whl") {downloads++;res.setHeader("content-type","application/octet-stream");res.setHeader("content-length",archive.length);res.end(archive);}
   else {res.writeHead(404);res.end();}

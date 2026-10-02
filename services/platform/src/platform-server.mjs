@@ -294,6 +294,7 @@ export class PlatformServer {
     tenantPolicy = null,
     approvalGate = null,
     runtimeCatalog = null,
+    environments = null,
   } = {}) {
     if (!authStore) throw new Error("authStore is required");
     if (!workerManager) throw new Error("workerManager is required");
@@ -309,6 +310,7 @@ export class PlatformServer {
     this.tenantPolicy = tenantPolicy;
     this.approvalGate = approvalGate;
     this.runtimeCatalog = runtimeCatalog;
+    this.environments = environments;
     this.server = null;
     this.listenPromise = null;
   }
@@ -442,6 +444,44 @@ export class PlatformServer {
       const status = error?.code === "unknown_user" ? 404 : 400;
       sendJson(response, status, { error: error?.message ?? "could not update user" });
     }
+  }
+
+  async #environmentRequest(request, response, user, worker) {
+    const parsed = new URL(request.url ?? "/", "http://platform.invalid");
+    if (!parsed.pathname.startsWith("/api/environments/")) return false;
+    const match = /^\/api\/environments\/([A-Za-z0-9_-]{1,128})(?:\/(request|install))?$/.exec(parsed.pathname);
+    if (!this.environments || !this.tenantPolicy || !match) { sendJson(response, 404, { error: "not found" }); return true; }
+    if (parsed.search) { sendJson(response, 400, { error: "query parameters are not accepted" }); return true; }
+    const [, sessionId, operation] = match;
+    if (request.method !== (operation ? "POST" : "GET")) { sendJson(response, 405, { error: "method not allowed" }); return true; }
+    if (operation && request.headers.origin && request.headers.origin !== `${this.secureCookies ? "https" : "http"}://${request.headers.host}`) {
+      sendJson(response, 403, { error: "origin rejected" }); return true;
+    }
+    const context = { userId: user.id, instanceId: worker.id, generation: worker.generation };
+    const controller = new AbortController();
+    request.once("aborted", () => controller.abort());
+    response.once("close", () => { if (!response.writableEnded) controller.abort(); });
+    try {
+      this.tenantPolicy.session(context, sessionId);
+      if (!operation) sendJson(response, 200, await this.environments.describe(context, sessionId, {signal: controller.signal}));
+      else {
+        const payload = await this.#readPayload(request, response);
+        if (!payload) return true;
+        const allowed = operation === "install" ? ["id", "manual"] : [];
+        if (Object.keys(payload).some(key => !allowed.includes(key)) ||
+            (operation === "install" && (!/^[a-f0-9]{64}$/.test(payload.id ?? "") || payload.manual !== true))) {
+          sendJson(response, 400, { error: "invalid environment request" }); return true;
+        }
+        const value = operation === "install"
+          ? await this.environments.install(context, sessionId, {...payload, signal: controller.signal})
+          : await this.environments.request(context, sessionId, {signal: controller.signal});
+        sendJson(response, 200, value);
+      }
+    } catch (error) {
+      const status = [400,403,404,429,503].includes(error?.statusCode) ? error.statusCode : 409;
+      sendJson(response, status, {error: status === 503 ? "workspace is busy; retry after the active task finishes" : "environment request denied"});
+    }
+    return true;
   }
 
   async #ensureWorker(user) {
@@ -818,6 +858,11 @@ export class PlatformServer {
           this.#unauthorized(request, response);
           return;
         }
+        if (path.startsWith("/api/environments/")) {
+          if (!this.environments || !this.tenantPolicy) { sendJson(response, 404, {error: "not found"}); return; }
+          const {worker} = await this.#ensureWorker(user);
+          await this.#environmentRequest(request, response, user, worker); return;
+        }
         if (path === "/api/me" && request.method === "GET") {
           sendJson(response, 200, { user });
           return;
@@ -907,7 +952,7 @@ export class PlatformServer {
       }
       if (this.tenantPolicy && await this.#serveWeb(request, response)) return;
       const { access, worker } = await this.#ensureWorker(user);
-      const lease = this.workerManager.retainWorker?.(worker.id);
+      const lease = this.workerManager.retainWorker?.(worker.id, { readOnly: ["GET", "HEAD"].includes(request.method) });
       if (lease) {
         let released = false;
         const release = () => { if (!released) { released = true; lease.release(); } };

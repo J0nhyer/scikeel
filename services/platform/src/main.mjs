@@ -83,6 +83,7 @@ const platform = new PlatformServer({
   cliRuntime,
   tenantPolicy: controlPlane?.tenantPolicy,
   runtimeCatalog: controlPlane?.runtimeCatalog,
+  environments: controlPlane?.environments,
   webRoot: optionalPath("PLATFORM_WEB_ROOT", join(process.cwd(), "apps/desktop/dist")),
   // The current internal deployment is still plain HTTP; set this to true
   // when the reverse proxy terminates HTTPS.

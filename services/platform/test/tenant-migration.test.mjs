@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nextMigrationState, TenantMigrations } from "../../../scripts/dev/migrate-tenant-sandboxes.mjs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { nextMigrationState, TenantMigrations, inventoryTenant } from "../../../scripts/dev/migrate-tenant-sandboxes.mjs";
+import { mkdtemp, rm, mkdir, writeFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -11,6 +11,15 @@ test("migration requires each verified checkpoint and never falls back after act
   assert.equal(nextMigrationState("verified","activate"),"managed");
   assert.equal(nextMigrationState("managed","runtimeFailed"),"managedUnavailable");
   assert.throws(()=>nextMigrationState("managedUnavailable","rollbackToHost"));
+});
+test("migration inventory preserves Git/history identity and reports external links without following them", async (t) => {
+  const root=await mkdtemp(join(tmpdir(),"scikeel-inventory-"));t.after(()=>rm(root,{recursive:true,force:true}));
+  await mkdir(join(root,".git"));await writeFile(join(root,".git","HEAD"),"ref: refs/heads/main\n");
+  await writeFile(join(root,"history.sqlite-wal"),"private history");await symlink("/etc/passwd",join(root,"external"));
+  const result=await inventoryTenant(root);
+  assert.equal(result.files.length,2);assert.equal(result.externalLinks.length,1);
+  assert.ok(result.files.every(file=>/^[a-f0-9]{64}$/.test(file.sha256)));
+  assert.ok(!JSON.stringify(result).includes("private history"));
 });
 test("migration checkpoints persist identity and generation atomically across restarts", async (t) => {
   const root=await mkdtemp(join(tmpdir(),"scikeel-migration-"));t.after(()=>rm(root,{recursive:true,force:true}));

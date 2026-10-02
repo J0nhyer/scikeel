@@ -27,7 +27,7 @@ const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
 if (!["build", "test", "typecheck", "lint", "probe", "platform-test",
-  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install"].includes(mode)) {
+  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install", "sandbox-migrate"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
 }
@@ -140,6 +140,9 @@ if (mode === "probe") {
 } else if (mode === "sandbox-mirror-probe") {
   if (args.length) throw new Error("Mirror acceptance uses fixed synthetic inputs");
   run(process.execPath, [join(root, "scripts/dev/probe-package-mirror.mjs")], root);
+} else if (mode === "sandbox-migrate") {
+  if (args.join(" ") !== "--dry-run --synthetic") throw new Error("Only read-only synthetic migration is available");
+  run(process.execPath, [join(root, "scripts/dev/migrate-tenant-sandboxes.mjs"), ...args], root);
 } else if (mode === "sandbox-mirror-install") {
   if (args.length) throw new Error("Mirror setup uses fixed verified inputs");
   run("sudo", ["-n", "/usr/bin/python3", "/usr/local/lib/scikeel/prepare-package-mirror.py"], root);

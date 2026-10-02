@@ -63,7 +63,7 @@ function makeClient(base) {
   };
 }
 
-async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null } = {}) {
+async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null } = {}) {
   const root = providedRoot ?? (await mkdtemp(join(tmpdir(), "osd-platform-server-")));
   const authStore = new AuthStore({
     filePath: join(root, "platform", "auth.json"),
@@ -76,7 +76,7 @@ async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRo
     startupTimeoutMs: 5_000,
     stopTimeoutMs: 1_000,
   });
-  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy });
+  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments });
   const address = await server.listen();
   const fixture = { root, authStore, manager, server, cliRuntime, base: `http://${address.host}:${address.port}` };
   fixtures.push(fixture);
@@ -604,4 +604,29 @@ test("managed users can load the Web client without admitting a sandbox or expos
   const response = await client.request("/");
   assert.equal(response.status, 200); assert.match(await response.text(), /static client/);
   assert.equal(response.headers.get("location"), null);
+});
+test("private environment endpoints require an owned session and explicit manual approval without caller file paths", async () => {
+  const policy=new TenantPolicy(); const calls=[];
+  const environments={describe:async(context,sessionId)=>{calls.push(["describe",context,sessionId]);return {venvState:"absent"};},
+    request:async(context,sessionId)=>{calls.push(["request",context,sessionId]);return {id:"a".repeat(64),permission:"dependency_install"};},
+    install:async(context,sessionId,value)=>{calls.push(["install",context,sessionId]);assert.equal(value.manual,true);return {selection:{kind:"private"}};}};
+  const fixture=await makeFixture({tenantPolicy:policy,environments}); const client=makeClient(fixture.base);
+  assert.equal((await client.request("/api/environments/owned")).status,401);
+  const {user}=await login(client,"admin","admin-password");const instanceId=`user-${user.id}`;
+  const worker=await fixture.manager.ensureWorker({instanceId,userId:user.id});
+  fixture.manager.getWorker=((original)=>(id)=>({...original.call(fixture.manager,id),generation:1}))(fixture.manager.getWorker);
+  const context={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir};
+  policy.registerAccount(context);policy.registerSession(context,{id:"owned",directory:worker.workspaceDir+"/project"});
+  const post=(path,body={},headers={})=>client.request(path,{method:"POST",headers:{"content-type":"application/json",...headers},body:JSON.stringify(body)});
+  assert.equal((await client.request("/api/environments/foreign")).status,404);
+  assert.equal((await client.request("/api/environments/owned?project=peer")).status,400);
+  assert.equal((await post("/api/environments/owned/request",{project:"peer"})).status,400);
+  assert.equal((await post("/api/environments/owned/request",{}, {origin:"https://foreign.invalid"})).status,403);
+  assert.equal((await post("/api/environments/owned/install",{id:"a".repeat(64),manual:false})).status,400);
+  assert.deepEqual(calls,[]);
+  assert.equal((await client.request("/api/environments/owned")).status,200);
+  assert.equal((await post("/api/environments/owned/request")).status,200);
+  assert.equal((await post("/api/environments/owned/install",{id:"a".repeat(64),manual:true})).status,200);
+  assert.deepEqual(calls.map(value=>value[0]),["describe","request","install"]);
+  assert.ok(calls.every(([,owner])=>owner.userId===user.id && owner.instanceId===instanceId && owner.generation===1));
 });

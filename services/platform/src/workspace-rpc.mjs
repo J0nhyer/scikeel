@@ -1,4 +1,4 @@
-import { fileRequest } from "../../../runtime/sandbox/file-rpc.mjs";
+import { fileRequest, environmentRequest } from "../../../runtime/sandbox/file-rpc.mjs";
 
 const denied=(message)=>Object.assign(new Error(message),{statusCode:403});
 export class WorkspaceRpc {
@@ -14,16 +14,22 @@ export class WorkspaceRpc {
       throw denied("workspace generation unavailable");
   }
   async call(context,value,{signal}={}) {
-    const request=fileRequest(value);this.#owned(context);
+    return this.#send(context,fileRequest(value),"/files",signal);
+  }
+  async environment(context,value,{signal}={}) {
+    return this.#send(context,environmentRequest(value),"/environments",signal);
+  }
+  async #send(context,request,path,signal) {
+    this.#owned(context);
     if(signal?.aborted)throw denied("workspace operation cancelled");
-    const lease=this.workerManager.retainWorker(context.instanceId);
+    const lease=this.workerManager.retainWorker(context.instanceId, { maintenance: path === "/environments", readOnly: ["read", "list", "inspect"].includes(request.operation) });
     try {
       if(lease.generation!==context.generation)throw denied("workspace generation changed");
       const access=this.workerManager.getWorkerAccess(context.instanceId);
       if(!/^http:\/\/172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]):4791$/.test(access.runnerUrl??"") ||
           !/^[a-f0-9]{64}$/.test(access.token??""))throw denied("workspace transport unavailable");
-      const bounded=signal ? AbortSignal.any([signal,AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs);
-      const response=await this.fetchImpl(`${access.runnerUrl}/files`,{method:"POST",redirect:"error",signal:bounded,headers:{
+      const bounded=signal ? AbortSignal.any([signal,AbortSignal.timeout(path === "/environments" ? 300000 : this.timeoutMs)]) : AbortSignal.timeout(path === "/environments" ? 300000 : this.timeoutMs);
+      const response=await this.fetchImpl(`${access.runnerUrl}${path}`,{method:"POST",redirect:"error",signal:bounded,headers:{
         authorization:`Bearer ${access.token}`,"content-type":"application/json"},body:JSON.stringify({instanceId:context.instanceId,generation:context.generation,...request})});
       if(!response.ok){await response.body?.cancel();throw denied("workspace operation denied");}
       const reader=response.body.getReader();const buffers=[];let total=0;

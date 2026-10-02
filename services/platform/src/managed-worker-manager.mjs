@@ -25,7 +25,7 @@ export class ManagedWorkerManager {
     let record = this.#workers.get(instanceId);
     if (record && record.userId !== userId) return Promise.reject(new Error("instance belongs to another user"));
     if (!record) {
-      record = { id: instanceId, userId, ...this.instancePaths(instanceId), status: "stopped", generation: null, activeOperations: 0 };
+      record = { id: instanceId, userId, ...this.instancePaths(instanceId), status: "stopped", generation: null, activeOperations: 0, activeMutations: 0, maintenance: false };
       this.#workers.set(instanceId, record);
     }
     if (record.status === "running") return Promise.resolve(this.refreshWorker?.({ userId, instanceId, generation: record.generation }))
@@ -72,14 +72,33 @@ export class ManagedWorkerManager {
       return body && typeof body === "object" && !Array.isArray(body) && Object.values(body).every((value) => value?.type === "idle");
     } catch { return false; }
   }
-  retainWorker(instanceId) {
+  isIdle(context) {
+    const record=this.#workers.get(context?.instanceId);
+    if(!record || record.userId!==context.userId || record.generation!==context.generation || record.status!=="running")return Promise.resolve(false);
+    return this.#idle(record);
+  }
+  async acquireMaintenance(context) {
+    const record = this.#workers.get(context?.instanceId);
+    if (!record || record.userId !== context.userId || record.generation !== context.generation || record.status !== "running" ||
+        record.maintenance || record.activeMutations) throw unavailable("workspace is busy");
+    // Set before awaiting runtime status, so a new mutating request cannot race the check.
+    record.maintenance = true; record.activeOperations++;
+    let released = false;
+    const release = () => { if (!released) { released = true; record.maintenance = false; record.activeOperations--; } };
+    try { if (!await this.#idle(record)) throw unavailable("workspace is busy"); }
+    catch (error) { release(); throw error; }
+    return Object.freeze({ generation: record.generation, release });
+  }
+  retainWorker(instanceId, { readOnly = false, maintenance = false } = {}) {
     const record = this.#workers.get(instanceId);
     if (!record || record.status !== "running") throw unavailable("worker is not running");
-    record.activeOperations++; let released = false;
-    return Object.freeze({ generation: record.generation, release: () => { if (!released) { released = true; record.activeOperations--; } } });
+    if (record.maintenance && !readOnly && !maintenance) throw unavailable("workspace environment installation in progress");
+    record.activeOperations++; if (!readOnly) record.activeMutations++; let released = false;
+    return Object.freeze({ generation: record.generation, release: () => { if (!released) { released = true; record.activeOperations--; if (!readOnly) record.activeMutations--; } } });
   }
   async #stop(record) {
     if (!["running", "starting"].includes(record.status)) return;
+    if (record.maintenance) throw unavailable("workspace environment installation in progress");
     const context = { userId: record.userId, instanceId: record.id, generation: record.generation };
     await this.client.stop({ instanceId: record.id, generation: record.generation, reason: "managed-stop" });
     await this.#admissions.get(record.id)?.release(); this.#admissions.delete(record.id);
@@ -100,7 +119,7 @@ export class ManagedWorkerManager {
   async removeWorker(instanceId) { await this.stopWorker(instanceId); this.#workers.delete(instanceId); }
   getWorker(instanceId) {
     const record = this.#workers.get(instanceId); if (!record) return null;
-    const { token: _token, runnerUrl: _runnerUrl, activeOperations: _active, ...safe } = record;
+    const { token: _token, runnerUrl: _runnerUrl, activeOperations: _active, activeMutations: _mutations, maintenance: _maintenance, ...safe } = record;
     return { ...safe };
   }
   listWorkers() { return [...this.#workers.keys()].map((id) => this.getWorker(id)); }

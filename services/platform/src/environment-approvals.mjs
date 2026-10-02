@@ -26,7 +26,8 @@ export class EnvironmentApprovals {
   }
   approve({ id, actor, manual }) {
     const record = this.#records.get(id);
-    if (!record || manual !== true || actor?.userId !== record.userId || record.expiresAt <= this.now() || record.used) throw denied();
+    if (!record || manual !== true || actor?.userId !== record.userId ||
+        ["instanceId", "generation", "sessionId", "projectId"].some(key => actor[key] !== undefined && actor[key] !== record[key]) || record.expiresAt <= this.now() || record.used) throw denied();
     record.approved = true; return Object.freeze({ ...record });
   }
   consume(input) {

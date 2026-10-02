@@ -4,7 +4,7 @@ import { readFile, lstat, mkdir, writeFile, rename } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { resolve, posix } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FileRpc, fileRequest } from "./file-rpc.mjs";
+import { FileRpc, fileRequest, EnvironmentRpc, environmentRequest } from "./file-rpc.mjs";
 import { buildJobEnvironment } from "./cli-jobs.mjs";
 
 function validateManifest(value) {
@@ -17,11 +17,11 @@ function validateManifest(value) {
   return Object.freeze({ ...value });
 }
 export class TenantRunner {
-  #active = new Set();
-  constructor({ manifest, token, files = new FileRpc(), configureProfile, timeoutMs = 30000 } = {}) {
+  #active = new Set(); #operations = new Set();
+  constructor({ manifest, token, files = new FileRpc(), environments = new EnvironmentRpc(), configureProfile, timeoutMs = 30000 } = {}) {
     this.manifest = validateManifest(manifest);
     if (!/^[a-f0-9]{64}$/.test(token ?? "") || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new Error("invalid tenant runner configuration");
-    this.token = token; this.files = files; this.configureProfile = configureProfile; this.timeoutMs = timeoutMs;
+    this.token = token; this.files = files; this.environments = environments; this.configureProfile = configureProfile; this.timeoutMs = timeoutMs;
     this.server = createServer((req, res) => { void this.#handle(req, res); });
     this.server.maxHeadersCount = 24; this.server.headersTimeout = 5000; this.server.requestTimeout = 10000;
     this.server.on("clientError", (_error, socket) => socket.destroy());
@@ -47,11 +47,11 @@ export class TenantRunner {
     if (req.method === "GET" && req.url === "/health") { send(200, { ready: true }); return; }
     const credential = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
     if (!credential || !timingSafeEqual(Buffer.from(credential), Buffer.from(this.token))) { send(403, { error: "runner_denied" }); return; }
-    if (req.method !== "POST" || !["/files", "/profile"].includes(req.url)) { send(404, { error: "runner_route_unavailable" }); return; }
-    if (this.#active.size) { send(429, { error: "runner_busy" }); return; }
-    const controller = new AbortController(); this.#active.add(controller);
+    if (req.method !== "POST" || !["/files", "/profile", "/environments"].includes(req.url)) { send(404, { error: "runner_route_unavailable" }); return; }
+    if (this.#operations.has(req.url) || this.#operations.has("/profile") || (req.url === "/profile" && this.#active.size)) { send(429, { error: "runner_busy" }); return; }
+    const controller = new AbortController(); this.#active.add(controller); this.#operations.add(req.url);
     const cancel = () => controller.abort();
-    const timeout = setTimeout(() => { send(504, { error: "runner_timeout" }); controller.abort(); req.destroy(); }, this.timeoutMs);
+    const timeout = setTimeout(() => { send(504, { error: "runner_timeout" }); controller.abort(); req.destroy(); }, req.url === "/environments" ? 300000 : this.timeoutMs);
     req.once("aborted", cancel); res.once("close", cancel);
     try {
       if (req.headers["content-type"] !== "application/json" || req.headers["content-encoding"]) throw new Error("invalid runner payload");
@@ -66,10 +66,11 @@ export class TenantRunner {
       if (req.url === "/profile") {
         if (Object.keys(operation).join(",") !== "profile" || !this.configureProfile) throw new Error("profile unavailable");
         await this.configureProfile(validateProfile(operation.profile), { signal: controller.signal }); result = { configured: true };
-      } else result = await this.files.call(fileRequest(operation), { signal: controller.signal });
+      } else if(req.url==="/environments") result=await this.environments.call(environmentRequest(operation),{signal:controller.signal});
+      else result = await this.files.call(fileRequest(operation), { signal: controller.signal });
       if (!controller.signal.aborted) send(200, result);
     } catch { if (!controller.signal.aborted) send(403, { error: "runner_operation_denied" }); }
-    finally { clearTimeout(timeout); req.off("aborted", cancel); res.off("close", cancel); this.#active.delete(controller); }
+    finally { clearTimeout(timeout); req.off("aborted", cancel); res.off("close", cancel); this.#active.delete(controller); this.#operations.delete(req.url); }
   }
 }
 function validateProfile(value) {

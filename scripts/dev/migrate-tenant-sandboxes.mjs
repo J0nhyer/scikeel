@@ -1,6 +1,8 @@
-import { open, readFile, rename, mkdir, unlink } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { open, readFile, rename, mkdir, unlink, readdir, lstat, readlink } from "node:fs/promises";
+import { dirname, resolve, join, relative, isAbsolute } from "node:path";
+import { randomBytes, createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const transitions={pending:{drain:"drained"},drained:{backup:"backedUp"},backedUp:{copy:"copied"},copied:{verify:"verified"},
   verified:{activate:"managed"},managed:{runtimeFailed:"managedUnavailable"},managedUnavailable:{runtimeRecovered:"managed"}};
@@ -46,4 +48,47 @@ export class TenantMigrations {
     const record=Object.freeze({...previous,state,checkpoint:state==="blocked"?previous.checkpoint:state});
     this.#records.set(context.instanceId,record);try{await this.#save();}catch(error){this.#records.set(context.instanceId,previous);throw error;}return record;
   });}
+}
+export async function inventoryTenant(root,{maxEntries=100000,maxBytes=2*1024**3}={}) {
+  if(typeof root!=="string" || !isAbsolute(root) || resolve(root)!==root || root==="/")throw new Error("invalid inventory root");
+  const initial=await lstat(root);if(!initial.isDirectory() || initial.isSymbolicLink())throw new Error("unsafe inventory root");
+  const files=[];const externalLinks=[];const directories=[];let bytes=0;let count=0;
+  async function walk(directory,depth=0) {
+    if(depth>32)throw new Error("inventory directory depth exceeds budget");
+    for(const entry of await readdir(directory,{withFileTypes:true})) {
+      if(++count>maxEntries)throw new Error("inventory entry limit");
+      const path=join(directory,entry.name);const name=relative(root,path);const info=await lstat(path);
+      if(info.isSymbolicLink()) {
+        const target=await readlink(path);const actual=resolve(directory,target);
+        if(actual!==root && !actual.startsWith(`${root}/`))externalLinks.push({path:name,target});
+        continue;
+      }
+      if(info.dev!==initial.dev)throw new Error("inventory crosses a filesystem boundary");
+      if(info.isDirectory()){directories.push(name);await walk(path,depth+1);continue;}
+      if(!info.isFile())throw new Error("inventory contains special files");
+      bytes+=info.size;if(bytes>maxBytes)throw new Error("inventory exceeds account disk budget");
+      const descriptor=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+      try {
+        const opened=await descriptor.stat();if(!opened.isFile() || opened.ino!==info.ino || opened.dev!==info.dev || opened.size!==info.size)throw new Error("inventory changed during read");
+        const hash=createHash("sha256");let actualBytes=0;
+        for await(const chunk of descriptor.createReadStream({autoClose:false})){actualBytes+=chunk.length;if(actualBytes>info.size)throw new Error("inventory changed during read");hash.update(chunk);}
+        const final=await descriptor.stat();
+        if(actualBytes!==info.size || final.mtimeMs!==opened.mtimeMs || final.ctimeMs!==opened.ctimeMs)throw new Error("inventory changed during read");
+        files.push({path:name,size:info.size,sha256:hash.digest("hex"),mode:info.mode&0o777});
+      } finally{await descriptor.close();}
+    }
+  }
+  await walk(root);files.sort((a,b)=>a.path.localeCompare(b.path));directories.sort();externalLinks.sort((a,b)=>a.path.localeCompare(b.path));
+  return {schema:1,root,bytes,entries:count,files,directories,externalLinks,coldCopyRequired:true};
+}
+async function dryRun(args) {
+  if(args.join(" ")!=="--dry-run --synthetic")throw new Error("only the read-only synthetic migration inventory is available");
+  const roots=["/var/lib/scikeel/fixture-data/instances/sandbox-test-a","/var/lib/scikeel/fixture-data/instances/sandbox-test-b"];
+  const reports=[];
+  for(const root of roots){const inventory=await inventoryTenant(root,{maxEntries:1024,maxBytes:64*1024**2});
+    reports.push({instanceId:root.split("/").at(-1),bytes:inventory.bytes,files:inventory.files.length,externalLinks:inventory.externalLinks.length,coldCopyRequired:true});}
+  console.log(JSON.stringify({dryRun:true,synthetic:true,mutated:false,accounts:reports}));
+}
+if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
+  try{await dryRun(process.argv.slice(2));}catch{console.error("Tenant migration prerequisites are incomplete");process.exitCode=1;}
 }

@@ -8,6 +8,8 @@ import { TenantPolicy } from "./tenant-policy.mjs";
 import { HostAdmission, hostPressure } from "./host-admission.mjs";
 import { SandboxScheduler } from "./sandbox-scheduler.mjs";
 import { WorkspaceRpc } from "./workspace-rpc.mjs";
+import { SandboxEnvironments } from "./sandbox-environments.mjs";
+import { PackageGrants } from "./package-grants.mjs";
 
 const routeSet = new Set(["/v1/responses", "/v1/chat/completions", "/v1/messages"]);
 export function validateBrokerConfiguration(config) {
@@ -46,6 +48,7 @@ export async function readBrokerConfiguration() {
 }
 export async function createSandboxControlPlane({ configuration, dataDir, config }) {
   config = validateBrokerConfiguration(config ?? await readBrokerConfiguration());
+  let environments;
   const accounts = new Map(); const tenantPolicy = new TenantPolicy();
   const identify = (input) => {
     const address = typeof input === "string" ? input : input.socket?.remoteAddress;
@@ -56,9 +59,9 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   };
   const model = new ModelBroker({ providers: config.providers, identify });
   const egress = new EgressBroker({ identify });
+  const packageGrants = new PackageGrants();
   const packages = new PackageBroker({ mirrorUrl: config.mirrorUrl, identify,
-    // Package access is issued only by the approved-install integration.
-    authorize: () => false });
+    authorize: (context, route, token) => packageGrants.authorize(context, route, token) });
   const client = new SandboxClient({ socketPath: configuration.socketPath });
   const admission = new HostAdmission();
   const scheduler = new SandboxScheduler({ pressure: hostPressure, admission: (input) => admission.acquire(input) });
@@ -82,7 +85,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     },
     revokeWorker: (context) => {
       scheduler.invalidate(context);
-      model.revokeContext(context); egress.revoke(context);
+      model.revokeContext(context); egress.revoke(context); packageGrants.revokeContext(context); environments?.revokeContext(context);
       for (const [address, account] of accounts) if (account.context.instanceId === context.instanceId && account.context.generation === context.generation) {
         clearInterval(account.timer); accounts.delete(address);
       }
@@ -91,7 +94,10 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   try {
     await model.listen(); await packages.listen({ host: "172.31.240.1", port: 4793 }); await egress.listen({ host: "172.31.240.1", port: 4794 });
   } catch { await Promise.allSettled([model.close(), packages.close(), egress.close()]); throw new Error("managed brokers unavailable"); }
-  return { manager, tenantPolicy, model, packages, egress, files: new WorkspaceRpc({ workerManager: manager, tenantPolicy }),
+  const files = new WorkspaceRpc({ workerManager: manager, tenantPolicy });
+  environments = new SandboxEnvironments({ files, tenantPolicy, packageGrants, imageDigest: configuration.imageDigest,
+    acquireMaintenance: (context) => manager.acquireMaintenance(context) });
+  return { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments,
     runtimeCatalog: () => ({ model: `${config.defaultProvider}/${config.defaultModel}`, providers: Object.entries(config.providers).map(([id, value]) => ({
       id, name: id, models: Object.fromEntries(value.enabledModels.map((model) => [model, { id: model, name: model, providerID: id }])) })),
       connected: Object.keys(config.providers), defaults: Object.fromEntries(Object.entries(config.providers).map(([id, value]) => [id, value.enabledModels[0]])) }),

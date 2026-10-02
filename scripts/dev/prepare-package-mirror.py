@@ -134,6 +134,18 @@ def provision():
         if result.returncode:
             raise ValueError('mirror root identity initialization failed')
         run([str(TOOLS / 'bin/devpi-init'), '--serverdir', str(data), '--root-passwd-hash', result.stdout.strip()], user='scikeel-mirror')
+    # Cold configuration avoids fetching the multi-million-entry PyPI root index.
+    # A named package is looked up on demand and remains cached for all tenants.
+    run(['/usr/bin/systemctl', 'stop', 'scikeel-package-mirror.service'])
+    configure = """from devpi_server.config import get_pluginmanager, parseoptions
+from devpi_server.main import xom_from_config
+config = parseoptions(get_pluginmanager(), ['devpi-server', '--serverdir', '/var/lib/scikeel/package-mirror/data'])
+xom = xom_from_config(config)
+with xom.keyfs.write_transaction():
+    stage = xom.model.getstage('root/pypi')
+    stage.modify(mirror_no_project_list=True)
+"""
+    run([str(TOOLS / 'bin/python'), '-c', configure], user='scikeel-mirror')
     secret = data / '.secret'
     if not secret.exists():
         descriptor = os.open(secret, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

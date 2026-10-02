@@ -13,7 +13,7 @@ export function fileRequest(value) {
 }
 export class FileRpc {
   constructor({ spawnImpl = spawn, timeoutMs = 15000, maxOutputBytes = 4 * 1024 ** 2 } = {}) {
-    if (typeof spawnImpl !== "function" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 ||
+    if (typeof spawnImpl !== "function" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000 ||
         !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > 8 * 1024 ** 2) throw new Error("invalid file helper configuration");
     Object.assign(this, { spawnImpl, timeoutMs, maxOutputBytes });
   }
@@ -21,9 +21,12 @@ export class FileRpc {
     let request;
     try { request = fileRequest(value); if (signal?.aborted) throw new Error("file helper cancelled"); }
     catch (error) { return Promise.reject(error); }
+    return this.execute(request, "/opt/scikeel/tools/bin/osd", ["managed-file-rpc"], { signal });
+  }
+  execute(request, command, args, { signal } = {}) {
     return new Promise((resolve, reject) => {
       let child;
-      try { child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["managed-file-rpc"], {
+      try { child = this.spawnImpl(command, args, {
         detached: true, env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "pipe"],
       }); } catch { reject(new Error("file helper unavailable")); return; }
       let reason; let count = 0; const output = [];
@@ -48,5 +51,24 @@ export class FileRpc {
       });
       child.stdin.end(JSON.stringify(request));
     });
+  }
+}
+export function environmentRequest(value) {
+  if(!value || typeof value!=="object" || Array.isArray(value) || Object.keys(value).some(key=>!["operation","project","inputHash","imageDigest","packageToken","stageId"].includes(key)) ||
+      !["inspect","stage","publish","discard"].includes(value.operation) || !/^sha256:[a-f0-9]{64}$/.test(value.imageDigest??"") ||
+      typeof value.project!=="string" || !value.project || value.project.length>4096 || /[\0\\]/.test(value.project) || value.project.startsWith("/") ||
+      value.project.split("/").some(part=>["",".",".."].includes(part)) ||
+      (value.operation!=="inspect" && !/^[a-f0-9]{64}$/.test(value.inputHash??"")) ||
+      (value.operation==="stage" ? !/^[a-f0-9]{64}$/.test(value.packageToken??"") : Object.hasOwn(value,"packageToken")) ||
+      (["publish","discard"].includes(value.operation) ? !/^[a-f0-9]{64}$/.test(value.stageId??"") : Object.hasOwn(value,"stageId")))
+    throw new Error("environment operation denied");
+  return {...value};
+}
+export class EnvironmentRpc extends FileRpc {
+  constructor(options={}) {super({timeoutMs:300000,maxOutputBytes:2*1024**2,...options});}
+  call(value,{signal}={}) {
+    let request;try{request=environmentRequest(value);if(signal?.aborted)throw new Error("environment helper cancelled");}
+    catch(error){return Promise.reject(error);}
+    return this.execute(request,"/opt/scikeel/science/bin/python",["-I","/opt/scikeel/tools/project-environment.py"],{signal});
   }
 }
