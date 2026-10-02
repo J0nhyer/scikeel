@@ -263,7 +263,7 @@ ENV PATH=/opt/scikeel/science/bin:/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin
 ENV OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 ENV PYTHONDONTWRITEBYTECODE=1
 USER 1000:1000
-ENTRYPOINT ["/opt/scikeel/tools/bin/osd", "--version"]
+ENTRYPOINT ["/opt/scikeel/tools/bin/osd", "version"]
 ```
 
 - [ ] Add a synthetic-only `probe-entry.mjs`: a fixed set of local import/file/network/resource exercises driven by a root-owned case manifest, with no production route registration. Stage it only in a test image variant; production image validation rejects that test marker. Tasks 6–10 can test primitives using this entrypoint before the production runner exists. Their primitive checks cannot satisfy production joint-readiness or real-runtime release gates. Task 11 adds the production runner to the explicit build context and replaces the image entrypoint with the pinned Node runner command. CI builds with bounded dedicated runner resources, imports the baseline offline, runs version probes, exports the rootfs and a machine-readable manifest, and records SHA256 before publication. The host staging script validates manifest/signature provenance, file count/size, archive entries, links/device restrictions and available storage; extracts into a root-owned new digest directory and atomically marks it ready. It never overlays a running image or executes archive hooks. Production rootfs is read-only and includes trusted shared Python symlinks. Protect installed manifest/binaries from the platform account's writes. Support keeping referenced previous images and refusing mismatched architecture.
@@ -273,7 +273,7 @@ ENTRYPOINT ["/opt/scikeel/tools/bin/osd", "--version"]
 
 **Files:** Create `services/platform/src/sandbox-manifest.mjs`, `services/platform/src/sandbox-client.mjs`, `services/platform/test/sandbox-manifest.test.mjs`, `services/platform/test/sandbox-client.test.mjs`. Modify `services/platform/src/main.mjs` for configuration validation without enabling cutover.
 
-- [ ] Test that mount sources and destinations derive only from trusted account records and configured roots. Test that the manifest excludes administrator HOME, shared platform data, original attachments and session envelopes. `sandbox-manifest.mjs` exports `deriveTenantLayout({roots, record, image})`; `sandbox-client.mjs` exports `SandboxClient` with the fixed interface above.
+- [x] Test that mount sources and destinations derive only from trusted account records and configured roots. Test that the manifest excludes administrator HOME, shared platform data, original attachments and session envelopes. `sandbox-manifest.mjs` exports `deriveTenantLayout({roots, record, image})`; `sandbox-client.mjs` exports `SandboxClient` with the fixed interface above.
 
 ```js
 import test from 'node:test';
@@ -290,8 +290,8 @@ test('public mount injection cannot enter a tenant layout', () => {
 });
 ```
 
-- [ ] Run `pnpm platform:test test/sandbox-manifest.test.mjs test/sandbox-client.test.mjs`: missing modules FAIL.
-- [ ] Use strict nonempty ID syntax matching current generated instance IDs, reject unknown input keys, and keep account/user binding in the external registry. Derive workspace at its current absolute path; mount only private runtime state/HOME/native-history subtrees and bounded scratch at required historical destinations. Never mount `cli-runtime/users/<id>` wholesale. Profile files are newly sanitized broker profiles, not copied administrator credentials. Implement length-capped newline JSON messages on a Unix socket with a request ID, timeout, response schema and generation check.
+- [x] Run `pnpm platform:test test/sandbox-manifest.test.mjs test/sandbox-client.test.mjs`: missing modules FAIL.
+- [x] Use strict nonempty ID syntax matching current generated instance IDs, reject unknown input keys, and keep account/user binding in the external registry. Derive workspace at its current absolute path; mount only private runtime state/HOME/native-history subtrees and bounded scratch at required historical destinations. Never mount `cli-runtime/users/<id>` wholesale. Profile files are newly sanitized broker profiles, not copied administrator credentials. Implement length-capped newline JSON messages on a Unix socket with a request ID, timeout, response schema and generation check.
 
 ```js
 export const LAUNCHER_OPERATIONS = Object.freeze(['register','start','stop','inspect']);
@@ -303,8 +303,8 @@ export function launcherRequest(op, args, requestId) {
 }
 ```
 
-- [ ] The host validates independently; a Node manifest is explanatory/test evidence, not privileged authority. `start` returns only launcher-derived endpoint identity; reject stale generation, foreign instance, malformed response, oversized message, timeout and unavailable launcher. No fallback spawn. Fixture socket tests exercise partial frames, duplicate responses and disconnects without launching anything.
-- [ ] Run both tests: PASS. Confirm no current worker launch path changed. Commit `feat: add trusted tenant layouts and narrow sandbox client`.
+- [x] The host validates independently; a Node manifest is explanatory/test evidence, not privileged authority. `start` returns only launcher-derived endpoint identity; reject stale generation, foreign instance, malformed response, oversized message, timeout and unavailable launcher. No fallback spawn. Fixture socket tests exercise partial frames, duplicate responses and disconnects without launching anything.
+- [x] Run both tests: PASS. Confirm no current worker launch path changed. Commit `feat: add trusted tenant layouts and narrow sandbox client`.
 
 ## Task 6: Enforce launcher process, memory, CPU and storage boundaries
 
