@@ -13,6 +13,10 @@ export function validateSourceImages(sources) {
     throw new Error("invalid source image identity");
   return sources;
 }
+export function toolVersionArguments(name) {
+  if (!["osd", "opencode", "node", "uv"].includes(name)) throw new Error("unsupported measured tool");
+  return [name === "osd" ? "version" : "--version"];
+}
 async function sha256(path) {
   const hash = createHash("sha256");
   for await (const bytes of createReadStream(path)) hash.update(bytes);
@@ -20,7 +24,7 @@ async function sha256(path) {
 }
 function run(binary, args) {
   const result = spawnSync(binary, args, { encoding: "utf8", timeout: 30000, maxBuffer: 32 * 1024 ** 2 });
-  if (result.error || result.signal || result.status !== 0) throw new Error("CI image measurement failed");
+  if (result.error || result.signal || result.status !== 0) throw new Error(`CI image measurement failed: ${binary.split("/").pop()}`);
   return result.stdout.trim();
 }
 async function files(root, prefix = "") {
@@ -44,7 +48,7 @@ export async function prepareImage(args) {
   const tools = {};
   for (const name of ["osd", "opencode", "node", "uv"]) {
     const path = join(context, "tools/bin", name);
-    const version = run(path, ["--version"]).match(/\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?/)?.[0];
+    const version = run(path, toolVersionArguments(name)).match(/\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?/)?.[0];
     if (!version) throw new Error("unmeasured CI tool version");
     tools[name] = { version, sha256: await sha256(path), path: `opt/scikeel/tools/bin/${name}` };
   }
@@ -55,6 +59,7 @@ export async function prepareImage(args) {
     return;
   }
   const program = `import hashlib,json,subprocess
+subprocess.check_output(['/opt/scikeel/tools/bin/osd','version'],text=True)
 out={}
 for name,path in [('python','/usr/local/bin/python3.12'),('uv','/usr/local/bin/uv'),('git','/usr/bin/git')]:
  version=subprocess.check_output([path,'--version'],text=True).strip()
@@ -84,5 +89,5 @@ print(json.dumps(out))`;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { await prepareImage(process.argv.slice(2)); }
-  catch { console.error("CI science image preparation failed"); process.exitCode = 1; }
+  catch (error) { console.error(error.message); process.exitCode = 1; }
 }

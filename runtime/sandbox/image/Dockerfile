@@ -17,4 +17,4 @@ ENV OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREA
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN dpkg-query -W > /opt/scikeel/baseline/system-packages.txt
 USER 1000:1000
-ENTRYPOINT ["/opt/scikeel/tools/bin/osd", "--version"]
+ENTRYPOINT ["/opt/scikeel/tools/bin/osd", "version"]

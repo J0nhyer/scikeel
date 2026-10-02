@@ -117,3 +117,11 @@ with tarfile.open(sys.argv[1],'w:gz') as archive:
     assert.equal(result.toolHashes?.["usr/bin/git"], createHash("sha256").update("owned").digest("hex"));
   } finally { await rm(temporary, { recursive: true }); }
 });
+
+// osd has a positional version command; unlike Node/uv, --version is a valued flag.
+test("image tool measurement uses the actual osd CLI version command", async () => {
+  const { toolVersionArguments } = await import("../../../scripts/dev/prepare-science-image.mjs");
+  assert.deepEqual(toolVersionArguments("osd"), ["version"]);
+  assert.deepEqual(toolVersionArguments("node"), ["--version"]);
+  assert.throws(() => toolVersionArguments("shell"));
+});
