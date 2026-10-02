@@ -1,5 +1,5 @@
 import {createHash} from "node:crypto";
-import {mkdir,writeFile,rm,lstat} from "node:fs/promises";
+import {mkdir,open,rm,lstat} from "node:fs/promises";
 import {spawnSync} from "node:child_process";
 import {resolve} from "node:path";
 
@@ -10,15 +10,21 @@ if(process.env.CI!=="true" || process.argv.length!==2)throw new Error("fixed CI 
 const directory=resolve(".deploy/science-context/tools/bin");await mkdir(directory,{recursive:true});
 const response=await fetch(`https://registry.npmjs.org/@openai/codex/-/codex-${version}-linux-x64.tgz`,{redirect:"error",signal:AbortSignal.timeout(120000)});
 if(!response.ok)throw new Error("pinned native runtime download unavailable");
-const reader=response.body.getReader();const chunks=[];let size=0;
-for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>100*1024**2){await reader.cancel();throw new Error("native archive limit");}chunks.push(Buffer.from(value));}
-const archive=Buffer.concat(chunks);if(createHash("sha512").update(archive).digest("base64")!==integrity)throw new Error("native archive integrity mismatch");
-const path=resolve(".deploy/science-context/codex-download.tgz");await writeFile(path,archive,{flag:"wx",mode:0o600});
+const path=resolve(".deploy/science-context/codex-download.tgz");
 try {
-  const extract=spawnSync("python3",["-c",`import io,os,sys,tarfile
+  const descriptor=await open(path,"wx",0o600);const hash=createHash("sha512");let size=0;
+  try {
+    for await(const value of response.body){size+=value.byteLength;
+      if(size>200*1024**2)throw new Error("native archive limit");
+      hash.update(value);await descriptor.writeFile(value);
+    }
+    await descriptor.sync();
+  }finally{await descriptor.close();}
+  if(hash.digest("base64")!==integrity)throw new Error("native archive integrity mismatch");
+  const extract=spawnSync("python3",["-c",`import os,sys,tarfile
 with tarfile.open(sys.argv[1], 'r:gz') as archive:
  member=archive.getmember('package/vendor/x86_64-unknown-linux-musl/bin/codex')
- if not member.isfile() or member.size>200*1024**2:raise ValueError('invalid native archive')
+ if not member.isfile() or member.size>400*1024**2:raise ValueError('invalid native archive')
  source=archive.extractfile(member)
  with open(sys.argv[2], 'xb') as target:
   while chunk:=source.read(1024*1024):target.write(chunk)

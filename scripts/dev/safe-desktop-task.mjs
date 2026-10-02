@@ -150,8 +150,8 @@ if (mode === "probe") {
   if (args.length) throw new Error("Host preparation has fixed synthetic arguments");
   run("sudo", ["-n", "/usr/bin/python3", "/usr/local/lib/scikeel/prepare-synthetic-host.py"], root);
 } else if (mode === "sandbox-storage-prepare") {
-  if (args.length) throw new Error("Storage preparation has fixed synthetic arguments");
-  run("sudo", ["-n", "/usr/bin/python3", "/usr/local/lib/scikeel/provision-synthetic-quota.py"], root);
+  if (args.length && args.join(" ")!=="--production") throw new Error("Storage preparation has fixed verified arguments");
+  run("sudo", ["-n", "/usr/bin/python3", `/usr/local/lib/scikeel/${args.length ? "prepare-tenant-volume.py" : "provision-synthetic-quota.py"}`], root);
 } else if (mode === "sandbox-probe" || mode === "sandbox-image-stage") {
   const entry = mode === "sandbox-probe" ? "sandbox-probe.mjs" : "stage-sandbox-image.mjs";
   run(process.execPath, [join(root, "scripts/dev", entry), ...args], root);

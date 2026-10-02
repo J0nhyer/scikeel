@@ -338,6 +338,7 @@ export class CliRuntimeManager {
     this.userStates = new Map();
     this.processes = new Map();
     this.turnReservations = new Map();
+    this.activeTurns = new Set();
     this.subscribers = new Map();
     this.persistQueues = new Map();
     this.configPersistQueue = Promise.resolve();
@@ -581,13 +582,14 @@ export class CliRuntimeManager {
 
   userPaths(userId) {
     assertUserId(userId);
-    const root = join(this.usersDir, userId);
+    const nativeRoot = join(this.usersDir, userId);
+    const root = this.sandboxJobs ? join(this.rootDir,"metadata",userId) : nativeRoot;
     return {
       root,
       sessionsPath: join(root, "sessions.json"),
-      home: join(root, "home"),
-      claudeConfig: join(root, "claude-config"),
-      codexHome: join(root, "codex-home"),
+      home: join(nativeRoot, "home"),
+      claudeConfig: join(nativeRoot, "claude-config"),
+      codexHome: join(nativeRoot, "codex-home"),
     };
   }
 
@@ -597,7 +599,7 @@ export class CliRuntimeManager {
     if (existing) return existing;
     const paths = this.userPaths(userId);
     await ensureDirectory(paths.root);
-    await ensureDirectory(paths.home);
+    if(!this.sandboxJobs)await ensureDirectory(paths.home);
     const loaded = await readJson(paths.sessionsPath, { version: 1, sessions: [] });
     const sessions = new Map();
     for (const session of Array.isArray(loaded?.sessions) ? loaded.sessions : []) {
@@ -909,6 +911,11 @@ export class CliRuntimeManager {
   }
 
   async runReservedPrompt(turn) {
+    const pending=this.executeReservedPrompt(turn);this.activeTurns.add(pending);
+    try{return await pending;}finally{this.activeTurns.delete(pending);}
+  }
+
+  async executeReservedPrompt(turn) {
     try {
       await this.startReservedPrompt(turn);
     } catch (error) {
@@ -1484,6 +1491,7 @@ export class CliRuntimeManager {
         // Already exited.
       }
     }
+    await Promise.allSettled([...this.activeTurns]);
     this.processes.clear();
     for (const set of this.subscribers.values()) {
       for (const subscription of set) subscription.response.end();

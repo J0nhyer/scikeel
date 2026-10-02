@@ -550,7 +550,7 @@ export class PlatformServer {
   async #proxy(request, response, access, user, worker) {
     // This branch is enabled only for explicitly migrated managed accounts.
     // It never invokes the legacy host CLI adapters.
-    if (this.tenantPolicy && !this.cliRuntime?.isManaged(user.id) && !(request.url ?? "").startsWith("/v1/")) {
+    if (this.tenantPolicy && (!this.cliRuntime?.isManaged(user.id) || (request.method==="GET" && (request.url??"").split("?")[0]==="/skill")) && !(request.url ?? "").startsWith("/v1/")) {
       await this.#managedRuntimeProxy(request, response, access, user, worker);
       return;
     }

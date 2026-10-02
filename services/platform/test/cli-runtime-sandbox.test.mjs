@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp,mkdir,rm} from "node:fs/promises";
+import {mkdtemp,mkdir,rm,readFile,lstat} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {CliRuntimeManager} from "../src/cli-runtime.mjs";
@@ -33,4 +33,25 @@ test("native cancellation closes the owned sandbox job and restores the session 
   const turn=f.manager.sendPrompt({userId:"a",sessionId:f.session.id,text:"Research"});await ready;
   await f.manager.abortSession("a",f.session.id);await turn;
   assert.equal(cancelled,true);assert.equal((await f.manager.getOwnedSession("a",f.session.id)).session.status,"idle");
+});
+
+test("managed native history lives outside launcher-owned mounts and survives restart",async(t)=>{
+  const jobs={run:async()=>({nativeSessionId:"owned"})};const f=await fixture(t,jobs);
+  const paths=f.manager.userPaths("a");
+  assert.ok(paths.sessionsPath.includes("/metadata/a/sessions.json"));
+  assert.ok(paths.home.includes("/users/a/home"));
+  assert.equal(JSON.parse(await readFile(paths.sessionsPath,"utf8")).sessions[0].id,f.session.id);
+  await assert.rejects(lstat(paths.home));
+  await f.manager.close();
+  const restarted=new CliRuntimeManager({rootDir:f.manager.rootDir,sandboxJobs:jobs,profileResolver:f.manager.profileResolver});
+  t.after(()=>restarted.close());await restarted.init();
+  assert.equal((await restarted.ensureUser("a")).sessions.get(f.session.id).directory,f.project);
+});
+test("manager shutdown waits for verified sandbox cancellation before declaring native history drained",async(t)=>{
+  let started;const ready=new Promise(resolve=>started=resolve);let stopped=false;
+  const f=await fixture(t,{run:async args=>{started();await new Promise((resolve,reject)=>args.signal.addEventListener("abort",()=>{
+    setTimeout(()=>{stopped=true;reject(new Error("cancelled"));},25);},{once:true}));}});
+  const turn=f.manager.sendPrompt({userId:"a",sessionId:f.session.id,text:"Research"});await ready;
+  await f.manager.close();assert.equal(stopped,true);await turn;
+  const saved=JSON.parse(await readFile(f.manager.userPaths("a").sessionsPath,"utf8"));assert.equal(saved.sessions.length,1);
 });

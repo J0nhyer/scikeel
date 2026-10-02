@@ -115,8 +115,8 @@ jobs:
       - name: Verify the real production runner, gateway and authenticated file helper
         shell: bash
         run: |
-          mkdir -p .deploy/runner-fixture/{workspace,state,home,scratch,config}
-          chmod 777 .deploy/runner-fixture/{workspace,state,home,scratch}
+          mkdir -p .deploy/runner-fixture/{workspace,state,home,codex-home,scratch,config}
+          chmod 777 .deploy/runner-fixture/{workspace,state,home,codex-home,scratch}
           node --input-type=module -e 'import {writeFileSync} from "node:fs"; const dir=".deploy/runner-fixture/config/"; writeFileSync(dir+"tenant.json",JSON.stringify({schema:1,instanceId:"sandbox-test-ci",generation:1,workspaceDir:"/fixture/workspace",stateDir:"/fixture/state",home:"/fixture/home",scratchDir:"/fixture/scratch"})); writeFileSync(dir+"runner-auth.json",JSON.stringify({schema:1,token:"a".repeat(64)}));'
           sudo chown root:root .deploy/runner-fixture/config/*.json
           cp scripts/dev/probe-production-runner.mjs .deploy/science-test/
@@ -126,6 +126,7 @@ jobs:
             -v "$PWD/.deploy/runner-fixture/workspace:/fixture/workspace" \
             -v "$PWD/.deploy/runner-fixture/state:/fixture/state" \
             -v "$PWD/.deploy/runner-fixture/home:/fixture/home" \
+            -v "$PWD/.deploy/runner-fixture/codex-home:/fixture/codex-home" \
             -v "$PWD/.deploy/runner-fixture/scratch:/fixture/scratch" \
             -v "$PWD/.deploy/runner-fixture/config/tenant.json:/opt/scikeel/tenant.json:ro" \
             -v "$PWD/.deploy/runner-fixture/config/runner-auth.json:/opt/scikeel/runner-auth.json:ro" \

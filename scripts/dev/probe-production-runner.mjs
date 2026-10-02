@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import {CodexAppServer} from "/opt/scikeel/tools/cli-jobs.mjs";
+import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
 
 // CI-only acceptance driver; never copied into an installed scientific image.
 const token = "a".repeat(64);
@@ -35,10 +37,23 @@ try {
     npm: "@ai-sdk/openai-compatible", name: "fixture", models: { approved: { name: "approved" } },
     options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: "c".repeat(64) } } },
     permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
-  if (!(await request("/profile", { profile })).ok) throw new Error("production gateway profile restart failed");
+  const imageDigest=`sha256:${"d".repeat(64)}`;
+  if (!(await request("/profile", { profile,imageDigest })).ok) throw new Error("production gateway profile restart failed");
   const preserved = await request("/files", { operation: "read", root: "workspace", path: value.path });
   if (!preserved.ok || (await preserved.json()).text !== value.text) throw new Error("profile restart lost user files");
-  console.log(JSON.stringify({ productionRunner: true, realGateway: true, realFileHelper: true,
+  const projectDir="/fixture/workspace/science-project";
+  if(!(await request("/files",{operation:"mkdir",root:"workspace",path:"science-project"})).ok)throw new Error("owned science project creation failed");
+  const hooks=await scienceEnvironment({directory:projectDir},{imageDigest});const output={env:{}};
+  await hooks["shell.env"]({cwd:projectDir},output);
+  if(!output.env.PATH.startsWith("/opt/scikeel/science/bin:"))throw new Error("shared science shell environment missing");
+  const native=new CodexAppServer({spawnImpl:spawn,emit:async()=>{},timeoutMs:15000,requestTimeoutMs:10000});
+  let started;
+  try {
+    started=await native.start({privateHome:"/fixture/home",projectDir,environment:{kind:"base",python:"/opt/scikeel/science/bin/python"},
+      brokers:{modelToken:"c".repeat(64)},model:"approved",text:"Offline protocol initialization only"});
+    if(!started.nativeSessionId || !started.turnId)throw new Error("native protocol initialization failed");
+  }finally{await native.close();}
+  console.log(JSON.stringify({ nativeAppServer:true,scienceShellEnvironment:true,productionRunner: true, realGateway: true, realFileHelper: true,
     authentication: true, generationBinding: true, workspaceEscapeDenied: true, profileRestart: true }));
 } finally {
   const closed = new Promise((done) => child.once("close", done));
