@@ -1,5 +1,9 @@
 # Progress
 
+2026-10-02 21:45 · Two synthetic tenants passed real gVisor offline scientific imports/plotting against one immutable image, with enforced resource/project quotas, working openat2 and hidden host controls; scoped model streams, single-use dependency approvals and bounded scheduler tests pass, while production runner integration remains pending.
+
+2026-10-02 20:50 · Reclaimed about 9 GiB of unused Docker build cache, excess journals, an inactive project's frontend build cache and verified download fragments; the platform remains active and the attested synthetic science image is now installed.
+
 2026-10-02 18:49 · Added trusted tenant mount derivation and the strict four-operation Unix-socket client; all 69 platform tests pass, deployment remains unchanged while the science image build is repaired.
 
 2026-10-02 18:29 · Added the test-only scientific image CI/attestation workflow and artifact/context/archive validators, tightened managed project metadata reads, and passed 60 platform plus 241 core tests; Task 4 remains incomplete because CI locks/signed rootfs and root-owned installation are unavailable, with no production cutover.

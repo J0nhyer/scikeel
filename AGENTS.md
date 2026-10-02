@@ -77,6 +77,7 @@ local workspace + SQLite + JSONL provenance.
   blockers only.
 - Avoid adding new Markdown docs unless requested — too many docs become debt.
 - Prefer minimal, verifiable changes; every step should produce a checkable result.
+- While downloads, builds, or external services are pending, continue independent implementation work instead of repeatedly polling. If only waiting remains, report what is pending so the user can check it.
 - Do not write inferences as verified facts; tie conclusions to code or data.
 - New session workspaces are local git repos: the app initializes them and makes
   best-effort local commits after workspace file changes. Never set a remote or push.

@@ -42,6 +42,8 @@ export async function prepareImage(args) {
   if (process.env.CI !== "true" || args.length < 2 || args.length > 3 || (args[2] && args[2] !== "--manifest"))
     throw new Error("dedicated CI image measurement required");
   const [context, artifacts] = args.map((path, index) => index < 2 ? resolve(path) : path);
+  const variant = process.env.SCIKEEL_IMAGE_VARIANT ?? "probe";
+  if (!["probe", "production"].includes(variant)) throw new Error("invalid science image variant");
   const sources = validateSourceImages({ python: (await readFile(join(artifacts, "python-image.txt"), "utf8")).trim(),
     uv: (await readFile(join(artifacts, "uv-image.txt"), "utf8")).trim() });
   validateBuildContext(await files(context));
@@ -78,11 +80,14 @@ print(json.dumps(out))`;
   const archive = join(artifacts, "rootfs.tar.gz");
   const inventory = JSON.parse(run("python3", [inspector, archive]));
   const digest = await sha256(archive);
-  const manifest = { schema: 1, name: "science-v1", variant: "probe", architecture: "linux/amd64",
+  const runnerFiles = {};
+  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs"])
+    runnerFiles[`opt/scikeel/tools/${name}`] = await sha256(join(context, "tools", name));
+  const manifest = { schema: 1, name: "science-v1", variant, architecture: "linux/amd64",
     rootfsSha256: digest, imageDigest: `sha256:${digest}`, python: tools.python.version, uv: tools.uv.version,
     baselineLockSha256: await sha256(join(artifacts, "uv.lock")), toolLockSha256: await sha256(join(artifacts, "tool-lock.json")),
     fileCount: inventory.fileCount, uncompressedBytes: inventory.uncompressedBytes, tools, enabledRuntimes: ["opencode"],
-    testEntryPoint: "/opt/scikeel/tools/probe-entry.mjs",
+    ...(variant === "probe" ? { testEntryPoint: "/opt/scikeel/tools/probe-entry.mjs" } : { runnerFiles }),
     provenance: { repository: "J0nhyer/scikeel", commit: process.env.GITHUB_SHA, workflow: "sandbox-image.yml" } };
   validateImageManifest(manifest);
   await writeFile(join(artifacts, "image-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");

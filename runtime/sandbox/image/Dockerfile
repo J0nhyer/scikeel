@@ -10,7 +10,7 @@ COPY pyproject.toml uv.lock tool-lock.json /opt/scikeel/baseline/
 ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
 ENV UV_PROJECT_ENVIRONMENT=/opt/scikeel/science
 WORKDIR /opt/scikeel/baseline
-RUN uv sync --locked --no-dev --no-install-project
+RUN uv sync --locked --no-dev --no-install-project --no-cache
 COPY tools/ /opt/scikeel/tools/
 ENV PATH=/opt/scikeel/science/bin:/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin
 ENV OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1

@@ -1,4 +1,5 @@
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { validateImageManifest, validateBuildContext, validateArchiveEntry } from "../../../scripts/dev/stage-sandbox-image.mjs";
 
@@ -31,6 +32,15 @@ test("credential canaries and whole-home/checkout copies are forbidden in the bu
   for (const path of ["tools/auth.json", "tools/.codex/config.toml", "tools/.env", "tools/private.key",
     "tools/.git/config", "home/ubuntu/canary", "../../secret", "tools/credentials.json"])
     assert.throws(() => validateBuildContext([path]), /context/);
+});
+test("production images require the exact authenticated runner and file-helper source identities", () => {
+  const production = { ...manifest(), variant: "production" };
+  assert.throws(() => validateImageManifest(production), /runner/);
+  const runnerFiles = Object.fromEntries(["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs"].map((name) => [`opt/scikeel/tools/${name}`, "a".repeat(64)]));
+  assert.doesNotThrow(() => validateImageManifest({ ...production, runnerFiles }));
+  assert.doesNotThrow(() => validateBuildContext(["tools/runner.mjs", "tools/file-rpc.mjs", "tools/cli-jobs.mjs"]));
+  for (const patch of [{ ...runnerFiles, "opt/scikeel/tools/unknown.mjs": "a".repeat(64) }, { ...runnerFiles, "opt/scikeel/tools/runner.mjs": "" }])
+    assert.throws(() => validateImageManifest({ ...production, runnerFiles: patch }), /runner/);
 });
 
 test("rootfs archive entries reject escape paths, devices, duplicate roots and unsafe links", () => {
@@ -124,4 +134,35 @@ test("image tool measurement uses the actual osd CLI version command", async () 
   assert.deepEqual(toolVersionArguments("osd"), ["version"]);
   assert.deepEqual(toolVersionArguments("node"), ["--version"]);
   assert.throws(() => toolVersionArguments("shell"));
+});
+
+test("rootfs extraction rewrites absolute links and rejects traversal, privileged modes and duplicate roots", () => {
+  const program = `
+import hashlib,importlib.util,io,os,pathlib,tarfile,tempfile
+spec=importlib.util.spec_from_file_location('installer','../../scripts/dev/install-sandbox-image.py')
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as temporary:
+ root=pathlib.Path(temporary)
+ archive=root/'safe.tar.gz'
+ with tarfile.open(archive,'w:gz') as tar:
+  directory=tarfile.TarInfo('usr/bin');directory.type=tarfile.DIRTYPE;directory.mode=0o755;tar.addfile(directory)
+  file=tarfile.TarInfo('usr/bin/tool');file.size=4;file.mode=0o4755;tar.addfile(file,io.BytesIO(b'tool'))
+  link=tarfile.TarInfo('bin');link.type=tarfile.SYMTYPE;link.linkname='/usr/bin';tar.addfile(link)
+ destination=root/'rootfs';destination.mkdir()
+ assert module.digest(archive)==hashlib.sha256(archive.read_bytes()).hexdigest()
+ module.extract_checked(archive,destination)
+ assert os.readlink(destination/'bin')=='usr/bin'
+ assert (destination/'bin/tool').read_bytes()==b'tool'
+ assert (destination/'usr/bin/tool').stat().st_mode & 0o6022==0
+ for name in ['../escape','/escape','usr/../escape']:
+  bad=root/'bad.tar.gz'
+  with tarfile.open(bad,'w:gz') as tar:
+   file=tarfile.TarInfo(name);file.size=1;tar.addfile(file,io.BytesIO(b'x'))
+  out=root/('bad-'+str(len(name)));out.mkdir(exist_ok=True)
+  try: module.extract_checked(bad,out)
+  except ValueError: pass
+  else: raise AssertionError('accepted an escape')
+`;
+  const result = spawnSync("/usr/bin/python3", ["-c", program], { cwd: new URL("../../../services/platform/", import.meta.url), encoding: "utf8", timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
 });

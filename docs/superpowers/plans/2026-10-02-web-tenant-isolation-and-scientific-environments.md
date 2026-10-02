@@ -214,7 +214,7 @@ fn open_regular_beneath(root: &std::fs::File, relative: &str) -> std::io::Result
 
 ## Task 4: Build and identify one immutable scientific baseline
 
-**Execution checkpoint (October 2, 2026): IN PROGRESS.** The Dockerfile, baseline inputs, image schema, test-only science probe, CI selection/build/attestation workflow, source/build-context/archive validators and dry-run staging verification are implemented. Eight image tests, all 60 platform tests and 241 core tests pass (one existing ignored core test). Actual CI has not run: `uv.lock`, measured `tool-lock.json`, the signed rootfs and root-owned installation do not exist. Dry-run staging correctly reports missing CI artifacts. The workflow currently produces an explicitly test-only OpenCode image; native runtime inclusion, production runner and actual installation remain gated. Tasks 5–18 and production cutover have not started.
+**Execution checkpoint (October 2, 2026): IN PROGRESS.** GitHub Actions run 36997881167 produced the signed, test-only OpenCode scientific rootfs and measured locks. Download, attestation/digest/archive verification and root-owned installation succeeded for `sha256:4060b6eeeb30d38a073e4136e7902595f9ae24e7710bf9131dfd46e438b97226`. The installer and extraction regression tests are implemented. The Dockerfile's subsequent cache-removal change needs a new CI artifact before it can be accepted. Task 5 is implemented; Tasks 6–7 have a tested launcher/network foundation, with full gVisor worker readiness, production runner, native adapters and production cutover still pending.
 
 **Files:** Create `runtime/sandbox/image/{Dockerfile,pyproject.toml,uv.lock,tool-lock.json}`, `runtime/sandbox/probe-entry.mjs`, `runtime/sandbox/image-manifest.schema.json`, `scripts/dev/stage-sandbox-image.mjs`, `.github/workflows/sandbox-image.yml`, `services/platform/test/science-image.test.mjs`. Modify `package.json` for the staging script wired through Task 1's guard.
 
@@ -336,6 +336,8 @@ fn arbitrary_execution_is_not_a_launcher_operation() {
 
 ## Task 7: Establish internal transport and approved network egress
 
+**Execution checkpoint (October 2, 2026): IN PROGRESS.** Controlled HTTP/CONNECT broker tests cover identity/grant binding, DNS failure/deadline, disconnect recovery, revocation, credential stripping, bounded transfer and listener restart. The real kernel probe runs in private mount/network namespaces and verifies allowed broker transport, denied peer/host/direct/private/metadata/UDP connections, host UID restrictions, policy mutation detection and idempotent cleanup. The launcher provisions and verifies its own per-generation veth/nftables policy; osd has an explicit internal bind address. Full gVisor transport/SSE, openat2 inside gVisor and runtime tool approval adapters remain pending; the managed production activation block remains in place.
+
 **Files:** Create `crates/osd-sandbox-host/src/network.rs`, `services/platform/src/egress-broker.mjs`, `services/platform/test/egress-broker.test.mjs`. Modify `crates/osd-cli/src/{args,server}.rs`, launcher lifecycle and `services/platform/src/main.mjs`.
 
 - [ ] Add tests denying loopback/private/link-local/metadata destinations, IPv4-mapped IPv6, disallowed ports, rebinding and redirects to a denied destination. Export `isPublicAddress(address)` and `EgressBroker` with platform-owned time-limited connection grants. Include public IPv4/IPv6 positive cases; parse addresses with a maintained IP parser, not string-prefix matching.
@@ -401,6 +403,8 @@ ReadWritePaths=/var/lib/scikeel/package-mirror
 - [ ] Register/run `pnpm sandbox:probe --case package-cache`: two synthetic tenants install the same tiny wheel through the real mirror with one upstream artifact fetch; metadata checks may occur separately. Private environments differ; upload/delete/pollution attempts fail; outage/quota failures are bounded. Unit test and probe PASS within service memory budget or retain an explicit release blocker. Commit `feat: provide bounded public dependency artifact reuse`.
 
 ## Task 9: Keep upstream credentials outside sandboxes and preserve model streams
+
+Implementation checkpoint (2026-10-02 21:45): ModelBroker unit/integration tests pass for scoped hashed capabilities, fixed upstream credentials, SSE, revocation, bounded slow bodies, output reservations, account budgets and provider-error redaction. Production profile/startup wiring and native runtime acceptance remain pending. The real synthetic science-image probe passed for both tenants with kernel cgroup/project-quota evidence and openat2 support; this is not production runner acceptance.
 
 **Files:** Create `services/platform/src/model-broker.mjs`, `services/platform/test/model-broker.test.mjs`. Modify `services/platform/src/{cli-profile,main}.mjs`, `services/platform/test/cli-runtime.test.mjs` and image/profile acceptance fixtures.
 

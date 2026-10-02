@@ -8,10 +8,22 @@ const schemas = { register: ["instanceId", "userId"], start: ["instanceId", "gen
 const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
 const generation = (value) => Number.isSafeInteger(value) && value > 0;
 const MAX_FRAME = 65536;
+const diagnosticReasons = new Set(["network_resource_collision", "network_tool_unavailable", "network_command_failed",
+  "memory_high_not_enforced", "memory_max_not_enforced", "swap_not_enforced", "pids_not_enforced", "cpu_not_enforced", "process_ownership_unverified",
+  "limits_not_enforced", "controller_unavailable", "unbounded_controller", "network_inspection_failed", "invalid_network_snapshot",
+  "quota_source_not_owned", "quota_wrong_filesystem", "quota_backing_wrong_device", "invalid_controller", "invalid_cpu_controller",
+  "mount_failed", "destination_creation_failed", "staging_directory_failed", "host_command_failed", "host_command_timeout",
+  "bundle_write_failed", "test_destination_failed", "unmount_failed", "staging_cleanup_failed", "network_namespace_unavailable",
+  "network_command_timeout", "network_policy_changed", "network_not_ready", "quota_unavailable", "quota_not_enforced",
+  "quota_backing_not_reserved", "host_reserve_insufficient", "controllers_unavailable", "sandbox_readiness_failed",
+  "image_not_ready", "wrong_image_variant", "stale_generation", "already_started", "unknown_instance", "cleanup_unverified"]);
+function clientError(message, code, reason) {
+  return Object.assign(new Error(message), { code, ...(reason ? { reason } : {}) });
+}
 const replyFields = { register: ["instanceId", "generation"],
-  start: ["instanceId", "generation", "endpoint", "runnerEndpoint"],
+  start: ["instanceId", "generation", "endpoint", "runnerEndpoint", "internalToken"],
   stop: ["instanceId", "generation", "stopped"],
-  inspect: ["instanceId", "generation", "status", "limits", "quota", "imageDigest", "endpoint", "runnerEndpoint"] };
+  inspect: ["instanceId", "generation", "status", "limits", "quota", "imageDigest", "endpoint", "runnerEndpoint", "internalToken"] };
 export function launcherRequest(op, args, requestId) {
   if (!LAUNCHER_OPERATIONS.includes(op)) throw new Error("unsupported launcher operation");
   if (typeof requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) throw new Error("invalid launcher request ID");
@@ -25,17 +37,18 @@ export function launcherRequest(op, args, requestId) {
     throw new Error("invalid launcher arguments");
   return { schema: 1, requestId, op, args: { ...args } };
 }
-function endpoint(value) {
+function endpoint(value, port) {
   if (typeof value !== "string") throw new Error("invalid launcher endpoint");
   let url;
   try { url = new URL(value); } catch { throw new Error("invalid launcher endpoint"); }
   // The launcher allocates addresses only from the dedicated, internal subnet.
   const match = /^172\.31\.240\.(\d{1,3})$/.exec(url.hostname);
   const octet = match && Number(match[1]);
-  if (url.protocol !== "http:" || !match || octet < 2 || octet > 254 || !url.port ||
+  if (url.protocol !== "http:" || !match || octet < 2 || octet > 254 || url.port !== String(port) ||
+      value !== `http://172.31.240.${octet}:${port}` ||
       url.username || url.password || url.pathname !== "/" || url.search || url.hash)
     throw new Error("invalid launcher endpoint");
-  return value;
+  return url.hostname;
 }
 export class SandboxClient {
   constructor({ socketPath, timeoutMs = 30000 } = {}) {
@@ -50,10 +63,10 @@ export class SandboxClient {
     return new Promise((resolve, reject) => {
       const socket = createConnection({ path: this.socketPath });
       let buffer = Buffer.alloc(0); let frame; let settled = false;
-      const timer = setTimeout(() => fail(new Error("launcher timeout")), this.timeoutMs);
+      const timer = setTimeout(() => fail(clientError("launcher timeout", "launcher_timeout")), this.timeoutMs);
       function fail(error) { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); reject(error); }
       socket.on("connect", () => socket.write(data));
-      socket.on("error", () => fail(new Error("launcher unavailable")));
+      socket.on("error", () => fail(clientError("launcher unavailable", "launcher_unavailable")));
       socket.on("data", (bytes) => {
         buffer = Buffer.concat([buffer, bytes]);
         if (buffer.length > MAX_FRAME) { fail(new Error("launcher response exceeds limit")); return; }
@@ -71,7 +84,11 @@ export class SandboxClient {
           if (!frame || buffer.length || frame.schema !== 1 || frame.requestId !== request.requestId ||
               typeof frame.ok !== "boolean" || Object.keys(frame).some((key) => !["schema", "requestId", "ok", "result", "error"].includes(key)))
             throw new Error("invalid launcher response");
-          if (!frame.ok) throw new Error("launcher rejected operation");
+          if (!frame.ok) {
+            if (frame.result !== undefined || typeof frame.error !== "string") throw new Error("invalid launcher failure response");
+            const reason = diagnosticReasons.has(frame.error) ? frame.error : undefined;
+            throw clientError("launcher rejected operation", "launcher_rejected", reason);
+          }
           const result = frame.result;
           if (!result || typeof result !== "object" || Array.isArray(result) ||
               Object.keys(result).some((key) => !replyFields[op].includes(key)) || result.instanceId !== args.instanceId || !generation(result.generation) ||
@@ -79,12 +96,15 @@ export class SandboxClient {
           if (frame.error !== undefined) throw new Error("invalid launcher success response");
           if (op === "inspect" && !["registered", "starting", "ready", "stopped", "unavailable"].includes(result.status))
             throw new Error("invalid launcher inspection response");
-          if (op === "start") { endpoint(result.endpoint); endpoint(result.runnerEndpoint); }
+          if (op === "start" || (op === "inspect" && result.status === "ready")) {
+            if (endpoint(result.endpoint, 4790) !== endpoint(result.runnerEndpoint, 4791)) throw new Error("foreign launcher runner endpoint");
+          }
+          if (Object.hasOwn(result, "internalToken") && !/^[a-f0-9]{64}$/.test(result.internalToken)) throw new Error("invalid launcher internal token");
           if (op === "stop" && result.stopped !== true) throw new Error("invalid launcher stop response");
           settled = true; clearTimeout(timer); socket.destroy(); resolve(result);
         } catch (error) { fail(error); }
       });
-      socket.on("close", () => { if (!settled) fail(new Error("launcher disconnected")); });
+      socket.on("close", () => { if (!settled) fail(clientError("launcher disconnected", "launcher_disconnected")); });
     });
   }
   register(args) { return this.call("register", args); }

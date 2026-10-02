@@ -23,8 +23,46 @@ fn live_other_gateway(env: &osd_core::Env) -> Option<u16> {
         .filter(|p| gateway::port_is_answering(*p))
 }
 
+fn internal_bind_address(args: &Args) -> Result<Option<std::net::Ipv4Addr>, String> {
+    let Some(value) = args.value("bind-address") else { return Ok(None); };
+    if args.has("lan") || args.value("host").is_some() {
+        return Err("--bind-address cannot be combined with --lan or --host".into());
+    }
+    let address: std::net::Ipv4Addr = value.parse().map_err(|_| "--bind-address requires a numeric internal IPv4 address")?;
+    let octets = address.octets();
+    if !address.is_loopback() && !(octets[..3] == [172, 31, 240] && (2..=254).contains(&octets[3])) {
+        return Err("--bind-address requires loopback or an assigned tenant address".into());
+    }
+    Ok(Some(address))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn args(value: &str) -> Args { Args::parse(value.split_whitespace().map(str::to_string).collect()).unwrap() }
+    #[test]
+    fn internal_bind_address_is_explicit_and_cannot_be_combined_with_lan() {
+        assert_eq!(internal_bind_address(&args("server")).unwrap(), None);
+        assert_eq!(internal_bind_address(&args("server --bind-address 172.31.240.2")).unwrap(), Some(std::net::Ipv4Addr::new(172,31,240,2)));
+        assert!(internal_bind_address(&args("server --bind-address 127.0.0.1")).is_ok());
+        for value in ["0.0.0.0", "8.8.8.8", "169.254.169.254", "172.31.240.1", "172.31.240.255", "::1", "host.example"] {
+            assert!(internal_bind_address(&args(&format!("server --bind-address {value}"))).is_err());
+        }
+        assert!(internal_bind_address(&args("server --bind-address 172.31.240.2 --lan")).is_err());
+        assert!(internal_bind_address(&args("server --bind-address 172.31.240.2 --host 0.0.0.0")).is_err());
+    }
+}
+
 pub fn run(args: &Args) -> Result<(), String> {
     let env = crate::env(args)?;
+    #[cfg(target_os = "linux")]
+    let env = if args.has("managed") {
+        let manifest=crate::managed::manifest()?;
+        for (flag,key) in [("workspace","workspaceDir"),("state-dir","stateDir")] {
+            if args.value(flag).as_deref()!=manifest[key].as_str() {return Err("managed startup paths do not match launcher manifest".into());}
+        }
+        env.with_managed_files(crate::managed::policy(&manifest)?)
+    } else {env};
 
     // A workspace named on the command line becomes the active one, exactly as
     // picking a folder in the app does — so `osd server --workspace ~/proj`
@@ -66,6 +104,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     // refusal after that would leave the machine configured for a server that
     // never came up.
     let lan = args.has("lan") || matches!(args.value("host").as_deref(), Some("0.0.0.0"));
+    let bind_address = internal_bind_address(args)?;
     let mode = match args.value("mode").as_deref() {
         None | Some("full") => "full".to_string(),
         Some("read-only") => "read-only".to_string(),
@@ -158,7 +197,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     // From here on the sidecar is OURS to clean up: it is a separate process, so
     // returning an error without killing it (a port already in use is the easy
     // way to hit this) would leave an OpenCode running with nothing driving it.
-    let port = match gateway::start_at(&env, &state, &persisted, requested_port) {
+    let port = match gateway::start_at_bind_address(&env, &state, &persisted, requested_port, bind_address) {
         Ok(port) => port,
         Err(e) => {
             runtime::kill_child(env.runtime());
@@ -181,7 +220,8 @@ pub fn run(args: &Args) -> Result<(), String> {
     println!("  workspace   {}", workspace.display());
     println!("  runtime     {sidecar}");
     println!("  access      {mode}");
-    println!("  url         http://{}:{port}", if lan { "0.0.0.0" } else { "127.0.0.1" });
+    let host = bind_address.map(|address| address.to_string()).unwrap_or_else(|| if lan { "0.0.0.0".into() } else { "127.0.0.1".into() });
+    println!("  url         http://{host}:{port}");
     if lan {
         if let Some(ip) = local_ip() {
             println!("  on the LAN  http://{ip}:{port}/?token={token}");
@@ -189,7 +229,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     }
     println!("  token       {token}");
     println!("\nOpen the URL with ?token=<token>, or point a CLI at it:");
-    println!("  osd --gateway http://127.0.0.1:{port} --token {token} session ls");
+    println!("  osd --gateway http://{host}:{port} --token {token} session ls");
     println!("\nCtrl-C to stop.");
 
     wait_for_shutdown();
@@ -265,4 +305,3 @@ fn local_ip() -> Option<String> {
     s.connect("8.8.8.8:80").ok()?;
     s.local_addr().ok().map(|a| a.ip().to_string())
 }
-

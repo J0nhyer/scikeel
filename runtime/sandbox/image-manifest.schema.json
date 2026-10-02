@@ -134,6 +134,12 @@
       },
       "additionalProperties": false
     },
+    "runnerFiles": {
+      "type": "object",
+      "required": ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs"],
+      "propertyNames": {"enum": ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs"]},
+      "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    },
     "testEntryPoint": {
       "const": "/opt/scikeel/tools/probe-entry.mjs"
     }
@@ -149,6 +155,7 @@
         }
       },
       "then": {
+        "required": ["runnerFiles"],
         "not": {
           "required": [
             "testEntryPoint"

@@ -7,13 +7,25 @@ import { fileURLToPath } from "node:url";
 
 export async function scienceProbe() {
   const result = spawnSync("/opt/scikeel/science/bin/python", ["-c", `
-import os
+import os, ctypes, json
+libc = ctypes.CDLL(None, use_errno=True)
+class OpenHow(ctypes.Structure):
+    _fields_ = [('flags', ctypes.c_uint64), ('mode', ctypes.c_uint64), ('resolve', ctypes.c_uint64)]
+root = os.open('/workspace', os.O_RDONLY | os.O_DIRECTORY)
+how = OpenHow(os.O_RDONLY | os.O_DIRECTORY, 0, 0x08 | 0x02 | 0x04)
+descriptor = libc.syscall(437, root, b'.', ctypes.byref(how), ctypes.sizeof(how))
+assert descriptor >= 0, 'secure descriptor API unavailable'
+os.close(descriptor)
+os.close(root)
 import numpy, pandas, scipy, matplotlib, sklearn, statsmodels, sympy, nbformat
 matplotlib.use('Agg')
 from matplotlib import pyplot
 pyplot.plot([1,2,3],[1,4,9])
 pyplot.savefig('/workspace/figure.png')
 assert not os.path.exists('/workspace/.venv')
+assert not os.path.exists('/etc/scikeel/sandbox-host.json')
+assert not os.path.exists('/run/scikeel/host.sock')
+print(json.dumps({'secureOpenSupported': True, 'hostControlHidden': True}))
 `], { timeout: 30000, maxBuffer: 65536,
     env: { PATH: "/opt/scikeel/science/bin:/usr/local/bin:/usr/bin:/bin", HOME: "/workspace",
       PYTHONDONTWRITEBYTECODE: "1", MPLCONFIGDIR: "/workspace/.matplotlib",
@@ -23,7 +35,9 @@ assert not os.path.exists('/workspace/.venv')
   try { await writeFile("/opt/scikeel/baseline/forbidden-write", "synthetic"); }
   catch { rejected = true; }
   if (!rejected) throw new Error("baseline is writable");
-  return { imports: true, figure: true, noPrivateVenv: true, baselineWriteRejected: true };
+  const evidence = JSON.parse(result.stdout.toString("utf8"));
+  if (evidence.secureOpenSupported !== true || evidence.hostControlHidden !== true) throw new Error("sandbox descriptor evidence incomplete");
+  return { imports: true, figure: true, noPrivateVenv: true, baselineWriteRejected: true, ...evidence };
 }
 
 export async function runProbeEntry(path) {

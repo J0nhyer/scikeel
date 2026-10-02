@@ -16,7 +16,10 @@
     "sandbox:core:check": "node scripts/dev/safe-desktop-task.mjs core-check",
     "sandbox:probe": "node scripts/dev/safe-desktop-task.mjs sandbox-probe",
     "sandbox:image:stage": "node scripts/dev/safe-desktop-task.mjs sandbox-image-stage",
-    "sandbox:core:build": "node scripts/dev/safe-desktop-task.mjs core-build"
+    "sandbox:core:build": "node scripts/dev/safe-desktop-task.mjs core-build",
+    "sandbox:network:test": "node scripts/dev/safe-desktop-task.mjs sandbox-network-test",
+    "sandbox:storage:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-storage-prepare",
+    "sandbox:host:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-host-prepare"
   },
   "engines": {
     "node": ">=20"

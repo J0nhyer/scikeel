@@ -71,3 +71,33 @@ test("reply fields are operation-specific and reject untrusted execution or cred
       async (client) => assert.rejects(client.register({ instanceId: "a", userId: "a" })));
   }
 });
+
+test("worker endpoints use the fixed ports and both belong to the same tenant", async () => {
+  for (const patch of [{ endpoint: "http://172.31.240.2:22" }, { runnerEndpoint: "http://172.31.240.2:4790" },
+    { runnerEndpoint: "http://172.31.240.3:4791" }, { endpoint: "http://172.31.240.02:4790" }]) {
+    await socketFixture((socket, request) => socket.end(response(request, { instanceId: "a", generation: 1,
+      endpoint: "http://172.31.240.2:4790", runnerEndpoint: "http://172.31.240.2:4791", ...patch })),
+    async (client) => assert.rejects(client.start({ instanceId: "a", generation: 1, imageDigest: `sha256:${"a".repeat(64)}` })));
+  }
+});
+
+test("ready inspection cannot introduce an unvalidated worker endpoint", async () => {
+  for (const patch of [{ endpoint: "http://127.0.0.1:4790" }, { runnerEndpoint: "http://172.31.240.3:4791" }, { endpoint: undefined }]) {
+    await socketFixture((socket, request) => socket.end(response(request, { instanceId: "a", generation: 1, status: "ready",
+      imageDigest: `sha256:${"a".repeat(64)}`, endpoint: "http://172.31.240.2:4790", runnerEndpoint: "http://172.31.240.2:4791", ...patch })),
+    async (client) => assert.rejects(client.inspect({ instanceId: "a" })));
+  }
+});
+
+test("launcher rejection exposes only a curated diagnostic code", async () => {
+  for (const reason of ["network_resource_collision", "secret /path/to/admin-key"]) {
+    await socketFixture((socket, request) => socket.end(JSON.stringify({ schema: 1, requestId: request.requestId,
+      ok: false, error: reason }) + "\n"), async (client) => {
+      await assert.rejects(client.inspect({ instanceId: "a" }), (error) => {
+        assert.equal(error.code, "launcher_rejected");
+        assert.equal(error.reason, reason === "network_resource_collision" ? reason : undefined);
+        assert.ok(!error.message.includes("secret")); return true;
+      });
+    });
+  }
+});

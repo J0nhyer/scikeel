@@ -2826,6 +2826,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "osd-sandbox-host"
+version = "0.5.2"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "pango"
 version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

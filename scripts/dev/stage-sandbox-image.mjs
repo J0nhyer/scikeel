@@ -36,6 +36,11 @@ export function validateImageManifest(v) {
   if (v.tools.opencode.version !== opencodeVersion || v.tools.uv.version !== v.uv || v.tools.python.version !== v.python)
     throw new Error("pinned tool version mismatch");
   if (v.variant === "production" && v.testEntryPoint) throw new Error("invalid production test entrypoint");
+  if (v.variant === "production") {
+    const paths = ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs"];
+    if (!v.runnerFiles || Object.keys(v.runnerFiles).sort().join(",") !== paths.sort().join(",") ||
+        Object.values(v.runnerFiles).some((value) => !hex.test(value))) throw new Error("missing immutable runner identity");
+  }
   return v;
 }
 
@@ -45,7 +50,7 @@ export function validateBuildContext(paths) {
     if (typeof path !== "string" || path.startsWith("/") || path.includes("\\") ||
         path.split("/").some((part) => !part || part === "." || part === "..") ||
         !(fixed.has(path) || /^tools\/bin\/(osd|opencode|node|uv|codex|claude)$/.test(path) ||
-          /^tools\/resources\/skills-core\/[^/]+\/.+/.test(path) || path === "tools/probe-entry.mjs") ||
+          /^tools\/resources\/skills-core\/[^/]+\/.+/.test(path) || /^tools\/(?:probe-entry|runner|file-rpc|cli-jobs)\.mjs$/.test(path)) ||
         /(^|\/)(\.[^/]+|auth\.json|credentials?\.json|secrets?)(\/|$)|\.(key|pem|p12)$/i.test(path))
       throw new Error("forbidden image build context entry");
   }
@@ -82,14 +87,14 @@ async function regular(path, maximum) {
   if (!metadata.isFile() || metadata.size > maximum) throw new Error("invalid artifact file");
   return metadata;
 }
-function command(binary, args) {
-  const result = spawnSync(binary, args, { cwd: repo, encoding: "utf8", timeout: 30000, maxBuffer: 32 * 1024 ** 2 });
+function command(binary, args, timeout = 30000) {
+  const result = spawnSync(binary, args, { cwd: repo, encoding: "utf8", timeout, maxBuffer: 32 * 1024 ** 2 });
   if (result.error || result.signal || result.status !== 0) throw new Error("image verification prerequisite failed");
   return result.stdout;
 }
 export async function stageImage(args) {
-  if (args.length !== 3 || args[0] !== "--manifest" || args[2] !== "--dry-run")
-    throw new Error("Only verified --manifest PATH --dry-run is available until CI and launcher staging are integrated");
+  if (args.length !== 3 || args[0] !== "--manifest" || !["--dry-run", "--install"].includes(args[2]))
+    throw new Error("Expected --manifest PATH --dry-run|--install");
   const manifestPath = resolve(args[1]);
   await regular(manifestPath, 1024 * 1024);
   const manifest = validateImageManifest(JSON.parse(await readFile(manifestPath, "utf8")));
@@ -111,6 +116,8 @@ export async function stageImage(args) {
   for (const tool of Object.values(manifest.tools)) {
     if (listing.toolHashes?.[tool.path] !== tool.sha256) throw new Error("immutable installed tool digest mismatch");
   }
+  for (const [path, sha] of Object.entries(manifest.runnerFiles ?? {}))
+    if (listing.toolHashes?.[path] !== sha) throw new Error("immutable installed runner digest mismatch");
   if (manifest.variant === "production" && listing.entries.some((entry) => entry.path === "opt/scikeel/tools/probe-entry.mjs"))
     throw new Error("invalid production test entrypoint");
   if (listing.fileCount !== manifest.fileCount || listing.uncompressedBytes !== manifest.uncompressedBytes)
@@ -118,7 +125,11 @@ export async function stageImage(args) {
   const disk = await statfs(artifactRoot);
   if (Number(disk.bavail) * Number(disk.bsize) < manifest.uncompressedBytes + 600 * 1024 ** 2)
     throw new Error("insufficient image staging storage");
-  console.log(JSON.stringify({ verified: true, dryRun: true, imageDigest: manifest.imageDigest,
+  if (args[2] === "--install") {
+    const installed = JSON.parse(command("sudo", ["-n", "/usr/bin/python3", "/usr/local/lib/scikeel/install-sandbox-image.py", artifactRoot], 180000));
+    if (installed.installed !== true || installed.imageDigest !== manifest.imageDigest) throw new Error("invalid installed image identity");
+  }
+  console.log(JSON.stringify({ verified: true, dryRun: args[2] === "--dry-run", imageDigest: manifest.imageDigest,
     fileCount: listing.fileCount, uncompressedBytes: listing.uncompressedBytes }));
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

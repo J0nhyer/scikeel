@@ -254,7 +254,10 @@ impl Ctx {
 /// leave every script pointed somewhere nothing is listening. With no explicit
 /// port we prefer the well-known one and accept any free port if it is taken.
 fn bind_listener(lan: bool, requested: Option<u16>) -> std::io::Result<TcpListener> {
-    let host = if lan { "0.0.0.0" } else { "127.0.0.1" };
+    bind_listener_address(lan, requested, None)
+}
+fn bind_listener_address(lan: bool, requested: Option<u16>, address: Option<std::net::Ipv4Addr>) -> std::io::Result<TcpListener> {
+    let host = address.unwrap_or(if lan { std::net::Ipv4Addr::UNSPECIFIED } else { std::net::Ipv4Addr::LOCALHOST });
     match requested {
         Some(port) => TcpListener::bind((host, port)),
         None => match TcpListener::bind((host, PREFERRED_PORT)) {
@@ -275,6 +278,18 @@ pub fn start_at(
     p: &Persisted,
     requested: Option<u16>,
 ) -> Result<u16, String> {
+    start_at_bind_address(env, state, p, requested, None)
+}
+
+/// Bind an internal worker to its assigned interface without changing desktop defaults.
+/// The CLI validates the managed address; callers never provide a hostname for resolution.
+pub fn start_at_bind_address(
+    env: &Env,
+    state: &GatewayState,
+    p: &Persisted,
+    requested: Option<u16>,
+    address: Option<std::net::Ipv4Addr>,
+) -> Result<u16, String> {
     // An empty token would make `ct_eq` accept `Authorization: Bearer ` (also
     // empty) — i.e. no auth at all on an off-loopback listener. Callers mint one
     // before enabling; refuse here too rather than trust every caller to.
@@ -282,7 +297,7 @@ pub fn start_at(
         return Err("gateway token is not set".into());
     }
     stop(env, state);
-    let listener = bind_listener(p.lan, requested)
+    let listener = if address.is_some() { bind_listener_address(p.lan, requested, address) } else { bind_listener(p.lan, requested) }
         .map_err(|e| match requested {
             Some(port) => format!("port {port} is not available: {e}"),
             None => format!("gateway bind failed: {e}"),
@@ -1525,6 +1540,16 @@ pub fn regenerate_gateway_token(env: &Env, state: &GatewayState) -> Result<Gatew
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_internal_bind_uses_the_requested_interface_and_never_changes_a_pinned_port() {
+        let address = std::net::Ipv4Addr::new(127, 0, 0, 2);
+        let listener = bind_listener_address(false, Some(0), Some(address)).unwrap();
+        let bound = listener.local_addr().unwrap();
+        assert_eq!(bound.ip(), std::net::IpAddr::V4(address));
+        assert!(std::net::TcpStream::connect(bound).is_ok());
+        assert!(bind_listener_address(false, Some(bound.port()), Some(address)).is_err());
+    }
 
     /// A gateway record with `port` set, in a throwaway data dir.
     fn env_with_recorded_port(name: &str, port: Option<u16>) -> (Env, PathBuf) {
