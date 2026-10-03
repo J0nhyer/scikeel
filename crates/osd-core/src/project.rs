@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use crate::file_policy::WORKSPACE_ROOT;
+
 // Projects: a named workspace folder under `<base>/projects`, marked by
 // `<folder>/.openscience/project.json`. The folder IS the workspace — sessions
 // group under a project by their `directory`, so no registry or database exists
@@ -191,23 +194,23 @@ pub fn create_project(env: &Env, name: &str) -> Result<ProjectInfo, String> {
     if let Some(policy) = env.managed_files() {
         let name = name.trim();
         if name.is_empty() || name.len()>240 {return Err("invalid project name".into());}
-        policy.mkdir_all("account",PROJECTS_DIR_NAME).map_err(|_|"project root unavailable")?;
+        policy.mkdir_all(WORKSPACE_ROOT,PROJECTS_DIR_NAME).map_err(|_|"project root unavailable")?;
         let slug=folder_slug(name);let mut chosen=None;
         for n in 1..100 {
             let path=if n==1 {format!("{PROJECTS_DIR_NAME}/{slug}")} else {format!("{PROJECTS_DIR_NAME}/{slug}-{n}")};
-            match policy.mkdir("account",&path) {
+            match policy.mkdir(WORKSPACE_ROOT,&path) {
                 Ok(())=>{chosen=Some(path);break;},
                 Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>continue,
                 Err(_)=>return Err("project creation denied".into()),
             }
         }
         let relative=chosen.ok_or("project name is already in use")?;
-        policy.mkdir("account",&format!("{relative}/.openscience")).map_err(|_|"project metadata creation denied")?;
+        policy.mkdir(WORKSPACE_ROOT,&format!("{relative}/.openscience")).map_err(|_|"project metadata creation denied")?;
         let meta=ProjectMeta{id:random_hex(8),name:name.into(),description:None,created_at:now_ms(),version:1,
             source_path:None,imported_from:None,pinned:None};
-        policy.write_atomic("account",&format!("{relative}/.openscience/project.json"),
+        policy.write_atomic(WORKSPACE_ROOT,&format!("{relative}/.openscience/project.json"),
             &serde_json::to_vec(&meta).map_err(|_|"invalid project metadata")?).map_err(|_|"project metadata write denied")?;
-        let dir=policy.root_path("account").map_err(|_|"project root unavailable")?.join(relative);
+        let dir=policy.root_path(WORKSPACE_ROOT).map_err(|_|"project root unavailable")?.join(relative);
         crate::harness::seed_harness(env,&dir);
         crate::git_snapshot::commit_best_effort(&dir,"Initialize project");
         return Ok(info_of(meta,&dir));
@@ -563,12 +566,12 @@ pub fn project_workspace_dirs(base: &Path) -> Vec<PathBuf> {
 pub fn list_projects(env: &Env) -> Result<Vec<ProjectInfo>, String> {
     #[cfg(target_os = "linux")]
     if let Some(policy) = env.managed_files() {
-        let root = policy.root_path("account").map_err(|_| "managed root unavailable")?;
+        let root = policy.root_path(WORKSPACE_ROOT).map_err(|_| "managed root unavailable")?;
         let mut directories = Vec::new();
-        for entry in policy.list("account", "", 10000).map_err(|_| "managed inventory unavailable")? {
+        for entry in policy.list(WORKSPACE_ROOT, "", 10000).map_err(|_| "managed inventory unavailable")? {
             if !entry.is_dir { continue; }
             if entry.name == PROJECTS_DIR_NAME {
-                for child in policy.list("account", &entry.name, 10000).map_err(|_| "managed inventory unavailable")? {
+                for child in policy.list(WORKSPACE_ROOT, &entry.name, 10000).map_err(|_| "managed inventory unavailable")? {
                     if child.is_dir { directories.push(format!("{}/{}", entry.name, child.name)); }
                 }
             } else if entry.name != SESSIONS_DIR_NAME { directories.push(entry.name); }
@@ -576,7 +579,7 @@ pub fn list_projects(env: &Env) -> Result<Vec<ProjectInfo>, String> {
         }
         let mut out = Vec::new();
         for directory in directories {
-            let bytes = match policy.read("account", &format!("{directory}/.openscience/project.json"), 128 * 1024) {
+            let bytes = match policy.read(WORKSPACE_ROOT, &format!("{directory}/.openscience/project.json"), 128 * 1024) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(_) => return Err("managed project metadata unavailable".into()),
@@ -648,10 +651,10 @@ fn managed_project_marker(env:&Env,id:&str)->Result<(String,ProjectMeta),String>
     let mut candidates=projects.iter().filter(|project|project.id==id);
     let project=candidates.next().ok_or("project not found")?;
     if candidates.next().is_some(){return Err("ambiguous project identity".into());}
-    let root=policy.root_path("account").map_err(|_|"project root unavailable")?;
+    let root=policy.root_path(WORKSPACE_ROOT).map_err(|_|"project root unavailable")?;
     let relative=Path::new(&project.path).strip_prefix(root).map_err(|_|"project is outside the account")?;
     let marker=format!("{}/.openscience/project.json",relative.to_str().ok_or("invalid project path")?);
-    let bytes=policy.read("account",&marker,128*1024).map_err(|_|"project metadata unavailable")?;
+    let bytes=policy.read(WORKSPACE_ROOT,&marker,128*1024).map_err(|_|"project metadata unavailable")?;
     let meta:ProjectMeta=serde_json::from_slice(&bytes).map_err(|_|"invalid project metadata")?;
     if meta.id!=id{return Err("project identity changed".into());}
     Ok((marker,meta))
@@ -666,7 +669,7 @@ pub fn rename_project(env: &Env, id: &str, name: &str) -> Result<(), String> {
     if let Some(policy)=env.managed_files() {
         if name.len()>240{return Err("invalid project name".into());}
         let (marker,mut meta)=managed_project_marker(env,id)?;meta.name=name.into();
-        return policy.write_atomic("account",&marker,&serde_json::to_vec(&meta).map_err(|_|"invalid project metadata")?)
+        return policy.write_atomic(WORKSPACE_ROOT,&marker,&serde_json::to_vec(&meta).map_err(|_|"invalid project metadata")?)
             .map_err(|_|"project metadata write denied".into());
     }
     let base = base_workspace_dir(env)?;
@@ -688,7 +691,7 @@ pub fn set_project_pinned(env: &Env, id: &str, pinned: bool) -> Result<(), Strin
     #[cfg(target_os = "linux")]
     if let Some(policy)=env.managed_files() {
         let (marker,mut meta)=managed_project_marker(env,id)?;meta.pinned=if pinned {Some(true)} else {None};
-        return policy.write_atomic("account",&marker,&serde_json::to_vec(&meta).map_err(|_|"invalid project metadata")?)
+        return policy.write_atomic(WORKSPACE_ROOT,&marker,&serde_json::to_vec(&meta).map_err(|_|"invalid project metadata")?)
             .map_err(|_|"project metadata write denied".into());
     }
     set_pinned_in(&base_workspace_dir(env)?, id, pinned)
@@ -727,7 +730,7 @@ pub fn delete_project(env: &Env, id: &str) -> Result<(), String> {
     if let Some(policy)=env.managed_files() {
         let (marker,_)=managed_project_marker(env,id)?;
         // Removing a Web project only removes its index marker, never user files.
-        return policy.unlink("account",&marker).map_err(|_|"project removal denied".into());
+        return policy.unlink(WORKSPACE_ROOT,&marker).map_err(|_|"project removal denied".into());
     }
     delete_in(&base_workspace_dir(env)?, id)
 }
@@ -751,7 +754,7 @@ mod tests {
         use super::*;
         let base=std::env::temp_dir().join(format!("scikeel-managed-project-{}",random_hex(8)));
         let workspace=base.join("workspace");std::fs::create_dir_all(&workspace).unwrap();
-        let policy=crate::file_policy::ManagedFilePolicy::new("a".into(),1,vec![("account".into(),workspace.clone())]).unwrap();
+        let policy=crate::file_policy::ManagedFilePolicy::new("a".into(),1,vec![(WORKSPACE_ROOT.into(),workspace.clone())]).unwrap();
         let env=crate::Env::new(base.join("state"),base.join("resources"),None,"test".into()).with_managed_files(policy);
         let project=create_project(&env,"Owned Study").unwrap();
         assert!(Path::new(&project.path).starts_with(&workspace));

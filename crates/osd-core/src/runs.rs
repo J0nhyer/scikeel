@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use crate::file_policy::WORKSPACE_ROOT;
+
 // Run provenance (reproducibility recipe): every agent experiment execution —
 // a bash command that runs code — appends a run record to
 // <workspace>/.openscience/runs.jsonl: the command, code version (entry scripts
@@ -392,7 +395,7 @@ pub fn read_run_log(env: &Env, hash: &str) -> Result<String, String> {
             if record.log_hash.as_deref() != Some(hash) { continue; }
             let path = if directory.is_empty() { format!(".openscience/logs/{hash}.txt") }
                 else { format!("{directory}/.openscience/logs/{hash}.txt") };
-            let bytes = policy.read("account", &path, LOG_CAP as u64 + 64)
+            let bytes = policy.read(WORKSPACE_ROOT, &path, LOG_CAP as u64 + 64)
                 .map_err(|_| "managed log unavailable")?;
             return String::from_utf8(bytes).map_err(|_| "managed log unavailable".into());
         }

@@ -12,6 +12,95 @@ mod tests {
             assert!(parse_manifest(&serde_json::to_vec(&bad).unwrap()).is_err());
         }
     }
+    struct ManagedFixture {
+        base: PathBuf,
+        workspace: PathBuf,
+        env: osd_core::Env,
+    }
+
+    impl ManagedFixture {
+        fn new() -> Self {
+            let base = std::env::temp_dir().join(format!(
+                "scikeel-managed-startup-{}", osd_core::runtime::random_hex(8)
+            ));
+            let workspace = base.join("workspace");
+            for name in ["workspace", "state", "home", "scratch"] {
+                std::fs::create_dir_all(base.join(name)).unwrap();
+            }
+            let value = json!({"schema": 1, "instanceId": "user-a", "generation": 1,
+                "workspaceDir": workspace, "stateDir": base.join("state"),
+                "home": base.join("home"), "scratchDir": base.join("scratch")});
+            let trusted = parse_manifest(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let env = osd_core::Env::new(base.join("state"), base.join("resources"), None, "test".into())
+                .with_managed_files(policy(&trusted).unwrap());
+            Self { base, workspace, env }
+        }
+    }
+
+    impl Drop for ManagedFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    #[test]
+    fn startup_policy_supports_workspace_browsing_and_artifacts() {
+        use osd_core::artifact_file::*;
+        let fixture = ManagedFixture::new();
+        std::fs::write(fixture.workspace.join("note.txt"), "owned artifact").unwrap();
+        for root in [None, Some("workspace"), Some("base")] {
+            assert_eq!(scope_root(&fixture.env, root).unwrap(), fixture.workspace);
+            let preview = read_artifact(&fixture.env, "note.txt".into(), root.map(str::to_owned)).unwrap();
+            assert_eq!(serde_json::to_value(preview).unwrap()["data"], "owned artifact");
+            assert_eq!(list_dir(&fixture.env, "".into(), root.map(str::to_owned)).unwrap().len(), 1);
+        }
+        assert_eq!(resolve_artifact(&fixture.env, "note.txt").unwrap().as_deref(), Some("note.txt"));
+        let peer = fixture.base.join("peer.txt");
+        std::fs::write(&peer, "foreign").unwrap();
+        std::os::unix::fs::symlink(&peer, fixture.workspace.join("escape")).unwrap();
+        assert!(read_artifact(&fixture.env, "escape".into(), None).is_err());
+        assert!(read_artifact(&fixture.env, "../peer.txt".into(), None).is_err());
+        assert!(scope_root(&fixture.env, Some("account")).is_err());
+        assert_eq!(dispatch(fixture.env.managed_files().unwrap(), json!({
+            "operation": "read", "root": "workspace", "path": "note.txt"
+        })).unwrap()["text"], "owned artifact");
+    }
+
+    #[test]
+    fn startup_policy_supports_project_lifecycle() {
+        use osd_core::project::*;
+        let fixture = ManagedFixture::new();
+        assert!(list_projects(&fixture.env).unwrap().is_empty());
+        let project = create_project(&fixture.env, "Owned Study").unwrap();
+        assert!(Path::new(&project.path).starts_with(&fixture.workspace));
+        rename_project(&fixture.env, &project.id, "Renamed Study").unwrap();
+        set_project_pinned(&fixture.env, &project.id, true).unwrap();
+        let projects = list_projects(&fixture.env).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "Renamed Study");
+        assert!(projects[0].pinned);
+        delete_project(&fixture.env, &project.id).unwrap();
+        assert!(list_projects(&fixture.env).unwrap().is_empty());
+    }
+
+    #[test]
+    fn startup_policy_supports_run_inventory_and_logs() {
+        let fixture = ManagedFixture::new();
+        let metadata = fixture.workspace.join("sessions/one/.openscience");
+        std::fs::create_dir_all(metadata.join("logs")).unwrap();
+        std::fs::write(metadata.join("runs.jsonl"), concat!(
+            r#"{"runId":"run_owned","ts":1,"status":"ok","command":"python local.py","sessionId":"ses_owned","logHash":"abcd","code":[],"outputs":[]}"#,
+            "\n"
+        )).unwrap();
+        std::fs::write(metadata.join("logs/abcd.txt"), "owned-log").unwrap();
+        let page = osd_core::runs_index::query_runs_cmd(&fixture.env, Default::default()).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.rows[0].run_id, "run_owned");
+        assert_eq!(osd_core::runs::list_runs(&fixture.env).unwrap().len(), 1);
+        assert_eq!(osd_core::runs::read_run_log(&fixture.env, "abcd").unwrap(), "owned-log");
+        assert!(osd_core::runs::read_run_log(&fixture.env, "../peer").is_err());
+    }
+
     #[test]
     fn file_dispatch_keeps_descriptor_policy_for_reads_writes_and_symlink_escapes() {
         let root=std::env::temp_dir().join(format!("scikeel-file-rpc-{}",std::process::id()));
@@ -41,7 +130,7 @@ mod tests {
     }
 }
 use std::{fs::File,io::{Read,Write},os::{fd::{AsRawFd,FromRawFd},unix::fs::MetadataExt},path::{Component,Path,PathBuf}};
-use osd_core::file_policy::ManagedFilePolicy;
+use osd_core::file_policy::{ManagedFilePolicy, WORKSPACE_ROOT};
 use serde_json::{json,Value};
 
 const MANIFEST:&str="/opt/scikeel/tenant.json";
@@ -89,12 +178,12 @@ pub fn manifest()->Result<Value,String> {
 pub fn policy(value:&Value)->Result<ManagedFilePolicy,String> {
     ManagedFilePolicy::new(value["instanceId"].as_str().ok_or("invalid managed identity")?.into(),
         value["generation"].as_u64().ok_or("invalid managed generation")?,
-        vec![("workspace".into(),canonical(&value["workspaceDir"])?)])
+        vec![(WORKSPACE_ROOT.into(),canonical(&value["workspaceDir"])?)])
         .map_err(|_|"secure managed workspace unavailable".into())
 }
 fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
     let object=value.as_object().ok_or("invalid file operation")?;
-    if object.keys().any(|key|!["operation","root","path","text","offset","limit","bytes"].contains(&key.as_str())) || value["root"]!="workspace" {
+    if object.keys().any(|key|!["operation","root","path","text","offset","limit","bytes"].contains(&key.as_str())) || value["root"]!=WORKSPACE_ROOT {
         return Err("invalid file operation".into());
     }
     let path=value["path"].as_str().ok_or("invalid file path")?;

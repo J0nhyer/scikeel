@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use crate::file_policy::WORKSPACE_ROOT;
+
 // Runs read-model: a SQLite index derived from the append-only runs logs
 // (`runs.jsonl` + `remote-runs.jsonl`). The JSONL stays the durable source of
 // truth; this index is disposable — rebuilt lazily from the logs by byte
@@ -89,10 +92,10 @@ pub(crate) fn managed_records(env: &Env) -> Result<Vec<(String, RunRecord)>, Str
     use std::io::{BufRead, BufReader, Read};
     let policy = env.managed_files().ok_or("managed policy unavailable")?;
     let mut directories = vec![String::new()];
-    for entry in policy.list("account", "", 10000).map_err(|_| "managed inventory unavailable")? {
+    for entry in policy.list(WORKSPACE_ROOT, "", 10000).map_err(|_| "managed inventory unavailable")? {
         if !entry.is_dir || entry.name == "node_modules" || entry.name == "__pycache__" { continue; }
         if matches!(entry.name.as_str(), "sessions" | "projects") {
-            for child in policy.list("account", &entry.name, 10000).map_err(|_| "managed inventory unavailable")? {
+            for child in policy.list(WORKSPACE_ROOT, &entry.name, 10000).map_err(|_| "managed inventory unavailable")? {
                 if child.is_dir { directories.push(format!("{}/{}", entry.name, child.name)); }
             }
         } else { directories.push(entry.name); }
@@ -104,7 +107,7 @@ pub(crate) fn managed_records(env: &Env) -> Result<Vec<(String, RunRecord)>, Str
         for store in [RUNS_FILE, REMOTE_RUNS_FILE] {
             let relative = if directory.is_empty() { format!(".openscience/{store}") }
                 else { format!("{directory}/.openscience/{store}") };
-            let file = match policy.open_regular("account", &relative, 25 * 1024 * 1024) {
+            let file = match policy.open_regular(WORKSPACE_ROOT, &relative, 25 * 1024 * 1024) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(_) => return Err("managed run store unavailable".into()),

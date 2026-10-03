@@ -1,3 +1,6 @@
+/// Root identifier shared by managed startup, file RPC and workspace APIs.
+pub const WORKSPACE_ROOT: &str = "workspace";
+
 #[cfg(target_os = "linux")]
 mod linux {
     use std::collections::HashMap;
@@ -560,14 +563,14 @@ mod tests {
             ManagedFilePolicy::new(
                 account.to_string(),
                 generation,
-                vec![("account".to_string(), self.owned.clone())],
+                vec![(WORKSPACE_ROOT.to_string(), self.owned.clone())],
             )
             .unwrap()
         }
         fn read(&self, policy: &ManagedFilePolicy, name: &str) -> std::io::Result<Vec<u8>> {
             let mut data = Vec::new();
             policy
-                .open_regular("account", name, 1024)?
+                .open_regular(WORKSPACE_ROOT, name, 1024)?
                 .read_to_end(&mut data)?;
             Ok(data)
         }
@@ -602,7 +605,7 @@ mod tests {
         assert!(f.read(&policy, "pipe").is_err());
         assert!(f.read(&policy, ".").is_err());
         assert!(policy.open_regular("foreign", "note.txt", 1024).is_err());
-        assert!(policy.open_regular("account", "note.txt", 1).is_err());
+        assert!(policy.open_regular(WORKSPACE_ROOT, "note.txt", 1).is_err());
     }
 
     #[test]
@@ -610,18 +613,18 @@ mod tests {
         let f = Fixture::new();
         let p = f.policy("a", 1);
         let ticket = p
-            .ticket("account", "note.txt", std::time::Duration::from_secs(60))
+            .ticket(WORKSPACE_ROOT, "note.txt", std::time::Duration::from_secs(60))
             .unwrap();
         assert!(p.redeem(&ticket).is_ok());
         assert!(f.policy("b", 1).redeem(&ticket).is_err());
         assert!(f.policy("a", 2).redeem(&ticket).is_err());
         std::fs::write(f.peer.join("note.txt"), b"peer-canary").unwrap();
         let changed_root =
-            ManagedFilePolicy::new("a".into(), 1, vec![("account".into(), f.peer.clone())])
+            ManagedFilePolicy::new("a".into(), 1, vec![(WORKSPACE_ROOT.into(), f.peer.clone())])
                 .unwrap();
         assert!(changed_root.redeem(&ticket).is_err());
         let expired = p
-            .ticket("account", "note.txt", std::time::Duration::ZERO)
+            .ticket(WORKSPACE_ROOT, "note.txt", std::time::Duration::ZERO)
             .unwrap();
         assert!(p.redeem(&expired).is_err());
         std::fs::remove_file(f.owned.join("note.txt")).unwrap();
@@ -633,25 +636,25 @@ mod tests {
     fn control_writes_and_listing_use_descriptors_and_refuse_links() {
         let f = Fixture::new();
         let p = f.policy("a", 1);
-        p.mkdir("account", "reports").unwrap();
-        p.write_atomic("account", "reports/result.json", b"{\"ok\":true}")
+        p.mkdir(WORKSPACE_ROOT, "reports").unwrap();
+        p.write_atomic(WORKSPACE_ROOT, "reports/result.json", b"{\"ok\":true}")
             .unwrap();
         assert_eq!(f.read(&p, "reports/result.json").unwrap(), b"{\"ok\":true}");
         symlink("reports", f.owned.join("linked")).unwrap();
-        assert!(p.write_atomic("account", "linked/bad.json", b"x").is_err());
-        assert!(p.write_atomic("account", "escape", b"x").is_ok());
+        assert!(p.write_atomic(WORKSPACE_ROOT, "linked/bad.json", b"x").is_err());
+        assert!(p.write_atomic(WORKSPACE_ROOT, "escape", b"x").is_ok());
         std::fs::remove_file(f.owned.join("escape")).unwrap();
         symlink("../peer/secret", f.owned.join("escape")).unwrap();
-        assert!(p.write_atomic("account", "escape", b"x").is_err());
-        let entries = p.list("account", "", 10).unwrap();
+        assert!(p.write_atomic(WORKSPACE_ROOT, "escape", b"x").is_err());
+        let entries = p.list(WORKSPACE_ROOT, "", 10).unwrap();
         assert!(entries
             .iter()
             .any(|entry| entry.name == "reports" && entry.is_dir));
         assert!(!entries
             .iter()
             .any(|entry| entry.name == "escape" || entry.name == "linked"));
-        assert!(p.list("account", "", 1).is_err());
-        p.unlink("account", "reports/result.json").unwrap();
+        assert!(p.list(WORKSPACE_ROOT, "", 1).is_err());
+        p.unlink(WORKSPACE_ROOT, "reports/result.json").unwrap();
         assert!(f.read(&p, "reports/result.json").is_err());
     }
 

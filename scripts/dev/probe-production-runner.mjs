@@ -42,12 +42,29 @@ try {
   if (!(await request("/profile", { profile,imageDigest })).ok) throw new Error("production gateway profile restart failed");
   const preserved = await request("/files", { operation: "read", root: "workspace", path: value.path });
   if (!preserved.ok || (await preserved.json()).text !== value.text) throw new Error("profile restart lost user files");
+  const gateway = async (path) => fetch(`http://${address}:4790${path}`, {
+    headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000),
+  });
+  for (const root of ["workspace", "base"]) {
+    const response = await gateway(`/v1/fs/list?root=${root}&path=`);
+    if (!response.ok || !(await response.json()).some((entry) => entry.name === value.path))
+      throw new Error(`managed ${root} inventory failed`);
+    const preview = await gateway(`/v1/fs/read?root=${root}&path=${value.path}`);
+    if (!preview.ok || await preview.text() !== value.text) throw new Error("managed gateway preview failed");
+  }
+  const projects = await gateway("/v1/projects");
+  if (!projects.ok || !Array.isArray(await projects.json())) throw new Error("managed project inventory failed");
+  const runs = await gateway("/v1/runs");
+  if (!runs.ok || !Array.isArray(await runs.json())) throw new Error("managed run inventory failed");
+  const escapedPreview = await gateway("/v1/fs/read?root=base&path=../state/private");
+  if (escapedPreview.ok) throw new Error("managed gateway workspace escape accepted");
   const projectDir="/fixture/workspace/science-project";
   if(!(await request("/files",{operation:"mkdir",root:"workspace",path:"science-project"})).ok)throw new Error("owned science project creation failed");
   const hooks=await scienceEnvironment({directory:projectDir},{imageDigest});const output={env:{}};
   await hooks["shell.env"]({cwd:projectDir},output);
   if(!output.env.PATH.startsWith("/opt/scikeel/science/bin:"))throw new Error("shared science shell environment missing");
   console.log(JSON.stringify({ assignedAddress:address,scienceShellEnvironment:true,productionRunner: true, realGateway: true, realFileHelper: true,
+    workspaceInventory: true, artifactPreview: true, projectInventory: true, runInventory: true,
     authentication: true, generationBinding: true, workspaceEscapeDenied: true, profileRestart: true }));
 } finally {
   const closed = new Promise((done) => child.once("close", done));

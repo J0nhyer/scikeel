@@ -1,3 +1,6 @@
+#[cfg(all(test, target_os = "linux"))]
+use crate::file_policy::WORKSPACE_ROOT;
+
 // Remote Access Gateway — one authenticated HTTP surface that re-exposes the
 // agent runtime + workspace files to CLI / LAN-web / tunnel clients. Loopback by
 // default; LAN (0.0.0.0) is an explicit opt-in. Std-only `TcpListener` with a
@@ -1915,7 +1918,7 @@ mod tests {
         std::fs::write(peer.join("secret"), b"peer-canary").unwrap();
         let env = Env::new(base.join("state"), base.join("res"), None, "test".into())
             .with_managed_files(crate::file_policy::ManagedFilePolicy::new("a".into(), 1,
-                vec![("account".into(), owned.clone())]).unwrap());
+                vec![(WORKSPACE_ROOT.into(), owned.clone())]).unwrap());
         let state = GatewayState::default();
         let p = Persisted { token: "test-token".into(), ..Persisted::default() };
         let port = start_at(&env, &state, &p, Some(0)).unwrap();

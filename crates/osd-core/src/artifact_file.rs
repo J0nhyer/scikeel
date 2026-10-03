@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use crate::file_policy::WORKSPACE_ROOT;
+
 // Read/open files the agent produced in the workspace, for artifact previews.
 // Strictly sandboxed to the workspace root: a path that escapes it is rejected.
 use std::path::{Path, PathBuf};
@@ -109,7 +112,7 @@ pub fn scope_root(env: &Env, root: Option<&str>) -> Result<PathBuf, String> {
     #[cfg(target_os = "linux")]
     if let Some(policy) = env.managed_files() {
         if !matches!(root.unwrap_or("workspace"), "workspace" | "base") { return Err("unknown root scope".into()); }
-        return policy.root_path("account").map_err(|_| "managed root unavailable".into());
+        return policy.root_path(WORKSPACE_ROOT).map_err(|_| "managed root unavailable".into());
     }
     match root.unwrap_or("workspace") {
         "workspace" => workspace_dir(env),
@@ -196,7 +199,7 @@ pub fn locate_under(root: &Path, rel: &str) -> Option<String> {
 pub fn resolve_artifact(env: &Env, path: &str) -> Result<Option<String>, String> {
     #[cfg(target_os = "linux")]
     if let Some(policy) = env.managed_files() {
-        let base = policy.root_path("account").map_err(|_| "managed root unavailable")?;
+        let base = policy.root_path(WORKSPACE_ROOT).map_err(|_| "managed root unavailable")?;
         return policy.locate(&base, path).map(|found| found.map(|(_, relative)| relative))
             .map_err(|_| "managed artifact unavailable".into());
     }
