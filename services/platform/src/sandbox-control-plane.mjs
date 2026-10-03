@@ -14,6 +14,20 @@ import { SandboxEnvironments } from "./sandbox-environments.mjs";
 import { PackageGrants } from "./package-grants.mjs";
 
 const routeSet = new Set(["/v1/responses", "/v1/chat/completions", "/v1/messages"]);
+export async function waitManagedRuntime(access, {directory,fetchImpl=fetch,timeoutMs=60000,delayMs=250}={}) {
+  const deadline=Date.now()+timeoutMs;
+  while(Date.now()<deadline) {
+    try {
+      const response=await fetchImpl(`${access.url}/session?directory=${encodeURIComponent(directory)}`,{headers:{authorization:`Basic ${Buffer.from(`opencode:${access.token}`).toString("base64")}`},
+        signal:AbortSignal.timeout(Math.max(1,Math.min(15000,deadline-Date.now())))});
+      const body=response.ok ? await response.json() : null;
+      if(Array.isArray(body))return;
+      await response.body?.cancel();
+    }catch{}
+    await new Promise(done=>setTimeout(done,Math.min(delayMs,Math.max(0,deadline-Date.now()))));
+  }
+  throw new Error("managed OpenCode runtime unavailable");
+}
 export function validateBrokerConfiguration(config) {
   if (!config || config.schema !== 1 || Object.keys(config).some((key) => !["schema", "providers", "defaultProvider", "defaultModel", "mirrorUrl"].includes(key)) ||
       config.mirrorUrl !== "http://127.0.0.1:3141" || !config.providers || Array.isArray(config.providers)) throw new Error("invalid managed broker configuration");
@@ -80,6 +94,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
         authorization: `Bearer ${access.token}`, "content-type": "application/json" },
         body: JSON.stringify({ instanceId: context.instanceId, generation: context.generation, profile, imageDigest:configuration.imageDigest }), signal: AbortSignal.timeout(15000) });
       if (!response.ok) throw new Error("managed profile unavailable");
+      await waitManagedRuntime(access,{directory:context.workspaceDir});
       const timer = setInterval(() => {
         try { model.renew(token, context); }
         catch { clearInterval(timer); void manager.stopWorker(context.instanceId).catch(() => {}); }

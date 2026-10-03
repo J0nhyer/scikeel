@@ -190,7 +190,8 @@ async function productionMigration(copy) {
     try{await lstat(checkpoint);throw new Error("existing production migration checkpoint requires review");}catch(error){if(error.code!=="ENOENT")throw error;}
     await mkdir(checkpointRoot,{recursive:true,mode:0o700});
     const registered=await client.register({instanceId,userId});
-    const inspection=await client.inspect({instanceId,generation:registered.generation});
+    const inspection=await client.inspect({instanceId});
+    if(inspection.generation!==registered.generation)throw new Error("migration destination generation changed");
     if(!["registered","stopped","unavailable"].includes(inspection.status))throw new Error("migration destination is running");
     await atomic(checkpoint,{schema:1,instanceId,userId,state:"backedUp",originalRetained:true,inventory});
     const copied=await copyColdTenant({source,destination,kind:"worker",assertDrained:drained});

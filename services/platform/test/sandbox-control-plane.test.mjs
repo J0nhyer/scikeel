@@ -1,8 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateBrokerConfiguration, brokerProfile } from "../src/sandbox-control-plane.mjs";
+import { validateBrokerConfiguration, brokerProfile, waitManagedRuntime } from "../src/sandbox-control-plane.mjs";
 
 const context = { userId: "a", instanceId: "user-a", generation: 1 };
+test("gateway liveness cannot admit a cold or failed OpenCode runtime",async()=>{
+  const access={url:"http://172.31.240.2:4790",token:"a".repeat(64)};let calls=0;
+  await waitManagedRuntime(access,{directory:"/tenant/workspace",delayMs:1,timeoutMs:100,fetchImpl:async(url,options)=>{
+    assert.equal(url,`${access.url}/session?directory=%2Ftenant%2Fworkspace`);assert.ok(options.headers.authorization.startsWith("Basic "));
+    return {ok:++calls>1,json:async()=>([]),body:{cancel:async()=>{}}};
+  }});
+  assert.equal(calls,2);
+  await assert.rejects(waitManagedRuntime(access,{delayMs:1,timeoutMs:10,fetchImpl:async()=>({ok:true,json:async()=>({ok:true})})}),/runtime unavailable/);
+});
 const config = { schema: 1, providers: { fixture: { baseUrl: "https://provider.example/v1", credential: "synthetic-upstream-secret", authMode: "bearer", enabledModels: ["approved"], routes: ["/v1/responses", "/v1/chat/completions"] } }, defaultProvider: "fixture", defaultModel: "approved", mirrorUrl: "http://127.0.0.1:3141" };
 test("only a fixed administrator configuration can create broker destinations", () => {
   assert.equal(validateBrokerConfiguration(config), config);

@@ -72,6 +72,10 @@ local workspace + SQLite + JSONL provenance.
   implementation, deployment, and acceptance testing to Web. Shared code must
   not intentionally break desktop builds, but desktop UX and feature parity are
   not current deliverables.
+- Runtime availability (user-confirmed on 2026-10-03): Codex and Claude are
+  disabled for the current Web deployment. Preserve their adapters and
+  deterministic tests, but exclude live native-runtime probes from acceptance
+  and release gates until the user confirms restoration.
 - One progress file: `PROGRESS.md`. Append one line per real milestone,
   `YYYY-MM-DD HH:MM` + a one-sentence conclusion, newest on top. Results and
   blockers only.
