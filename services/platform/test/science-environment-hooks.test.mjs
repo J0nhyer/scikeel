@@ -34,3 +34,17 @@ test("environment inspection cannot redirect shell tools to another project or i
     await assert.rejects(hooks.apply({cwd:"/tenant/workspace/project"},{env:{}}));
   }
 });
+
+
+test("webfetch permission metadata gets a default timeout before approval", async () => {
+  const {hooks}=fixture();const args={url:"https://example.invalid",format:"markdown"};
+  assert.equal(typeof hooks.beforeTool,"function");
+  await hooks.beforeTool({tool:"webfetch"},{args});
+  assert.deepEqual(args,{url:"https://example.invalid",format:"markdown",timeout:60});
+});
+test("webfetch keeps explicit timeouts and unrelated tools keep their arguments", async () => {
+  const {hooks}=fixture();const args={url:"https://example.invalid",timeout:10};
+  assert.equal(typeof hooks.beforeTool,"function");
+  await hooks.beforeTool({tool:"webfetch"},{args});assert.equal(args.timeout,10);
+  const shell={command:"echo test"};await hooks.beforeTool({tool:"bash"},{args:shell});assert.deepEqual(shell,{command:"echo test"});
+});

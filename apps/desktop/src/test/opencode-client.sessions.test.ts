@@ -331,3 +331,17 @@ describe("OpenCodeClient private environment transport",()=>{
     expect(JSON.parse(String(fetchImpl.mock.calls[2][1]?.body))).toEqual({id:"a".repeat(64),manual:true});
   });
 });
+
+
+describe("pending interaction recovery errors", () => {
+  it.each(["listQuestions", "listPermissions"] as const)("%s reports a broken endpoint instead of an empty list", async (method) => {
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () =>
+      new Response(JSON.stringify({ data: { message: "Expected JSON value at metadata.timeout" } }), { status: 400 }) });
+    await expect(client[method]()).rejects.toThrow(/400.*metadata.timeout/);
+  });
+
+  it.each(["listQuestions", "listPermissions"] as const)("%s tolerates an unsupported endpoint", async (method) => {
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () => new Response("not supported", { status: 404 }) });
+    expect(await client[method]()).toEqual([]);
+  });
+});

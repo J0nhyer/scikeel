@@ -62,6 +62,8 @@ const mocks = vi.hoisted(() => ({
    *  "aborted" error and one or more session.idle events. Empty by default. */
   abortTrailing: [] as unknown[],
   getMessages: vi.fn(),
+  listQuestions: vi.fn(async (): Promise<unknown[]> => []),
+  listPermissions: vi.fn(async (): Promise<unknown[]> => []),
   sessionRunning: null as boolean | null,
   failSessionStatus: false,
   failSkills: false,
@@ -312,10 +314,10 @@ vi.mock("@ai4s/sdk", () => {
       mocks.unrevertSpy(sid);
     }
     async listQuestions() {
-      return [];
+      return mocks.listQuestions();
     }
     async listPermissions() {
-      return [];
+      return mocks.listPermissions();
     }
     // The real client emits "offline" on teardown — the store must keep that
     // away from the UI while reconnecting (first-boot flicker regression).
@@ -349,6 +351,8 @@ beforeEach(async () => {
   mocks.failCommand = false;
   mocks.dropCommandPost = false;
   mocks.abortTrailing = [];
+  mocks.listQuestions.mockReset().mockResolvedValue([]);
+  mocks.listPermissions.mockReset().mockResolvedValue([]);
   mocks.messages = [];
   mocks.messagesGate = null;
   mocks.failMessages = false;
@@ -4093,5 +4097,89 @@ describe("stall guard integration", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+
+describe("pending interaction recovery after lost SSE events", () => {
+  const permission = { type: "permission.asked", sessionId: "ses_new", requestId: "per_recover", action: "webfetch", resources: ["https://example.invalid"] };
+  const question = { type: "question.asked", sessionId: "ses_new", requestId: "que_recover", questions: [] };
+
+  it("restores approvals and questions after automatic SSE reconnection", async () => {
+    mocks.listPermissions.mockResolvedValue([permission]);
+    mocks.listQuestions.mockResolvedValue([question]);
+    mocks.fireStatus("connecting");
+    mocks.fireStatus("ready");
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().permissions).toEqual([permission]);
+      expect(useRuntimeStore.getState().questions).toEqual([question]);
+    });
+  });
+
+  it("restores a missed approval while the server is still busy", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.listPermissions.mockResolvedValue([permission]);
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    mocks.sessionRunning = true;
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().permissions).toEqual([permission]);
+    expect(useRuntimeStore.getState().runningSessions.ses_new).toBe(true);
+  });
+
+  it("recovers questions even if the permission endpoint fails and exposes that error", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    mocks.listQuestions.mockResolvedValue([question]);
+    mocks.listPermissions.mockRejectedValue(new Error("Failed to load permissions (400: metadata.timeout)"));
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().questions).toEqual([question]);
+    expect(useRuntimeStore.getState().error).toContain("metadata.timeout");
+    mocks.listPermissions.mockResolvedValue([permission]);
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().permissions).toEqual([permission]);
+    expect(useRuntimeStore.getState().error).toBeNull();
+  });
+
+  it("removes prompts resolved in another browser without requiring an SSE reply", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    useRuntimeStore.setState({ permissions: [permission] as never, questions: [question] as never });
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().permissions).toEqual([]);
+    expect(useRuntimeStore.getState().questions).toEqual([]);
+  });
+
+  it("does not restore a request resolved while the recovery response was in flight", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    let release!: (value: unknown[]) => void;
+    mocks.listPermissions.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const pending = useRuntimeStore.getState().reconcileRunning();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    mocks.fireEvent({ type: "permission.resolved", sessionId: "ses_new", requestId: permission.requestId });
+    release([permission]);
+    await pending;
+    expect(useRuntimeStore.getState().permissions).toEqual([]);
+  });
+
+  it("keeps a newly streamed question that was not yet in the recovery snapshot", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    let release!: (value: unknown[]) => void;
+    mocks.listQuestions.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const pending = useRuntimeStore.getState().reconcileRunning();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    mocks.fireEvent(question);
+    release([]);
+    await pending;
+    expect(useRuntimeStore.getState().questions).toEqual([question]);
+  });
+
+  it("does not erase an unrelated error when recovery succeeds", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    useRuntimeStore.setState({ error: "An unrelated send failed" });
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().error).toBe("An unrelated send failed");
   });
 });

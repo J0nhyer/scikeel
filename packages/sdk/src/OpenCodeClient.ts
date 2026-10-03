@@ -1424,7 +1424,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/question${this.dirQuery()}`, {
       headers: this.headers(),
     });
-    if (!res.ok) return [];
+    if (res.status === 404 || res.status === 501) return [];
+    if (!res.ok) throw await this.apiError(res, "Failed to load questions");
     const arr = (await res.json()) as Array<{
       id: string;
       sessionID: string;
@@ -1461,7 +1462,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/permission${this.dirQuery()}`, {
       headers: this.headers(),
     });
-    if (!res.ok) return [];
+    if (res.status === 404 || res.status === 501) return [];
+    if (!res.ok) throw await this.apiError(res, "Failed to load permissions");
     // Same dual field names as the SSE event: `permission`/`patterns` (V2)
     // with `action`/`resources` as the legacy fallback.
     const arr = (await res.json()) as Array<{

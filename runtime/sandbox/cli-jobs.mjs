@@ -38,6 +38,14 @@ export function buildJobEnvironment({ privateHome, projectDir, environment, brok
 // Inspection runs inside the sandbox before each shell tool; a broken override
 // must remain an explicit repair error instead of selecting a different Python.
 export class ScienceEnvironmentHooks {
+  beforeTool(input, output) {
+    // OpenCode 1.18.32 cannot serialize a pending webfetch permission whose
+    // metadata contains timeout: undefined. Fill the default before asking;
+    // the existing manual permission gate still owns network authorization.
+    if (input.tool !== "webfetch" || !output.args || typeof output.args !== "object") return;
+    if (output.args.timeout === undefined) output.args.timeout = 60;
+  }
+
   constructor({manifest,directory,imageDigest,inspector}) {
     path(manifest?.workspaceDir);path(manifest?.home);path(directory);
     if(!/^sha256:[a-f0-9]{64}$/.test(imageDigest??"") || typeof inspector?.call!=="function" ||

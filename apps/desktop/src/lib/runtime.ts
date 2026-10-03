@@ -841,6 +841,37 @@ async function sessionRunning(get: StoreGet, sid: string): Promise<boolean | nul
     return null;
   }
 }
+// Reconnects can miss an ask as well as an idle event. One recovery per
+// runtime covers every session in its directory, including subagent requests.
+const interactionRecovery = new WeakMap<AgentRuntime, { pending?: Promise<void>; error?: string }>();
+function recoverInteractions(set: StoreSet, get: StoreGet, runtime: AgentRuntime): Promise<void> {
+  const state = interactionRecovery.get(runtime) ?? {};
+  if (state.pending) return state.pending;
+  interactionRecovery.set(runtime, state);
+  const mark = sseSeq;
+  const current = () => runtime === client || [...streamClients.values()].includes(runtime as OpenCodeClient);
+  const unchanged = (sid: string) => (sseLast.get(sid) ?? 0) <= mark;
+  const pending = (async () => {
+    const [qs, ps] = await Promise.allSettled([runtime.listQuestions(), runtime.listPermissions()]);
+    if (!current()) return;
+    const merge = <T extends { sessionId: string }>(existing: T[], recovered: T[]) => [
+      ...existing.filter((item) => clientForSession(get, item.sessionId) !== runtime || !unchanged(item.sessionId)),
+      ...recovered.filter((item) => unchanged(item.sessionId) && !interruptedSessions.has(item.sessionId)),
+    ];
+    const failures = [qs, ps].filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    const error = failures.length ? failures.map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason)).join("; ") : undefined;
+    const previousError = state.error;
+    state.error = error;
+    set((s) => ({
+      ...(qs.status === "fulfilled" ? { questions: merge(s.questions, qs.value) } : {}),
+      ...(ps.status === "fulfilled" ? { permissions: merge(s.permissions, ps.value) } : {}),
+      ...(error ? { error } : previousError && s.error === previousError ? { error: null } : {}),
+    }));
+  })().finally(() => { if (state.pending === pending) state.pending = undefined; });
+  state.pending = pending;
+  return pending;
+}
+
 const emptyThread = (): Thread => ({ blocks: [], index: {}, loaded: false });
 
 /** Retire a draft slot's folder — its session was created, or the user asked for
@@ -3297,6 +3328,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       }
       clearStatusBlip();
       set({ status: shown });
+      if (status === "ready") {
+        void recoverInteractions(set, get, c);
+        void get().reconcileRunning();
+      }
     });
     if (!sharedEventHandler)
       sharedEventHandler = (event) => {
@@ -4390,27 +4425,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // remote runs attach to the session, not just the global Runs view.
     if (dir) void markSession(id).catch(() => {});
     if (!client) return;
-    // Recover any request the agent is blocked on (asked before connect/reload).
-    void (async () => {
-      try {
-        const [qs, ps] = await Promise.all([
-          client!.listQuestions(id),
-          client!.listPermissions(id),
-        ]);
-        // Both lists are workspace-scoped (they include subagent sessions'
-        // asks) — replace by requestId so live SSE copies don't duplicate.
-        set((s) => {
-          const qIds = new Set(qs.map((q) => q.requestId));
-          const pIds = new Set(ps.map((p) => p.requestId));
-          return {
-            questions: [...s.questions.filter((q) => !qIds.has(q.requestId)), ...qs],
-            permissions: [...s.permissions.filter((p) => !pIds.has(p.requestId)), ...ps],
-          };
-        });
-      } catch {
-        /* pending-request recovery is best-effort */
-      }
-    })();
+    // Recover asks independently: a broken permission endpoint must not hide questions.
+    void recoverInteractions(set, get, client);
     // A session reopened while "Working…" may have finished behind our back.
     void get().reconcileRunning();
     // A FAILED load must not count as "already loaded": the session would show
@@ -4792,10 +4808,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     const c = client;
     const running = Object.keys(get().runningSessions);
     if (!c || running.length === 0) return;
+    const observedThreads = new Map(running.map((sid) => [sid, get().threads[sid]]));
+    const runtimes = new Set(running.map((sid) => clientForSession(get, sid)).filter((runtime): runtime is AgentRuntime => !!runtime));
+    await Promise.all([...runtimes].map((runtime) => recoverInteractions(set, get, runtime)));
     for (const sid of running) {
       try {
-        const observedThread = get().threads[sid];
-        const messages = await c.getMessages(sid);
+        const runtime = clientForSession(get, sid);
+        if (!runtime) continue;
+        const observedThread = observedThreads.get(sid);
+        const messages = await runtime.getMessages(sid);
         const serverIdle = !turnIsOver(messages) && await sessionRunning(get, sid) === false;
         // Still ours to answer for? The lock may have cleared while we fetched.
         if ((!turnIsOver(messages) && !serverIdle) || !get().runningSessions[sid] ||
