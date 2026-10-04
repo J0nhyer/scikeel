@@ -141,9 +141,10 @@ export class TenantGateway {
     const temporary = `${config}/profile-${process.pid}-${Date.now()}.tmp`;
     // Skill resources live outside the workspace. Put the deny first because
     // OpenCode evaluates the last matching rule; retain manual writes/commands.
-    const skills = `${config}/skills`;
+    const skills = "/opt/scikeel/tools/resources/skills-core";
     const configured = {
       ...profile,
+      skills: { paths: [skills] },
       permission: { bash: "ask", edit: "ask", webfetch: "ask", websearch: "ask", ...profile?.permission,
         external_directory: { "*": "deny", [skills]: "allow", [`${skills}/*`]: "allow" } },
       ...(profile && imageDigest ? { plugin: [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest }]] } : {}),

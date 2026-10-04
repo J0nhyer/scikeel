@@ -60,8 +60,12 @@ two ways (pandas vs R), confirm they match to the printed precision.
 The deterministic gate ships beside this SKILL.md. Run it on the workspace (or
 named files) before you report results:
 
+Replace `<skill-base-directory>` with the absolute base directory returned when
+you load this skill. It is the directory containing this SKILL.md, not a literal
+path or an environment variable. Run the command from the active workspace.
+
 ```bash
-python "$XDG_CONFIG_HOME/opencode/skills/stats-integrity/stats_integrity_check.py" [files...]
+python "<skill-base-directory>/stats_integrity_check.py" [files...]
 ```
 
 It prints one ` ```review ` fenced JSON block covering three risks:

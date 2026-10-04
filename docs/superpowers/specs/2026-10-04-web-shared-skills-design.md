@@ -1,7 +1,7 @@
 # Web Shared Platform Skills V1 Design
 
-**Status:** Draft for user review. The user approved the shared-platform direction
-on 2026-10-04 and requested a written spec before an implementation plan or code.
+**Status:** Approved by the user on 2026-10-04. Proceed with minimal V1
+implementation; ask the user if a scope or behavior decision is needed.
 **Product scope:** The multi-user gateway Web client, including phone-width views.
 **V2 direction:** Users manage their custom skills in their own file space.
 

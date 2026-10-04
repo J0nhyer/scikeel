@@ -80,8 +80,12 @@ per file you captured or downloaded (the streamed result **and** any
 fresh `RESULT` directory; the helper refuses to record paths used by earlier
 runs.
 
+Replace `<skill-base-directory>` with the absolute base directory returned when
+you load this skill. It is the directory containing this SKILL.md, not a literal
+path or an environment variable. Run the command from the active workspace.
+
 ```bash
-python "$XDG_CONFIG_HOME/opencode/skills/modal-run/record_run.py" \
+python "<skill-base-directory>/record_run.py" \
   --surface modal --command "modal run compute.py" \
   --status <ok|failed> --host "modal:<app-name>" \
   --hardware "<the gpu= from @app.function, e.g. A10G — or 'CPU'>" \

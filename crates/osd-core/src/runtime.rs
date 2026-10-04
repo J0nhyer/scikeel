@@ -406,6 +406,11 @@ fn auth_has_provider(text: &str, provider_id: &str) -> bool {
 /// workspace's own `.opencode/skills/` stays reserved for skills the user
 /// installs. Runs before every sidecar start so app upgrades refresh the packs.
 fn deploy_bundled_skills(env: &Env) {
+    // Managed Web runtimes load the read-only image pack through skills.paths.
+    #[cfg(target_os = "linux")]
+    if env.managed_files().is_some() {
+        return;
+    }
     let dst = match xdg_config_home(env) {
         Ok(cfg) => cfg.join("opencode").join("skills"),
         Err(_) => return,
@@ -3117,6 +3122,33 @@ mod tests {
         assert!(!dst.join(".commit").exists(), "top-level files are not skills");
         assert!(!dst.join("placeholder").exists(), "dirs without SKILL.md are not skills");
 
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_skills_do_not_copy_or_overwrite_private_resources() {
+        let tmp = std::env::temp_dir().join(format!("managed-skills-{}", super::random_hex(8)));
+        let data = tmp.join("state");
+        let resources = tmp.join("resources");
+        let workspace = tmp.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        write(&resources.join("skills-core/domain-check/SKILL.md"), "platform");
+        write(&resources.join("skills-core/large-file/SKILL.md"), "large-file");
+        let ordinary = crate::env::Env::new(data.clone(), resources.clone(), None, "test".into());
+        super::deploy_bundled_skills(&ordinary);
+        let destination = super::xdg_config_home(&ordinary).unwrap().join("opencode/skills");
+        assert_eq!(fs::read_to_string(destination.join("domain-check/SKILL.md")).unwrap(), "platform");
+        write(&destination.join("domain-check/SKILL.md"), "keep-private");
+        fs::remove_dir_all(destination.join("large-file")).unwrap();
+        let policy = crate::file_policy::ManagedFilePolicy::new(
+            "test-account".into(), 1, vec![("workspace".into(), workspace)],
+        ).unwrap();
+        let managed = crate::env::Env::new(data, resources, None, "test".into())
+            .with_managed_files(policy);
+        super::deploy_bundled_skills(&managed);
+        assert_eq!(fs::read_to_string(destination.join("domain-check/SKILL.md")).unwrap(), "keep-private");
+        assert!(!destination.join("large-file").exists());
         fs::remove_dir_all(&tmp).unwrap();
     }
 

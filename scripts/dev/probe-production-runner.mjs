@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, readdir, unlink } from "node:fs/promises";
 import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
 
 // CI-only acceptance driver; never copied into an installed scientific image.
@@ -78,6 +78,33 @@ try {
   const skillsResponse = await gateway("/skill?directory=%2Ffixture%2Fworkspace");
   if (!skillsResponse.ok) throw new Error(`managed skill discovery failed (${skillsResponse.status}): ${(await skillsResponse.text()).slice(0, 500)}`);
   const skills = await skillsResponse.json();
+  const shared = "/opt/scikeel/tools/resources/skills-core";
+  const platformNames = ["computer-use", "domain-check", "large-file", "modal-run", "publication-figures",
+    "remote-compute", "research-workflow", "stats-integrity", "traceability-review"];
+  for (const name of platformNames) {
+    const entries = skills.filter((skill) => skill.name === name);
+    if (entries.length !== 1 || entries[0].location !== `${shared}/${name}/SKILL.md`)
+      throw new Error(`shared skill discovery failed: ${name}`);
+  }
+  const privateSkills = "/fixture/state/runtime/xdg-config/opencode/skills";
+  try {
+    if ((await readdir(privateSkills)).length) throw new Error("managed startup recreated private platform skills");
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  const helpers = { "domain-check": "domain_check.py", "large-file": "large_file_probe.py", "modal-run": "record_run.py",
+    "remote-compute": "record_run.py", "stats-integrity": "stats_integrity_check.py", "traceability-review": "pdf_extract.py" };
+  for (const [name, helper] of Object.entries(helpers)) {
+    const text = await readFile(`${shared}/${name}/SKILL.md`, "utf8");
+    if (!text.includes(`<skill-base-directory>/${helper}`) || !(await readFile(`${shared}/${name}/${helper}`)).length)
+      throw new Error(`shared skill helper missing: ${name}`);
+  }
+  await writeFile("/fixture/workspace/helper-data.csv", "x,y\n1,2\n3,4\n");
+  JSON.parse(execFileSync("/opt/scikeel/science/bin/python", [`${shared}/large-file/large_file_probe.py`, "helper-data.csv"],
+    { cwd: "/fixture/workspace", encoding: "utf8", timeout: 10000 }));
+  const writeProbe = `${shared}/.acceptance-write-probe`;
+  let sharedWriteDenied = false;
+  try { await writeFile(writeProbe, "must not be writable", { flag: "wx" }); }
+  catch (error) { if (!["EROFS", "EACCES"].includes(error.code)) throw error; sharedWriteDenied = true; }
+  if (!sharedWriteDenied) { await unlink(writeProbe); throw new Error("shared skills are writable"); }
   const figures = skills.find((skill) => skill.name === "publication-figures");
   if (!figures) throw new Error("publication figures skill missing");
   const skillDirectory = figures.location.slice(0, figures.location.lastIndexOf("/"));
@@ -87,6 +114,7 @@ try {
   const configurationResponse = await gateway("/config?directory=%2Ffixture%2Fworkspace");
   if (!configurationResponse.ok) throw new Error("managed configuration unavailable");
   const configuration = await configurationResponse.json();
+  if (JSON.stringify(configuration.skills?.paths) !== JSON.stringify([shared])) throw new Error("shared skill path configuration missing");
   const directoryRules = configuration.permission.external_directory;
   if (directoryRules["*"] !== "deny" || directoryRules[`${skillDirectory.slice(0, skillDirectory.lastIndexOf("/"))}/*`] !== "allow" ||
       configuration.permission.bash !== "ask" || configuration.permission.edit !== "ask") throw new Error("managed skill policy regression");
@@ -102,7 +130,7 @@ try {
   await hooks["shell.env"]({cwd:projectDir},output);
   if(!output.env.PATH.startsWith("/opt/scikeel/science/bin:"))throw new Error("shared science shell environment missing");
   console.log(JSON.stringify({ assignedAddress:address,scienceShellEnvironment:true,productionRunner: true, realGateway: true, realFileHelper: true,
-    workspaceInventory: true, artifactPreview: true, skillResources: true, offlineRipgrep: true, projectInventory: true, runInventory: true,
+    workspaceInventory: true, artifactPreview: true, skillResources: true, sharedSkillLocations: true, sharedWriteDenied, privateSkillCopies: false, localSkillHelper: true, offlineRipgrep: true, projectInventory: true, runInventory: true,
     authentication: true, generationBinding: true, workspaceEscapeDenied: true, profileRestart: true }));
 } finally {
   const closed = new Promise((done) => child.once("close", done));

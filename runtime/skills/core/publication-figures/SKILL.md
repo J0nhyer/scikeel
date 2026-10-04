@@ -14,17 +14,15 @@ the final-size, collision, and figure-form rules below still apply.
 
 ## Apply the style (always, before plotting)
 
-The style file `openscience.mplstyle` sits next to this SKILL.md. Load it by
-absolute path at the top of any figure script:
+The style file `openscience.mplstyle` sits next to this SKILL.md. Replace
+`<skill-base-directory>` with the absolute base directory returned when you load
+this skill, then use that path at the top of any figure script or notebook cell.
+The generated script's directory is not the skill's resource directory.
 
 ```python
 import matplotlib.pyplot as plt
-from pathlib import Path
 
-# This skill's directory — the style ships beside SKILL.md.
-STYLE = Path(__file__).resolve().parent / "openscience.mplstyle" if "__file__" in dir() else None
-# In a notebook/agent cell, use the skill's deployed path directly:
-plt.style.use(str(STYLE)) if STYLE and STYLE.exists() else plt.style.use("default")
+plt.style.use("<skill-base-directory>/openscience.mplstyle")
 ```
 
 If you cannot resolve the path, set the palette inline (same hexes as below).

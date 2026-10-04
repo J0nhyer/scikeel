@@ -29,8 +29,12 @@ no findings in the user's conversation — noise they did not ask for.
 The gate ships beside this SKILL.md. Run it on the code files in play (or with
 no arguments to scan the workspace):
 
+Replace `<skill-base-directory>` with the absolute base directory returned when
+you load this skill. It is the directory containing this SKILL.md, not a literal
+path or an environment variable. Run the command from the active workspace.
+
 ```bash
-python "$XDG_CONFIG_HOME/opencode/skills/domain-check/domain_check.py" <file.py|notebook.ipynb|analysis.R ...>
+python "<skill-base-directory>/domain_check.py" <file.py|notebook.ipynb|analysis.R ...>
 ```
 
 It prints exactly one ` ```review ` fenced JSON block on stdout.

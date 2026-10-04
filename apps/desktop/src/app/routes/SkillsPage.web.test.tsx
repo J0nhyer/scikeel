@@ -32,6 +32,36 @@ describe("Web skill catalog", () => {
     expect(screen.getByText("No skills loaded yet.")).toBeInTheDocument();
   });
 
+  it("identifies all nine shipped platform skills as built-in without a source override", () => {
+    const names = ["computer-use", "domain-check", "large-file", "modal-run", "publication-figures",
+      "remote-compute", "research-workflow", "stats-integrity", "traceability-review"];
+    useRuntimeStore.setState({ skillsStatus: "ready", skills: names.map((name) => ({ name, description: name,
+      location: `/opt/scikeel/tools/resources/skills-core/${name}/SKILL.md` })) });
+    render(<MemoryRouter><SkillsPage /></MemoryRouter>);
+    expect(screen.getAllByText("built-in")).toHaveLength(names.length);
+    expect(screen.queryByText("user")).not.toBeInTheDocument();
+    expect(screen.queryByText("project")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["/workspace/.opencode/skills/publication-figures/SKILL.md", "project"],
+    ["/home/user/.agents/skills/publication-figures/SKILL.md", "user"],
+    ["/opt/scikeel/tools/resources/skills-core-user/publication-figures/SKILL.md", "user"],
+  ])("preserves the source of a same-name skill at %s", (location, source) => {
+    useRuntimeStore.setState({ skillsStatus: "ready", skills: [{ name: "publication-figures", description: "Publication figures", location }] });
+    render(<MemoryRouter><SkillsPage /></MemoryRouter>);
+    expect(screen.getByText(source)).toBeInTheDocument();
+    expect(screen.queryByText("built-in")).not.toBeInTheDocument();
+  });
+
+  it("preserves an explicit source supplied by the runtime", () => {
+    useRuntimeStore.setState({ skillsStatus: "ready", skills: [{ name: "publication-figures", description: "Publication figures",
+      location: "/opt/scikeel/tools/resources/skills-core/publication-figures/SKILL.md", source: "project" }] });
+    render(<MemoryRouter><SkillsPage /></MemoryRouter>);
+    expect(screen.getByText("project")).toBeInTheDocument();
+    expect(screen.queryByText("built-in")).not.toBeInTheDocument();
+  });
+
   it("shows runtime skill sources and the actual Web installation scope", async () => {
     const user = userEvent.setup();
     useRuntimeStore.setState({ skillsStatus: "ready", skills: [{ name: "publication-figures", description: "Publication figures", source: "builtin" }] });

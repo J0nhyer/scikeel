@@ -54,6 +54,7 @@ test("profile updates accept only platform broker credentials and manual permiss
   assert.equal((await post({ ...profile, permission: { bash: "allow" } })).status, 403);
   const foreign = structuredClone(profile); foreign.provider.fixture.options.baseURL = "http://peer/v1";
   assert.equal((await post(foreign)).status, 403);
+  assert.equal((await post({ ...profile, skills: { paths: ["/peer/skills"] } })).status, 403);
   assert.equal((await post(profile)).status, 200); assert.deepEqual(profiles, [profile]);
 });
 test("gateway configuration is published before startup and restart preserves private state", async (t) => {
@@ -69,7 +70,8 @@ test("gateway configuration is published before startup and restart preserves pr
   await gateway.start(profile);
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/one");
   const published = JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8"));
-  const skills = `${config.stateDir}/runtime/xdg-config/opencode/skills`;
+  const skills = "/opt/scikeel/tools/resources/skills-core";
+  assert.deepEqual(published.skills, { paths: [skills] });
   assert.deepEqual(published.permission.external_directory, { "*": "deny", [skills]: "allow", [`${skills}/*`]: "allow" });
   assert.equal(published.permission.bash, "ask");
   assert.equal(published.permission.edit, "ask");

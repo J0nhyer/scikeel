@@ -373,6 +373,8 @@ function sourceOf(location?: string): SkillSource | undefined {
   const path = location.replace(/\\/g, "/");
   // OpenCode's own built-in skill reports "<built-in>" (v1) or /builtin/… (v2).
   if (path === "<built-in>" || path.includes("/builtin/")) return "builtin";
+  // Shared skills shipped in the gateway sandbox image.
+  if (path.startsWith("/opt/scikeel/tools/resources/skills-core/")) return "builtin";
   // The app profile's skills dir: bundled packs, except the `user/` subtree the
   // skill installer writes to.
   if (path.includes("/xdg-config/opencode/skills/")) {
