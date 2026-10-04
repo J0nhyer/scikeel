@@ -1,7 +1,8 @@
 # Conversation Collaboration Modes Design
 
-**Status:** Draft for user review, 2026-10-04. This deliverable is a specification;
-implementation planning and product changes have not started.
+**Status:** Approved for Stage 1 implementation planning by the user on
+2026-10-04. The four stages are delivered separately; this document does not
+claim that product implementation or deployment has been completed.
 
 ## 1. Goal and scope
 
