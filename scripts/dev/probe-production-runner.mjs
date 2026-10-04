@@ -52,6 +52,19 @@ try {
     const preview = await gateway(`/v1/fs/read?root=${root}&path=${value.path}`);
     if (!preview.ok || await preview.text() !== value.text) throw new Error("managed gateway preview failed");
   }
+  // /v1/health reports the gateway process before its OpenCode sidecar is
+  // accepting requests. Wait for a real workspace-scoped session response.
+  const runtimeDeadline = Date.now() + 25000;
+  let runtimeReady = false;
+  while (Date.now() < runtimeDeadline) {
+    try {
+      const response = await gateway("/session?directory=%2Ffixture%2Fworkspace");
+      if (response.ok && Array.isArray(await response.json())) { runtimeReady = true; break; }
+      await response.body?.cancel();
+    } catch {}
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  if (!runtimeReady) throw new Error("managed OpenCode runtime did not become ready");
   const skillsResponse = await gateway("/skill?directory=%2Ffixture%2Fworkspace");
   if (!skillsResponse.ok) throw new Error(`managed skill discovery failed (${skillsResponse.status}): ${(await skillsResponse.text()).slice(0, 500)}`);
   const skills = await skillsResponse.json();
