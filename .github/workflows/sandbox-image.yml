@@ -72,7 +72,7 @@ jobs:
           cp "$(command -v node)" .deploy/science-context/tools/bin/
           bash scripts/dev/fetch-opencode.sh x86_64-unknown-linux-gnu
           cp apps/desktop/src-tauri/binaries/opencode-x86_64-unknown-linux-gnu .deploy/science-context/tools/bin/opencode
-          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment}.mjs .deploy/science-context/tools/
+          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment,collaboration}.mjs .deploy/science-context/tools/
           cp runtime/sandbox/project-environment.py .deploy/science-context/tools/
           mkdir -p .deploy/science-context/tools/resources/skills-core
           tar -C runtime/skills/core --exclude=.gitkeep -cf - . | tar -C .deploy/science-context/tools/resources/skills-core -xf -
@@ -132,6 +132,17 @@ jobs:
             -v "$PWD/.deploy/science-test:/opt/scikeel/test:ro" \
             --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
             /opt/scikeel/test/probe-production-runner.mjs
+      - name: Verify a real unanswered checkpoint in the pinned runtime
+        shell: bash
+        run: |
+          timeout --signal=TERM --kill-after=10s 80s docker run --rm \
+            --network=none --read-only --memory=1024m --memory-swap=1152m --pids-limit=256 --cpus=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            -v "$PWD:/fixture/repo:ro" \
+            -e OSD_COLLABORATION_BINARY=/opt/scikeel/tools/bin/opencode \
+            -w /fixture/repo/services/platform \
+            --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
+            --test --test-concurrency=1 /fixture/repo/services/platform/test/collaboration-opencode.test.mjs
       - name: Export immutable artifact and measured identities
         shell: bash
         run: |

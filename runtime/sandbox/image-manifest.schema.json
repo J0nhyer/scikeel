@@ -137,7 +137,7 @@
     "runnerFiles": {
       "type": "object",
       "required": ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py"],
-      "propertyNames": {"enum": ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py"]},
+      "propertyNames": {"enum": ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py", "opt/scikeel/tools/science-environment.mjs", "opt/scikeel/tools/collaboration.mjs"]},
       "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
     },
     "testEntryPoint": {

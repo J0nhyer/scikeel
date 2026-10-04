@@ -77,9 +77,17 @@ test("gateway configuration is published before startup and restart preserves pr
   assert.equal(published.permission.edit, "ask");
   assert.equal(Object.keys(published.permission.external_directory)[0], "*");
 
-  await gateway.start({ ...profile, model: "fixture/two" });
+  const brokerToken = "b".repeat(64);
+  const imageDigest = "sha256:" + "c".repeat(64);
+  await gateway.start({ ...profile, model: "fixture/two", enabled_providers: ["fixture"], provider: { fixture: {
+    npm: "@ai-sdk/openai-compatible", name: "fixture", models: { two: { name: "two" } },
+    options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: brokerToken },
+  } } }, { imageDigest });
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/two");
-  assert.deepEqual(JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8")).permission.external_directory, published.permission.external_directory);
+  const restarted = JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8"));
+  assert.deepEqual(restarted.skills, { paths: [skills] });
+  assert.deepEqual(restarted.plugin, [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest, collaborationToken: brokerToken }]]);
+  assert.deepEqual(restarted.permission, published.permission);
   await gateway.stop();
 });
 test("runner health reports an unavailable gateway rather than admitting new jobs after its child exits",async(t)=>{

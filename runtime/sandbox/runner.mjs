@@ -147,7 +147,7 @@ export class TenantGateway {
       skills: { paths: [skills] },
       permission: { bash: "ask", edit: "ask", webfetch: "ask", websearch: "ask", ...profile?.permission,
         external_directory: { "*": "deny", [skills]: "allow", [`${skills}/*`]: "allow" } },
-      ...(profile && imageDigest ? { plugin: [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest }]] } : {}),
+      ...(profile && imageDigest ? { plugin: [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest, collaborationToken:profile.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey }]] } : {}),
     };
     await writeFile(temporary, JSON.stringify(configured), { flag: "wx", mode: 0o600 });
     await rename(temporary, `${config}/opencode.json`);

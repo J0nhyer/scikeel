@@ -9,6 +9,14 @@ Protocol version: 1. Read the task record supplied with the current turn. Its
 objective, input paths, expected outputs, mode and confirmed decisions are the
 source of truth. Your suggestions are not confirmed user decisions.
 
+## Managed conversation checkpoints
+
+When `research_checkpoint` is available, use it for plan agreement and unapproved
+substantive research decisions. It waits for the actual user's answer. Do not
+replace this checkpoint with a question in a progress file or continue while it
+is pending. An explicit approved plan in the conversation needs no repeated
+confirmation. Keep the versioned report for real artifacts and checks.
+
 ## Establish the task
 
 1. Inspect the named input materials inside the session workspace. If materials

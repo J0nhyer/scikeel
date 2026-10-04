@@ -38,6 +38,11 @@ test("production images require the exact authenticated runner and file-helper s
   assert.throws(() => validateImageManifest(production), /runner/);
   const runnerFiles = Object.fromEntries(["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs"].map((name) => [`opt/scikeel/tools/${name}`, "a".repeat(64)]));
   assert.doesNotThrow(() => validateImageManifest({ ...production, runnerFiles }));
+  const collaborationFiles = { ...runnerFiles, "opt/scikeel/tools/collaboration.mjs": "c".repeat(64) };
+  assert.doesNotThrow(() => validateImageManifest({ ...production, runnerFiles: collaborationFiles }));
+  assert.throws(() => validateImageManifest({ ...production, runnerFiles: { ...collaborationFiles,
+    "opt/scikeel/tools/collaboration.mjs": "unmeasured" } }), /runner/);
+  assert.doesNotThrow(() => validateBuildContext(["tools/collaboration.mjs"]));
   assert.doesNotThrow(() => validateBuildContext(["tools/runner.mjs", "tools/file-rpc.mjs", "tools/cli-jobs.mjs", "tools/project-environment.py", "tools/science-environment.mjs"]));
   for (const patch of [{ ...runnerFiles, "opt/scikeel/tools/unknown.mjs": "a".repeat(64) }, { ...runnerFiles, "opt/scikeel/tools/runner.mjs": "" }])
     assert.throws(() => validateImageManifest({ ...production, runnerFiles: patch }), /runner/);
@@ -122,11 +127,12 @@ test("archive inspection measures tool bytes inside the rootfs rather than trust
   try {
     execFileSync("python3", ["-c", `import io,sys,tarfile
 with tarfile.open(sys.argv[1],'w:gz') as archive:
- for name in ['git','rg']:
-  entry=tarfile.TarInfo('usr/bin/'+name); entry.size=5; archive.addfile(entry,io.BytesIO(b'owned'))`, archive]);
+ for name in ['usr/bin/git','usr/bin/rg','opt/scikeel/tools/collaboration.mjs']:
+  entry=tarfile.TarInfo(name); entry.size=5; archive.addfile(entry,io.BytesIO(b'owned'))`, archive]);
     const result = JSON.parse(execFileSync("python3", [inspect, archive], { encoding: "utf8" }));
     assert.equal(result.toolHashes?.["usr/bin/git"], createHash("sha256").update("owned").digest("hex"));
     assert.equal(result.toolHashes?.["usr/bin/rg"], createHash("sha256").update("owned").digest("hex"));
+    assert.equal(result.toolHashes?.["opt/scikeel/tools/collaboration.mjs"], createHash("sha256").update("owned").digest("hex"));
   } finally { await rm(temporary, { recursive: true }); }
 });
 

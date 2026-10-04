@@ -81,7 +81,7 @@ print(json.dumps(out))`;
   const inventory = JSON.parse(run("python3", [inspector, archive]));
   const digest = await sha256(archive);
   const runnerFiles = {};
-  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs"])
+  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs", "collaboration.mjs"])
     runnerFiles[`opt/scikeel/tools/${name}`] = await sha256(join(context, "tools", name));
   const manifest = { schema: 1, name: "science-v1", variant, architecture: "linux/amd64",
     rootfsSha256: digest, imageDigest: `sha256:${digest}`, python: tools.python.version, uv: tools.uv.version,
