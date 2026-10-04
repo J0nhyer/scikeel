@@ -15,7 +15,13 @@ When `research_checkpoint` is available, use it for plan agreement and unapprove
 substantive research decisions. It waits for the actual user's answer. Do not
 replace this checkpoint with a question in a progress file or continue while it
 is pending. An explicit approved plan in the conversation needs no repeated
-confirmation. Keep the versioned report for real artifacts and checks.
+confirmation. In Guided mode, explain the outcome of each confirmed step and
+call `research_checkpoint` with kind `step` before starting the next meaningful
+research outcome. Approval of the overall plan does not authorize all Guided
+steps; explicit approval of this step needs no duplicate card. Routine tool
+calls within the step do not require extra research confirmations. Deliver the
+final requested result without an empty next-step card. Keep the versioned
+report for real artifacts and checks.
 
 ## Establish the task
 

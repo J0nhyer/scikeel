@@ -48,9 +48,9 @@ export function collaborationHooks({ token, request: provided }) {
   };
   const checkpoint = {
     description:
-      "Request and WAIT for the user research decision before continuing. Use for a new research plan or unapproved substantive method choice. Never assume approval.",
+      "Request and WAIT for the user research decision before continuing. Use for a new research plan, next meaningful Guided step, or unapproved substantive method choice. Never assume approval.",
     args: {
-      kind: { type: "string", enum: ["plan", "method", "missing_input"] },
+      kind: { type: "string", enum: ["plan", "step", "method", "missing_input"] },
       question: { type: "string", minLength: 1, maxLength: 12000 },
       suggestedAnswer: { type: "string", minLength: 1, maxLength: 12000 },
     },

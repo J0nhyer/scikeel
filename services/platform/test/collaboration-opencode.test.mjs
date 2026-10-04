@@ -28,8 +28,8 @@ async function waitFor(fn, timeout = 20000) {
   }
   throw new Error("Runtime acceptance timed out");
 }
-test(
-  "pinned OpenCode waits at a durable checkpoint before writing an actual artifact",
+for (const mode of ["collaborative", "guided"]) test(
+  `pinned OpenCode ${mode} waits at each required checkpoint before writing an actual artifact`,
   { skip: !existsSync(binary), timeout: 60000 },
   async (t) => {
     const root = await mkdtemp(join(tmpdir(), "scikeel-collab-native-"));
@@ -79,6 +79,9 @@ test(
       const checkpointAnswered = body.messages.some(
         (m) => m.role === "tool" && String(m.content).includes("userAnswer"),
       );
+      const nextStepAnswered = body.messages.some(
+        (m) => m.role === "tool" && m.tool_call_id === "call_next_step" && String(m.content).includes("userAnswer"),
+      );
       let delta,
         reason = "stop";
       if (hasCheckpoint && !finish) {
@@ -93,7 +96,7 @@ test(
                 function: {
                   name: "research_checkpoint",
                   arguments: JSON.stringify({
-                    kind: "plan",
+                    kind: mode === "guided" ? "step" : "plan",
                     question: "Write result.txt and verify?",
                     suggestedAnswer: "Continue",
                   }),
@@ -112,6 +115,16 @@ test(
                 },
               },
             ],
+          };
+        else if (mode === "guided" && !nextStepAnswered)
+          delta = {
+            tool_calls: [{ index: 0, id: "call_next_step", type: "function", function: {
+              name: "research_checkpoint", arguments: JSON.stringify({ kind: "step",
+                question: "Inspection completed. Write and verify the actual artifact next?",
+                suggestedAnswer: "Write the verified artifact" }),
+            } }, { index: 1, id: "call_second_early_write", type: "function", function: {
+              name: "write", arguments: JSON.stringify({ filePath: join(workspace, "result.txt"), content: "second unapproved artifact" }),
+            } }],
           };
         else
           delta = {
@@ -265,7 +278,8 @@ test(
       step = "prompt";
       owner.sessionId = session.id;
       await store.heartbeat(owner, "page");
-      await store.begin(owner, 0);
+      const selection = mode === "guided" ? await store.setMode(owner, mode, 0) : await store.get(owner);
+      await store.begin(owner, selection.revision);
       const post = await nativeFetch(
         `${native}/session/${session.id}/prompt_async`,
         {
@@ -300,6 +314,17 @@ test(
         revision: waiting.revision,
         answer: "Continue",
       });
+      if (mode === "guided") {
+        step = "next-step";
+        const next = await waitFor(async () => { const state = await store.get(owner); return state.pending && state.pending.id !== waiting.pending.id ? state : false; });
+        await delay(250);
+        assert.equal(next.pending.kind, "step");
+        assert.equal(next.decisions.length, 1);
+        assert.equal(existsSync(join(workspace, "result.txt")), false);
+        assert.equal(calls, 2);
+        assert.deepEqual(await (await nativeFetch(`${native}/permission`)).json(), []);
+        await store.answer(owner, { id: next.pending.id, execution: next.execution, revision: next.revision, answer: "Write the verified artifact" });
+      }
       step = "permission";
       const permission = await waitFor(async () => {
         const r = await nativeFetch(`${native}/permission`);

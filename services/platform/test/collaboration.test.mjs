@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CollaborationStore } from "../src/collaboration.mjs";
+import { CollaborationStore, collaborationPolicy } from "../src/collaboration.mjs";
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "collaboration-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -133,14 +133,72 @@ test("legacy active mode remains captured until idle and disabled modes require 
   let active = true;
   const store = new CollaborationStore({
     rootDir: f.root,
-    readLegacy: async () => ({ mode: "guided", executionActive: active }),
+    readLegacy: async () => ({ mode: "delegated", executionActive: active }),
   });
   assert.equal((await store.get(owner)).mode, "collaborative");
   active = false;
-  assert.equal((await store.get(owner)).mode, "guided");
+  assert.equal((await store.get(owner)).mode, "delegated");
   await store.heartbeat(owner, "page");
   await assert.rejects(store.begin(owner, 0), /not available/);
   const changed = await store.setMode(owner, "collaborative", 0);
   assert.equal((await store.get(owner)).mode, "collaborative");
   await store.begin(owner, changed.revision);
+});
+
+
+test("Guided waits before each next research outcome and does not change a waiting execution's policy", async (t) => {
+  const f = await fixture(t);
+  const selected = await f.store.setMode(owner, "guided", 0);
+  await f.store.heartbeat(owner, "page");
+  const started = await f.store.begin(owner, selected.revision);
+  assert.equal(started.executionMode, "guided");
+  const first = await f.store.checkpoint(owner, { kind: "step", question: "Inspect the data?", suggestedAnswer: "Inspect only" });
+  assert.equal((await f.store.guard(owner)).blocked, true);
+  await assert.rejects(f.store.begin(owner, first.revision), /answer/);
+  const changed = await f.store.setMode(owner, "collaborative", first.revision);
+  assert.equal(changed.mode, "collaborative");
+  assert.equal(changed.executionMode, "guided");
+  assert.equal(changed.pending.id, first.pending.id);
+  assert.match(collaborationPolicy(changed), /mode: guided/);
+  const answered = await f.store.answer(owner, { id: first.pending.id, execution: first.execution, revision: changed.revision, answer: "Inspect the original data" });
+  assert.equal((await f.store.guard(owner)).blocked, false);
+  const next = await f.store.checkpoint(owner, { kind: "step", question: "Inspection found two missing values. Run the agreed analysis?", suggestedAnswer: "Analyze without excluding observations" });
+  assert.notEqual(next.pending.id, first.pending.id);
+  assert.equal(next.execution, answered.execution);
+  assert.equal((await f.store.guard(owner)).blocked, true);
+  await f.store.answer(owner, { id: next.pending.id, execution: next.execution, revision: next.revision, answer: "Run the agreed analysis" });
+  await f.store.settled(owner);
+  const idle = await f.store.get(owner);
+  const following = await f.store.begin(owner, idle.revision);
+  assert.equal(following.executionMode, "collaborative");
+  assert.match(collaborationPolicy(following), /mode: collaborative/);
+  await assert.rejects(f.store.checkpoint(owner, { kind: "step", question: "Next?", suggestedAnswer: "Continue" }), /Guided/);
+});
+
+test("Guided mode rejects running or stale switches and a restored pending step stays paused", async (t) => {
+  const f = await fixture(t);
+  const selected = await f.store.setMode(owner, "guided", 0);
+  await assert.rejects(f.store.setMode(owner, "collaborative", 0), /changed/);
+  await f.store.heartbeat(owner, "page");
+  const started = await f.store.begin(owner, selected.revision);
+  await assert.rejects(f.store.setMode(owner, "collaborative", started.revision), /Stop/);
+  const waiting = await f.store.checkpoint(owner, { kind: "step", question: "Next outcome?", suggestedAnswer: "Inspect data" });
+  const restored = await new CollaborationStore({ rootDir: f.root }).get(owner);
+  assert.equal(restored.phase, "paused");
+  assert.equal(restored.pending.id, waiting.pending.id);
+  assert.equal(restored.executionMode, "guided");
+});
+
+
+test("a Stage 1 waiting execution captures its old mode before a new preference is saved", async (t) => {
+  const f = await fixture(t);
+  await f.store.heartbeat(owner, "page");
+  await f.store.begin(owner, 0);
+  const waiting = await f.store.checkpoint(owner, { kind: "plan", question: "Plan?", suggestedAnswer: "Continue" });
+  delete waiting.executionMode;
+  await f.store.save(waiting);
+  const changed = await f.store.setMode(owner, "guided", waiting.revision);
+  assert.equal(changed.executionMode, "collaborative");
+  assert.match(collaborationPolicy(changed), /mode: collaborative/);
+  assert.equal(changed.pending.id, waiting.pending.id);
 });

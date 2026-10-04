@@ -117,12 +117,13 @@ export class CollaborationStore {
   }
   setMode(o, mode, revision) {
     return this.locked(o, async () => {
-      if (mode !== "collaborative")
+      if (!["collaborative", "guided"].includes(mode))
         throw fail("This mode is not available yet", 400);
       const s = await this.load(o);
       this.revision(s, revision);
       if (s.phase === "running")
         throw fail("Stop before changing collaboration mode");
+      if (s.execution > 0 && !s.executionMode) s.executionMode = s.mode;
       s.mode = mode;
       s.revision++;
       return this.save(s);
@@ -144,9 +145,9 @@ export class CollaborationStore {
     return this.locked(o, async () => {
       const s = await this.load(o);
       this.revision(s, revision);
-      if (s.mode !== "collaborative")
+      if (!["collaborative", "guided"].includes(s.mode))
         throw fail(
-          "Choose Collaborative; this saved mode is not available yet",
+          "Choose Guided or Collaborative; this saved mode is not available yet",
         );
       if (s.pending) throw fail("Research decision requires an answer");
       if (s.phase === "running")
@@ -154,6 +155,7 @@ export class CollaborationStore {
       if (!this.alive(o))
         throw fail("Open this conversation before continuing");
       Object.assign(s, o);
+      s.executionMode = s.mode;
       s.execution++;
       s.startedAt = this.now();
       s.phase = "running";
@@ -169,8 +171,10 @@ export class CollaborationStore {
       if (s.pending) throw fail("Research decision requires an answer");
       if (value.execution !== undefined && value.execution !== s.execution)
         throw fail("Research execution changed");
-      if (!["plan", "method", "missing_input"].includes(value.kind))
+      if (!["plan", "step", "method", "missing_input"].includes(value.kind))
         throw fail("Invalid research decision", 400);
+      if (value.kind === "step" && (s.executionMode ?? s.mode) !== "guided")
+        throw fail("Step confirmation requires Guided mode", 400);
       s.pending = {
         id: randomUUID(),
         execution: s.execution,
@@ -278,3 +282,10 @@ export class CollaborationStore {
   }
 }
 export const COLLABORATIVE_POLICY = `SciKeel collaboration mode: collaborative. For new multi-step research, propose a concise plan and call research_checkpoint with kind plan before its execution, unless the user has already explicitly approved that plan. Execute routine steps continuously within the approved scope. Call research_checkpoint for unapproved substantive method choices or missing essential inputs. Simple questions and explicitly requested single operations need no plan. Discuss-only requests permit no execution. The checkpoint answer is the user's decision; suggestions are not approval. Existing tool permissions remain unchanged. Preserve original inputs and use relevant scientific Skills. Never invent outputs, citations, verification or novelty.`;
+
+export const GUIDED_POLICY = `SciKeel collaboration mode: guided. For multi-step research, explain one meaningful research outcome at a time: why it matters, what will be done, and how its result will be checked. Before each unapproved step, call research_checkpoint with kind step and WAIT for the user's real answer. Explicit approval in the conversation authorizes that step without asking twice; approval of an overall plan does not approve every subsequent step. Execute routine reads, tool calls, analysis and bounded repairs continuously within the confirmed step. After completing it, explain its actual result and evidence, then describe the next outcome and call research_checkpoint with kind step before starting that next outcome. A meaningful step is an outcome such as inspecting data, choosing a method, running analysis or interpreting results, not each tool call or sentence. When the requested final outcome is complete, deliver it without an empty next-step checkpoint. Simple questions, concept explanations and an explicitly requested single operation need no ceremonial plan. Discuss-only requests permit no execution. Call research_checkpoint for unapproved substantive method choices or missing essential inputs. Suggested answers are not approval. Existing tool permissions remain unchanged. Preserve original inputs, use relevant scientific Skills and never invent outputs, citations or verification.`;
+/** A preference change during waiting applies only to the next execution. */
+export function collaborationPolicy(state) {
+  const mode = state.execution > 0 ? state.executionMode ?? state.mode : state.mode;
+  return mode === "guided" ? GUIDED_POLICY : COLLABORATIVE_POLICY;
+}
