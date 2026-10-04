@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
 
 // CI-only acceptance driver; never copied into an installed scientific image.
@@ -7,6 +7,10 @@ const token = "a".repeat(64);
 // An alternate loopback address catches accidental fallback to 127.0.0.1.
 const address = "127.0.0.2";
 const identity = { instanceId: "sandbox-test-ci", generation: 1 };
+// OpenCode checks plugin dependencies in the background on a fresh home.
+// The offline fixture must refuse that optional fetch promptly, as production's
+// egress broker does, so local bundled plugins can finish initialization.
+await writeFile("/fixture/home/.npmrc", "registry=http://127.0.0.1:1\nfetch-retries=0\nfetch-timeout=1000\n");
 const child = spawn("/opt/scikeel/tools/bin/node", ["/opt/scikeel/tools/runner.mjs"], {
   env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", SCIKEEL_BIND_ADDRESS: address, SCIKEEL_CI_DIAGNOSTICS: "1" },
   detached: true, stdio: ["ignore", "ignore", "inherit"],
