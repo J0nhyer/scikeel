@@ -77,10 +77,10 @@ Files: `scripts/dev/probe-production-runner.mjs`, existing spec/plan,
 - [x] Run the full guarded platform suite, affected Rust tests, Web regression,
   typecheck and lint. Run a bounded staged Web build only if needed for browser
   acceptance, leaving the deployed bundle untouched.
-- [ ] Review the scoped diff and record actual outcomes and remaining deployment
+- [x] Review the scoped diff and record actual outcomes and remaining deployment
   gates in `PROGRESS.md`.
-- [ ] Commit only this feature's files. Do not stage unrelated in-progress work.
-- [ ] Present the verified change and migration dry-run before image promotion.
+- [x] Commit only this feature's files. Do not stage unrelated in-progress work.
+- [x] Present the verified change and migration dry-run before image promotion.
   Production acceptance still requires the newly attested image, account
   restart/migration, a real OpenCode turn, old-conversation continuation, and
   desktop/phone catalog checks. Do not claim these pass from unit tests alone.
@@ -105,3 +105,42 @@ extended and passes syntax checking; its new container acceptance is still
 pending until a new image is built. No production copy migration, image switch,
 worker restart, real-model turn, or conversation-continuation acceptance has
 been performed for V1.
+
+## Trusted image checkpoint
+
+Patch `03b1820` is published on the existing feature branch. Image workflow
+`37218437700` succeeded, including actual production runner/OpenCode shared-path
+discovery, no private platform copies, local helper execution, read-only write
+rejection, offline imports, and provenance attestation. Desktop/phone browser
+acceptance also passed at 1280px/390px in English and Chinese.
+
+The 345837710-byte attested artifact is downloading under
+`.deploy/shared-skills-release/image`. Download completion, local signature and
+archive verification, and candidate installation are pending. Production remains
+on image `31b68d0c...`; no live account copy has been moved. Pre-migration file
+hashes and session IDs are retained in the ignored private release directory.
+
+## Candidate installation checkpoint
+
+The resumed artifact download completed. The guarded image installer verified
+CI attestations, archive inventory and tool hashes, then independently verified
+and installed candidate image
+`sha256:7cc4f5e75b65bb31211abca7302f4186704dfa2ce365f2104e1132ff39743a83`
+into root-controlled storage. Both account migration dry-runs still return
+`ready` with 16 files. Production configuration and account copies are unchanged;
+live activation and model/conversation-continuation acceptance remain pending.
+
+## Completed live activation
+
+User-approved promotion completed on 2026-10-05. The service was stopped only
+after the active runtime was idle; both verified skill-copy directories were
+renamed to rollback backups, then image/configuration were switched and the
+service restored. Both accounts passed shared discovery, state-file escape and
+cross-account session denial. Big Pickle passed actual skill/resource/helper and
+manual-approval checks in an old-history fork; original history remained unchanged.
+Shared resources cannot be opened for writing inside the sandbox, and peer state
+is unavailable. All five original session IDs and history counts remain unchanged;
+user files match the stable baseline. Fixture handling generated only the app's
+automatic internal Git snapshot metadata. Verification fork/fixture and short-lived
+logins were cleaned. Prior image/configuration and full old skill backups are
+retained. The feature is complete; no V2 management feature was added.

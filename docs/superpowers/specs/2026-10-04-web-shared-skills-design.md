@@ -1,7 +1,7 @@
 # Web Shared Platform Skills V1 Design
 
-**Status:** Approved by the user on 2026-10-04. Proceed with minimal V1
-implementation; ask the user if a scope or behavior decision is needed.
+**Status:** Approved on 2026-10-04; V1 deployed and verified on 2026-10-05.
+V2 remains a separately reviewed future feature.
 **Product scope:** The multi-user gateway Web client, including phone-width views.
 **V2 direction:** Users manage their custom skills in their own file space.
 
@@ -213,3 +213,28 @@ settle the user-visible storage location, supported file operations, discovery
 and refresh behavior, validation, name conflicts, and execution permissions.
 This V1 spec does not assign a custom directory, assume an existing project,
 create a custom-skill system, or define user/project override priority.
+
+## V1 deployment result
+
+Patch `03b1820` is active in production image
+`sha256:7cc4f5e75b65bb31211abca7302f4186704dfa2ce365f2104e1132ff39743a83`.
+Both existing account spaces now discover nine shared platform skills with no
+private platform copies. Their complete old packs are retained outside discovery
+for rollback. A newly registered account without file space required no migration.
+
+CI verified new-account startup, offline resources, local helper execution and
+read-only protection. Live acceptance verified both account catalogs and isolation;
+Big Pickle loaded three skills, read two resources, executed the named CSV probe
+after one manual approval, and encountered the expected ordinary state-read
+denial. A disposable fork continued pre-migration history and reloaded the new
+paths without changing the original conversation. The fork, fixture and two
+short-lived acceptance logins were removed or revoked.
+
+All original user-file content hashes, five session IDs and original message/part
+counts are preserved. The existing application's automatic Git snapshots produced
+four additional objects and changed its private snapshot index/ref during fixture
+creation/removal. These generated `.git` records were retained; the verification
+does not claim byte identity of all internal Git metadata.
+
+The old image, configuration and complete skill backups remain available. Web
+catalog acceptance at 1280px/390px in English and Chinese passed before promotion.

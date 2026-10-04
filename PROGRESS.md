@@ -1,3 +1,5 @@
+2026-10-05 02:37 · Deployed shared-skills V1 image 7cc4f5e with both old packs retained for rollback; both catalogs/isolation and real Big Pickle old-history-fork skill/resource/helper/manual-approval checks pass, shared writes are denied, original user files/five sessions/history counts remain intact with only generated Git snapshot metadata, and verification artifacts/logins are cleaned.
+
 2026-10-05 00:51 · Implemented minimal shared-platform skills V1 with direct image-path loading, managed-copy suppression, portable helper/style references and verified reversible copy migration; 267 platform tests, 244 Rust tests, 11 Web tests, typecheck/lint and both production 16-file migration dry-runs pass, while new-image and live migration acceptance remain pending.
 
 2026-10-03 16:35 · Repaired pending Web interaction recovery on reconnect and polling with race-safe snapshot merging and visible endpoint errors; 275 focused Web checks, six real-binary/science checks, typecheck, lint and staged bounded build pass, while browser acceptance and the attested sandbox image update remain pending.
