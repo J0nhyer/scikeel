@@ -52,8 +52,8 @@ try {
     const preview = await gateway(`/v1/fs/read?root=${root}&path=${value.path}`);
     if (!preview.ok || await preview.text() !== value.text) throw new Error("managed gateway preview failed");
   }
-  const skillsResponse = await gateway("/skill");
-  if (!skillsResponse.ok) throw new Error("managed skill discovery failed");
+  const skillsResponse = await gateway("/skill?directory=%2Ffixture%2Fworkspace");
+  if (!skillsResponse.ok) throw new Error(`managed skill discovery failed (${skillsResponse.status}): ${(await skillsResponse.text()).slice(0, 500)}`);
   const skills = await skillsResponse.json();
   const figures = skills.find((skill) => skill.name === "publication-figures");
   if (!figures) throw new Error("publication figures skill missing");
@@ -61,7 +61,7 @@ try {
   const resources = execFileSync("rg", ["--no-config", "--files", "--hidden", "--glob=!**/SKILL.md", "."],
     { cwd: skillDirectory, encoding: "utf8", timeout: 5000 });
   if (!resources.split("\n").some((file) => file.endsWith("openscience.mplstyle"))) throw new Error("skill resource enumeration failed");
-  const configurationResponse = await gateway("/config");
+  const configurationResponse = await gateway("/config?directory=%2Ffixture%2Fworkspace");
   if (!configurationResponse.ok) throw new Error("managed configuration unavailable");
   const configuration = await configurationResponse.json();
   const directoryRules = configuration.permission.external_directory;
