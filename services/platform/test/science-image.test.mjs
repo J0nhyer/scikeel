@@ -122,9 +122,11 @@ test("archive inspection measures tool bytes inside the rootfs rather than trust
   try {
     execFileSync("python3", ["-c", `import io,sys,tarfile
 with tarfile.open(sys.argv[1],'w:gz') as archive:
- entry=tarfile.TarInfo('usr/bin/git'); entry.size=5; archive.addfile(entry,io.BytesIO(b'owned'))`, archive]);
+ for name in ['git','rg']:
+  entry=tarfile.TarInfo('usr/bin/'+name); entry.size=5; archive.addfile(entry,io.BytesIO(b'owned'))`, archive]);
     const result = JSON.parse(execFileSync("python3", [inspect, archive], { encoding: "utf8" }));
     assert.equal(result.toolHashes?.["usr/bin/git"], createHash("sha256").update("owned").digest("hex"));
+    assert.equal(result.toolHashes?.["usr/bin/rg"], createHash("sha256").update("owned").digest("hex"));
   } finally { await rm(temporary, { recursive: true }); }
 });
 

@@ -139,8 +139,16 @@ export class TenantGateway {
     try { await lstat(`${config}/opencode.jsonc`); throw new Error("legacy managed profile requires migration"); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
     const temporary = `${config}/profile-${process.pid}-${Date.now()}.tmp`;
-    const configured=profile && imageDigest ? {...profile,plugin:[["file:///opt/scikeel/tools/science-environment.mjs",{imageDigest}]]} : profile;
-    await writeFile(temporary, JSON.stringify(configured ?? { permission: { bash: "ask", edit: "ask", external_directory: "deny" } }), { flag: "wx", mode: 0o600 });
+    // Skill resources live outside the workspace. Put the deny first because
+    // OpenCode evaluates the last matching rule; retain manual writes/commands.
+    const skills = `${config}/skills`;
+    const configured = {
+      ...profile,
+      permission: { bash: "ask", edit: "ask", webfetch: "ask", websearch: "ask", ...profile?.permission,
+        external_directory: { "*": "deny", [skills]: "allow", [`${skills}/*`]: "allow" } },
+      ...(profile && imageDigest ? { plugin: [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest }]] } : {}),
+    };
+    await writeFile(temporary, JSON.stringify(configured), { flag: "wx", mode: 0o600 });
     await rename(temporary, `${config}/opencode.json`);
     const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", this.address,
       "--port", String(this.port), "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,

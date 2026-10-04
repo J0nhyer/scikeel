@@ -63,7 +63,7 @@ export async function prepareImage(args) {
   const program = `import hashlib,json,subprocess
 subprocess.check_output(['/opt/scikeel/tools/bin/osd','version'],text=True)
 out={}
-for name,path in [('python','/usr/local/bin/python3.12'),('uv','/usr/local/bin/uv'),('git','/usr/bin/git')]:
+for name,path in [('python','/usr/local/bin/python3.12'),('uv','/usr/local/bin/uv'),('git','/usr/bin/git'),('ripgrep','/usr/bin/rg')]:
  version=subprocess.check_output([path,'--version'],text=True).strip()
  with open(path,'rb') as file: digest=hashlib.file_digest(file,'sha256').hexdigest()
  out[name]={'reported':version,'sha256':digest,'path':path[1:]}

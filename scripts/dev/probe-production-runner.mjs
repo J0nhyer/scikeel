@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
 
 // CI-only acceptance driver; never copied into an installed scientific image.
@@ -52,6 +52,21 @@ try {
     const preview = await gateway(`/v1/fs/read?root=${root}&path=${value.path}`);
     if (!preview.ok || await preview.text() !== value.text) throw new Error("managed gateway preview failed");
   }
+  const skillsResponse = await gateway("/skill");
+  if (!skillsResponse.ok) throw new Error("managed skill discovery failed");
+  const skills = await skillsResponse.json();
+  const figures = skills.find((skill) => skill.name === "publication-figures");
+  if (!figures) throw new Error("publication figures skill missing");
+  const skillDirectory = figures.location.slice(0, figures.location.lastIndexOf("/"));
+  const resources = execFileSync("rg", ["--no-config", "--files", "--hidden", "--glob=!**/SKILL.md", "."],
+    { cwd: skillDirectory, encoding: "utf8", timeout: 5000 });
+  if (!resources.split("\n").some((file) => file.endsWith("openscience.mplstyle"))) throw new Error("skill resource enumeration failed");
+  const configurationResponse = await gateway("/config");
+  if (!configurationResponse.ok) throw new Error("managed configuration unavailable");
+  const configuration = await configurationResponse.json();
+  const directoryRules = configuration.permission.external_directory;
+  if (directoryRules["*"] !== "deny" || directoryRules[`${skillDirectory.slice(0, skillDirectory.lastIndexOf("/"))}/*`] !== "allow" ||
+      configuration.permission.bash !== "ask" || configuration.permission.edit !== "ask") throw new Error("managed skill policy regression");
   const projects = await gateway("/v1/projects");
   if (!projects.ok || !Array.isArray(await projects.json())) throw new Error("managed project inventory failed");
   const runs = await gateway("/v1/runs");
@@ -64,7 +79,7 @@ try {
   await hooks["shell.env"]({cwd:projectDir},output);
   if(!output.env.PATH.startsWith("/opt/scikeel/science/bin:"))throw new Error("shared science shell environment missing");
   console.log(JSON.stringify({ assignedAddress:address,scienceShellEnvironment:true,productionRunner: true, realGateway: true, realFileHelper: true,
-    workspaceInventory: true, artifactPreview: true, projectInventory: true, runInventory: true,
+    workspaceInventory: true, artifactPreview: true, skillResources: true, offlineRipgrep: true, projectInventory: true, runInventory: true,
     authentication: true, generationBinding: true, workspaceEscapeDenied: true, profileRestart: true }));
 } finally {
   const closed = new Promise((done) => child.once("close", done));

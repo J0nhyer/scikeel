@@ -4,7 +4,7 @@ ARG PYTHON_IMAGE
 ARG UV_IMAGE
 FROM ${UV_IMAGE} AS uv
 FROM ${PYTHON_IMAGE}
-RUN apt-get update && apt-get install -y --no-install-recommends git libssl3 libstdc++6 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep libssl3 libstdc++6 ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock tool-lock.json /opt/scikeel/baseline/
 ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { TenantRunner, TenantGateway } from "../../../runtime/sandbox/runner.mjs";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -65,10 +65,19 @@ test("gateway configuration is published before startup and restart preserves pr
   const gateway = new TenantGateway({ manifest: config, token, address: "127.0.0.1", port, spawnImpl: (_command, _args, options) =>
     spawn(process.execPath, [fileURLToPath(new URL("../fixtures/sandbox-gateway.mjs", import.meta.url))], { ...options, env: { ...options.env, FIXTURE_PORT: String(port) } }) });
   t.after(() => gateway.stop());
-  await gateway.start({ model: "fixture/one" });
+  const profile = { model: "fixture/one", permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
+  await gateway.start(profile);
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/one");
-  await gateway.start({ model: "fixture/two" });
+  const published = JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8"));
+  const skills = `${config.stateDir}/runtime/xdg-config/opencode/skills`;
+  assert.deepEqual(published.permission.external_directory, { "*": "deny", [skills]: "allow", [`${skills}/*`]: "allow" });
+  assert.equal(published.permission.bash, "ask");
+  assert.equal(published.permission.edit, "ask");
+  assert.equal(Object.keys(published.permission.external_directory)[0], "*");
+
+  await gateway.start({ ...profile, model: "fixture/two" });
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/two");
+  assert.deepEqual(JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8")).permission.external_directory, published.permission.external_directory);
   await gateway.stop();
 });
 test("runner health reports an unavailable gateway rather than admitting new jobs after its child exits",async(t)=>{

@@ -9,7 +9,7 @@ import tarfile
 def inspect(path):
     entries = []
     tool_hashes = {}
-    measured_paths = {"usr/local/bin/python3.12", "usr/local/bin/uv", "usr/bin/git",
+    measured_paths = {"usr/local/bin/python3.12", "usr/local/bin/uv", "usr/bin/git", "usr/bin/rg",
                       "opt/scikeel/tools/bin/osd", "opt/scikeel/tools/bin/opencode",
                       "opt/scikeel/tools/bin/node", "opt/scikeel/tools/bin/codex", "opt/scikeel/tools/bin/claude",
                       "opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py", "opt/scikeel/tools/science-environment.mjs"}
