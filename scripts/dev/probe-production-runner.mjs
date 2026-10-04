@@ -1,4 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
 
 // CI-only acceptance driver; never copied into an installed scientific image.
@@ -64,7 +65,12 @@ try {
     } catch {}
     await new Promise((done) => setTimeout(done, 100));
   }
-  if (!runtimeReady) throw new Error("managed OpenCode runtime did not become ready");
+  if (!runtimeReady) {
+    for (const path of ["/fixture/state/debug.log", "/fixture/state/runtime/xdg-data/opencode/log/opencode.log"]) {
+      try { console.error((await readFile(path, "utf8")).slice(-6000)); } catch {}
+    }
+    throw new Error("managed OpenCode runtime did not become ready");
+  }
   const skillsResponse = await gateway("/skill?directory=%2Ffixture%2Fworkspace");
   if (!skillsResponse.ok) throw new Error(`managed skill discovery failed (${skillsResponse.status}): ${(await skillsResponse.text()).slice(0, 500)}`);
   const skills = await skillsResponse.json();
