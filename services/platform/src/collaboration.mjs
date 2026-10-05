@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { join, resolve } from "node:path";
+import { researchPaths } from "./research-tasks.mjs";
 const fail = (message, status = 409) =>
   Object.assign(new Error(message), { status });
 const id = (v) => {
@@ -21,6 +22,7 @@ export class CollaborationStore {
     cancel = async () => {},
     running = null,
     readLegacy = null,
+    research = null,
   } = {}) {
     Object.assign(this, {
       rootDir: resolve(rootDir),
@@ -28,6 +30,7 @@ export class CollaborationStore {
       cancel,
       running,
       readLegacy,
+      research,
     });
     this.records = new Map();
     this.queues = new Map();
@@ -117,7 +120,7 @@ export class CollaborationStore {
   }
   setMode(o, mode, revision) {
     return this.locked(o, async () => {
-      if (!["collaborative", "guided"].includes(mode))
+      if (!["collaborative", "guided", "delegated"].includes(mode))
         throw fail("This mode is not available yet", 400);
       const s = await this.load(o);
       this.revision(s, revision);
@@ -145,9 +148,9 @@ export class CollaborationStore {
     return this.locked(o, async () => {
       const s = await this.load(o);
       this.revision(s, revision);
-      if (!["collaborative", "guided"].includes(s.mode))
+      if (!["collaborative", "guided", "delegated"].includes(s.mode))
         throw fail(
-          "Choose Guided or Collaborative; this saved mode is not available yet",
+          "Choose an available collaboration mode",
         );
       if (s.pending) throw fail("Research decision requires an answer");
       if (s.phase === "running")
@@ -158,6 +161,7 @@ export class CollaborationStore {
       s.executionMode = s.mode;
       s.execution++;
       s.startedAt = this.now();
+      delete s.delivery;
       s.phase = "running";
       s.revision++;
       return this.save(s);
@@ -183,6 +187,52 @@ export class CollaborationStore {
         suggestedAnswer: text(value.suggestedAnswer),
       };
       s.phase = "waiting_input";
+      s.revision++;
+      return this.save(s);
+    });
+  }
+  /** Runtime proposals are checked against gateway-owned scope and file versions. */
+  delivery(o, value) {
+    return this.locked(o, async () => {
+      const s = await this.load(o);
+      if (s.pending) throw fail("Research decision requires an answer");
+      if (!this.alive(o) || s.phase !== "running")
+        throw fail("Research execution is paused");
+      if (value.execution !== s.execution) throw fail("Research execution changed");
+      if ((s.executionMode ?? s.mode) !== "delegated")
+        throw fail("Delivery verification requires Delegated mode", 400);
+      if (!this.research) throw fail("Delivery verification is unavailable", 503);
+      if (value.operation === "prepare") {
+        const inputs = researchPaths(value.inputs ?? []);
+        const deliverables = researchPaths(value.deliverables, true);
+        if (s.delivery) {
+          if (JSON.stringify(s.delivery.inputs.map((v) => v.path)) !== JSON.stringify(inputs) ||
+              JSON.stringify(s.delivery.deliverables) !== JSON.stringify(deliverables))
+            throw fail("Delivery scope is already captured; ask the user before changing it");
+          return structuredClone(s);
+        }
+        const versions = await Promise.all(inputs.map((path) => this.research.artifact(o, path)));
+        if (versions.some((v) => !v.exists)) throw fail("An original input is missing", 400);
+        s.delivery = {
+          execution: s.execution,
+          reportPath: `.scikeel/delivery-${id(s.sessionId)}-${s.execution}.json`,
+          inputs: versions, deliverables, status: "pending", attempts: 0, report: null,
+        };
+      } else if (value.operation === "verify") {
+        const d = s.delivery;
+        if (!d) throw fail("Prepare the authorized delivery scope first", 400);
+        if (d.attempts >= 3 && d.status === "failed") throw fail("Delivery repair limit reached");
+        const report = await this.research.readProgress({ ...o, execution: s.execution, reportPath: d.reportPath });
+        const inputs = await Promise.all(d.inputs.map((v) => this.research.artifact(o, v.path)));
+        const unchanged = inputs.every((v, i) => v.exists && v.sha256 === d.inputs[i].sha256);
+        const outputs = d.deliverables.every((path) => report?.artifacts.some((v) => v.path === path && v.exists));
+        const checks = report?.checks.length > 0 && report.checks.every((v) => v.status === "passed" && v.evidenceExists);
+        const issue = !unchanged ? "changed_inputs" : !report ? "missing_progress" :
+          report.decisions.length ? "pending_decisions" : report.status !== "completed" ? "incomplete_report" :
+          !outputs ? "missing_outputs" : !checks ? "failed_checks" : null;
+        Object.assign(d, { report, status: issue ? "failed" : "completed", issue, checkedAt: this.now() });
+        d.attempts++;
+      } else throw fail("Invalid delivery operation", 400);
       s.revision++;
       return this.save(s);
     });
@@ -221,6 +271,7 @@ export class CollaborationStore {
           Boolean(s.pending) ||
           s.phase === "paused" ||
           (s.execution > 0 && !this.alive(o)),
+        repairExhausted: Boolean(s.delivery?.status === "failed" && s.delivery.attempts >= 3),
         state: structuredClone(s),
       };
     });
@@ -284,8 +335,9 @@ export class CollaborationStore {
 export const COLLABORATIVE_POLICY = `SciKeel collaboration mode: collaborative. For new multi-step research, propose a concise plan and call research_checkpoint with kind plan before its execution, unless the user has already explicitly approved that plan. Execute routine steps continuously within the approved scope. Call research_checkpoint for unapproved substantive method choices or missing essential inputs. Simple questions and explicitly requested single operations need no plan. Discuss-only requests permit no execution. The checkpoint answer is the user's decision; suggestions are not approval. Existing tool permissions remain unchanged. Preserve original inputs and use relevant scientific Skills. Never invent outputs, citations, verification or novelty.`;
 
 export const GUIDED_POLICY = `SciKeel collaboration mode: guided. For multi-step research, explain one meaningful research outcome at a time: why it matters, what will be done, and how its result will be checked. Before each unapproved step, call research_checkpoint with kind step and WAIT for the user's real answer. Explicit approval in the conversation authorizes that step without asking twice; approval of an overall plan does not approve every subsequent step. Execute routine reads, tool calls, analysis and bounded repairs continuously within the confirmed step. After completing it, explain its actual result and evidence, then describe the next outcome and call research_checkpoint with kind step before starting that next outcome. A meaningful step is an outcome such as inspecting data, choosing a method, running analysis or interpreting results, not each tool call or sentence. When the requested final outcome is complete, deliver it without an empty next-step checkpoint. Simple questions, concept explanations and an explicitly requested single operation need no ceremonial plan. Discuss-only requests permit no execution. Call research_checkpoint for unapproved substantive method choices or missing essential inputs. Suggested answers are not approval. Existing tool permissions remain unchanged. Preserve original inputs, use relevant scientific Skills and never invent outputs, citations or verification.`;
+export const DELEGATED_POLICY = `SciKeel collaboration mode: delegated (Basic Delegated, Stage 3). Execute a clear, explicitly authorized scope continuously without a ceremonial plan or meaningful-step confirmation. Follow confirmed methods and alternatives; call research_checkpoint with kind method before an unapproved substantive choice such as the primary analysis method, observation exclusions or a changed research question. Stage 3 does not grant broad initial method-selection authority. Call research_checkpoint with kind missing_input for essential unavailable materials. Discuss-only requests permit no execution; simple questions and explicitly requested single operations need no research report. Give brief nonblocking progress. Preserve original inputs and use relevant scientific Skills. For multi-step work that produces requested files, call research_delivery action prepare with actual original input paths and promised deliverable paths before changes, using only workspace-relative paths. It returns execution and reportPath. Write the existing version-1 research report there: {version:1,execution,status:completed|running|failed,steps:[],decisions:[],artifacts:[relative paths],checks:[{title,status:passed|failed|pending,evidence:relative evidence file}],limitations:string}. Checks require actual executions and evidence files. Then call research_delivery action verify. Deliver success only if the verification status is completed; a filename alone is not an output. Repair within the same scope at most twice after the initial failed candidate; never change originals, widen scope or repeat a failing operation indefinitely. If repair is exhausted or impossible, stop and explain partial outputs, failed checks and the blocker accurately. Completion verifies file/evidence presence and unchanged original versions; scientific check conclusions are Agent-reported self-checks, not independent review, novelty or publication readiness. Never invent data, citations, outputs or passed checks. Only real authenticated user answers approve research decisions; suggestions and reports cannot approve them. Existing operation permissions and page-bound execution remain unchanged.`;
 /** A preference change during waiting applies only to the next execution. */
 export function collaborationPolicy(state) {
   const mode = state.execution > 0 ? state.executionMode ?? state.mode : state.mode;
-  return mode === "guided" ? GUIDED_POLICY : COLLABORATIVE_POLICY;
+  return mode === "guided" ? GUIDED_POLICY : mode === "delegated" ? DELEGATED_POLICY : COLLABORATIVE_POLICY;
 }

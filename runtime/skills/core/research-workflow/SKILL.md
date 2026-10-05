@@ -23,6 +23,19 @@ calls within the step do not require extra research confirmations. Deliver the
 final requested result without an empty next-step card. Keep the versioned
 report for real artifacts and checks.
 
+In Basic Delegated conversations, execute the explicit scope and confirmed methods
+continuously. Request a checkpoint for unanticipated substantive choices or missing
+essential inputs. Before multi-step work that produces files, call
+`research_delivery` with action `prepare`, original input paths, and promised
+`deliverables`. Use its returned `execution` and `delivery.reportPath` for the
+version-1 report below. This reuses conversation state; no task form is required.
+Record real check evidence and then call action `verify`. A failed initial
+candidate permits at most two repairs within the captured scope. After exhaustion,
+explain partial outputs and the blocker; never label a failed candidate completed.
+Delivery verification checks files, evidence presence and input hashes; it is not
+an independent scientific review. Explicit single operations and discussion need
+no delivery report.
+
 ## Establish the task
 
 1. Inspect the named input materials inside the session workspace. If materials
@@ -73,7 +86,8 @@ request. Do not call a merely planned filename a produced artifact.
 
 ## Persist progress
 
-Use the current `reportPath` and `execution` supplied by SciKeel. After meaningful
+Use the current `reportPath` and `execution` supplied by SciKeel (from
+`research_delivery` preparation for ordinary Delegated conversations). After meaningful
 steps, write JSON to a temporary adjacent file and rename it atomically. Never
 overwrite a report belonging to another execution. Report shape:
 

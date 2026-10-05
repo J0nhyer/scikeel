@@ -306,3 +306,5 @@ export class ResearchTasks {
     await Promise.all([...this.records.values()].filter((task) => task.executionActive).map((task) => this.stop(task, "server-stopped")));
   }
 }
+
+export { paths as researchPaths };

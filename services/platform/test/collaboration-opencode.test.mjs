@@ -28,7 +28,7 @@ async function waitFor(fn, timeout = 20000) {
   }
   throw new Error("Runtime acceptance timed out");
 }
-for (const mode of ["collaborative", "guided"]) test(
+for (const mode of ["collaborative", "guided", "delegated"]) test(
   `pinned OpenCode ${mode} waits at each required checkpoint before writing an actual artifact`,
   { skip: !existsSync(binary), timeout: 60000 },
   async (t) => {
@@ -96,7 +96,7 @@ for (const mode of ["collaborative", "guided"]) test(
                 function: {
                   name: "research_checkpoint",
                   arguments: JSON.stringify({
-                    kind: mode === "guided" ? "step" : "plan",
+                    kind: mode === "guided" ? "step" : mode === "delegated" ? "method" : "plan",
                     question: "Write result.txt and verify?",
                     suggestedAnswer: "Continue",
                   }),

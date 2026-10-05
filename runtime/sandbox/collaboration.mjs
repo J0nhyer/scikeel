@@ -21,6 +21,7 @@ export function collaborationHooks({ token, request: provided }) {
       return response.json();
     });
   const registrations = new Map(),
+    deliveries = new Map(),
     preflight = new Map();
   const before = async (input, output) => {
     const key = input.sessionID,
@@ -31,6 +32,16 @@ export function collaborationHooks({ token, request: provided }) {
         const result = await request(key, { action: "guard" });
         if (result.blocked)
           throw new Error("Research decision requires an answer");
+        if (result.repairExhausted)
+          throw new Error("Delivery repair limit reached; explain the partial outcome");
+        if (input.tool === "research_delivery") {
+          const saved = await request(key, {
+            action: "delivery", operation: output.args.action,
+            execution: result.state.execution,
+            inputs: output.args.inputs, deliverables: output.args.deliverables,
+          });
+          deliveries.set(`${key}/${input.callID}`, saved);
+        }
         if (input.tool === "research_checkpoint") {
           const registered = await request(key, {
             action: "checkpoint",
@@ -98,9 +109,32 @@ export function collaborationHooks({ token, request: provided }) {
       }
     },
   };
+  const delivery = {
+    description: "Prepare an explicitly authorized Basic Delegated file scope before editing originals or producing outputs, then verify its version-1 report against actual workspace files. At most two repairs after the first failed candidate. The result checks files and evidence, not scientific correctness.",
+    args: {
+      action: { type: "string", enum: ["prepare", "verify"] },
+      inputs: { type: "array", items: { type: "string" }, maxItems: 30 },
+      deliverables: { type: "array", items: { type: "string" }, maxItems: 30 },
+    },
+    async execute(args, context) {
+      const key = `${context.sessionID}/${context.callID}`;
+      let saved = deliveries.get(key);
+      deliveries.delete(key);
+      if (!saved) {
+        const guarded = await request(context.sessionID, { action: "guard" }, context.abort);
+        if (guarded.blocked) throw new Error("Research decision requires an answer");
+        if (guarded.repairExhausted) throw new Error("Delivery repair limit reached");
+        saved = await request(context.sessionID, {
+          action: "delivery", operation: args.action, execution: guarded.state.execution,
+          inputs: args.inputs, deliverables: args.deliverables,
+        }, context.abort);
+      }
+      return JSON.stringify({ execution: saved.state.execution, delivery: saved.state.delivery });
+    },
+  };
   return {
     "tool.execute.before": before,
-    tool: { research_checkpoint: checkpoint },
+    tool: { research_checkpoint: checkpoint, research_delivery: delivery },
     "experimental.chat.system.transform": async (input, output) => {
       if (!input.sessionID) return;
       const result = await request(input.sessionID, { action: "guard" });
@@ -110,6 +144,8 @@ export function collaborationHooks({ token, request: provided }) {
         output.system.push(
           result.policy,
           `Confirmed research decisions: ${JSON.stringify(result.state.decisions)}`,
+          `Delivery verification: ${JSON.stringify(result.state.delivery ?? null)}`,
+          ...(result.repairExhausted ? ["Delivery repair limit reached. Make no further tool calls. Explain the failed checks, preserved partial outputs and limitations truthfully."] : []),
         );
     },
   };

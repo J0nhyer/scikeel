@@ -32,7 +32,7 @@ test("mode defaults, identity isolation and release availability", async (t) => 
   const s = await f.store.get(owner);
   assert.equal(s.mode, "collaborative");
   assert.equal(s.phase, "idle");
-  await assert.rejects(f.store.setMode(owner, "delegated", 0), /not available/);
+  await assert.rejects(f.store.setMode(owner, "unknown", 0), /not available/);
   await assert.rejects(f.store.setMode(owner, "collaborative", 7), /changed/);
   assert.equal((await f.store.get({ ...owner, userId: "peer" })).revision, 0);
 });
@@ -128,7 +128,7 @@ test("settling a normal turn allows the next one and keeps confirmed context", a
   assert.equal(next.execution, 2);
 });
 
-test("legacy active mode remains captured until idle and disabled modes require an explicit new choice", async (t) => {
+test("legacy active mode remains captured until idle and released Delegated is usable", async (t) => {
   const f = await fixture(t);
   let active = true;
   const store = new CollaborationStore({
@@ -139,8 +139,10 @@ test("legacy active mode remains captured until idle and disabled modes require 
   active = false;
   assert.equal((await store.get(owner)).mode, "delegated");
   await store.heartbeat(owner, "page");
-  await assert.rejects(store.begin(owner, 0), /not available/);
-  const changed = await store.setMode(owner, "collaborative", 0);
+  const started = await store.begin(owner, 0);
+  assert.equal(started.executionMode, "delegated");
+  const settled = await store.settled(owner);
+  const changed = await store.setMode(owner, "collaborative", settled.revision);
   assert.equal((await store.get(owner)).mode, "collaborative");
   await store.begin(owner, changed.revision);
 });
