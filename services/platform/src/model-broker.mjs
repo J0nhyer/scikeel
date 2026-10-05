@@ -40,13 +40,13 @@ function wait(operation, signal) {
   });
 }
 export class ModelBroker {
-  #providers = new Map(); #grants = new Map(); #budgets = new Map(); #operations = new Set();
+  #providers = new Map(); #grants = new Map(); #operations = new Set();
   constructor({ providers, identify, now = Date.now, timeoutMs = 120000, maxBodyBytes = 2 * 1024 ** 2,
-    maxResponseBytes = 16 * 1024 ** 2, maxConnections = 4, maxRequests = 100,
-    maxOutputTokens = 32768, maxReservedTokens = 262144, maxAccountBytes = 64 * 1024 ** 2, maxGrants = 1024 } = {}) {
+    maxResponseBytes = 16 * 1024 ** 2, maxConnections = 4,
+    maxOutputTokens = 32768, maxGrants = 1024 } = {}) {
     if (!providers || typeof identify !== "function" || typeof now !== "function") throw new Error("invalid model broker configuration");
-    for (const [name, value] of Object.entries({ timeoutMs, maxBodyBytes, maxResponseBytes, maxConnections, maxRequests,
-      maxOutputTokens, maxReservedTokens, maxAccountBytes, maxGrants }))
+    for (const [name, value] of Object.entries({ timeoutMs, maxBodyBytes, maxResponseBytes, maxConnections,
+      maxOutputTokens, maxGrants }))
       if (!Number.isSafeInteger(value) || value < 1) throw new Error(`invalid model broker ${name}`);
     if (timeoutMs > 1200000 || maxBodyBytes > 16 * 1024 ** 2 || maxResponseBytes > 64 * 1024 ** 2 || maxConnections > 32 || maxGrants > 10000)
       throw new Error("model broker limits exceed host budget");
@@ -62,7 +62,7 @@ export class ModelBroker {
         enabledModels: [...provider.enabledModels], routes: [...provider.routes], revoked: false });
     }
     Object.assign(this, { identify, now, timeoutMs, maxBodyBytes, maxResponseBytes, maxConnections,
-      maxRequests, maxOutputTokens, maxReservedTokens, maxAccountBytes, maxGrants });
+      maxOutputTokens, maxGrants });
     this.server = createServer((req, res) => { void this.#handle(req, res); });
     this.server.maxHeadersCount = 32; this.server.headersTimeout = 10000; this.server.requestTimeout = Math.min(timeoutMs, 30000);
     this.server.on("clientError", (_error, socket) => socket.destroy());
@@ -141,7 +141,6 @@ export class ModelBroker {
     };
     controller.signal.addEventListener("abort", stopRead, { once: true });
     req.once("aborted", aborted); res.once("close", aborted); this.#operations.add(operation);
-    let budget; let active = false;
     try {
       if (this.#operations.size > this.maxConnections) throw failure("model_capacity", 429);
       if (req.method !== "POST" || !ROUTES.has(req.url) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
@@ -182,15 +181,7 @@ export class ModelBroker {
           ["max_tokens", "max_completion_tokens", "max_output_tokens"].some((key) => key !== tokenField && Object.hasOwn(body, key)))
         throw failure("model_token_limit");
       body[tokenField] = reserved;
-      // Reserve the requested maximum, including failures. Rotating a grant cannot reset account usage.
-      budget = this.#budgets.get(context.userId);
-      if (!budget) {
-        if (this.#budgets.size >= this.maxGrants) throw failure("model_capacity", 429);
-        budget = { requests: 0, tokens: 0, bytes: 0, active: 0 }; this.#budgets.set(context.userId, budget);
-      }
-      if (budget.requests >= this.maxRequests || budget.tokens + reserved > this.maxReservedTokens ||
-          budget.bytes + bytes > this.maxAccountBytes || budget.active >= this.maxConnections) throw failure("model_account_budget", 429);
-      budget.requests++; budget.tokens += reserved; budget.bytes += bytes; budget.active++; active = true;
+      // Only active operations are bounded; completed calls consume no account allowance.
       operation.provider = capability.provider; operation.model = body.model;
       if (controller.signal.aborted || !this.#grants.has(grantKey)) throw controller.signal.reason ?? failure("model_grant_revoked");
       const url = new URL(provider.url); const prefix = url.pathname.replace(/\/$/, "");
@@ -212,14 +203,14 @@ export class ModelBroker {
       res.writeHead(200, { "content-type": contentType, "cache-control": "no-store", "x-content-type-options": "nosniff" });
       let responseBytes = 0;
       const limiter = new Transform({ transform: (chunk, _encoding, callback) => {
-        responseBytes += chunk.length; budget.bytes += chunk.length;
-        callback(responseBytes > this.maxResponseBytes || budget.bytes > this.maxAccountBytes ? failure("model_byte_limit", 413) : null, chunk);
+        responseBytes += chunk.length;
+        callback(responseBytes > this.maxResponseBytes ? failure("model_byte_limit", 413) : null, chunk);
       } });
       await pipeline(upstream, limiter, res, { signal: controller.signal });
     } catch (reason) {
       sendFailure(res, controller.signal.aborted ? controller.signal.reason : reason);
     } finally {
-      clearTimeout(timer); clearTimeout(operation.expiration); if (active) budget.active--;
+      clearTimeout(timer); clearTimeout(operation.expiration);
       req.off("aborted", aborted); res.off("close", aborted); this.#operations.delete(operation);
       controller.signal.removeEventListener("abort", stopRead);
       if (!controller.signal.aborted) controller.abort(failure("model_request_finished"));

@@ -79,11 +79,15 @@ test("provider errors and redirects never disclose credentials or get followed",
   const { fetch } = await fixture(t, (_req, res) => { res.writeHead(302, { location: "http://peer" }); res.end("administrator-secret-canary"); });
   const result = await fetch(); assert.equal(result.status, 502); assert.ok(!result.body.includes("secret-canary"));
 });
-test("timeouts release capacity and requests are charged per account across new grants", async (t) => {
-  const { broker, fetch } = await fixture(t, () => {}, { timeoutMs: 40, maxRequests: 1, maxConnections: 1 });
+test("timeouts release capacity across renewed and new grants", async (t) => {
+  let contacts = 0;
+  const { broker, fetch } = await fixture(t, (_req, res) => {
+    if (++contacts > 1) { res.setHeader("content-type", "application/json"); res.end("{}"); }
+  }, { timeoutMs: 100, maxConnections: 1 });
   assert.equal((await fetch()).status, 504);
   const token = broker.issue({ ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 });
-  assert.equal((await fetch(undefined, { grant: token })).status, 429);
+  broker.renew(token, context);
+  assert.equal((await fetch(undefined, { grant: token })).status, 200);
 });
 test("slow request bodies time out before they can hold a broker slot", async (t) => {
   const { broker, token, fetch } = await fixture(t, (_req, res) => { res.setHeader("content-type", "application/json"); res.end("{}"); }, { timeoutMs: 40, maxConnections: 1 });
@@ -125,4 +129,118 @@ test("fixed provider API prefixes are joined once and Anthropic-style capabiliti
     assert.equal(req.headers.authorization, undefined); res.setHeader("content-type", "application/json"); res.end("{}");
   }, { basePath: "/v1", authMode: "x-api-key" });
   assert.equal((await fetch(undefined, { apiKeyHeader: true })).status, 200);
+});
+
+
+test("continuous requests cross the former request cap without account rejection", async (t) => {
+  let contacts = 0;
+  const { broker, token, fetch } = await fixture(t, (_req, res) => {
+    contacts++; res.setHeader("content-type", "application/json"); res.end("{}");
+  });
+  for (let i = 0; i < 105; i++) {
+    if (i === 50) broker.renew(token, context);
+    const result = await fetch({ model: "approved", input: "synthetic", max_output_tokens: 1 }, {
+      headers: { "x-opencode-session": `ses_${i}` },
+    });
+    assert.equal(result.status, 200, `request ${i + 1}: ${result.body}`);
+  }
+  assert.equal(contacts, 105);
+});
+
+test("continuous streaming crosses the former cumulative byte cap without buffering history", async (t) => {
+  let contacts = 0;
+  const payload = Buffer.alloc(256 * 1024, "x");
+  const { broker, token } = await fixture(t, (_req, res) => {
+    contacts++; res.writeHead(200, { "content-type": "text/event-stream" });
+    for (let i = 0; i < 32; i++) res.write(payload);
+    res.end();
+  });
+  const stream = () => new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port: broker.server.address().port, method: "POST",
+      path: "/v1/responses", agent: false,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" } }, (res) => {
+      let bytes = 0;
+      res.on("data", (chunk) => { bytes += chunk.length; });
+      res.once("error", reject); res.once("end", () => resolve({ status: res.statusCode, bytes }));
+    });
+    req.setTimeout(5000, () => req.destroy(new Error("stream fixture timeout")));
+    req.once("error", reject);
+    req.end(JSON.stringify({ model: "approved", stream: true, max_output_tokens: 1 }));
+  });
+  for (let i = 0; i < 9; i++) {
+    const result = await stream();
+    assert.equal(result.status, 200);
+    assert.equal(result.bytes, 8 * 1024 ** 2);
+  }
+  assert.equal(contacts, 9);
+});
+
+test("finished users leave no lifetime account entries that block later users", async (t) => {
+  let owner = context;
+  const { broker, token, fetch } = await fixture(t, (_req, res) => {
+    res.setHeader("content-type", "application/json"); res.end("{}");
+  }, { identify: () => owner, maxGrants: 1 });
+  broker.revoke(token);
+  for (let i = 0; i < 5; i++) {
+    owner = { userId: `user${i}`, instanceId: `instance${i}`, generation: 1 };
+    const grant = broker.issue({ ...owner, provider: "fixture", models: ["approved"],
+      routes: ["/v1/responses"], expiresAt: Date.now() + 60000 });
+    const result = await fetch(undefined, { grant });
+    assert.equal(result.status, 200, result.body);
+    broker.revoke(grant);
+  }
+});
+
+test("individual body and output token limits reject before contacting upstream", async (t) => {
+  let contacts = 0;
+  const { fetch } = await fixture(t, (_req, res) => {
+    contacts++; res.setHeader("content-type", "application/json"); res.end("{}");
+  }, { maxBodyBytes: 512, maxOutputTokens: 32 });
+  assert.equal((await fetch({ model: "approved", max_output_tokens: 33 })).status, 403);
+  const oversized = await fetch({ model: "approved", input: "x".repeat(1024), max_output_tokens: 1 });
+  assert.ok(oversized.status >= 400 && oversized.status < 500, oversized.body);
+  assert.equal(contacts, 0);
+  assert.equal((await fetch()).status, 200);
+});
+
+test("individual response overflow closes the stream and releases its capacity", async (t) => {
+  let contacts = 0;
+  const { fetch } = await fixture(t, (_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(++contacts === 1 ? "x".repeat(1024) : "{}");
+  }, { maxResponseBytes: 128, maxConnections: 1 });
+  await assert.rejects(fetch(), /aborted|reset|hang up/i);
+  assert.equal((await fetch()).status, 200);
+});
+
+test("temporary global capacity is bounded and frees slots after provider errors", async (t) => {
+  let release;
+  let started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  let contacts = 0;
+  const { fetch } = await fixture(t, (_req, res) => {
+    contacts++;
+    if (contacts === 1) { release = () => { res.writeHead(503); res.end(); }; started(); }
+    else { res.setHeader("content-type", "application/json"); res.end("{}"); }
+  }, { maxConnections: 1 });
+  const first = fetch();
+  await ready;
+  const saturated = await fetch();
+  assert.equal(saturated.status, 429);
+  assert.equal(JSON.parse(saturated.body).error, "model_capacity");
+  assert.equal(contacts, 1);
+  release();
+  assert.equal((await first).status, 502);
+  assert.equal((await fetch()).status, 200);
+});
+
+
+test("continuous output maxima cross the former token reservation cap", async (t) => {
+  const { fetch } = await fixture(t, (_req, res) => {
+    res.setHeader("content-type", "application/json"); res.end("{}");
+  });
+  for (let i = 0; i < 70; i++) {
+    const result = await fetch({ model: "approved", max_output_tokens: 4096 });
+    assert.equal(result.status, 200, `request ${i + 1}: ${result.body}`);
+  }
 });
