@@ -35,3 +35,21 @@ test("fixed administrator HTTP providers remain compatible without accepting ten
   for(const baseUrl of ["file:///etc/passwd","http://user:secret@provider.example/v1","http://provider.example/v1?override=peer"])
     assert.throws(()=>validateBrokerConfiguration({...config,providers:{fixture:{...config.providers.fixture,baseUrl}}}));
 });
+
+
+test("managed runtime whitelists exactly the current broker catalog without sharing mutable arrays", () => {
+  const calls = [];
+  const broker = { issue: grant => { calls.push(grant); return "a".repeat(64); } };
+  const first = brokerProfile({ config, broker, context });
+  assert.deepEqual(first.provider.fixture.whitelist, ["approved"]);
+  assert.deepEqual(first.provider.fixture.whitelist, Object.keys(first.provider.fixture.models));
+  assert.notEqual(first.provider.fixture.whitelist, config.providers.fixture.enabledModels);
+  const refreshed = { ...config, defaultModel: "other", providers: { fixture: {
+    ...config.providers.fixture, enabledModels: ["other", "approved"],
+  } } };
+  const next = brokerProfile({ config: refreshed, broker, context });
+  assert.deepEqual(next.provider.fixture.whitelist, ["other", "approved"]);
+  assert.equal(next.model, "fixture/other");
+  assert.deepEqual(calls[1].models, next.provider.fixture.whitelist);
+  assert.deepEqual(first.provider.fixture.whitelist, ["approved"]);
+});

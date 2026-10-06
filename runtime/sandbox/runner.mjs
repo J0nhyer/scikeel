@@ -94,11 +94,13 @@ function validateProfile(value) {
       !Array.isArray(value.enabled_providers) || value.enabled_providers.length !== 1) throw new Error("invalid managed profile");
   const name = value.enabled_providers[0]; const provider = value.provider?.[name];
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || Object.keys(value.provider).join(",") !== name || !provider ||
-      Object.keys(provider).sort().join(",") !== ["npm", "name", "options", "models"].sort().join(",") || provider.name !== name ||
+      Object.keys(provider).sort().join(",") !== ["npm", "name", "options", "models", "whitelist"].sort().join(",") || provider.name !== name ||
       !["@ai-sdk/openai-compatible", "@ai-sdk/anthropic"].includes(provider.npm) ||
       Object.keys(provider.options ?? {}).sort().join(",") !== "apiKey,baseURL" || provider.options.baseURL !== "http://172.31.240.1:4792/v1" ||
       !/^[a-f0-9]{64}$/.test(provider.options.apiKey ?? "") || !provider.models || Array.isArray(provider.models) ||
       Object.entries(provider.models).some(([model, entry]) => !model || model.length > 160 || /[\0\r\n]/.test(model) || Object.keys(entry).join(",") !== "name" || entry.name !== model) ||
+      !Array.isArray(provider.whitelist) || provider.whitelist.length !== Object.keys(provider.models).length ||
+      new Set(provider.whitelist).size !== provider.whitelist.length || !provider.whitelist.every(model => Object.hasOwn(provider.models, model)) ||
       !Object.hasOwn(provider.models, String(value.model).slice(name.length + 1)) || !String(value.model).startsWith(`${name}/`)) throw new Error("invalid managed provider");
   const permissions = { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" };
   if (!value.permission || Object.keys(value.permission).length !== Object.keys(permissions).length ||

@@ -46,7 +46,7 @@ test("profile updates accept only platform broker credentials and manual permiss
   const runner = new TenantRunner({ manifest, token, configureProfile: async (profile) => profiles.push(profile) });
   await runner.listen({ host: "127.0.0.1", port: 0 }); t.after(() => runner.close());
   const profile = { model: "fixture/approved", enabled_providers: ["fixture"], provider: { fixture: {
-    npm: "@ai-sdk/openai-compatible", name: "fixture", models: { approved: { name: "approved" } },
+    npm: "@ai-sdk/openai-compatible", name: "fixture", whitelist: ["approved"], models: { approved: { name: "approved" } },
     options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: "b".repeat(64) } } },
     permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
   const post = (value) => fetch(`http://127.0.0.1:${runner.server.address().port}/profile`, { method: "POST",
@@ -55,6 +55,12 @@ test("profile updates accept only platform broker credentials and manual permiss
   const foreign = structuredClone(profile); foreign.provider.fixture.options.baseURL = "http://peer/v1";
   assert.equal((await post(foreign)).status, 403);
   assert.equal((await post({ ...profile, skills: { paths: ["/peer/skills"] } })).status, 403);
+  for (const whitelist of [undefined, [], ["other"], ["approved", "approved"], "approved", ["approved", "other"]]) {
+    const invalid = structuredClone(profile);
+    if (whitelist === undefined) delete invalid.provider.fixture.whitelist;
+    else invalid.provider.fixture.whitelist = whitelist;
+    assert.equal((await post(invalid)).status, 403);
+  }
   assert.equal((await post(profile)).status, 200); assert.deepEqual(profiles, [profile]);
 });
 test("gateway configuration is published before startup and restart preserves private state", async (t) => {

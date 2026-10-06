@@ -52,6 +52,7 @@ export function brokerProfile({ config, broker, context, now = Date.now() }) {
   return { model: `${name}/${config.defaultModel}`, enabled_providers: [name], provider: {
     [name]: { npm: provider.authMode === "x-api-key" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible", name,
       options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: token },
+      whitelist: [...provider.enabledModels],
       models: Object.fromEntries(provider.enabledModels.map((model) => [model, { name: model }])) },
   }, permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
 }
