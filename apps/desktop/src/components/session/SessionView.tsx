@@ -29,7 +29,7 @@ import { useLayoutStore } from "@/lib/layout";
 import { startPaneDrag } from "@/lib/dragPane";
 import { allowsNativeMenu } from "@/lib/nativeMenu";
 import { FindBar } from "@/components/ui/FindBar";
-import { isGatewayWeb } from "@/lib/webMode";
+import { isGatewayWeb, isPlatformWeb } from "@/lib/webMode";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { queryRuns } from "@/lib/runs";
 import { useOverlayTitlebar, useUiStore } from "@/lib/store";
@@ -48,6 +48,10 @@ import { GoalPill } from "@/components/thread/GoalPill";
 import { GOAL_RESUME_NUDGE } from "@/lib/goalPrompts";
 import { baseName } from "@/components/thread/WorkspaceChip";
 import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
+import { useCollaboration } from "@/lib/collaboration";
+import { CollaborationPicker } from "../thread/CollaborationPicker";
+import { ResearchDecisionCard } from "../thread/ResearchDecisionCard";
+import { ResearchDeliveryStatus } from "../thread/ResearchDeliveryStatus";
 import { researchRequest } from "@/lib/research";
 import { SplitMenu } from "@/components/session/SplitMenu";
 import {
@@ -252,7 +256,7 @@ export function SessionView({
   // The platform marks the transport ready just before its first session list
   // arrives. Keep a restored/stale conversation read-only in that gap so it
   // cannot send to an id that belongs to another CLI or no longer exists.
-  const waitingForWebSessions = isGatewayWeb && !sessionListReady;
+  const waitingForWebSessions = isGatewayWeb && !sessionListReady && status !== "error" && status !== "offline";
   const connected = !waitingForWebSessions && (status === "ready" || switching);
   const connecting = waitingForWebSessions || (status === "connecting" && !switching);
   const displayStatus = waitingForWebSessions ? "connecting" : switching ? "ready" : status;
@@ -276,13 +280,22 @@ export function SessionView({
     const created = dockSession(leafId, edge, null);
     if (created && folder) aimDraft(draftKeyFor(created), folder);
   };
+  const [decisionInputError, setDecisionInputError] = useState<string | null>(null);
+  const gatewayRuntime = useRuntimeStore((s) => s.gatewayRuntime);
+  const collaboration = useCollaboration(sid, isGatewayWeb && isPlatformWeb && connected && gatewayRuntime === "opencode");
   const onSend = async (text: string, attachments?: string[], context?: AttachmentPromptContext) => {
     pinEphemeral();
-    const accepted = await sendPrompt(text, sid ?? undefined, draftKey, attachments, undefined, context);
+    setDecisionInputError(null);
+    if (collaboration.state.pending) {
+      if (attachments?.length) { setDecisionInputError(t("collaboration.attachmentsAfterAnswer")); return false; }
+      return collaboration.answer(text);
+    }
+    const accepted = await sendPrompt(text, sid ?? undefined, draftKey, attachments, undefined, context, sid ? undefined : collaboration.state.mode);
     bindIfCreated(accepted);
     return accepted !== null;
   };
   const onStopResearch = () => {
+    if (collaboration.available) void collaboration.pause();
     if (isGatewayWeb && eid) void researchRequest(eid, { action: "stop" }).catch(() => {});
     void interrupt(sid ?? undefined);
   };
@@ -969,7 +982,7 @@ export function SessionView({
             style={zoom !== 1 ? { zoom } : undefined}
             className="mx-auto flex max-w-[760px] flex-col gap-4 px-8 pt-6"
           >
-            {!connected && !connecting && (
+            {!connected && !connecting && !isGatewayWeb && (
               <div className="rounded-card border border-border bg-surface p-5 shadow-card">
                 <div className="text-sm font-medium text-text">{t("live.runtime.title")}</div>
                 <p className="mt-1 text-sm text-muted">
@@ -993,13 +1006,17 @@ export function SessionView({
               >
                 <div className="flex items-center gap-2 text-sm font-medium text-text">
                   <Loader2 size={13} className="animate-spin text-muted" />
-                  {t("live.starting.title")}
+                  {t(isGatewayWeb
+                    ? status === "ready" ? "live.starting.titleSessionsWeb" : "live.starting.titleWeb"
+                    : "live.starting.title")}
                 </div>
                 <p className="mt-1 text-sm text-muted">
                   {/* The browser client waits on a gateway running on someone
                       else's machine — the local first-launch permission prompt
                       is not what is holding it up. */}
-                  {t(isGatewayWeb ? "live.starting.bodyWeb" : "live.starting.body")}
+                  {t(isGatewayWeb
+                    ? status === "ready" ? "live.starting.bodySessionsWeb" : "live.starting.bodyWeb"
+                    : "live.starting.body")}
                 </p>
               </div>
             )}
@@ -1183,6 +1200,11 @@ export function SessionView({
             style={zoom !== 1 ? { zoom } : undefined}
             className="pointer-events-auto relative mx-auto w-full max-w-[760px] space-y-3 px-8"
           >
+            {decisionInputError && <p role="alert" className="text-xs text-danger">{decisionInputError}</p>}
+            {collaboration.error && <div role="alert" className="text-xs text-danger">{collaboration.error}<button className="ml-2 underline" onClick={()=>void collaboration.refresh()}>{t("collaboration.retry")}</button></div>}
+            {collaboration.state.decisions.length>0 && <details className="text-xs text-muted"><summary>{t("collaboration.savedDecisions")}</summary><ul className="mt-2 space-y-2">{collaboration.state.decisions.map(d=><li key={d.id}><p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{d.question}</p><p className="whitespace-pre-wrap text-text [overflow-wrap:anywhere]">{d.answer}</p></li>)}</ul></details>}
+            {collaboration.state.delivery && <ResearchDeliveryStatus delivery={collaboration.state.delivery} />}
+            {collaboration.state.pending && <ResearchDecisionCard key={collaboration.state.pending.id} decision={collaboration.state.pending} paused={collaboration.state.phase==="paused"} busy={collaboration.saving} onAnswer={collaboration.answer} onPause={collaboration.pause}/>}
             {activeRequest && (
               <InteractionPrompt
                 question={activeQuestion}
@@ -1194,13 +1216,14 @@ export function SessionView({
               />
             )}
             <Composer
+              collaborationControl={isGatewayWeb && isPlatformWeb && gatewayRuntime === "opencode" ? <CollaborationPicker mode={collaboration.state.mode} disabled={(!collaboration.available && !!sid) || collaboration.saving || (working && !collaboration.state.pending)} onSelect={collaboration.setMode}/> : undefined}
               onSend={onSend}
               onRunShell={(c) => void onRunShell(c)}
               onRunCommand={(n, a) => void onRunCommand(n, a)}
               onInteract={pinEphemeral}
               commands={composerCommands}
-              disabled={!connected || working || webReadOnly}
-              working={running}
+              disabled={!connected || (working && !collaboration.state.pending) || webReadOnly}
+              working={running && !collaboration.state.pending}
               onStop={onStopResearch}
               placeholder={
                 webReadOnly
@@ -1211,7 +1234,7 @@ export function SessionView({
                       ? t("live.placeholder.starting")
                       : !connected
                         ? t("live.placeholder.disconnected")
-                        : planAvailable && agentMode === "plan"
+                        : planAvailable && agentMode === "plan" && !(isGatewayWeb && isPlatformWeb && gatewayRuntime === "opencode")
                           ? t("composer.placeholder.plan")
                           : t("composer.placeholder.default")
               }

@@ -87,3 +87,11 @@ test("maintenance atomically blocks new mutations while permitting event streams
   const job=manager.retainWorker("user-a");
   await assert.rejects(manager.acquireMaintenance(context),/busy/);job.release();
 });
+test("passive event subscriptions do not prevent idle tenant switching, while mutations do", async (t) => {
+  const {manager}=fixture();t.after(()=>manager.close());
+  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
+  const stream=manager.retainWorker("user-a",{readOnly:true,passive:true});
+  await manager.ensureWorker({instanceId:"user-b",userId:"b"});
+  assert.equal(manager.getWorker("user-a").status,"stopped");stream.release();stream.release();
+  assert.throws(()=>manager.retainWorker("user-b",{passive:true}),/read.only/i);
+});

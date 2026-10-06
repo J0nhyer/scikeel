@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   kernelReset: vi.fn(async () => {}),
   /** Number of connect() attempts that fail before one succeeds. */
   failConnects: 0,
+  failSessionLists: 0,
   /** Number of createSession() attempts that fail before one succeeds. */
   failCreates: 0,
   /** Fire a normalized event into the store, as the SSE stream would. */
@@ -51,6 +52,8 @@ const mocks = vi.hoisted(() => ({
   /** Captures the FULL sendPrompt arg list (incl. model + variant) — the plain
    *  spy above deliberately ignores those, so existing 3-arg assertions hold. */
   sendPromptFullSpy: vi.fn(),
+  prepareCollaborationSend: vi.fn(),
+  collaborationRevisionSpy: vi.fn(),
   runCommand: vi.fn(),
   replyPermission: vi.fn(),
   abortSession: vi.fn(),
@@ -65,6 +68,10 @@ const mocks = vi.hoisted(() => ({
   listQuestions: vi.fn(async (): Promise<unknown[]> => []),
   listPermissions: vi.fn(async (): Promise<unknown[]> => []),
   sessionRunning: null as boolean | null,
+  runningByDirectory: {} as Record<string, string[]>,
+  statusDiscoveryFailures: 0,
+  statusDiscoveryGates: {} as Record<string, Promise<string[]> | undefined>,
+  listRunningSessions: vi.fn(),
   failSessionStatus: false,
   failSkills: false,
   /** Records setDefaultModel calls; `currentModel` is what getDefaultModel returns. */
@@ -144,9 +151,11 @@ vi.mock("./webMode", () => ({
   get isGatewayWeb() {
     return mocks.isGatewayWeb;
   },
+  get isPlatformWeb() { return mocks.isGatewayWeb; },
   gatewayToken: () => "gateway-test-token",
   gatewayOrigin: () => "http://gateway.test",
 }));
+vi.mock("./collaboration",()=>({prepareCollaborationSend:mocks.prepareCollaborationSend}));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
 vi.mock("./systemNotification", () => ({
   notifyPermissionRequest: mocks.notifyPermissionRequest,
@@ -190,6 +199,10 @@ vi.mock("@ai4s/sdk", () => {
       this.statusCb("ready");
     }
     async listSessions() {
+      if (mocks.failSessionLists > 0) {
+        mocks.failSessionLists--;
+        throw new Error("Session list temporarily unavailable");
+      }
       return mocks.sessionList;
     }
     async compactSession(sid: string, providerID?: string, modelID?: string) {
@@ -250,9 +263,13 @@ vi.mock("@ai4s/sdk", () => {
       agent?: string,
       model?: string | null,
       variant?: string | null,
+      _parts?: unknown,
+      _attachments?: unknown,
+      collaborationRevision?: number,
     ) {
       mocks.sendPromptSpy(sid, text, agent);
       mocks.sendPromptFullSpy(sid, text, agent, model, variant);
+      mocks.collaborationRevisionSpy(collaborationRevision);
     }
     async listCommands() {
       return [{ name: "init", description: "guided AGENTS.md setup", source: "command" }];
@@ -299,6 +316,14 @@ vi.mock("@ai4s/sdk", () => {
       if (mocks.messagesGate) await mocks.messagesGate;
       return mocks.messages;
     }
+    async listRunningSessions(directory?: string) {
+      mocks.listRunningSessions(directory);
+      const discoveryGate = mocks.statusDiscoveryGates[directory ?? ""];
+      if (discoveryGate) return discoveryGate;
+      if (mocks.statusDiscoveryFailures-- > 0) throw new Error("transient discovery failure");
+      if (mocks.failSessionStatus) throw new Error("status unavailable");
+      return mocks.runningByDirectory[directory ?? ""] ?? [];
+    }
     async isSessionRunning() {
       if (mocks.failSessionStatus) throw new Error("status unavailable");
       return mocks.sessionRunning;
@@ -342,10 +367,12 @@ import { leaves, makeLeaf, useLayoutStore } from "./layout";
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.prepareCollaborationSend.mockReset().mockResolvedValue(0);
   mocks.isTauri = true;
   mocks.isGatewayWeb = false;
   mocks.activeWorkspace = "/ws/base";
   mocks.failConnects = 0;
+  mocks.failSessionLists = 0;
   mocks.failCreates = 0;
   mocks.failShell = false;
   mocks.failCommand = false;
@@ -357,6 +384,11 @@ beforeEach(async () => {
   mocks.messagesGate = null;
   mocks.failMessages = false;
   mocks.sessionRunning = null;
+  mocks.runningByDirectory = {};
+  mocks.statusDiscoveryFailures = 0;
+  mocks.statusDiscoveryGates = {};
+  sessionStorage.removeItem("scikeel.running-sessions");
+  mocks.listRunningSessions.mockReset();
   mocks.failSessionStatus = false;
   mocks.failSkills = false;
   mocks.failReverts = 0;
@@ -410,6 +442,44 @@ afterEach(() => {
 });
 
 describe("gateway runtime selection", () => {
+  it("requests account and runtime metadata while the workspace identity is still loading", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    let release!: (response: Response) => void;
+    const whoami = new Promise<Response>(resolve => { release = resolve; });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/v1/whoami")
+      ? whoami : new Response(JSON.stringify({ runtime: "opencode", available: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const connection = useRuntimeStore.getState().connect();
+    await Promise.resolve(); await Promise.resolve();
+    try {
+      expect(fetchMock.mock.calls.map(call => String(call[0]))).toEqual(expect.arrayContaining(["http://gateway.test/api/me", "http://gateway.test/api/runtime"]));
+    } finally {
+      release(new Response(JSON.stringify({ directory: "/ws/base" }), { status: 200 }));
+      await connection;
+    }
+  });
+
+
+  it("retries a failed initial Web session list before declaring the connection ready", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    mocks.failSessionLists = 1;
+    mocks.sessionList = [{ id: "ses_recovered", title: "Recovered conversation" }];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", runtime: "opencode", available: [] }), { status: 200 })));
+    expect(await useRuntimeStore.getState().connectRetry(2)).toBe(true);
+    expect(useRuntimeStore.getState().sessionListReady).toBe(true);
+    expect(useRuntimeStore.getState().sessions.some(session => session.id === "ses_recovered")).toBe(true);
+  });
+
+  it("reports an unavailable Web session list after the retry window instead of waiting forever", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    mocks.failSessionLists = 10;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", runtime: "opencode", available: [] }), { status: 200 })));
+    expect(await useRuntimeStore.getState().connectRetry(2)).toBe(false);
+    expect(useRuntimeStore.getState().status).toBe("error");
+    expect(useRuntimeStore.getState().error).toContain("conversations");
+  });
+
+
   it("binds a Web draft to its created session even when its first prompt fails", async () => {
     mocks.isGatewayWeb = true; mocks.isTauri = false;
     const source = makeLeaf(null);
@@ -450,6 +520,17 @@ describe("gateway runtime selection", () => {
     await useRuntimeStore.getState().sendPrompt("Start again", "ses_b", undefined, undefined, brief);
     expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
     expect(useRuntimeStore.getState().error).toContain("invalid scope");
+  });
+  it("uses the persisted collaboration revision and preserves text when its service is unavailable",async()=>{
+    mocks.isGatewayWeb=true;useRuntimeStore.setState({gatewayRuntime:"opencode",gatewayCatalogState:"ready",sessionAgents:{ses_a:"plan"},agents:[{name:"plan",mode:"primary",description:"Plan fixture"}]});
+    mocks.prepareCollaborationSend.mockResolvedValue(7);
+    await useRuntimeStore.getState().sendPrompt("Research","ses_a");
+    expect(mocks.prepareCollaborationSend).toHaveBeenCalledWith("ses_a", undefined);
+    expect(mocks.collaborationRevisionSpy).toHaveBeenLastCalledWith(7);
+    expect(mocks.sendPromptSpy).toHaveBeenCalledWith("ses_a","Research",undefined);
+    mocks.sendPromptSpy.mockClear();mocks.prepareCollaborationSend.mockRejectedValue(new Error("checkpoint service unavailable"));
+    const accepted=await useRuntimeStore.getState().sendPrompt("Keep this answer","ses_b");
+    expect(accepted).toBeNull();expect(mocks.sendPromptSpy).not.toHaveBeenCalled();expect(useRuntimeStore.getState().error).toContain("checkpoint service unavailable");
   });
   it("reports failed skill discovery independently and recovers on retry", async () => {
     mocks.failSkills = true;
@@ -737,6 +818,56 @@ describe("gateway runtime selection", () => {
         selectedModel: "gpt-deep",
       }),
     ]);
+  });
+
+  it("recovers background running sessions after cold reload while viewing another conversation", async () => {
+    mocks.isTauri = false;
+    mocks.isGatewayWeb = true;
+    mocks.sessionList = [
+      { id: "ses_live", title: "Live", directory: "/ws/live" },
+      { id: "ses_other", title: "Other", directory: "/ws/other" },
+    ];
+    mocks.runningByDirectory = { "/ws/live": ["ses_live", "ses_unknown"], "/ws/other": [] };
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", runningSessions: {}, currentId: "ses_other" });
+    await useRuntimeStore.getState().refreshSessions();
+    expect(useRuntimeStore.getState().runningSessions).toEqual({ ses_live: true });
+    expect(useRuntimeStore.getState().currentId).toBe("ses_other");
+    expect(mocks.listRunningSessions.mock.calls.map(([directory]) => directory).sort()).toEqual(["/ws/live", "/ws/other"]);
+  });
+
+  it("retries unknown cold-reload status without clearing known runs or beginning work", async () => {
+    mocks.isTauri = false;
+    mocks.isGatewayWeb = true;
+    mocks.sessionList = [{ id: "ses_live", title: "Live", directory: "/ws/live" }];
+    mocks.runningByDirectory = { "/ws/live": ["ses_live"] };
+    mocks.statusDiscoveryFailures = 1;
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", runningSessions: { ses_known: true } });
+    await useRuntimeStore.getState().refreshSessions();
+    expect(useRuntimeStore.getState().runningSessions).toEqual({ ses_live: true, ses_known: true });
+    expect(mocks.listRunningSessions).toHaveBeenCalledTimes(2);
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+  });
+
+  it("renews a discovered run before another directory's slow response completes", async () => {
+    mocks.isTauri = false; mocks.isGatewayWeb = true;
+    mocks.sessionList = [{ id: "ses_slow", title: "Slow", directory: "/ws/slow" }, { id: "ses_live", title: "Live", directory: "/ws/live" }];
+    mocks.runningByDirectory = { "/ws/live": ["ses_live"] };
+    let release!: (value: string[]) => void;
+    mocks.statusDiscoveryGates["/ws/slow"] = new Promise(done => { release = done; });
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", runningSessions: {} });
+    const refreshing = useRuntimeStore.getState().refreshSessions();
+    try { await vi.waitFor(() => expect(useRuntimeStore.getState().runningSessions.ses_live).toBe(true)); }
+    finally { release([]); await refreshing; }
+  });
+
+  it("prioritizes remembered run directories without treating browser hints as live status", async () => {
+    mocks.isTauri = false; mocks.isGatewayWeb = true;
+    mocks.sessionList = Array.from({ length: 12 }, (_, i) => ({ id: "ses_" + i, title: "Session " + i, directory: "/ws/" + i }));
+    sessionStorage.setItem("scikeel.running-sessions", JSON.stringify(["ses_11", "ses_foreign"]));
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", runningSessions: {} });
+    await useRuntimeStore.getState().refreshSessions();
+    expect(mocks.listRunningSessions.mock.calls[0][0]).toBe("/ws/11");
+    expect(useRuntimeStore.getState().runningSessions).toEqual({});
   });
 
   it("keeps a draft model choice separate from the account default", () => {
@@ -1891,6 +2022,42 @@ describe("stale running locks and interrupt", () => {
     ] },
   ];
 
+  it.each(["openSession", "loadHistory"] as const)("%s restores confirmed aborted history with one diagnostic", async (method) => {
+    mocks.messages = [
+      { role: "user", parts: [{ type: "text", text: "wait" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [
+        { type: "tool", tool: "bash", state: { status: "completed", input: { command: "sleep 90" } } },
+      ] },
+    ];
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState()[method]("ses_aborted");
+    const state = useRuntimeStore.getState();
+    expect(state.runningSessions["ses_aborted"]).toBeUndefined();
+    expect(state.threads["ses_aborted"].blocks.filter(b => b.kind === "status-line" && b.text.includes("did not finish"))).toHaveLength(1);
+  });
+
+  it("reconciliation recovers a persisted cancellation after a missed idle", async () => {
+    await useRuntimeStore.getState().sendPrompt("wait");
+    mocks.messages = [
+      { role: "user", parts: [{ type: "text", text: "wait" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [] },
+    ];
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBeUndefined();
+    expect(useRuntimeStore.getState().threads["ses_new"].blocks.filter(b => b.kind === "status-line" && b.text.includes("did not finish"))).toHaveLength(1);
+  });
+
+  it.each([true, null])("does not claim persisted cancellation is the current interrupted turn with status %s", async (status) => {
+    mocks.messages = [
+      { role: "user", parts: [{ type: "text", text: "wait" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [] },
+    ];
+    mocks.sessionRunning = status;
+    await useRuntimeStore.getState().openSession("ses_aborted");
+    expect(useRuntimeStore.getState().threads["ses_aborted"].blocks.some(b => b.kind === "status-line")).toBe(false);
+  });
+
   it("reopening an unfinished history does not lock an idle server session", async () => {
     mocks.messages = unfinishedHistory;
     mocks.sessionRunning = false;
@@ -2885,13 +3052,13 @@ describe("session rename and project filing", () => {
     ]);
   });
 
-  it("renameSession ignores an empty or unchanged title", async () => {
+  it("renameSession ignores empty input but preserves same-title manual intent", async () => {
     await useRuntimeStore.getState().connect();
     useRuntimeStore.setState({ sessions: [{ id: "ses_1", title: "Spike sorting" }] });
 
     expect(await useRuntimeStore.getState().renameSession("ses_1", "   ")).toBe(false);
-    expect(await useRuntimeStore.getState().renameSession("ses_1", "Spike sorting")).toBe(false);
-    expect(mocks.renameSessionSpy).not.toHaveBeenCalled();
+    expect(await useRuntimeStore.getState().renameSession("ses_1", "Spike sorting")).toBe(true);
+    expect(mocks.renameSessionSpy).toHaveBeenCalledWith("ses_1", "Spike sorting");
   });
 
   it("renameSession keeps the old title when the runtime rejects it", async () => {
@@ -4181,5 +4348,34 @@ describe("pending interaction recovery after lost SSE events", () => {
     useRuntimeStore.setState({ error: "An unrelated send failed" });
     await useRuntimeStore.getState().reconcileRunning();
     expect(useRuntimeStore.getState().error).toBe("An unrelated send failed");
+  });
+});
+
+
+it("persists a draft's Guided choice before sending its created conversation", async () => {
+  mocks.isGatewayWeb = true;
+  mocks.isTauri = false;
+  useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready" });
+  mocks.prepareCollaborationSend.mockImplementation(async () => {
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+    return 5;
+  });
+  const created = await useRuntimeStore.getState().sendPrompt("Inspect data", undefined, undefined, undefined, undefined, undefined, "guided");
+  expect(created).not.toBeNull();
+  expect(mocks.prepareCollaborationSend).toHaveBeenCalledWith(created, "guided");
+  expect(mocks.collaborationRevisionSpy).toHaveBeenLastCalledWith(5);
+});
+
+
+describe("committed session title events", () => {
+  it("updates only the matching title after idle without changing row order or run state", async () => {
+    await useRuntimeStore.getState().connect();
+    useRuntimeStore.setState({ sessions: [{ id: "ses_a", title: "New session", directory: "/ws/a" }, { id: "ses_b", title: "Unrelated" }], runningSessions: {} });
+    mocks.fireEvent({ type: "session.updated", sessionId: "ses_a", title: "Research topic" });
+    expect(useRuntimeStore.getState().sessions.map(s => [s.id, s.title])).toEqual([["ses_a", "Research topic"], ["ses_b", "Unrelated"]]);
+    expect(useRuntimeStore.getState().sessions[0].directory).toBe("/ws/a");
+    expect(useRuntimeStore.getState().runningSessions).toEqual({});
+    mocks.fireEvent({ type: "session.updated", sessionId: "unknown", title: "Foreign title" });
+    expect(useRuntimeStore.getState().sessions).toHaveLength(2);
   });
 });
