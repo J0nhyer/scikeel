@@ -35,7 +35,8 @@
     "runtime:title:check": "node scripts/dev/safe-desktop-task.mjs opencode-title-check",
     "runtime:title:acceptance": "node scripts/dev/safe-desktop-task.mjs opencode-title-acceptance",
     "web:publish": "node scripts/dev/web-publish.mjs",
-    "platform:title:live": "node scripts/dev/safe-desktop-task.mjs platform-title-live"
+    "platform:title:live": "node scripts/dev/safe-desktop-task.mjs platform-title-live",
+    "web:recovery:live": "node scripts/dev/safe-desktop-task.mjs web-recovery-live"
   },
   "engines": {
     "node": ">=20"

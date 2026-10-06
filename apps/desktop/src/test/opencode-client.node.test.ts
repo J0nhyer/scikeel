@@ -949,3 +949,45 @@ describe("manual compaction (#75)", () => {
     expect(calls.some((c) => c.url.endsWith("/summarize"))).toBe(false);
   });
 });
+
+describe("bounded catalog reads", () => {
+  it("bounds headers even when the transport does not settle after abort", async () => {
+    let signal: AbortSignal | undefined;
+    const client = new OpenCodeClient({ fetchImpl: async (_input, init) => {
+      signal = init?.signal as AbortSignal;
+      return new Promise<Response>(() => {});
+    } });
+    await expect(client.listProviders({ timeoutMs: 20 })).rejects.toThrow();
+    expect(signal?.aborted).toBe(true);
+  });
+  it("cancels a body read when its owner is superseded", async () => {
+    const owner = new AbortController();
+    let started!: () => void;
+    const bodyStarted = new Promise<void>(resolve => { started = resolve; });
+    const client = new OpenCodeClient({ fetchImpl: async () => {
+      started();
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("[")); } }));
+    } });
+    const reading = client.listSkills({ signal: owner.signal });
+    await bodyStarted;
+    owner.abort(new Error("Superseded connection"));
+    await expect(reading).rejects.toThrow("Superseded connection");
+  });
+
+  it("bounds a stalled response body and cancels the request", async () => {
+    let signal: AbortSignal | undefined;
+    const client = new OpenCodeClient({ fetchImpl: async (_input, init) => {
+      signal = init?.signal as AbortSignal;
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("[")); } }));
+    } });
+    await expect(client.listAgents({ timeoutMs: 20 })).rejects.toThrow();
+    expect(signal?.aborted).toBe(true);
+  });
+  it("cancels an obsolete catalog read before sending it", async () => {
+    const fetchImpl = vi.fn(async () => new Response("[]"));
+    const client = new OpenCodeClient({ fetchImpl });
+    const controller = new AbortController(); controller.abort();
+    await expect(client.listCommands({ signal: controller.signal })).rejects.toThrow();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});

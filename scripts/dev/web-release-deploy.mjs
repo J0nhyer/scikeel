@@ -116,12 +116,10 @@ async function liveOpenCode(production) {
     const answer = await json('/session/' + sessionId + '/message', { method: 'POST', body: JSON.stringify({ model: { providerID: 'opencode', modelID: model },
       parts: [{ type: 'text', text: `Transport verification only. Reply with exactly ${expected}. Do not use tools or change files.` }] }) });
     if (answer.info?.error || !(answer.parts ?? []).some((part) => part.type === 'text' && part.text.includes(expected))) throw new Error('Required live OpenCode reply failed');
-    return { runtime: 'opencode', provider: 'opencode', model, status: 'passed' };
+    return { runtime: 'opencode', provider: 'opencode', model, sessionId, status: 'passed' };
   } finally {
-    try { if (sessionId && /^ses_[A-Za-z0-9]+$/.test(sessionId)) {
-      const removed = await fetch(client.origin + '/session/' + sessionId, { method: 'DELETE', headers: client.headers, signal: AbortSignal.timeout(10000) });
-      if (!removed.ok) throw new Error('Verification session cleanup failed');
-    } } finally { await client.close(); }
+    // Keep verification conversations reviewable, including after a failed gate.
+    await client.close();
   }
 }
 async function deploymentOperations(candidate, store) {

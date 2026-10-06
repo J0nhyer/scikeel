@@ -20,7 +20,7 @@ test.skipIf(!process.env.OSD_LOGIN_ACCEPTANCE)("localized Web login works on des
   const origin = `http://127.0.0.1:${address.port}`;
   const browser = await chromium.launch({ executablePath: process.env.OSD_CHROMIUM_PATH, args: ["--no-sandbox", "--disable-dev-shm-usage"], headless: true });
   try {
-    for (const width of [1280, 390, 320]) {
+    for (const width of (process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? [1280] : [1280, 390, 320])) {
       const context = await browser.newContext({ viewport: { width, height: 900 }, locale: "en-US" });
       try {
         const page = await context.newPage();
@@ -67,7 +67,7 @@ test.skipIf(!process.env.OSD_LOGIN_ACCEPTANCE)("localized Web login works on des
         expect(errors).toEqual([]);
       } finally { await context.close(); }
     }
-    const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
+    const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? 1280 : 390, height: 844 } });
     try {
       const page = await context.newPage();
       await page.goto(`${origin}/login?next=/health`);

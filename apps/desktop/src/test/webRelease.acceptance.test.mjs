@@ -26,7 +26,7 @@ test.skipIf(!process.env.OSD_RELEASE_ACCEPTANCE)('candidate Web bundle loads wit
     platform = new PlatformServer({ authStore, workerManager, cliRuntime: runtime, webRoot: process.env.OSD_WEB_CANDIDATE });
     const address = await platform.listen(); const origin = `http://${address.host}:${address.port}`;
     browser = await chromium.launch({ executablePath: process.env.OSD_CHROMIUM_PATH, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
-    for (const width of [1280, 390]) {
+    for (const width of (process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? [1280] : [1280, 390])) {
       const context = await browser.newContext({ viewport: { width, height: 900 } });
       try {
         const login = await context.request.post(origin + '/auth/login', { headers: { accept: 'application/json' }, data: { username: 'fixture', password: 'fixture-password' } });

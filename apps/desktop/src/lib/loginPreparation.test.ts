@@ -46,3 +46,11 @@ it("reports an unavailable model catalog without another long login wait", () =>
   current = { ...current, status: "ready", sessionListReady: true, gatewayCatalogState: "unavailable" }; listener(current);
   expect(failure).toHaveBeenCalledOnce();
 });
+
+it("hands off a usable limited catalog without waiting for optional checks", () => {
+  const ready = vi.fn(); document.addEventListener("scikeel:login-ready", ready, { once: true });
+  installLoginPreparation(source);
+  current = { ...current, status: "ready", sessionListReady: true, gatewayCatalogState: "limited", defaultModel: "codex/model" };
+  listener(current);
+  expect(ready).toHaveBeenCalledOnce();
+});

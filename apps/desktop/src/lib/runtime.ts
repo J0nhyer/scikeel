@@ -11,6 +11,7 @@ import {
   type CommandInfo,
   type HistoryMessage,
   type OpenCodeEvent,
+  type OpenCodeCatalogReadOptions,
   type PermissionAskedEvent,
   type PermissionReply,
   type ProviderInfo,
@@ -430,7 +431,7 @@ interface RuntimeState {
   reportQuarantinedConfig: () => Promise<void>;
   bootstrap: () => Promise<void>;
   disconnect: () => void;
-  refreshSessions: () => Promise<void>;
+  refreshSessions: (discoverInBackground?: boolean) => Promise<void>;
   startDraft: () => void;
   /** Blank the draft view WITHOUT unpinning the folder the next session
    *  will be created in — only an explicit New may do that (#69). */
@@ -646,24 +647,78 @@ let skillsCatalogClient: AgentRuntime | null = null;
 // A switch or reconnect invalidates any older metadata request, even if it
 // finishes after the new assistant has already connected.
 let gatewayCatalogVersion = 0;
+let commandsInFlight: Promise<void> | null = null;
+let modelCatalogVersion = 0;
+let webContextVersion = 0;
+let connectionVersion = 0;
+let catalogController: AbortController | null = null;
+let webRecovery: { context: number; controller: AbortController; deadline: number; promise: Promise<boolean> } | null = null;
+
+function cancelWebRecovery() {
+  if (!isGatewayWeb) return;
+  ++webContextVersion;
+  ++connectionVersion;
+  webRecovery?.controller.abort();
+  catalogController?.abort();
+}
+
+function beforeDeadline(deadline: number, ceiling = 15000): number {
+  const remaining = deadline - performance.now();
+  if (remaining <= 0) throw new Error("AI assistant connection recovery timed out.");
+  return Math.max(1, Math.ceil(Math.min(ceiling, remaining)));
+}
+
+async function withSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  let abort!: () => void;
+  try {
+    return await Promise.race([operation, new Promise<never>((_resolve, reject) => {
+      abort = () => reject(signal.reason ?? new Error("Connection recovery cancelled"));
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    })]);
+  } finally { signal.removeEventListener("abort", abort); }
+}
+
+
+/** Recover failed Web restoration when connectivity or tab visibility returns. */
+export function installWebRecovery(): () => void {
+  if (!isGatewayWeb) return () => {};
+  let lastAttempt = -Infinity;
+  const recover = () => {
+    const state = useRuntimeStore.getState();
+    if (document.hidden || window.location.pathname.startsWith("/login") ||
+      (state.status !== "error" && state.status !== "offline") || webRecovery ||
+      performance.now() - lastAttempt < 5000) return;
+    lastAttempt = performance.now();
+    void state.connectRetry();
+  };
+  window.addEventListener("online", recover);
+  document.addEventListener("visibilitychange", recover);
+  return () => {
+    window.removeEventListener("online", recover);
+    document.removeEventListener("visibilitychange", recover);
+  };
+}
 
 function reconcileGatewayModels(state: RuntimeState, options: GatewayRuntimeOption[]) {
   const selected = options.find((item) => item.runtime === state.gatewayRuntime);
   const choices = webModelChoices(state.gatewayRuntime, state.providers, options);
   const status = selected?.enabled && choices.length > 0 ? selected.status ?? "ready" : "unavailable";
   const keys = new Set(choices.map((item) => item.key));
+  const nativeKeys = state.gatewayRuntime === "opencode"
+    ? new Set(state.providers.flatMap(provider => provider.models.map(model => `${provider.id}/${model.id}`))) : keys;
   const prefix = `${state.gatewayRuntime}/`;
   const preferred = selected?.selectedModel ?? selected?.defaultModel;
   const suggested = preferred && keys.has(`${prefix}${preferred}`) ? `${prefix}${preferred}` : choices[0]?.key ?? null;
-  const defaultModel = state.gatewayRuntime === "opencode" && state.defaultModel && keys.has(state.defaultModel)
+  const defaultModel = state.gatewayRuntime === "opencode" && state.defaultModel && nativeKeys.has(state.defaultModel)
     ? state.defaultModel : suggested;
   const sessionModels = { ...state.sessionModels };
   for (const [id, model] of Object.entries(sessionModels)) {
-    if (id.startsWith("draft") && !keys.has(model)) {
+    if (id.startsWith("draft") && !nativeKeys.has(model)) {
       delete sessionModels[id];
       continue;
     }
-    if ((state.gatewayRuntime === "opencode" ? !/^(claude|codex)\//.test(model) : model.startsWith(prefix)) && !keys.has(model)) {
+    if ((state.gatewayRuntime === "opencode" ? !/^(claude|codex)\//.test(model) : model.startsWith(prefix)) && !nativeKeys.has(model)) {
       if (defaultModel) sessionModels[id] = defaultModel;
       else delete sessionModels[id];
     }
@@ -745,6 +800,9 @@ function visibleStatus(status: RuntimeStatus): RuntimeStatus {
  * same command again a moment later.
  */
 function teardownClient(keep?: AgentRuntime | null) {
+  catalogController?.abort();
+  catalogController = null;
+  ++modelCatalogVersion;
   clientStatusUnsub?.();
   clientStatusUnsub = null;
   clearStatusBlip();
@@ -2498,614 +2556,27 @@ export function contextLimitFor(state: RuntimeState, key: string): number {
   return found?.contextLimit ?? 0;
 }
 
-export const useRuntimeStore = create<RuntimeState>((set, get) => ({
-  // The shell dials the runtime the moment it mounts, so on a real launch
-  // "connecting" is already true at the first frame — starting at "offline"
-  // flashed the "no runtime, run opencode serve" card for as long as the
-  // sidecar took to spawn, every time the app was opened. Plain browser dev
-  // (no Tauri, no gateway) has nothing to dial and keeps that card.
-  status: isTauri || isGatewayWeb ? "connecting" : "offline",
-  serverUrl: initialUrl(),
-  // Reconciled with the saved selection on every connect; OpenCode until then,
-  // which is what a first paint before any connection is actually driving.
-  runtimeKind: "opencode",
-  gatewayRuntime: null,
-  gatewayRuntimes: [],
-  gatewayUser: null,
-  gatewayCatalogState: "loading",
-  refreshGatewayRuntimes: async () => {
-    if (!isGatewayWeb) return;
-    const version = ++gatewayCatalogVersion;
-    const selected = get().gatewayRuntime;
-    set({ gatewayCatalogState: "loading" });
-    try {
-      const response = await fetch(`${gatewayOrigin()}/api/runtime`, { credentials: "same-origin" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json() as { available?: GatewayRuntimeOption[]; runtime?: GatewayRuntimeId };
-      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
-      if (data.runtime !== selected || !Array.isArray(data.available)) throw new Error("Assistant catalog is unavailable");
-      let providers = get().providers;
-      let configured = get().defaultModel;
-      if (selected === "opencode") {
-        const source = opencodeClient;
-        if (!source) throw new Error("Assistant is disconnected");
-        [providers, configured] = await Promise.all([listProvidersWithAvailability(source), source.getDefaultModel()]);
-        if (source !== opencodeClient) return;
-      }
-      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
-      set((state) => ({ providers, ...reconcileGatewayModels({ ...state, providers, defaultModel: configured }, data.available!) }));
-    } catch {
-      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
-      // Do not offer stale choices after an offline or failed refresh.
-      set((state) => ({
-        gatewayCatalogState: "unavailable",
-        gatewayRuntimes: state.gatewayRuntimes.map((option) => option.runtime === selected
-          ? { ...option, models: [], status: "unavailable" as const } : option),
-        ...(selected === "opencode" ? { providers: [] } : { defaultModel: null }),
-      }));
-    }
-  },
-  gatewayUserRole: null,
-  sessionListReady: false,
-  gatewayRuntimeSwitching: false,
-  selectGatewayRuntime: async (runtime) => {
-    if (!isGatewayWeb) return;
-    const state = get();
-    if (state.gatewayRuntime === runtime || state.gatewayRuntimeSwitching) return;
-    const option = state.gatewayRuntimes.find((candidate) => candidate.runtime === runtime);
-    if (!option) {
-      set({ error: `Runtime ${runtime} is not available on this platform.` });
-      return;
-    }
-    if (!option.enabled) {
-      set({ error: `${option.label} has no administrator-enabled models.` });
-      return;
-    }
-    if (state.sending || Object.keys(state.runningSessions).length > 0) {
-      set({ error: "Wait for the current agent turn to finish before switching runtime." });
-      return;
-    }
-
-    ++gatewayCatalogVersion;
-    set({ switching: true, gatewayRuntimeSwitching: true, gatewayCatalogState: "loading", error: null });
-    try {
-      const response = await fetch(`${gatewayOrigin()}/api/runtime`, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          runtime,
-        }),
-      });
-      if (!response.ok) {
-        const detail = await response
-          .json()
-          .then((body: { error?: string }) => body.error)
-          .catch(() => null);
-        throw new Error(detail ?? `HTTP ${response.status}`);
-      }
-
-      // Conversations belong to their runtime. Clear the old runtime's view
-      // before reconnecting so an OpenCode session is never sent to Codex (or
-      // vice versa); switching back reloads that runtime's persisted history.
-      useLayoutStore.getState().reset(null);
-      set({
-        sessions: [],
-        sessionListReady: false,
-        currentId: null,
-        threads: {},
-        skills: [],
-        skillsStatus: "idle",
-        agents: [],
-        commands: [],
-        providers: [],
-        gatewayCatalogState: "loading",
-        defaultModel: null,
-        questions: [],
-        permissions: [],
-        sessionParents: {},
-        panes: {},
-        sessionAgents: {},
-        runningSessions: {},
-        sendingSessions: {},
-        sending: false,
-        retryNotices: {},
-        backgroundReviews: {},
-      });
-      if (!(await get().connectRetry())) {
-        throw new Error(get().error ?? "The selected runtime did not reconnect.");
-      }
-    } catch (err) {
-      set((current) => ({
-        error: err instanceof Error ? err.message : String(err),
-        gatewayCatalogState: current.gatewayRuntimes.find((item) => item.runtime === current.gatewayRuntime)?.status ?? "unavailable",
-      }));
-    } finally {
-      set({ switching: false, gatewayRuntimeSwitching: false });
-    }
-  },
-  acpAgentName: null,
-  acpConfigOptions: {},
-  setAcpConfigOption: async (sessionId, configId, value) => {
-    const rt = acpRuntime;
-    if (!rt || client !== rt) return;
-    try {
-      const options = await rt.setConfigOption(sessionId, configId, value);
-      set((s) => ({ acpConfigOptions: { ...s.acpConfigOptions, [sessionId]: options } }));
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-    }
-  },
-  sessions: [],
-  currentId: null,
-  threads: {},
-  skills: [],
-  skillsStatus: "idle",
-  agents: [],
-  agentModels: {},
-  agentVariants: {},
-  commands: [],
-  defaultModel: null,
-  providers: [],
-  reasoningVariant: initialReasoningVariant(),
-  setReasoningVariant: (variant) => {
-    if (typeof window !== "undefined") {
-      if (variant) window.localStorage.setItem(REASONING_KEY, variant);
-      else window.localStorage.removeItem(REASONING_KEY);
-    }
-    set({ reasoningVariant: variant });
-  },
-  autoReview: initialAutoReview(),
-  setAutoReview: (enabled) => {
-    if (typeof window !== "undefined") {
-      if (enabled) window.localStorage.setItem(AUTO_REVIEW_KEY, "1");
-      else window.localStorage.removeItem(AUTO_REVIEW_KEY);
-    }
-    set({ autoReview: enabled });
-    if (!enabled) {
-      // "Off" is immediate: discard work that has not started and abort the
-      // one hidden reviewer that may currently hold the global slot.
-      const pending = new Set([...reviewQueue, ...Object.keys(get().backgroundReviews)]);
-      for (const sid of pending) get().cancelAutoReview(sid);
-      drainReviewQueue(set, get);
-    }
-  },
-  backgroundReviews: {},
-  turnNotify: initialTurnNotify(),
-  setTurnNotify: (enabled) => {
-    if (typeof window !== "undefined") {
-      if (enabled) window.localStorage.setItem(TURN_NOTIFY_KEY, "1");
-      else window.localStorage.removeItem(TURN_NOTIFY_KEY);
-    }
-    set({ turnNotify: enabled });
-  },
-  stallGuard: initialStallGuardConfig(),
-  setStallGuard: (patch) => {
-    // Clamp here as well as in the UI: a hostile or buggy caller must not be
-    // able to store a threshold that breaks the feature (0 → warn instantly,
-    // negative → nonsense, huge → never warn).
-    const merged = { ...get().stallGuard, ...patch };
-    const next: StallGuardConfig = {
-      ...merged,
-      silenceMinutes:
-        typeof merged.silenceMinutes === "number" &&
-        Number.isFinite(merged.silenceMinutes)
-          ? Math.max(1, Math.min(1440, Math.round(merged.silenceMinutes)))
-          : get().stallGuard.silenceMinutes,
-      repeatThreshold:
-        typeof merged.repeatThreshold === "number" &&
-        Number.isFinite(merged.repeatThreshold)
-          ? Math.max(2, Math.min(100, Math.round(merged.repeatThreshold)))
-          : get().stallGuard.repeatThreshold,
-    };
-    persistStallGuardConfig(next);
-    set({ stallGuard: next });
-    // Turning the guard off (or changing its thresholds) retires any standing
-    // warnings: a line that no longer matches the user's settings is stale.
-    if (!next.enabled) clearStallWarnings();
-    // Channel A's silence clock follows the config: armed when a turn is
-    // running and silence-watching is on, stopped when either ends.
-    if (next.enabled && next.channelAEnabled) ensureStallTimer();
-    else maybeStopStallTimer();
-  },
-  stallAction: (sid, key, action) => handleStallAction(sid, key, action),
-  cancelAutoReview: (sessionId) => {
-    const queuedAt = reviewQueue.indexOf(sessionId);
-    if (queuedAt >= 0) reviewQueue.splice(queuedAt, 1);
-    queuedReviewPaths.delete(sessionId);
-    const active = [...backgroundReviewJobs.entries()].find(
-      ([, job]) => job.parentId === sessionId,
-    );
-    if (active) {
-      const [reviewSid, job] = active;
-      cancelledBackgroundReviews.add(reviewSid);
-      void job.runtime.abortSession(reviewSid).then(
-        () => finishAutoReview(set, get, reviewSid, false),
-        () => finishAutoReview(set, get, reviewSid, false),
-      );
-    } else if (reviewInFlight === sessionId) {
-      // The fork is still being created. Clearing the reservation makes
-      // startAutoReview abort it as soon as the id arrives.
-      reviewInFlight = null;
-      drainReviewQueue(set, get);
-    }
-    set((s) => {
-      const backgroundReviews = { ...s.backgroundReviews };
-      delete backgroundReviews[sessionId];
-      return { backgroundReviews };
-    });
-  },
-  modelSwitchError: null,
-  modelSwitching: false,
-  approvalMode: "approve",
-  tools: [],
-  hiddenExamples: initialHidden(),
-  error: null,
-  questions: [],
-  permissions: [],
-  sessionParents: {},
-  panes: {},
-  sessionAgents: {},
-  sessionModels: loadRecord<string>(SESSION_MODELS_KEY),
-  sessionVariants: loadRecord<string | null>(SESSION_VARIANTS_KEY),
-  setSessionModel: (sessionId, model) =>
-    set((s) => {
-      const sessionModels = { ...s.sessionModels, [sessionId]: model };
-      saveRecord(SESSION_MODELS_KEY, sessionModels);
-      if (isGatewayWeb) {
-        const effort = s.sessionVariants[sessionId] !== undefined ? s.sessionVariants[sessionId] : s.reasoningVariant;
-        if (effort && !variantExposed(s.providers, model, effort)) {
-          // Keep an explicit default so an old global effort cannot return.
-          const sessionVariants = { ...s.sessionVariants, [sessionId]: null };
-          saveRecord(SESSION_VARIANTS_KEY, sessionVariants);
-          return { sessionModels, sessionVariants };
-        }
-      }
-      return { sessionModels };
-    }),
-  clearSessionModel: (sessionId) =>
-    set((s) => {
-      if (!(sessionId in s.sessionModels)) return {};
-      const sessionModels = { ...s.sessionModels };
-      delete sessionModels[sessionId];
-      saveRecord(SESSION_MODELS_KEY, sessionModels);
-      // The effort was picked FOR that model, so it goes with it.
-      const sessionVariants = { ...s.sessionVariants };
-      delete sessionVariants[sessionId];
-      saveRecord(SESSION_VARIANTS_KEY, sessionVariants);
-      return { sessionModels, sessionVariants };
-    }),
-  setSessionVariant: (sessionId, variant) =>
-    set((s) => {
-      const sessionVariants = { ...s.sessionVariants, [sessionId]: variant };
-      saveRecord(SESSION_VARIANTS_KEY, sessionVariants);
-      return { sessionVariants };
-    }),
-  setAgentMode: (mode, sessionId) =>
-    set((s) => ({ sessionAgents: { ...s.sessionAgents, [sessionId ?? s.currentId ?? DRAFT_KEY]: mode } })),
-  projects: [],
-  workspace: null,
-  webWorkspace: null,
-  webReadOnly: false,
-  draftWorkspaces: {},
-  switching: false,
-  sending: false,
-  sendingSessions: {},
-  runningSessions: {},
-  stepCounts: {},
-  shellTurns: {},
-  retryNotices: {},
-  compactingSessions: {},
-  runtimeStartedAt: 0,
-
-  // These write the CURRENT session's pane (DRAFT_KEY on a draft), keeping the
-  // artifact inspector, the Files browser, and the Runs pane mutually exclusive
-  // — one pane at a time.
-  openArtifact: (artifact, sessionId) =>
-    set((s) => ({
-      panes: {
-        ...s.panes,
-        [sessionId ?? s.currentId ?? DRAFT_KEY]: {
-          artifact,
-          showFiles: false,
-          showRuns: false,
-          showAgents: false,
-        },
-      },
-    })),
-  toggleArtifact: (artifact, sessionId) => {
-    const s = get();
-    const key = sessionId ?? s.currentId ?? DRAFT_KEY;
-    // Same file already in the inspector ⇒ the click is asking to put it away.
-    // Keyed on `path`, which is the file's identity here: `filename` repeats
-    // across directories, and the block object itself is rebuilt on every
-    // thread re-render so it can never be compared by reference.
-    if (s.panes[key]?.artifact?.path === artifact.path) {
-      s.closeArtifact(sessionId);
-      return;
-    }
-    s.openArtifact(artifact, sessionId);
-  },
-  closeArtifact: (sessionId) =>
-    set((s) => {
-      const key = sessionId ?? s.currentId ?? DRAFT_KEY;
-      const p = s.panes[key];
-      return {
-        panes: {
-          ...s.panes,
-          [key]: {
-            artifact: null,
-            showFiles: p?.showFiles ?? false,
-            showRuns: p?.showRuns ?? false,
-            showAgents: p?.showAgents ?? false,
-          },
-        },
+export const useRuntimeStore = create<RuntimeState>((set, get) => {
+  const connectOnce = async () => {
+    const attempt = ++connectionVersion;
+    const owner = isGatewayWeb ? webRecovery : null;
+    const active = () => attempt === connectionVersion && !owner?.controller.signal.aborted;
+    const deadline = owner?.deadline ?? performance.now() + 90_000;
+    const requestSignal = (ceiling: number) => {
+      const timeout = AbortSignal.timeout(beforeDeadline(deadline, ceiling));
+      if (!owner) return timeout;
+      const controller = new AbortController();
+      const cancel = () => {
+        controller.abort(owner.controller.signal.aborted ? owner.controller.signal.reason : timeout.reason);
+        owner.controller.signal.removeEventListener("abort", cancel);
+        timeout.removeEventListener("abort", cancel);
       };
-    }),
-  // The right pane holds ONE thing: opening any view closes the others.
-  setShowFiles: (show, sessionId) => set((s) => showOnly(s, sessionId, "showFiles", show)),
-  setShowRuns: (show, sessionId) => set((s) => showOnly(s, sessionId, "showRuns", show)),
-  setShowAgents: (show, sessionId) => set((s) => showOnly(s, sessionId, "showAgents", show)),
+      timeout.addEventListener("abort", cancel, { once: true });
+      owner.controller.signal.addEventListener("abort", cancel, { once: true });
+      if (owner.controller.signal.aborted) cancel();
+      return controller.signal;
+    };
 
-  answerQuestion: async (requestId, answers) => {
-    const q = get().questions.find((x) => x.requestId === requestId);
-    if (!q) return;
-    // Route to the client whose folder owns the asking session (a split pane in
-    // another project has its own directory-scoped instance).
-    const c = clientForSession(get, q.sessionId);
-    if (!c) return;
-    set((s) => ({ questions: s.questions.filter((x) => x.requestId !== requestId) }));
-    try {
-      await c.answerQuestion(requestId, answers);
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-    }
-  },
-  rejectQuestion: async (requestId) => {
-    const q = get().questions.find((x) => x.requestId === requestId);
-    if (!q) return;
-    const c = clientForSession(get, q.sessionId);
-    if (!c) return;
-    set((s) => ({ questions: s.questions.filter((x) => x.requestId !== requestId) }));
-    try {
-      await c.rejectQuestion(requestId);
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-    }
-  },
-  replyPermission: async (requestId, reply) => {
-    const p = get().permissions.find((x) => x.requestId === requestId);
-    if (!p) return;
-    const c = clientForSession(get, p.sessionId);
-    if (!c) return;
-    // Identical pending asks (same session, action and resources — e.g. three
-    // parallel reads into one folder) are ONE question to the user: answer
-    // them all with one click instead of re-asking for each tool call.
-    const sig = (x: PermissionAskedEvent) =>
-      `${x.sessionId}|${x.action}|${x.resources.join("|")}`;
-    const batch = get().permissions.filter((x) => sig(x) === sig(p));
-    set((s) => ({ permissions: s.permissions.filter((x) => sig(x) !== sig(p)) }));
-    const results = await Promise.allSettled(
-      batch.map((x) => c.replyPermission(x.requestId, reply)),
-    );
-    // A 404 means that request is already resolved — the turn moved on, or a
-    // duplicate in this batch was answered by the same click. The user's answer
-    // landed; reporting it as a failure just alarms them about nothing. Only a
-    // real failure, and only if it is not merely a stale sibling, surfaces.
-    const failed = results.find(
-      (r) => r.status === "rejected" && !isApiStatus(r.reason, 404),
-    ) as PromiseRejectedResult | undefined;
-    if (failed) {
-      const err = failed.reason;
-      set({ error: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  setServerUrl: (serverUrl) => {
-    if (typeof window !== "undefined") window.localStorage.setItem(URL_KEY, serverUrl);
-    set({ serverUrl, modelSwitchError: null });
-  },
-
-  reloadRuntimeConfig: async (apply) => {
-    set({ switching: true });
-    try {
-      await apply();
-      await get().connectRetry();
-      await get().loadCatalog();
-    } finally {
-      set({ switching: false });
-    }
-  },
-
-  refreshAgentModels: async () => {
-    // Desktop-only config (the helpers answer {} in the browser). Never worth
-    // failing a connect over: an unreadable config just means "no overrides",
-    // and the send then keeps passing an explicit model, which is the old
-    // behavior rather than a broken one.
-    try {
-      const [agentModels, agentVariants] = await Promise.all([
-        getAgentModels(),
-        getAgentVariants(),
-      ]);
-      set({ agentModels, agentVariants });
-    } catch {
-      /* leave whatever we already had */
-    }
-  },
-
-  loadCatalog: async () => {
-    if (!client) return;
-    const source = client;
-    if (isGatewayWeb && get().gatewayRuntime === "opencode") set({ gatewayCatalogState: "loading" });
-    const skillsVersion = ++skillsCatalogVersion;
-    const currentSkillsLoad = () => source === client && skillsVersion === skillsCatalogVersion;
-    const retryEmptySkills = get().runtimeKind === "opencode" && (!isGatewayWeb || get().gatewayRuntime === "opencode");
-    set({ skillsStatus: "loading", ...(skillsCatalogClient !== source ? { skills: [] } : {}) });
-    skillsCatalogClient = source;
-    const skillLoad = (async () => {
-      try {
-        let skills = await source.listSkills();
-        // OpenCode can answer before its initial workspace scan has finished.
-        for (let i = 0; retryEmptySkills && skills.length === 0 && i < 4; i++) {
-          await sleep(400);
-          if (!currentSkillsLoad()) return;
-          skills = await source.listSkills();
-        }
-        if (currentSkillsLoad()) set({ skills, skillsStatus: "ready" });
-      } catch {
-        if (currentSkillsLoad()) set({ skillsStatus: "error" });
-      }
-    })();
-    const run = (async () => {
-    void get().refreshAgentModels();
-    try {
-      const [agents, defaultModel, commands, providers] = await Promise.all([
-        source.listAgents(),
-        source.getDefaultModel().catch(() => null),
-        source.listCommands().catch(() => []),
-        // listProviders is OpenCodeClient-only (not on the AgentRuntime port);
-        // opencodeClient is the same instance as `client`, set together.
-        opencodeClient
-          ? listProvidersWithAvailability(opencodeClient).catch(() => [])
-          : Promise.resolve([]),
-      ]);
-      if (source !== client) return;
-      // A model switch in flight owns `defaultModel`: this read may predate
-      // the switch's config write, and applying it would visibly revert the
-      // just-selected model.
-      set((state) => {
-        if (isGatewayWeb && state.gatewayRuntime && state.gatewayRuntime !== "opencode") {
-          return { agents, commands, providers, ...reconcileGatewayModels(state, state.gatewayRuntimes) };
-        }
-        if (isGatewayWeb && state.gatewayRuntime === "opencode" && !state.switching) {
-          return { agents, commands, providers, ...reconcileGatewayModels({ ...state, providers, defaultModel }, state.gatewayRuntimes) };
-        }
-        return state.switching ? { agents, commands, providers } : { agents, defaultModel, commands, providers };
-      });
-      // Self-heal a dangling default model. It can go stale out-of-band — its
-      // provider removed, its id renamed, or the config edited outside the app
-      // — and then every send fails with "model not found". Settings only
-      // re-points it after a provider action, which never runs while the user
-      // is just chatting, so heal it here (loadCatalog runs on every connect).
-      // Skip while switching (a switch owns the model); an empty providers list
-      // (transient read failure) yields no fallback, so it stays untouched. Also
-      // skip a model the user just deliberately switched to (within the grace
-      // window): right after a switch the reconnecting instance's provider list
-      // can be incomplete, and reverting on that transient reads the user's own
-      // switch as "dangling" and points it back at an old model (#37).
-      const justSwitched =
-        defaultModel === lastSwitchModel && Date.now() - lastSwitchAt < SWITCH_HEAL_GRACE_MS;
-      if ((!isGatewayWeb || get().gatewayRuntime === "opencode") && !get().switching && !justSwitched && defaultModel) {
-        const next = fallbackDefaultModel(providers, defaultModel);
-        if (next) {
-          try {
-            await get().setDefaultModel(next);
-            toast.success(
-              i18n.t("settings:toast.defaultModelReset", { old: defaultModel, model: next }),
-            );
-          } catch {
-            // Leave it stale — the send-time error still guides to Settings.
-          }
-        }
-      }
-    } catch {
-      /* ignore transient failures */
-    } finally {
-      await skillLoad;
-    }
-    })();
-    catalogInFlight = run;
-    try {
-      await run;
-    } finally {
-      if (catalogInFlight === run) catalogInFlight = null;
-    }
-  },
-
-  detectTools: async () => {
-    try {
-      set({ tools: await probeTools() });
-    } catch {
-      /* ignore */
-    }
-  },
-
-  setApprovalMode: async (mode) => {
-    // A deliberate restart, like switchWorkspace: `switching` keeps the UI
-    // rendering as connected — no status flip, no page flash.
-    set({ switching: true });
-    try {
-      await persistApprovalMode(mode); // writes the config; restarts the sidecar
-      set({ approvalMode: mode });
-      await get().connectRetry();
-    } finally {
-      set({ switching: false });
-    }
-  },
-
-  setProxySetting: async (mode, url) => {
-    // Same masked restart as setApprovalMode: the proxy env applies at spawn.
-    set({ switching: true });
-    try {
-      await persistProxySetting(mode, url); // persists; restarts the sidecar
-      await get().connectRetry();
-    } finally {
-      set({ switching: false });
-    }
-  },
-
-  setDefaultModel: async (model) => {
-    if (!client) throw new Error("Not connected to the OpenCode runtime.");
-    if (isGatewayWeb) ++gatewayCatalogVersion;
-    // #37 diagnostics: record what we ask for so a repro (e.g. switching after a
-    // plan's quota runs out) shows the exact target model.
-    void logDebug(`[provider] setDefaultModel → ${model}`);
-    // Mark this as a deliberate switch so the reconnect's self-heal (loadCatalog)
-    // won't revert it against a still-warming provider list (#37).
-    lastSwitchModel = model;
-    lastSwitchAt = Date.now();
-    set({ modelSwitching: true });
-    // Applying the model PATCHes OpenCode's global config, which closes the
-    // event stream server-side. EventSource's own reconnect does not reliably
-    // recover from that — it strands the app in "connecting"/disconnected until
-    // a manual Connect. So do a deliberate masked reconnect (a fresh stream,
-    // exactly what the manual Connect did): `switching` keeps the UI connected,
-    // so switching models never flips the status or blocks the composer.
-    set({ switching: true });
-    try {
-      await client.setDefaultModel(model);
-      set({ defaultModel: model });
-      if (!(await get().connectRetry())) {
-        throw new Error(
-          get().error ?? "Runtime did not reconnect after setting the default model.",
-        );
-      }
-      set({ modelSwitchError: null });
-      // #37 diagnostics: confirm the switch actually persisted and which providers
-      // the runtime now recognizes — pinpoints "switch doesn't take" / "provider
-      // not recognized" vs. a stale config-vs-auth mismatch. Best-effort, never
-      // fails the switch.
-      try {
-        const oc = opencodeClient;
-        if (oc) {
-          const [applied, provs] = await Promise.all([oc.getDefaultModel(), oc.listProviders()]);
-          void logDebug(
-            `[provider] applied=${applied ?? "null"} providers=[${provs.map((p) => p.id).join(",")}]`,
-          );
-        }
-      } catch (e) {
-        void logDebug(`[provider] post-switch probe failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    } catch (err) {
-      void logDebug(`[provider] setDefaultModel FAILED (${model}): ${err instanceof Error ? err.message : String(err)}`);
-      set({ modelSwitchError: err instanceof Error ? err.message : String(err) });
-      throw err;
-    } finally {
-      set({ switching: false, modelSwitching: false });
-    }
-  },
-
-  connect: async () => {
     if (isGatewayWeb) {
       ++gatewayCatalogVersion;
       set({ sessionListReady: false, gatewayCatalogState: "loading" });
@@ -3114,6 +2585,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // the message is kept for connectRetry to report if the window runs out,
     // and the UI stays on "connecting" instead of blinking the offline card.
     const failed = (msg: string) => {
+      if (!active()) return;
       lastConnectError = msg;
       if (connectRetryDepth > 0) set({ status: "connecting" });
       else set({ error: msg, status: "error" });
@@ -3137,8 +2609,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     let gatewayRuntimeName: string | null = null;
     let gatewayRuntime: GatewayRuntimeId | null = null;
     let gatewayRuntimes: GatewayRuntimeOption[] = [];
-    let gatewayUserRole: GatewayUserRole | null = null;
-    let gatewayUser: GatewayUser | null = null;
+    const gatewayUserRole: GatewayUserRole | null = null;
+    const gatewayUser: GatewayUser | null = null;
+    let account: Promise<{ user?: GatewayUser } | null> = Promise.resolve(null);
     // Artifact path resolutions are relative to the workspace folder, so a
     // connect that lands somewhere else must not reuse them (#92).
     const previousWorkspace = get().workspace;
@@ -3152,55 +2625,39 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // Start account metadata at the same time as workspace startup. Observe
       // rejection immediately so an unavailable metadata endpoint cannot cause
       // an unhandled rejection while whoami is still pending.
-      const metadata = Promise.all([
-        fetch(`${baseUrl}/api/me`, { credentials: "same-origin", signal: AbortSignal.timeout(15000) }),
-        fetch(`${baseUrl}/api/runtime`, { credentials: "same-origin", signal: AbortSignal.timeout(15000) }),
-      ]).catch(() => null);
+      const readContext = async <T,>(path: string, ceiling: number, headers?: Record<string, string>): Promise<T> => {
+        const signal = requestSignal(ceiling);
+        return withSignal((async () => {
+          const response = await fetch(`${baseUrl}${path}`, { credentials: "same-origin", headers, signal });
+          if (isPlatformWeb && ((response.status === 401 && response.headers.get("x-scikeel-auth") === "session-required") ||
+            (response.redirected && new URL(response.url, baseUrl).pathname.startsWith("/login")))) owner?.controller.abort();
+          if (!response.ok) throw new Error(`Could not load ${path} (HTTP ${response.status})`);
+          return response.json() as Promise<T>;
+        })(), signal);
+      };
+      const metadata = readContext<{ runtime?: GatewayRuntimeId; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[] }>("/api/runtime", 15000).then(value => ({ value, error: null }), error => ({ value: null, error }));
+      account = readContext<{ user?: GatewayUser }>("/api/me", 15000).catch(() => null);
       try {
-        const r = await fetch(`${baseUrl}/v1/whoami`, {
-          headers: password ? { Authorization: `Bearer ${password}` } : {},
-          signal: AbortSignal.timeout(60000),
-        });
-        if (r.ok) {
-          const who = (await r.json()) as { directory?: string; mode?: string };
-          // The folder this browser opened, if any; otherwise the host's.
-          directory = get().webWorkspace ?? who.directory ?? null;
-          // A read-only token 403s every write — surface that in the UI
-          // instead of letting "New session" / the composer fail opaquely.
-          readOnly = who.mode === "read-only";
+        const who = await readContext("/v1/whoami", 60000, password ? { Authorization: `Bearer ${password}` } : undefined) as { directory?: string; mode?: string };
+        if (!active()) return;
+        if (isPlatformWeb && (typeof who.directory !== "string" || !who.directory || !["full", "read-only"].includes(who.mode ?? ""))) {
+          throw new Error("Workspace identity is unavailable");
         }
-      } catch {
-        /* whoami is best-effort; the client still connects */
+        directory = get().webWorkspace ?? who.directory ?? null;
+        readOnly = who.mode === "read-only";
+      } catch (error) {
+        if (isPlatformWeb) { failed(error instanceof Error ? error.message : String(error)); return; }
       }
       try {
         const result = await metadata;
-        if (!result) throw new Error("Gateway metadata unavailable");
-        const [meResponse, runtimeResponse] = result;
-        if (meResponse.ok) {
-          const me = (await meResponse.json()) as { user?: { id?: string; username?: string; role?: string } };
-          if (me.user?.role === "admin" || me.user?.role === "user") {
-            gatewayUserRole = me.user.role;
-            if (typeof me.user.id === "string" && typeof me.user.username === "string") gatewayUser = { id: me.user.id, username: me.user.username, role: me.user.role };
-          }
+        if (!active()) return;
+        if (result.error) throw result.error;
+        const managed = result.value;
+        if (isPlatformWeb && (!["opencode", "claude", "codex"].includes(managed?.runtime ?? "") ||
+          managed?.kind !== (managed?.runtime === "opencode" ? "opencode" : "server") || !Array.isArray(managed?.available))) {
+          throw new Error("Assistant identity is unavailable");
         }
-        if (runtimeResponse.ok) {
-          const managed = (await runtimeResponse.json()) as {
-            runtime?: string;
-            kind?: string;
-            label?: string;
-            available?: Array<{
-              runtime?: string;
-              kind?: string;
-              managed?: boolean;
-              label?: string;
-              enabled?: boolean;
-              models?: unknown;
-              defaultModel?: unknown;
-              selectedModel?: unknown;
-              status?: unknown;
-              catalogRevision?: unknown;
-            }>;
-          };
+        if (managed) {
           if (["opencode", "claude", "codex"].includes(managed.runtime ?? "")) {
             gatewayRuntime = managed.runtime as GatewayRuntimeId;
           }
@@ -3231,9 +2688,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
             gatewayRuntimeName = managed.label ?? "OpenCode";
           }
         }
-      } catch {
-        /* Older gateways do not expose runtime metadata. */
+      } catch (error) {
+        if (isPlatformWeb) { failed(error instanceof Error ? error.message : String(error)); return; }
+        // Standalone legacy gateways can omit assistant metadata.
       }
+      if (!active()) return;
       set({
         serverUrl: baseUrl,
         workspace: directory,
@@ -3314,6 +2773,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         directory: directory ?? undefined,
         password: password ?? undefined,
       });
+      catalogController = isGatewayWeb ? new AbortController() : null;
       opencodeClient = oc;
       client = oc;
       c = oc;
@@ -3333,6 +2793,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       if (directory) removeStreamClient(directory);
     }
     clientStatusUnsub = c.onStatus((status) => {
+      if (!active() || c !== client) return;
       const shown = visibleStatus(status);
       // Log what the runtime said AND what the UI was given, so a report of
       // "it flickered" can be read straight off the log.
@@ -3352,6 +2813,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       if (status === "ready") {
         void recoverInteractions(set, get, c);
         void get().reconcileRunning();
+      }
+    });
+    if (isGatewayWeb) void account.then(me => {
+      if (!active() || c !== client) return;
+      const user = me?.user;
+      if (user && (user.role === "admin" || user.role === "user") && typeof user.id === "string" && typeof user.username === "string") {
+        set({ gatewayUserRole: user.role, gatewayUser: { id: user.id, username: user.username, role: user.role } });
       }
     });
     if (!sharedEventHandler)
@@ -3937,10 +3405,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
           });
       }
       };
-    c.onEvent(sharedEventHandler);
+    c.onEvent(event => { if (active() && c === client) sharedEventHandler?.(event); });
     try {
       void logDebug(`connect → ${get().serverUrl}`);
-      await c.connect();
+      const initialSessions = isGatewayWeb ? get().refreshSessions(true) : null;
+      if (isGatewayWeb) await withSignal(c.connect(), requestSignal(5000));
+      else await c.connect();
+      if (!active()) return;
       void logDebug("connect OK");
       // Take the status from the runtime rather than waiting for a transition:
       // a REUSED ACP agent is already "ready", so its idempotent connect emits
@@ -3950,7 +3421,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // Models and sessions are independent reads. Begin both immediately so
       // a login waits for their slowest request, not the sum of both stages.
       if (isGatewayWeb) void get().loadCatalog();
-      await get().refreshSessions();
+      if (initialSessions) await withSignal(initialSessions, requestSignal(15000));
+      else await get().refreshSessions();
+      if (!active()) return;
       // Web panes cannot open until their session list is known. A failed list
       // must retry the connection instead of leaving a ready stream and a
       // permanently waiting pane.
@@ -3985,10 +3458,641 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
           );
       }
     } catch (err) {
+      if (!active()) return;
+      if (isGatewayWeb && c === client) c.close();
       const msg = err instanceof Error ? err.message : String(err);
       void logDebug(`connect FAILED: ${msg}`);
       failed(msg);
     }
+  };
+  return ({
+  // The shell dials the runtime the moment it mounts, so on a real launch
+  // "connecting" is already true at the first frame — starting at "offline"
+  // flashed the "no runtime, run opencode serve" card for as long as the
+  // sidecar took to spawn, every time the app was opened. Plain browser dev
+  // (no Tauri, no gateway) has nothing to dial and keeps that card.
+  status: isTauri || isGatewayWeb ? "connecting" : "offline",
+  serverUrl: initialUrl(),
+  // Reconciled with the saved selection on every connect; OpenCode until then,
+  // which is what a first paint before any connection is actually driving.
+  runtimeKind: "opencode",
+  gatewayRuntime: null,
+  gatewayRuntimes: [],
+  gatewayUser: null,
+  gatewayCatalogState: "loading",
+  refreshGatewayRuntimes: async () => {
+    if (!isGatewayWeb) return;
+    const version = ++gatewayCatalogVersion;
+    ++modelCatalogVersion;
+    const selected = get().gatewayRuntime;
+    set({ gatewayCatalogState: "loading" });
+    try {
+      const signal = AbortSignal.timeout(15000);
+      const data = await withSignal((async () => {
+        const response = await fetch(`${gatewayOrigin()}/api/runtime`, { credentials: "same-origin", signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<{ available?: GatewayRuntimeOption[]; runtime?: GatewayRuntimeId }>;
+      })(), signal);
+      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
+      if (data.runtime !== selected || !Array.isArray(data.available)) throw new Error("Assistant catalog is unavailable");
+      let providers = get().providers;
+      let configured = get().defaultModel;
+      if (selected === "opencode") {
+        const source = opencodeClient;
+        if (!source) throw new Error("Assistant is disconnected");
+        [providers, configured] = await Promise.all([listProvidersWithAvailability(source, (providers) => {
+          if (version === gatewayCatalogVersion && source === opencodeClient && get().gatewayRuntime === selected) set({ providers });
+        }, { signal, timeoutMs: 15000 }), source.getDefaultModel({ signal, timeoutMs: 15000 })]);
+        if (source !== opencodeClient) return;
+      }
+      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
+      set((state) => ({ providers, ...reconcileGatewayModels({ ...state, providers, defaultModel: configured }, data.available!) }));
+    } catch {
+      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
+      // Do not offer stale choices after an offline or failed refresh.
+      set((state) => ({
+        gatewayCatalogState: "unavailable",
+        gatewayRuntimes: state.gatewayRuntimes.map((option) => option.runtime === selected
+          ? { ...option, models: [], status: "unavailable" as const } : option),
+        ...(selected === "opencode" ? { providers: [] } : { defaultModel: null }),
+      }));
+    }
+  },
+  gatewayUserRole: null,
+  sessionListReady: false,
+  gatewayRuntimeSwitching: false,
+  selectGatewayRuntime: async (runtime) => {
+    if (!isGatewayWeb) return;
+    const state = get();
+    if (state.gatewayRuntime === runtime || state.gatewayRuntimeSwitching) return;
+    const option = state.gatewayRuntimes.find((candidate) => candidate.runtime === runtime);
+    if (!option) {
+      set({ error: `Runtime ${runtime} is not available on this platform.` });
+      return;
+    }
+    if (!option.enabled) {
+      set({ error: `${option.label} has no administrator-enabled models.` });
+      return;
+    }
+    if (state.sending || Object.keys(state.runningSessions).length > 0) {
+      set({ error: "Wait for the current agent turn to finish before switching runtime." });
+      return;
+    }
+
+    cancelWebRecovery();
+    ++gatewayCatalogVersion;
+    set({ switching: true, gatewayRuntimeSwitching: true, gatewayCatalogState: "loading", error: null });
+    try {
+      const response = await fetch(`${gatewayOrigin()}/api/runtime`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          runtime,
+        }),
+      });
+      if (!response.ok) {
+        const detail = await response
+          .json()
+          .then((body: { error?: string }) => body.error)
+          .catch(() => null);
+        throw new Error(detail ?? `HTTP ${response.status}`);
+      }
+
+      // Conversations belong to their runtime. Clear the old runtime's view
+      // before reconnecting so an OpenCode session is never sent to Codex (or
+      // vice versa); switching back reloads that runtime's persisted history.
+      useLayoutStore.getState().reset(null);
+      set({
+        sessions: [],
+        sessionListReady: false,
+        currentId: null,
+        threads: {},
+        skills: [],
+        skillsStatus: "idle",
+        agents: [],
+        commands: [],
+        providers: [],
+        gatewayCatalogState: "loading",
+        defaultModel: null,
+        questions: [],
+        permissions: [],
+        sessionParents: {},
+        panes: {},
+        sessionAgents: {},
+        runningSessions: {},
+        sendingSessions: {},
+        sending: false,
+        retryNotices: {},
+        backgroundReviews: {},
+      });
+      if (!(await get().connectRetry())) {
+        throw new Error(get().error ?? "The selected runtime did not reconnect.");
+      }
+    } catch (err) {
+      set((current) => ({
+        error: err instanceof Error ? err.message : String(err),
+        gatewayCatalogState: current.gatewayRuntimes.find((item) => item.runtime === current.gatewayRuntime)?.status ?? "unavailable",
+      }));
+    } finally {
+      set({ switching: false, gatewayRuntimeSwitching: false });
+    }
+  },
+  acpAgentName: null,
+  acpConfigOptions: {},
+  setAcpConfigOption: async (sessionId, configId, value) => {
+    const rt = acpRuntime;
+    if (!rt || client !== rt) return;
+    try {
+      const options = await rt.setConfigOption(sessionId, configId, value);
+      set((s) => ({ acpConfigOptions: { ...s.acpConfigOptions, [sessionId]: options } }));
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+  sessions: [],
+  currentId: null,
+  threads: {},
+  skills: [],
+  skillsStatus: "idle",
+  agents: [],
+  agentModels: {},
+  agentVariants: {},
+  commands: [],
+  defaultModel: null,
+  providers: [],
+  reasoningVariant: initialReasoningVariant(),
+  setReasoningVariant: (variant) => {
+    if (typeof window !== "undefined") {
+      if (variant) window.localStorage.setItem(REASONING_KEY, variant);
+      else window.localStorage.removeItem(REASONING_KEY);
+    }
+    set({ reasoningVariant: variant });
+  },
+  autoReview: initialAutoReview(),
+  setAutoReview: (enabled) => {
+    if (typeof window !== "undefined") {
+      if (enabled) window.localStorage.setItem(AUTO_REVIEW_KEY, "1");
+      else window.localStorage.removeItem(AUTO_REVIEW_KEY);
+    }
+    set({ autoReview: enabled });
+    if (!enabled) {
+      // "Off" is immediate: discard work that has not started and abort the
+      // one hidden reviewer that may currently hold the global slot.
+      const pending = new Set([...reviewQueue, ...Object.keys(get().backgroundReviews)]);
+      for (const sid of pending) get().cancelAutoReview(sid);
+      drainReviewQueue(set, get);
+    }
+  },
+  backgroundReviews: {},
+  turnNotify: initialTurnNotify(),
+  setTurnNotify: (enabled) => {
+    if (typeof window !== "undefined") {
+      if (enabled) window.localStorage.setItem(TURN_NOTIFY_KEY, "1");
+      else window.localStorage.removeItem(TURN_NOTIFY_KEY);
+    }
+    set({ turnNotify: enabled });
+  },
+  stallGuard: initialStallGuardConfig(),
+  setStallGuard: (patch) => {
+    // Clamp here as well as in the UI: a hostile or buggy caller must not be
+    // able to store a threshold that breaks the feature (0 → warn instantly,
+    // negative → nonsense, huge → never warn).
+    const merged = { ...get().stallGuard, ...patch };
+    const next: StallGuardConfig = {
+      ...merged,
+      silenceMinutes:
+        typeof merged.silenceMinutes === "number" &&
+        Number.isFinite(merged.silenceMinutes)
+          ? Math.max(1, Math.min(1440, Math.round(merged.silenceMinutes)))
+          : get().stallGuard.silenceMinutes,
+      repeatThreshold:
+        typeof merged.repeatThreshold === "number" &&
+        Number.isFinite(merged.repeatThreshold)
+          ? Math.max(2, Math.min(100, Math.round(merged.repeatThreshold)))
+          : get().stallGuard.repeatThreshold,
+    };
+    persistStallGuardConfig(next);
+    set({ stallGuard: next });
+    // Turning the guard off (or changing its thresholds) retires any standing
+    // warnings: a line that no longer matches the user's settings is stale.
+    if (!next.enabled) clearStallWarnings();
+    // Channel A's silence clock follows the config: armed when a turn is
+    // running and silence-watching is on, stopped when either ends.
+    if (next.enabled && next.channelAEnabled) ensureStallTimer();
+    else maybeStopStallTimer();
+  },
+  stallAction: (sid, key, action) => handleStallAction(sid, key, action),
+  cancelAutoReview: (sessionId) => {
+    const queuedAt = reviewQueue.indexOf(sessionId);
+    if (queuedAt >= 0) reviewQueue.splice(queuedAt, 1);
+    queuedReviewPaths.delete(sessionId);
+    const active = [...backgroundReviewJobs.entries()].find(
+      ([, job]) => job.parentId === sessionId,
+    );
+    if (active) {
+      const [reviewSid, job] = active;
+      cancelledBackgroundReviews.add(reviewSid);
+      void job.runtime.abortSession(reviewSid).then(
+        () => finishAutoReview(set, get, reviewSid, false),
+        () => finishAutoReview(set, get, reviewSid, false),
+      );
+    } else if (reviewInFlight === sessionId) {
+      // The fork is still being created. Clearing the reservation makes
+      // startAutoReview abort it as soon as the id arrives.
+      reviewInFlight = null;
+      drainReviewQueue(set, get);
+    }
+    set((s) => {
+      const backgroundReviews = { ...s.backgroundReviews };
+      delete backgroundReviews[sessionId];
+      return { backgroundReviews };
+    });
+  },
+  modelSwitchError: null,
+  modelSwitching: false,
+  approvalMode: "approve",
+  tools: [],
+  hiddenExamples: initialHidden(),
+  error: null,
+  questions: [],
+  permissions: [],
+  sessionParents: {},
+  panes: {},
+  sessionAgents: {},
+  sessionModels: loadRecord<string>(SESSION_MODELS_KEY),
+  sessionVariants: loadRecord<string | null>(SESSION_VARIANTS_KEY),
+  setSessionModel: (sessionId, model) =>
+    set((s) => {
+      const sessionModels = { ...s.sessionModels, [sessionId]: model };
+      saveRecord(SESSION_MODELS_KEY, sessionModels);
+      if (isGatewayWeb) {
+        const effort = s.sessionVariants[sessionId] !== undefined ? s.sessionVariants[sessionId] : s.reasoningVariant;
+        if (effort && !variantExposed(s.providers, model, effort)) {
+          // Keep an explicit default so an old global effort cannot return.
+          const sessionVariants = { ...s.sessionVariants, [sessionId]: null };
+          saveRecord(SESSION_VARIANTS_KEY, sessionVariants);
+          return { sessionModels, sessionVariants };
+        }
+      }
+      return { sessionModels };
+    }),
+  clearSessionModel: (sessionId) =>
+    set((s) => {
+      if (!(sessionId in s.sessionModels)) return {};
+      const sessionModels = { ...s.sessionModels };
+      delete sessionModels[sessionId];
+      saveRecord(SESSION_MODELS_KEY, sessionModels);
+      // The effort was picked FOR that model, so it goes with it.
+      const sessionVariants = { ...s.sessionVariants };
+      delete sessionVariants[sessionId];
+      saveRecord(SESSION_VARIANTS_KEY, sessionVariants);
+      return { sessionModels, sessionVariants };
+    }),
+  setSessionVariant: (sessionId, variant) =>
+    set((s) => {
+      const sessionVariants = { ...s.sessionVariants, [sessionId]: variant };
+      saveRecord(SESSION_VARIANTS_KEY, sessionVariants);
+      return { sessionVariants };
+    }),
+  setAgentMode: (mode, sessionId) =>
+    set((s) => ({ sessionAgents: { ...s.sessionAgents, [sessionId ?? s.currentId ?? DRAFT_KEY]: mode } })),
+  projects: [],
+  workspace: null,
+  webWorkspace: null,
+  webReadOnly: false,
+  draftWorkspaces: {},
+  switching: false,
+  sending: false,
+  sendingSessions: {},
+  runningSessions: {},
+  stepCounts: {},
+  shellTurns: {},
+  retryNotices: {},
+  compactingSessions: {},
+  runtimeStartedAt: 0,
+
+  // These write the CURRENT session's pane (DRAFT_KEY on a draft), keeping the
+  // artifact inspector, the Files browser, and the Runs pane mutually exclusive
+  // — one pane at a time.
+  openArtifact: (artifact, sessionId) =>
+    set((s) => ({
+      panes: {
+        ...s.panes,
+        [sessionId ?? s.currentId ?? DRAFT_KEY]: {
+          artifact,
+          showFiles: false,
+          showRuns: false,
+          showAgents: false,
+        },
+      },
+    })),
+  toggleArtifact: (artifact, sessionId) => {
+    const s = get();
+    const key = sessionId ?? s.currentId ?? DRAFT_KEY;
+    // Same file already in the inspector ⇒ the click is asking to put it away.
+    // Keyed on `path`, which is the file's identity here: `filename` repeats
+    // across directories, and the block object itself is rebuilt on every
+    // thread re-render so it can never be compared by reference.
+    if (s.panes[key]?.artifact?.path === artifact.path) {
+      s.closeArtifact(sessionId);
+      return;
+    }
+    s.openArtifact(artifact, sessionId);
+  },
+  closeArtifact: (sessionId) =>
+    set((s) => {
+      const key = sessionId ?? s.currentId ?? DRAFT_KEY;
+      const p = s.panes[key];
+      return {
+        panes: {
+          ...s.panes,
+          [key]: {
+            artifact: null,
+            showFiles: p?.showFiles ?? false,
+            showRuns: p?.showRuns ?? false,
+            showAgents: p?.showAgents ?? false,
+          },
+        },
+      };
+    }),
+  // The right pane holds ONE thing: opening any view closes the others.
+  setShowFiles: (show, sessionId) => set((s) => showOnly(s, sessionId, "showFiles", show)),
+  setShowRuns: (show, sessionId) => set((s) => showOnly(s, sessionId, "showRuns", show)),
+  setShowAgents: (show, sessionId) => set((s) => showOnly(s, sessionId, "showAgents", show)),
+
+  answerQuestion: async (requestId, answers) => {
+    const q = get().questions.find((x) => x.requestId === requestId);
+    if (!q) return;
+    // Route to the client whose folder owns the asking session (a split pane in
+    // another project has its own directory-scoped instance).
+    const c = clientForSession(get, q.sessionId);
+    if (!c) return;
+    set((s) => ({ questions: s.questions.filter((x) => x.requestId !== requestId) }));
+    try {
+      await c.answerQuestion(requestId, answers);
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+  rejectQuestion: async (requestId) => {
+    const q = get().questions.find((x) => x.requestId === requestId);
+    if (!q) return;
+    const c = clientForSession(get, q.sessionId);
+    if (!c) return;
+    set((s) => ({ questions: s.questions.filter((x) => x.requestId !== requestId) }));
+    try {
+      await c.rejectQuestion(requestId);
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+  replyPermission: async (requestId, reply) => {
+    const p = get().permissions.find((x) => x.requestId === requestId);
+    if (!p) return;
+    const c = clientForSession(get, p.sessionId);
+    if (!c) return;
+    // Identical pending asks (same session, action and resources — e.g. three
+    // parallel reads into one folder) are ONE question to the user: answer
+    // them all with one click instead of re-asking for each tool call.
+    const sig = (x: PermissionAskedEvent) =>
+      `${x.sessionId}|${x.action}|${x.resources.join("|")}`;
+    const batch = get().permissions.filter((x) => sig(x) === sig(p));
+    set((s) => ({ permissions: s.permissions.filter((x) => sig(x) !== sig(p)) }));
+    const results = await Promise.allSettled(
+      batch.map((x) => c.replyPermission(x.requestId, reply)),
+    );
+    // A 404 means that request is already resolved — the turn moved on, or a
+    // duplicate in this batch was answered by the same click. The user's answer
+    // landed; reporting it as a failure just alarms them about nothing. Only a
+    // real failure, and only if it is not merely a stale sibling, surfaces.
+    const failed = results.find(
+      (r) => r.status === "rejected" && !isApiStatus(r.reason, 404),
+    ) as PromiseRejectedResult | undefined;
+    if (failed) {
+      const err = failed.reason;
+      set({ error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  setServerUrl: (serverUrl) => {
+    if (typeof window !== "undefined") window.localStorage.setItem(URL_KEY, serverUrl);
+    set({ serverUrl, modelSwitchError: null });
+  },
+
+  reloadRuntimeConfig: async (apply) => {
+    set({ switching: true });
+    try {
+      await apply();
+      await get().connectRetry();
+      await get().loadCatalog();
+    } finally {
+      set({ switching: false });
+    }
+  },
+
+  refreshAgentModels: async () => {
+    // Desktop-only config (the helpers answer {} in the browser). Never worth
+    // failing a connect over: an unreadable config just means "no overrides",
+    // and the send then keeps passing an explicit model, which is the old
+    // behavior rather than a broken one.
+    try {
+      const [agentModels, agentVariants] = await Promise.all([
+        getAgentModels(),
+        getAgentVariants(),
+      ]);
+      set({ agentModels, agentVariants });
+    } catch {
+      /* leave whatever we already had */
+    }
+  },
+
+  loadCatalog: async () => {
+    if (!client) return;
+    const source = client;
+    if (catalogInFlight && skillsCatalogClient === source) return catalogInFlight;
+    const oc = opencodeClient;
+    const version = ++modelCatalogVersion;
+    const assistant = get().gatewayRuntime;
+    const deadline = webRecovery?.deadline ?? performance.now() + 90_000;
+    const controller = catalogController;
+    const currentSource = () => source === client && !controller?.signal.aborted;
+    const current = () => currentSource() && version === modelCatalogVersion;
+    const readOptions = (): OpenCodeCatalogReadOptions | undefined => isGatewayWeb
+      ? { signal: controller?.signal, timeoutMs: beforeDeadline(deadline) } : undefined;
+    if (isGatewayWeb && assistant === "opencode") set({ gatewayCatalogState: "loading" });
+    void get().refreshAgentModels();
+
+    // History needs command templates, not the entire catalog or skill scan.
+    const commands = (async () => {
+      try {
+        const value = isGatewayWeb && oc ? await oc.listCommands(readOptions()) : await source.listCommands();
+        if (currentSource()) set({ commands: value });
+      } catch { if (currentSource()) set({ commands: [] }); }
+    })();
+    commandsInFlight = commands;
+    void commands.finally(() => { if (commandsInFlight === commands) commandsInFlight = null; });
+    const agents = (async () => {
+      try {
+        const value = isGatewayWeb && oc ? await oc.listAgents(readOptions()) : await source.listAgents();
+        if (currentSource()) set({ agents: value });
+      } catch { /* Agent discovery does not determine model/history readiness. */ }
+    })();
+
+    const skillsVersion = ++skillsCatalogVersion;
+    const currentSkillsLoad = () => source === client && skillsVersion === skillsCatalogVersion && !controller?.signal.aborted;
+    const retryEmptySkills = get().runtimeKind === "opencode" && (!isGatewayWeb || assistant === "opencode");
+    set({ skillsStatus: "loading", ...(skillsCatalogClient !== source ? { skills: [] } : {}) });
+    skillsCatalogClient = source;
+    const skills = (async () => {
+      try {
+        const read = () => isGatewayWeb && oc ? oc.listSkills(readOptions()) : source.listSkills();
+        let value = await read();
+        for (let i = 0; retryEmptySkills && value.length === 0 && i < 4; i++) {
+          await sleep(400);
+          if (!currentSkillsLoad()) return;
+          value = await read();
+        }
+        if (currentSkillsLoad()) set({ skills: value, skillsStatus: "ready" });
+      } catch { if (currentSkillsLoad()) set({ skillsStatus: "error" }); }
+    })();
+
+    const models = (async () => {
+      if (isGatewayWeb && assistant && assistant !== "opencode") return;
+      for (let attempt = 0; attempt < (isGatewayWeb ? 4 : 1); attempt++) {
+        try {
+          const availability = (providers: ProviderInfo[]) => {
+            if (current() && get().gatewayRuntime === assistant) set({ providers });
+          };
+          const [defaultModel, providers] = await Promise.all([
+            isGatewayWeb && oc ? oc.getDefaultModel(readOptions()) : source.getDefaultModel().catch(() => null),
+            oc ? listProvidersWithAvailability(oc, availability, readOptions()) : Promise.resolve([]),
+          ]);
+          if (!current()) return;
+          if (isGatewayWeb && providers.length === 0) throw new Error("Model catalog is unavailable");
+          set((state) => {
+            if (isGatewayWeb && assistant === "opencode" && !state.switching) {
+              return { providers, ...reconcileGatewayModels({ ...state, providers, defaultModel }, state.gatewayRuntimes) };
+            }
+            return state.switching ? { providers } : { defaultModel, providers };
+          });
+          // Only an identity removed from a successful catalog can heal a stale default.
+          const justSwitched = defaultModel === lastSwitchModel && Date.now() - lastSwitchAt < SWITCH_HEAL_GRACE_MS;
+          if (!get().switching && !justSwitched && defaultModel) {
+            const next = fallbackDefaultModel(providers, defaultModel);
+            if (next) {
+              try {
+                await get().setDefaultModel(next);
+                toast.success(i18n.t("settings:toast.defaultModelReset", { old: defaultModel, model: next }));
+              } catch { /* The send-time error remains retryable. */ }
+            }
+          }
+          return;
+        } catch {
+          if (!current()) return;
+          if (!isGatewayWeb) return;
+          if (attempt < 3 && performance.now() + 250 * 2 ** attempt < deadline) {
+            await sleep(250 * 2 ** attempt);
+            if (!current()) return;
+          } else {
+            set({ gatewayCatalogState: "unavailable" });
+            return;
+          }
+        }
+      }
+    })();
+    const run = Promise.all([commands, agents, skills, models]).then(() => undefined);
+    catalogInFlight = run;
+    try { await run; }
+    finally { if (catalogInFlight === run) catalogInFlight = null; }
+  },
+
+  detectTools: async () => {
+    try {
+      set({ tools: await probeTools() });
+    } catch {
+      /* ignore */
+    }
+  },
+
+  setApprovalMode: async (mode) => {
+    // A deliberate restart, like switchWorkspace: `switching` keeps the UI
+    // rendering as connected — no status flip, no page flash.
+    set({ switching: true });
+    try {
+      await persistApprovalMode(mode); // writes the config; restarts the sidecar
+      set({ approvalMode: mode });
+      await get().connectRetry();
+    } finally {
+      set({ switching: false });
+    }
+  },
+
+  setProxySetting: async (mode, url) => {
+    // Same masked restart as setApprovalMode: the proxy env applies at spawn.
+    set({ switching: true });
+    try {
+      await persistProxySetting(mode, url); // persists; restarts the sidecar
+      await get().connectRetry();
+    } finally {
+      set({ switching: false });
+    }
+  },
+
+  setDefaultModel: async (model) => {
+    if (!client) throw new Error("Not connected to the OpenCode runtime.");
+    if (isGatewayWeb) ++gatewayCatalogVersion;
+    // #37 diagnostics: record what we ask for so a repro (e.g. switching after a
+    // plan's quota runs out) shows the exact target model.
+    void logDebug(`[provider] setDefaultModel → ${model}`);
+    // Mark this as a deliberate switch so the reconnect's self-heal (loadCatalog)
+    // won't revert it against a still-warming provider list (#37).
+    lastSwitchModel = model;
+    lastSwitchAt = Date.now();
+    set({ modelSwitching: true });
+    // Applying the model PATCHes OpenCode's global config, which closes the
+    // event stream server-side. EventSource's own reconnect does not reliably
+    // recover from that — it strands the app in "connecting"/disconnected until
+    // a manual Connect. So do a deliberate masked reconnect (a fresh stream,
+    // exactly what the manual Connect did): `switching` keeps the UI connected,
+    // so switching models never flips the status or blocks the composer.
+    set({ switching: true });
+    try {
+      await client.setDefaultModel(model);
+      set({ defaultModel: model });
+      if (!(await get().connectRetry())) {
+        throw new Error(
+          get().error ?? "Runtime did not reconnect after setting the default model.",
+        );
+      }
+      set({ modelSwitchError: null });
+      // #37 diagnostics: confirm the switch actually persisted and which providers
+      // the runtime now recognizes — pinpoints "switch doesn't take" / "provider
+      // not recognized" vs. a stale config-vs-auth mismatch. Best-effort, never
+      // fails the switch.
+      try {
+        const oc = opencodeClient;
+        if (oc) {
+          const [applied, provs] = await Promise.all([oc.getDefaultModel(), oc.listProviders()]);
+          void logDebug(
+            `[provider] applied=${applied ?? "null"} providers=[${provs.map((p) => p.id).join(",")}]`,
+          );
+        }
+      } catch (e) {
+        void logDebug(`[provider] post-switch probe failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    } catch (err) {
+      void logDebug(`[provider] setDefaultModel FAILED (${model}): ${err instanceof Error ? err.message : String(err)}`);
+      set({ modelSwitchError: err instanceof Error ? err.message : String(err) });
+      throw err;
+    } finally {
+      set({ switching: false, modelSwitching: false });
+    }
+  },
+
+  connect: async () => {
+    if (isGatewayWeb) { await get().connectRetry(); return; }
+    await connectOnce();
   },
 
   // First boot can be slow far beyond the process spawn: on a fresh install
@@ -4002,7 +4106,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   // fail against a sidecar that is spawned but not yet listening, which used to
   // strobe the page connecting→error→connecting four times a second. The last
   // error is surfaced only if the whole retry window is exhausted.
-  connectRetry: async (tries = isGatewayWeb ? 4 : 120) => {
+  connectRetry: (tries = isGatewayWeb ? 4 : 120) => {
+    if (isGatewayWeb && webRecovery?.context === webContextVersion) return webRecovery.promise;
+    const owner = isGatewayWeb ? { context: webContextVersion, controller: new AbortController(), deadline: performance.now() + 90_000, promise: Promise.resolve(false) } : null;
+    const run = Promise.resolve().then(async () => {
     // Same hold the SDK's own reconnect gets: a deliberate reconnect that
     // succeeds immediately must not repaint every status consumer on the way
     // through. Switching Screens goes openSession → setWorkspace →
@@ -4033,7 +4140,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     connectRetryDepth++;
     try {
       for (let i = 0; i < tries; i++) {
-        await get().connect();
+        if (owner?.controller.signal.aborted) return false;
+        if (owner && performance.now() >= owner.deadline) { lastError = "AI assistant connection recovery timed out."; break; }
+        if (isGatewayWeb) await connectOnce();
+        else await get().connect();
+        if (owner?.controller.signal.aborted) return false;
         if (get().status === "ready") {
           set({ modelSwitchError: null });
           void get().reportQuarantinedConfig();
@@ -4084,13 +4195,24 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         // Quick retries first — the server is usually up within a second (a
         // reconnect finds it already listening); back off to 1 s for the long
         // tail (first boot blocked on macOS TCC can take minutes).
-        await sleep(i < 8 ? 250 : 1000);
+        if (i + 1 < tries) {
+          if (owner) await withSignal(sleep(250), owner.controller.signal).catch(() => {});
+          else await sleep(i < 8 ? 250 : 1000);
+        }
       }
+      if (owner?.controller.signal.aborted) return false;
       set({ status: "error", error: lastError });
       return false;
     } finally {
       connectRetryDepth--;
     }
+    });
+    if (owner) {
+      owner.promise = run;
+      webRecovery = owner;
+      void run.finally(() => { if (webRecovery === owner) webRecovery = null; }).catch(() => {});
+    }
+    return run;
   },
 
   reportQuarantinedConfig: async () => {
@@ -4152,6 +4274,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   },
 
   disconnect: () => {
+    cancelWebRecovery();
     // Closing the event stream does not stop server-side turns. Explicitly
     // abort hidden reviewers first so reconnecting cannot leave paid work
     // running with no UI or completion handler attached.
@@ -4180,7 +4303,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     });
   },
 
-  refreshSessions: async () => {
+  refreshSessions: async (discoverInBackground = false) => {
     if (!client) return;
     const source = client;
     try {
@@ -4220,7 +4343,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
           .sort((a, b) => Number(priority.has(b)) - Number(priority.has(a)));
         const known = new Set(sessions.map((session) => session.id));
         let next = 0;
-        await Promise.all(Array.from({ length: Math.min(4, directories.length) }, async () => {
+        const discovery = Promise.all(Array.from({ length: Math.min(4, directories.length) }, async () => {
           while (next < directories.length) {
             const directory = directories[next++];
             for (let attempt = 0; attempt < 2; attempt++) {
@@ -4243,6 +4366,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
             }
           }
         }));
+        if (discoverInBackground) void discovery.catch(() => {});
+        else await discovery;
       }
     } catch {
       /* ignore transient list failures */
@@ -4408,7 +4533,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // folder, so the next new session lands exactly there.
       // The local kernel is a desktop feature; there is none to re-root here.
       if (!isGatewayWeb) await kernelReset().catch(() => {});
-      if (isGatewayWeb && landed) set({ webWorkspace: landed, workspace: landed });
+      if (isGatewayWeb && landed) { cancelWebRecovery(); set({ webWorkspace: landed, workspace: landed }); }
       set((s) => {
         // Back to a draft in the new folder — the draft pane must not carry
         // files from the previous folder. Session panes keep their memory.
@@ -4451,7 +4576,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         // serves each folder from its own instance, so a stream still scoped to
         // the previous folder delivers NOTHING for this session — the turn runs
         // and the page shows nothing happening.
-        if (isGatewayWeb) set({ webWorkspace: dir, workspace: dir });
+        if (isGatewayWeb) { cancelWebRecovery(); set({ webWorkspace: dir, workspace: dir }); }
         else {
           // A failure here used to be swallowed, and everything below then ran
           // against the folder we had FAILED to leave: the reconnect scoped the
@@ -4544,7 +4669,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       // awaiting it, so on a cold open this can still be in flight — join it
       // rather than render the raw expansion. No extra request: it is the same
       // load already running.
-      if (catalogInFlight && get().commands.length === 0) await catalogInFlight;
+      if (commandsInFlight && get().commands.length === 0) await commandsInFlight;
       if (seq !== openSessionSeq || get().currentId !== id) return;
       // A replayed ACP session reports its selectors during the load — show the
       // model it is actually on, not the one the last session used.
@@ -4611,7 +4736,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       const serverIdle = (streaming || latestTurnWasAborted(messages)) && await sessionRunning(get, id) === false;
       // Same reason as openSession: without the command templates a stored
       // slash-command expansion renders raw.
-      if (catalogInFlight && get().commands.length === 0) await catalogInFlight;
+      if (commandsInFlight && get().commands.length === 0) await commandsInFlight;
       // Only skip when a REAL load landed meanwhile. A live fold sets `loaded`
       // but cannot clear a prior `historyError`, so it must not swallow our
       // reload — the fold's partial content would leave the stale error line
@@ -4650,7 +4775,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       set({ error: "AI assistant model catalog is unavailable. Refresh and try again." });
       return Promise.resolve(null);
     }
-    if (isGatewayWeb && s.gatewayRuntime && s.gatewayRuntime !== "opencode" &&
+    if (isGatewayWeb && s.gatewayRuntime &&
       !webModelChoices(s.gatewayRuntime, s.providers, s.gatewayRuntimes).some((item) => item.key === (s.sessionModels[key] ?? s.defaultModel))) {
       set({ error: "Select an available model before sending." });
       return Promise.resolve(null);
@@ -4681,8 +4806,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
           }
           const latest = get();
           if (isGatewayWeb && (latest.gatewayCatalogState === "loading" || latest.gatewayCatalogState === "unavailable" ||
-            latest.gatewayRuntimeSwitching || (latest.gatewayRuntime !== "opencode" &&
-              !webModelChoices(latest.gatewayRuntime, latest.providers, latest.gatewayRuntimes).some((item) => item.key === model)))) {
+            latest.gatewayRuntimeSwitching || (latest.gatewayRuntime && !webModelChoices(latest.gatewayRuntime, latest.providers, latest.gatewayRuntimes).some((item) => item.key === model)))) {
             throw new Error("AI assistant model catalog changed. Refresh and select a model again.");
           }
           if (isGatewayWeb && researchBrief && !researchCreated) {
@@ -5140,7 +5264,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       void c.connect().catch(() => {});
     }
   },
-}));
+  });
+});
 
 /** Dated folder name like `2026-07-04-1615` for a fresh per-session workspace. */
 export function datedWorkspaceName(now = new Date()): string {

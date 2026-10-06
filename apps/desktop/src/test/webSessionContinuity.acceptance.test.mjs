@@ -80,7 +80,7 @@ test.skipIf(!process.env.OSD_CONTINUITY_BROWSER)("running Web turns survive conv
     await page.getByText("Inspect the fixture", { exact: true }).waitFor({ timeout: 12000 }).catch(async error => { console.log(JSON.stringify({ pageText: (await page.locator("body").innerText()).slice(0, 5000), errors })); throw error; });
     expect(await page.getByText(/Interrupted — this turn did not finish/).count()).toBe(0);
     expect(beats.some(b => b.pageId === background && b.action === "release")).toBe(false);
-    await page.setViewportSize({ width: 390, height: 900 });
+    if (process.env.OSD_DESKTOP_ONLY_ACCEPTANCE !== "1") await page.setViewportSize({ width: 390, height: 900 });
     await page.reload();
     await page.getByText("Inspect the fixture", { exact: true }).waitFor();
     expect(await page.getByText(/Interrupted — this turn did not finish/).count()).toBe(0);

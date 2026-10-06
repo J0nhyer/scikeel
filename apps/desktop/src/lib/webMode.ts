@@ -138,11 +138,12 @@ export async function gatewayPost<T>(path: string, body: unknown, method: "POST"
 
 /** GET a gateway `/v1/...` path with the bearer token. Returns null when not in
  *  web mode; throws on a non-OK response. JSON is parsed, else text is returned. */
-export async function gatewayGet<T>(path: string): Promise<T | null> {
+export async function gatewayGet<T>(path: string, options?: { signal?: AbortSignal }): Promise<T | null> {
   if (!isGatewayWeb) return null;
   const token = gatewayToken();
   const res = await fetch(`${gatewayOrigin()}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal: options?.signal,
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const ct = res.headers.get("content-type") ?? "";

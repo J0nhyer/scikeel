@@ -51,7 +51,7 @@ test.skipIf(!process.env.OSD_TITLE_BROWSER)("committed Web titles refresh, remai
     for (const res of streams) res.write(`data: ${JSON.stringify({ type: "session.updated", properties: { info: session } })}\n\n`);
   };
   try {
-    for (const width of [1280, 390]) {
+    for (const width of (process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? [1280] : [1280, 390])) {
       sessions[0].title = "Default a"; sessions[1].title = "Default b";
       const context = await browser.newContext({ viewport: { width, height: 900 } });
       try {

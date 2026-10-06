@@ -24,7 +24,7 @@ test.skipIf(!process.env.OSD_ATTACHMENTS_ACCEPTANCE)("uploads, restores, downloa
   const platform=new PlatformServer({authStore,workerManager,cliRuntime,webRoot:process.env.OSD_ATTACHMENTS_WEB_ROOT || resolve("dist")});const address=await platform.listen();const origin=`http://127.0.0.1:${address.port}`,httpOrigin=`http://scikeel-attachments.test:${address.port}`;
   const browser=await chromium.launch({executablePath:process.env.OSD_CHROMIUM_PATH,args:["--no-sandbox","--disable-dev-shm-usage","--no-proxy-server","--host-resolver-rules=MAP scikeel-attachments.test 127.0.0.1"],headless:true});
   try{
-    for(const width of [1280,390]){
+    for(const width of (process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? [1280] : [1280,390])){
       const context=await browser.newContext({viewport:{width,height:900},acceptDownloads:true});
       try{
         const login=await context.request.post(`${origin}/auth/login`,{headers:{accept:"application/json"},data:{username:"fixture",password:"fixture-password"}});expect(login.status()).toBe(200);const {user}=await login.json();await cliRuntime.setUserRuntime(user.id,"codex");

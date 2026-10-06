@@ -41,6 +41,9 @@ export interface ProjectEnvironmentApproval {
   patterns: string[];
   metadata: { project: string; operation: "install" | "rebuild"; inputHash: string };
 }
+/** Optional bounds for Web catalog reads; existing callers keep their behavior. */
+export type OpenCodeCatalogReadOptions = { signal?: AbortSignal; timeoutMs?: number };
+
 export type CustomProviderModality = "text" | "audio" | "image" | "video" | "pdf";
 
 /** A model on a custom endpoint. A caller that knows nothing but the id passes
@@ -347,6 +350,36 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
   approveProjectEnvironment(sessionId: string, approvalId: string): Promise<{selection: {kind: "private"}}> {
     return this.projectEnvironmentRequest(sessionId, "install", {id: approvalId, manual: true});
+  }
+
+  private async fetchCatalog(url: string, options?: OpenCodeCatalogReadOptions): Promise<Response> {
+    if (!options) return this.fetchImpl(url, { headers: this.headers() });
+    const controller = new AbortController();
+    const cancel = () => controller.abort(options.signal?.reason);
+    const timer = setTimeout(() => controller.abort(new Error("Timed out reading model catalog")),
+      Math.max(1, Math.min(options.timeoutMs ?? this.requestTimeoutMs, this.requestTimeoutMs)));
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    if (options.signal?.aborted) cancel();
+    let rejectAbort!: () => void;
+    try {
+      const aborted = new Promise<never>((_resolve, reject) => {
+        rejectAbort = () => reject(controller.signal.reason ?? new Error("Catalog read cancelled"));
+        controller.signal.addEventListener("abort", rejectAbort, { once: true });
+        if (controller.signal.aborted) rejectAbort();
+      });
+      const read = async () => {
+        controller.signal.throwIfAborted();
+        const response = await this.fetchImpl(url, { headers: this.headers(), signal: controller.signal });
+        // Keep the deadline through body reception; decoding uses this buffered response.
+        const bytes = await response.arrayBuffer();
+        return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+      };
+      return await Promise.race([read(), aborted]);
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", cancel);
+      controller.signal.removeEventListener("abort", rejectAbort);
+    }
   }
 
   /** Open the SSE event stream. Resolves once the server acknowledges. */
@@ -915,12 +948,10 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  from config-declared sources — config dirs plus `.opencode/skill(s)` —
    *  so home-level skills are missing from it even though sessions (which run
    *  on this same v1 API) load and use them (#61). */
-  async listSkills(): Promise<SkillInfo[]> {
+  async listSkills(options?: OpenCodeCatalogReadOptions): Promise<SkillInfo[]> {
     // Scope to the workspace: skill instances are created lazily per directory,
     // and the unscoped endpoint answers from an instance that may have none.
-    const res = await this.fetchImpl(`${this.baseUrl}/skill${this.dirQuery()}`, {
-      headers: this.headers(),
-    });
+    const res = await this.fetchCatalog(`${this.baseUrl}/skill${this.dirQuery()}`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list skills");
     // v1 answers with a bare array; tolerate the v2 envelope so a server
     // pinned to either shape still lists.
@@ -932,12 +963,12 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   /** The configured default model ("provider/model"), or null when unset. */
-  async getDefaultModel(): Promise<string | null> {
+  async getDefaultModel(options?: OpenCodeCatalogReadOptions): Promise<string | null> {
     // Read the same global config that setDefaultModel PATCHes. The instance-
     // scoped /config only reflects a model change after OpenCode rebuilds the
     // instance (~1s later), so reading it right after a switch returns the
     // previous model.
-    const res = await this.fetchImpl(`${this.baseUrl}/global/config`, { headers: this.headers() });
+    const res = await this.fetchCatalog(`${this.baseUrl}/global/config`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to read config");
     const cfg = (await res.json()) as { model?: string };
     return cfg.model ?? null;
@@ -960,10 +991,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   /** Providers OpenCode can use right now, with their models. */
-  async listProviders(): Promise<ProviderInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/config/providers`, {
-      headers: this.headers(),
-    });
+  async listProviders(options?: OpenCodeCatalogReadOptions): Promise<ProviderInfo[]> {
+    const res = await this.fetchCatalog(`${this.baseUrl}/config/providers`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list providers");
     const body = (await res.json()) as {
       providers?: Array<{
@@ -1313,18 +1342,16 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   /** Real agents configured in OpenCode. */
-  async listAgents(): Promise<AgentInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/agent`, { headers: this.headers() });
+  async listAgents(options?: OpenCodeCatalogReadOptions): Promise<AgentInfo[]> {
+    const res = await this.fetchCatalog(`${this.baseUrl}/agent`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list agents");
     return (await res.json()) as AgentInfo[];
   }
 
   /** Slash commands the runtime can run — config commands, skills and MCP
    *  prompts all surface in this one list (directory-scoped like skills). */
-  async listCommands(): Promise<CommandInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/command${this.dirQuery()}`, {
-      headers: this.headers(),
-    });
+  async listCommands(options?: OpenCodeCatalogReadOptions): Promise<CommandInfo[]> {
+    const res = await this.fetchCatalog(`${this.baseUrl}/command${this.dirQuery()}`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list commands");
     const arr = (await res.json()) as Array<{
       name: string;

@@ -109,7 +109,7 @@ export async function validateInstalledImage(candidate, digest) {
   if (JSON.stringify(candidateSkills) !== JSON.stringify(JSON.parse(installedSkills))) throw new Error('Core skill inventory differs from installed image');
   return { imageDigest: digest, reused: digest === candidate.production.imageDigest, runnerFiles: manifest.runnerFiles };
 }
-async function browserStage(candidate) {
+export async function browserStage(candidate, run = runProcess) {
   requireBrowserConfiguration(process.env);
   const desktop = join(candidate.source.root, 'apps/desktop');
   const tests = ['src/test/webRelease.acceptance.test.mjs'];
@@ -122,15 +122,18 @@ async function browserStage(candidate) {
     if (await lstat(join(desktop, continuity)).catch(() => null)) { tests.push(continuity); environment.OSD_CONTINUITY_BROWSER = '1'; }
     else if (await lstat(join(desktop, refresh)).catch(() => null)) { tests.push(refresh); environment.OSD_REFRESH_ACCEPTANCE = '1'; }
     else throw new Error('Required session browser scenario is unavailable');
+    const recovery = 'src/test/webRuntimeRecovery.acceptance.test.mjs';
+    if (!await lstat(join(desktop, recovery)).catch(() => null)) throw new Error('Required Web runtime recovery scenario is unavailable');
+    tests.push(recovery); environment.OSD_RECOVERY_ACCEPTANCE = '1';
     const titleScenario = 'src/test/webSessionTitle.acceptance.test.mjs';
     if (await lstat(join(desktop, titleScenario)).catch(() => null)) { tests.push(titleScenario); environment.OSD_TITLE_BROWSER = '1'; }
   }
   if (groups.includes('attachments')) { tests.push('src/test/webAttachments.acceptance.test.mjs'); environment.OSD_ATTACHMENTS_ACCEPTANCE = '1'; environment.OSD_ATTACHMENTS_WEB_ROOT = candidate.artifacts.web.directory; }
   const report = join(candidate.directory, 'browser-results.json');
-  runProcess(process.execPath, [join(desktop, 'node_modules/vitest/vitest.mjs'), 'run', '--no-file-parallelism', '--reporter=json', '--outputFile', report, ...tests], desktop, environment);
+  await run(process.execPath, [join(desktop, 'node_modules/vitest/vitest.mjs'), 'run', '--no-file-parallelism', '--reporter=json', '--outputFile', report, ...tests], desktop, environment);
   const result = JSON.parse(await readFile(report, 'utf8'));
   if (!result.success || result.numPassedTests < tests.length || result.numPendingTests) throw new Error('Required browser acceptance failed or was skipped');
-  return { passedTests: result.numPassedTests, widths: [1280, 390], scenarios: tests };
+  return { passedTests: result.numPassedTests, widths: process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? [1280] : [1280, 390], scenarios: tests };
 }
 export function assertSelectedSource(selectedFiles, candidateFiles) {
   if (fingerprintFiles(selectedFiles) !== fingerprintFiles(candidateFiles)) throw new Error('Source changed between verification selection and snapshot; prepare again');

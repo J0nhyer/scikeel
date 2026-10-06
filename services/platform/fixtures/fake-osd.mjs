@@ -94,6 +94,7 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify({
       authorization: request.headers.authorization,
       directory: workspace,
+      mode: "full",
       stateDir,
     }));
     return;

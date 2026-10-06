@@ -74,3 +74,14 @@ it("returns to login when a runtime GET follows the platform login redirect", as
   await window.fetch("/session");
   expect(replace).toHaveBeenCalledExactlyOnceWith("/login?next=%2Flive%2Fsession%3Fview%3Dfiles");
 });
+
+it("forwards cancellation without changing gateway authentication", async () => {
+  const { mode, fetch } = await setup(false, 200);
+  const response = new Response(JSON.stringify({ models: ["public"] }), { headers: { "content-type": "application/json" } });
+  fetch.mockResolvedValue(response);
+  mode.setGatewayToken("standalone-token");
+  vi.stubGlobal("fetch", fetch);
+  const controller = new AbortController();
+  await mode.gatewayGet("/v1/zen-models", { signal: controller.signal });
+  expect(fetch).toHaveBeenCalledWith("http://localhost/v1/zen-models", expect.objectContaining({ signal: controller.signal, headers: { Authorization: "Bearer standalone-token" } }));
+});

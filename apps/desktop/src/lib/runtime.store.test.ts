@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   isTauri: true,
   /** Authenticated platform Web client, toggled only by gateway-specific tests. */
   isGatewayWeb: false,
+  isPlatformWeb: false,
   /** The host's active workspace folder, as `active-workspace.txt` holds it.
    *  `setWorkspace`/`newDatedWorkspace` move it and `workspacePath` reads it
    *  back, because that is the contract the Rust side keeps: creating a dated
@@ -30,6 +31,10 @@ const mocks = vi.hoisted(() => ({
   /** Number of connect() attempts that fail before one succeeds. */
   failConnects: 0,
   failSessionLists: 0,
+  agentGate: null as Promise<void> | null,
+  commandGate: null as Promise<void> | null,
+  providerGate: null as Promise<void> | null,
+  skillGate: null as Promise<void> | null,
   /** Number of createSession() attempts that fail before one succeeds. */
   failCreates: 0,
   /** Fire a normalized event into the store, as the SSE stream would. */
@@ -151,7 +156,7 @@ vi.mock("./webMode", () => ({
   get isGatewayWeb() {
     return mocks.isGatewayWeb;
   },
-  get isPlatformWeb() { return mocks.isGatewayWeb; },
+  get isPlatformWeb() { return mocks.isPlatformWeb; },
   gatewayToken: () => "gateway-test-token",
   gatewayOrigin: () => "http://gateway.test",
 }));
@@ -217,10 +222,12 @@ vi.mock("@ai4s/sdk", () => {
       mocks.moveSessionSpy(id, directory);
     }
     async listSkills() {
+      if (mocks.skillGate) await mocks.skillGate;
       if (mocks.failSkills) throw new Error("skill discovery failed");
       return [{ name: "stub" }];
     }
     async listAgents() {
+      if (mocks.agentGate) await mocks.agentGate;
       return [
         { name: "build", description: "", mode: "primary" },
         { name: "plan", description: "", mode: "primary" },
@@ -230,6 +237,7 @@ vi.mock("@ai4s/sdk", () => {
       return mocks.currentModel;
     }
     async listProviders() {
+      if (mocks.providerGate) await mocks.providerGate;
       return mocks.providers;
     }
     async setDefaultModel(model: string) {
@@ -272,6 +280,7 @@ vi.mock("@ai4s/sdk", () => {
       mocks.collaborationRevisionSpy(collaborationRevision);
     }
     async listCommands() {
+      if (mocks.commandGate) await mocks.commandGate;
       return [{ name: "init", description: "guided AGENTS.md setup", source: "command" }];
     }
     // Like the real endpoints, shell/command resolve only when the turn is
@@ -360,7 +369,7 @@ vi.mock("@ai4s/sdk", () => {
 });
 
 import type { ArtifactBlock, ThreadBlock } from "@ai4s/shared";
-import { DRAFT_KEY, adoptSourceFolder, rootSessionOf, useRuntimeStore } from "./runtime";
+import { DRAFT_KEY, adoptSourceFolder, rootSessionOf, installWebRecovery, useRuntimeStore } from "./runtime";
 import { useSshStore } from "./ssh";
 import { useToastStore } from "./toast";
 import { leaves, makeLeaf, useLayoutStore } from "./layout";
@@ -370,9 +379,11 @@ beforeEach(async () => {
   mocks.prepareCollaborationSend.mockReset().mockResolvedValue(0);
   mocks.isTauri = true;
   mocks.isGatewayWeb = false;
+  mocks.isPlatformWeb = false;
   mocks.activeWorkspace = "/ws/base";
   mocks.failConnects = 0;
   mocks.failSessionLists = 0;
+  mocks.agentGate = mocks.commandGate = mocks.providerGate = mocks.skillGate = null;
   mocks.failCreates = 0;
   mocks.failShell = false;
   mocks.failCommand = false;
@@ -415,6 +426,8 @@ beforeEach(async () => {
     gatewayRuntimes: [],
     gatewayRuntimeSwitching: false,
     gatewayUserRole: null,
+    webReadOnly: false,
+    sessionModels: {},
     currentId: null,
     draftWorkspaces: {},
     threads: {},
@@ -439,6 +452,206 @@ beforeEach(async () => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+describe("Web catalog readiness", () => {
+  function gate() {
+    let release!: () => void;
+    const promise = new Promise<void>(resolve => { release = resolve; });
+    return { promise, release };
+  }
+  it("publishes models before agents and skills finish", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    const slow = gate(); mocks.agentGate = mocks.skillGate = slow.promise;
+    mocks.providers = [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }];
+    mocks.currentModel = "fixture/model";
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "loading", providers: [],
+      gatewayRuntimes: [{ runtime: "opencode", kind: "opencode", label: "OpenCode", managed: false, enabled: true, models: [], defaultModel: null, selectedModel: null, status: "ready", catalogRevision: null }] });
+    const loading = useRuntimeStore.getState().loadCatalog();
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(useRuntimeStore.getState().providers).toHaveLength(1);
+      expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
+    } finally { slow.release(); await loading; }
+  });
+  it("keeps command publication when only the model catalog is retried", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    mocks.providers = [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }];
+    mocks.currentModel = "fixture/model";
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", commands: [] });
+    const slow = gate(); mocks.commandGate = slow.promise;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ runtime: "opencode", available: [{ runtime: "opencode", enabled: true, status: "ready" }] }))));
+    const loading = useRuntimeStore.getState().loadCatalog();
+    try {
+      await useRuntimeStore.getState().refreshGatewayRuntimes();
+      slow.release(); await loading;
+      expect(useRuntimeStore.getState().commands.some(command => command.name === "init")).toBe(true);
+    } finally { slow.release(); await loading; }
+  });
+  it("loads history after commands without waiting for model and skill discovery", async () => {
+    const slow = gate(); mocks.providerGate = mocks.skillGate = slow.promise;
+    useRuntimeStore.setState({ commands: [], threads: {}, sessions: [{ id: "ses_a", title: "A" }] });
+    const loading = useRuntimeStore.getState().loadCatalog();
+    const history = useRuntimeStore.getState().loadHistory("ses_a");
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(useRuntimeStore.getState().threads.ses_a?.loaded).toBe(true);
+    } finally { slow.release(); await Promise.all([loading, history]); }
+  });
+  it("preserves an explicitly selected retired identity and blocks dispatch", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    sessionStorage.setItem("scikeel.zen.models.v1", JSON.stringify({ version: 1, fetchedAt: Date.now(), models: ["paid"] }));
+    mocks.providers = [{ id: "opencode", name: "Zen", models: [{ id: "free", name: "Free" }, { id: "paid", name: "Paid" }] }];
+    mocks.currentModel = "opencode/free";
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", sessionModels: { ses_a: "opencode/free" },
+      gatewayRuntimes: [{ runtime: "opencode", kind: "opencode", label: "OpenCode", managed: false, enabled: true, models: [], defaultModel: null, selectedModel: null, status: "ready", catalogRevision: null }] });
+    try {
+      await useRuntimeStore.getState().loadCatalog();
+      expect(useRuntimeStore.getState().defaultModel).toBe("opencode/free");
+      expect(useRuntimeStore.getState().sessionModels.ses_a).toBe("opencode/free");
+      await useRuntimeStore.getState().sendPrompt("Research", "ses_a");
+      expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+      expect(mocks.setDefaultModelSpy).not.toHaveBeenCalled();
+    } finally { sessionStorage.removeItem("scikeel.zen.models.v1"); }
+  });
+
+});
+
+describe("platform connection context", () => {
+  function response(path: string): Response {
+    const data = path.endsWith("/v1/whoami") ? { directory: "/ws/base", mode: "full" }
+      : path.endsWith("/api/me") ? { user: { id: "usr_fixture", username: "fixture", role: "user" } }
+      : { runtime: "opencode", kind: "opencode", available: [{ runtime: "opencode", kind: "opencode", enabled: true }] };
+    return new Response(JSON.stringify(data));
+  }
+  it("retries failed required metadata before opening a usable connection", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/runtime") && ++attempts === 1) return new Response("offline", { status: 503 });
+      return response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(2)).toBe(true);
+    expect(attempts).toBe(2);
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("opencode");
+  });
+  it("does not discard successful runtime metadata when account metadata fails", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/me")) throw new Error("account temporarily offline");
+      return response(path);
+    }));
+    await useRuntimeStore.getState().connect();
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("opencode");
+    expect(useRuntimeStore.getState().gatewayUserRole).toBeNull();
+    expect(useRuntimeStore.getState().status).toBe("ready");
+  });
+  it("does not expose ready or writable state after a failed workspace identity", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/v1/whoami")
+      ? new Response("unavailable", { status: 503 }) : response(String(input))));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    expect(useRuntimeStore.getState().status).toBe("error");
+  });
+  it("shares simultaneous Web connection recovery", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => response(String(input)));
+    vi.stubGlobal("fetch", fetchMock);
+    await Promise.all([useRuntimeStore.getState().connectRetry(1), useRuntimeStore.getState().connectRetry(1)]);
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/v1/whoami"))).toHaveLength(1);
+  });
+  it("rejects an unknown assistant instead of falling back to OpenCode", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/api/runtime")
+      ? new Response(JSON.stringify({ runtime: "unknown", kind: "opencode", available: [] })) : response(String(input))));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    expect(useRuntimeStore.getState().status).toBe("error");
+  });
+  it("preserves verified read-only workspace permissions", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/v1/whoami")
+      ? new Response(JSON.stringify({ directory: "/ws/base", mode: "read-only" })) : response(String(input))));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    expect(useRuntimeStore.getState().webReadOnly).toBe(true);
+  });
+  it("does not let a cancelled old context close or overwrite its replacement", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    let release!: (value: Response) => void;
+    const oldMetadata = new Promise<Response>(resolve => { release = resolve; });
+    let requests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/runtime") && ++requests === 1) return oldMetadata;
+      return response(path);
+    }));
+    const old = useRuntimeStore.getState().connectRetry(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    useRuntimeStore.getState().disconnect();
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    release(new Response("old failure", { status: 503 }));
+    expect(await old).toBe(false);
+    expect(useRuntimeStore.getState().status).toBe("ready");
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("opencode");
+  });
+  it("stops retries at the overall recovery deadline", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/whoami")) now = 90_001;
+      return new Response("failed", { status: 503 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      expect(await useRuntimeStore.getState().connectRetry(4)).toBe(false);
+      expect(useRuntimeStore.getState().error).toContain("timed out");
+      expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/v1/whoami"))).toHaveLength(1);
+    } finally { clock.mockRestore(); }
+  });
+  it("does not retry an explicit platform login-expiry redirect", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    const fetchMock = vi.fn<(input: RequestInfo | URL) => Promise<Response>>(async () => new Response("expired", { status: 401, headers: { "x-scikeel-auth": "session-required" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await useRuntimeStore.getState().connectRetry(4)).toBe(false);
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/v1/whoami"))).toHaveLength(1);
+  });
+
+});
+
+describe("Web browser recovery and model retry", () => {
+  it("coalesces browser recovery events and ignores a healthy tab", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    const original = useRuntimeStore.getState().connectRetry;
+    const recover = vi.fn(async () => false);
+    useRuntimeStore.setState({ connectRetry: recover, status: "error" });
+    const stop = installWebRecovery();
+    try {
+      window.dispatchEvent(new Event("online"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("online"));
+      expect(recover).toHaveBeenCalledOnce();
+      stop();
+      window.dispatchEvent(new Event("online"));
+      expect(recover).toHaveBeenCalledOnce();
+      useRuntimeStore.setState({ status: "ready" });
+      const stopReady = installWebRecovery();
+      window.dispatchEvent(new Event("online"));
+      expect(recover).toHaveBeenCalledOnce();
+      stopReady();
+    } finally { stop(); useRuntimeStore.setState({ connectRetry: original }); }
+  });
+  it("offers model-only retry without reconnecting the stream", async () => {
+    const original = useRuntimeStore.getState().refreshGatewayRuntimes;
+    const refresh = vi.fn(async () => {});
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "unavailable", refreshGatewayRuntimes: refresh });
+    try {
+      render(createElement(WebModelPicker, { sessionId: "ses_a" }));
+      await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(refresh).toHaveBeenCalledOnce();
+    } finally { useRuntimeStore.setState({ refreshGatewayRuntimes: original }); }
+  });
 });
 
 describe("gateway runtime selection", () => {
@@ -470,6 +683,21 @@ describe("gateway runtime selection", () => {
     expect(useRuntimeStore.getState().sessions.some(session => session.id === "ses_recovered")).toBe(true);
   });
 
+  it("finishes connection while another workspace's running status is still loading", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    mocks.sessionList = [{ id: "ses_slow", title: "Slow status", directory: "/ws/slow" }];
+    let release!: (value: string[]) => void;
+    mocks.statusDiscoveryGates["/ws/slow"] = new Promise(resolve => { release = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", runtime: "opencode", available: [] }))));
+    let finished = false;
+    const connection = useRuntimeStore.getState().connectRetry(1).then(result => { finished = result; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(useRuntimeStore.getState().sessionListReady).toBe(true);
+      expect(finished).toBe(true);
+    } finally { release([]); await connection; }
+  });
+
   it("reports an unavailable Web session list after the retry window instead of waiting forever", async () => {
     mocks.isGatewayWeb = true; mocks.isTauri = false;
     mocks.failSessionLists = 10;
@@ -484,7 +712,7 @@ describe("gateway runtime selection", () => {
     mocks.isGatewayWeb = true; mocks.isTauri = false;
     const source = makeLeaf(null);
     useLayoutStore.setState({ groups: [{ id: "retry-group", name: "", tree: source, focusedLeafId: source.id, zoomedLeafId: null }], activeGroupId: "retry-group", tree: source, focusedLeafId: source.id, zoomedLeafId: null });
-    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready" });
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
     mocks.sessionList = [{ id: "ses_new", title: "New session" }];
     const brief = { objective: "Rejected", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-first-retry" };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "reject fixture" }), { status: 400 })));
@@ -495,7 +723,7 @@ describe("gateway runtime selection", () => {
   });
   it("returns no acceptance when a Web prompt is rejected so the composer retains its draft", async () => {
     mocks.isGatewayWeb = true; mocks.isTauri = false;
-    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready" });
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
     const brief = { objective: "Invalid fixture", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-rejected" };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "reject fixture" }), { status: 400 })));
     expect(await useRuntimeStore.getState().sendPrompt("Keep my text", "ses_rejected", undefined, undefined, brief)).toBeNull();
@@ -505,7 +733,7 @@ describe("gateway runtime selection", () => {
   it("creates a confirmed research record before posting its first prompt and refuses a failed record", async () => {
     mocks.isGatewayWeb = true;
     mocks.isTauri = false;
-    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready" });
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
     const brief = { objective: "Traceable baseline", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-test" };
     const fetchMock = vi.fn(async () => {
       expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
@@ -522,7 +750,7 @@ describe("gateway runtime selection", () => {
     expect(useRuntimeStore.getState().error).toContain("invalid scope");
   });
   it("uses the persisted collaboration revision and preserves text when its service is unavailable",async()=>{
-    mocks.isGatewayWeb=true;useRuntimeStore.setState({gatewayRuntime:"opencode",gatewayCatalogState:"ready",sessionAgents:{ses_a:"plan"},agents:[{name:"plan",mode:"primary",description:"Plan fixture"}]});
+    mocks.isGatewayWeb=true;mocks.isPlatformWeb=true;useRuntimeStore.setState({gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }],sessionAgents:{ses_a:"plan"},agents:[{name:"plan",mode:"primary",description:"Plan fixture"}]});
     mocks.prepareCollaborationSend.mockResolvedValue(7);
     await useRuntimeStore.getState().sendPrompt("Research","ses_a");
     expect(mocks.prepareCollaborationSend).toHaveBeenCalledWith("ses_a", undefined);
@@ -4353,9 +4581,10 @@ describe("pending interaction recovery after lost SSE events", () => {
 
 
 it("persists a draft's Guided choice before sending its created conversation", async () => {
+  mocks.isPlatformWeb = true;
   mocks.isGatewayWeb = true;
   mocks.isTauri = false;
-  useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready" });
+  useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
   mocks.prepareCollaborationSend.mockImplementation(async () => {
     expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
     return 5;

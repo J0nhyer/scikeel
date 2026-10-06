@@ -98,7 +98,7 @@ test('release bundles only the matching checked source and excludes ACP', async 
   assert.deepEqual(calls, ['check', 'vendor', 'bundle']);
 });
 
-import { prepareRelease, requireBrowserConfiguration, parseArguments, validateResume, validateInstalledImage, assertSelectedSource } from './web-release.mjs';
+import { browserStage, prepareRelease, requireBrowserConfiguration, parseArguments, validateResume, validateInstalledImage, assertSelectedSource } from './web-release.mjs';
 test('CLI requires explicit source and rejects ambiguous commands/options', () => {
   assert.throws(() => parseArguments(['prepare']), /source/);
   assert.throws(() => parseArguments(['prepare', '--source', '/tmp/a', '--skip-tests']), /Unknown/);
@@ -336,4 +336,29 @@ test('a frozen dependency view can be frozen again without mistaking installed f
   await freezeSource(frozen, next, files);
   const identity = await dependencyIdentity(next);
   assert.match(identity.fingerprint, /^[a-f0-9]{64}$/);
+});
+
+test('session verification includes recovery even when continuity already exists', async (t) => {
+  const root = await fixture(t);
+  const desktop = join(root, 'apps/desktop/src/test');
+  await mkdir(desktop, { recursive: true });
+  await writeFile(join(desktop, 'webSessionContinuity.acceptance.test.mjs'), 'fixture');
+  await writeFile(join(desktop, 'webRuntimeRecovery.acceptance.test.mjs'), 'fixture');
+  const saved = [process.env.OSD_PLAYWRIGHT_PATH, process.env.OSD_CHROMIUM_PATH];
+  process.env.OSD_PLAYWRIGHT_PATH = root; process.env.OSD_CHROMIUM_PATH = root;
+  t.after(() => {
+    for (const [key, value] of [['OSD_PLAYWRIGHT_PATH', saved[0]], ['OSD_CHROMIUM_PATH', saved[1]]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  const result = await browserStage({ directory: root, source: { root }, artifacts: { web: { directory: root } }, selection: { browserGroups: ['session'] } }, async (_cmd, args, _cwd, environment) => {
+    assert(args.includes('src/test/webSessionContinuity.acceptance.test.mjs'));
+    assert(args.includes('src/test/webRuntimeRecovery.acceptance.test.mjs'));
+    assert.equal(environment.OSD_CONTINUITY_BROWSER, '1');
+    assert.equal(environment.OSD_RECOVERY_ACCEPTANCE, '1');
+    await writeFile(join(root, 'browser-results.json'), JSON.stringify({ success: true, numPassedTests: 3, numPendingTests: 0 }));
+  });
+  assert.equal(result.passedTests, 3);
+  await rm(join(desktop, 'webRuntimeRecovery.acceptance.test.mjs'));
+  await assert.rejects(browserStage({ directory: root, source: { root }, artifacts: { web: { directory: root } }, selection: { browserGroups: ['session'] } }), /recovery scenario/);
 });

@@ -26,6 +26,7 @@ export function WebModelPicker({ sessionId, compact = false, defaultMode = false
   const setSession = useRuntimeStore((s) => s.setSessionModel);
   const setVariant = useRuntimeStore((s) => s.setSessionVariant);
   const setDefault = useRuntimeStore((s) => s.setDefaultModel);
+  const retry = useRuntimeStore((s) => s.refreshGatewayRuntimes);
   const choices = webModelChoices(runtime, providers, runtimes);
   const selected = defaultMode ? defaultModel : sessionModel ?? defaultModel;
   const value = choices.some((model) => model.key === selected) && state !== "unavailable"
@@ -45,6 +46,8 @@ export function WebModelPicker({ sessionId, compact = false, defaultMode = false
         choices={choices.map((model) => ({ key: model.key, label: model.label }))}
         onSelect={(key) => defaultMode ? setDefault(key) : sessionId ? setSession(sessionId, key) : undefined} />
     </div>
+    {state === "unavailable" && <button type="button" className="h-10 shrink-0 rounded-md border border-border px-3 text-xs text-text"
+      disabled={changing || modelChanging} onClick={() => void retry()}>{t("research.retry")}</button>}
     {!defaultMode && sessionId && value && variants.length > 0 && <div className="shrink-0">
       <WebChoiceMenu label={t("composer.model.reasoning")} value={effortValue}
         triggerIcon={<SlidersHorizontal size={15} aria-hidden={true} />} busy={busy}

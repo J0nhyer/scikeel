@@ -21,14 +21,15 @@ const mode = process.argv[2];
 const guarded = process.argv[3] === "--guarded";
 const args = process.argv.slice(guarded ? 4 : 3);
 const smallLinuxHost = process.platform === "linux" && (totalmem() < 5 * 1024 ** 3 || process.env.OSD_TASK_FORCE_LIMITS === "1");
-const liveTitle = mode === "platform-title-live";
-if (liveTitle && args.length) throw new Error("Live title verification uses a fixed test only");
+const liveRecovery = mode === "web-recovery-live";
+const liveVerification = mode === "platform-title-live" || liveRecovery;
+if (liveVerification && args.length) throw new Error("Live verification uses a fixed test only");
 const mib = 1024 ** 2;
 const memoryHigh = 1850 * mib;
 const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
-if (!["platform-title-live", "opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
+if (!["web-recovery-live", "platform-title-live", "opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
   "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install", "sandbox-migrate"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
@@ -46,9 +47,9 @@ function verifyLimits() {
     .find((line) => line.startsWith("0::"))?.slice(3);
   if (!cgroup) throw new Error("No unified cgroup; refusing to run an unprotected task");
   const readLimit = (name) => Number(readFileSync(join("/sys/fs/cgroup", cgroup, name), "utf8").trim());
-  if (!(readLimit("memory.high") <= (liveTitle ? 384 * mib : memoryHigh) &&
-        readLimit("memory.max") <= (liveTitle ? 512 * mib : memoryMax) &&
-        readLimit("memory.swap.max") <= (liveTitle ? 64 * mib : swapMax))) {
+  if (!(readLimit("memory.high") <= (liveVerification ? 384 * mib : memoryHigh) &&
+        readLimit("memory.max") <= (liveVerification ? 512 * mib : memoryMax) &&
+        readLimit("memory.swap.max") <= (liveVerification ? 64 * mib : swapMax))) {
     throw new Error("Resource limits are missing; refusing to run an unprotected task");
   }
 }
@@ -61,9 +62,9 @@ if (smallLinuxHost && !guarded) {
   await new Promise((done, fail) => {
     const child = spawn("flock", [
       "--conflict-exit-code", "75", "-n", join(sharedTaskRoot, "web-release-deploy.lock"),
-      ...(liveTitle ? [] : ["flock", "--conflict-exit-code", "75", "-n", join(sharedTaskRoot, "desktop-task.lock")]),
+      ...(liveVerification ? [] : ["flock", "--conflict-exit-code", "75", "-n", join(sharedTaskRoot, "desktop-task.lock")]),
       "systemd-run", "--user", "--scope", `--unit=${unit}`,
-      "-p", liveTitle ? "MemoryHigh=384M" : "MemoryHigh=1850M", "-p", liveTitle ? "MemoryMax=512M" : "MemoryMax=2200M", "-p", liveTitle ? "MemorySwapMax=64M" : "MemorySwapMax=256M",
+      "-p", liveVerification ? "MemoryHigh=384M" : "MemoryHigh=1850M", "-p", liveVerification ? "MemoryMax=512M" : "MemoryMax=2200M", "-p", liveVerification ? "MemorySwapMax=64M" : "MemorySwapMax=256M",
       "nice", "-n", "10", process.execPath, script, mode, "--guarded", ...args,
     ], { cwd: desktop, stdio: "inherit" });
     let unsafeReadings = 0;
@@ -121,9 +122,12 @@ function coreArgs() {
 if (smallLinuxHost) {
   verifyLimits();
   const { verifyTaskLocks } = await import("./web-build.mjs");
-  verifyTaskLocks({ publicationOnly: liveTitle });
+  verifyTaskLocks({ publicationOnly: liveVerification });
 }
-if (liveTitle) {
+if (liveRecovery) {
+  process.env.SCIKEEL_RECOVERY_LIVE_ACCEPTANCE = "1";
+  run(process.execPath, ["--test", "--test-concurrency=1", "test/web-runtime-recovery.live.acceptance.mjs"], join(root, "services/platform"));
+} else if (liveVerification) {
   process.env.SCIKEEL_TITLE_LIVE_ACCEPTANCE = "1";
   run(process.execPath, ["--test", "--test-concurrency=1", "test/session-title.live.acceptance.mjs"], join(root, "services/platform"));
 } else if (mode === "release-test") {

@@ -26,7 +26,7 @@ export function installLoginPreparation(source: PreparationSource): () => void {
   const update = (state: PreparationState) => {
     if (state.status === "error" || (state.status === "ready" && state.sessionListReady && state.gatewayCatalogState === "unavailable")) finish("scikeel:login-error");
     else if (state.status === "ready" && state.sessionListReady &&
-      state.gatewayCatalogState === "ready" && state.defaultModel) finish("scikeel:login-ready");
+      (state.gatewayCatalogState === "ready" || state.gatewayCatalogState === "limited") && state.defaultModel) finish("scikeel:login-ready");
   };
   unsubscribe = source.subscribe(update);
   update(source.getState());

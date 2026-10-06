@@ -10,7 +10,7 @@ import { StatusBar } from "@/components/status-bar/StatusBar";
 import { Toaster } from "@/components/ui/Toaster";
 import { SshSignInDialog } from "@/components/ui/SshSignInDialog";
 import { mockProject } from "@/lib/mock";
-import { adoptSourceFolder, useRuntimeStore } from "@/lib/runtime";
+import { adoptSourceFolder, installWebRecovery, useRuntimeStore } from "@/lib/runtime";
 import { useHoverTracking } from "@/lib/hoverTracking";
 import { useConversationLeases } from "@/lib/conversationLeases";
 import { ensureSetupProgressListener } from "@/lib/setup";
@@ -133,6 +133,8 @@ export function AppShell() {
       void useUpdateStore.getState().maybeAutoCheck();
     }
   }, [webReady]);
+
+  useEffect(() => webReady ? installWebRecovery() : undefined, [webReady]);
 
   // Standalone gateways recover rotated/revoked tokens through the token gate.
   useEffect(() => {
