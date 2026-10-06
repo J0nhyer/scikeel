@@ -96,9 +96,13 @@ function validModelProfile(model, entry) {
   if (entry.variants === undefined) return true;
   if (entry.reasoning !== true || !entry.variants || typeof entry.variants !== "object" || Array.isArray(entry.variants)) return false;
   const levels = Object.entries(entry.variants);
-  return levels.length > 0 && levels.length <= 7 && levels.every(([effort, options]) =>
-    ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort) && options &&
-    typeof options === "object" && !Array.isArray(options) && Object.keys(options).join(",") === "reasoningEffort" && options.reasoningEffort === effort);
+  return levels.length > 0 && levels.length <= 9 && levels.every(([effort, options]) =>
+    options && typeof options === "object" && !Array.isArray(options) &&
+    (["enabled", "disabled"].includes(effort)
+      ? Object.keys(options).join(",") === "thinking" && options.thinking && typeof options.thinking === "object" &&
+        !Array.isArray(options.thinking) && Object.keys(options.thinking).join(",") === "type" && options.thinking.type === effort
+      : ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort) &&
+        Object.keys(options).join(",") === "reasoningEffort" && options.reasoningEffort === effort));
 }
 function validateProfile(value) {
   if (!value || Object.keys(value).sort().join(",") !== ["model", "enabled_providers", "provider", "permission"].sort().join(",") ||

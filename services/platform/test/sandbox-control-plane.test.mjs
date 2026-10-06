@@ -78,3 +78,11 @@ test("declared reasoning levels reach the runtime without changing models or per
     { approved: [] }, { approved: { apiKey: "secret" } }, []])
     assert.throws(() => validateBrokerConfiguration({ ...configured, providers: { fixture: { ...configured.providers.fixture, modelVariants } } }));
 });
+
+test("declared thinking toggles use native enable/disable options", () => {
+  const configured = { ...config, providers: { fixture: { ...config.providers.fixture, modelVariants: { approved: ["enabled", "disabled"] } } } };
+  const profile = brokerProfile({ config: configured, broker: { issue: () => "a".repeat(64) }, context });
+  assert.deepEqual(profile.provider.fixture.models.approved.variants, {
+    enabled: { thinking: { type: "enabled" } }, disabled: { thinking: { type: "disabled" } },
+  });
+});

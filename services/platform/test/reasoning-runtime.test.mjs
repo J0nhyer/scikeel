@@ -33,7 +33,7 @@ test('pinned OpenCode sends each selected reasoning effort and resets it for def
   await writeFile(profilePath, JSON.stringify({ model: 'fixture/fledge-alpha-free', small_model: 'fixture/title', enabled_providers: ['fixture'],
     provider: { fixture: { npm: '@ai-sdk/openai-compatible', name: 'fixture',
       options: { baseURL: `http://127.0.0.1:${upstream.address().port}/v1`, apiKey: 'synthetic-key' },
-      models: { 'fledge-alpha-free': { name: 'fledge-alpha-free', reasoning: true, variants }, title: { name: 'title' } } } },
+      models: { 'fledge-alpha-free': { name: 'fledge-alpha-free', reasoning: true, variants }, 'longcat-2.5-preview-free': { name: 'longcat-2.5-preview-free', reasoning: true, variants: { enabled: { thinking: { type: 'enabled' } }, disabled: { thinking: { type: 'disabled' } } } }, title: { name: 'title' } } } },
     permission: { bash: 'deny', edit: 'deny', webfetch: 'deny', websearch: 'deny' }, plugin: [],
   }));
   const child = spawn(process.env.SCIKEEL_REASONING_BINARY, ['serve', '--hostname', '127.0.0.1', '--port', '0'], {
@@ -70,5 +70,18 @@ test('pinned OpenCode sends each selected reasoning effort and resets it for def
     assert.ok(request, 'selected model must reach the upstream');
     if (index === 0) defaultEffort = request.reasoning_effort;
     assert.equal(request.reasoning_effort, effort ?? defaultEffort);
+  }
+  const toggleSession = await call('/session', 'POST', { title: 'Thinking toggle fixture' });
+  let defaultThinking;
+  for (const [index, type] of [null, 'enabled', 'disabled', null].entries()) {
+    const before = requests.length;
+    const response = await call(`/session/${toggleSession.id}/message`, 'POST', { model: { providerID: 'fixture', modelID: 'longcat-2.5-preview-free' },
+      ...(type ? { variant: type } : {}), parts: [{ type: 'text', text: 'Reply OK without tools.' }] });
+    assert.equal(response.info.error, undefined);
+    const request = requests.slice(before).find(value => value.model === 'longcat-2.5-preview-free');
+    assert.ok(request, 'toggle model must reach the upstream');
+    if (index === 0) defaultThinking = request.thinking;
+    assert.deepEqual(request.thinking, type ? { type } : defaultThinking);
+    assert.equal(request.reasoning_effort, undefined, 'toggle modes must not become unsupported effort levels');
   }
 });

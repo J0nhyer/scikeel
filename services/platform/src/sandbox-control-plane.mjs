@@ -45,8 +45,8 @@ export function validateBrokerConfiguration(config) {
       throw new Error("invalid managed provider configuration");
     if (provider.modelVariants !== undefined && (!provider.modelVariants || typeof provider.modelVariants !== "object" ||
         Array.isArray(provider.modelVariants) || Object.entries(provider.modelVariants).some(([id, levels]) =>
-          !provider.enabledModels.includes(id) || !Array.isArray(levels) || !levels.length || levels.length > 7 ||
-          new Set(levels).size !== levels.length || levels.some((level) => !["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(level)))))
+          !provider.enabledModels.includes(id) || !Array.isArray(levels) || !levels.length || levels.length > 9 ||
+          new Set(levels).size !== levels.length || levels.some((level) => !["minimal", "low", "medium", "high", "xhigh", "max", "ultra", "enabled", "disabled"].includes(level)))))
       throw new Error("invalid managed reasoning levels");
     if ((provider.catalog !== undefined && (provider.catalog !== "opencode-free" || name !== "opencode" || provider.baseUrl !== "https://opencode.ai/zen/v1")) ||
         (provider.name !== undefined && (typeof provider.name !== "string" || !provider.name || provider.name.length > 512)) ||
@@ -67,7 +67,7 @@ export function brokerProfile({ config, broker, context, now = Date.now() }) {
       whitelist: [...provider.enabledModels],
       models: Object.fromEntries(provider.enabledModels.map((model) => [model, { name: model,
         ...(provider.modelVariants?.[model] ? { reasoning: true,
-          variants: Object.fromEntries(provider.modelVariants[model].map((effort) => [effort, { reasoningEffort: effort }])) } : {}),
+          variants: Object.fromEntries(provider.modelVariants[model].map((effort) => [effort, ["enabled", "disabled"].includes(effort) ? { thinking: { type: effort } } : { reasoningEffort: effort }])) } : {}),
       }])) },
   }, permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
 }

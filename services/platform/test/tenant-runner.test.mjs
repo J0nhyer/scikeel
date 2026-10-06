@@ -67,6 +67,13 @@ test("profile updates accept only platform broker credentials and manual permiss
     variants: { low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" }, max: { reasoningEffort: "max" } } };
   assert.equal((await post(reasoning)).status, 200);
   assert.deepEqual(profiles[1], reasoning);
+  const toggle = structuredClone(reasoning);
+  toggle.provider.fixture.models.approved.variants = { enabled: { thinking: { type: "enabled" } }, disabled: { thinking: { type: "disabled" } } };
+  assert.equal((await post(toggle)).status, 200);
+  for (const thinking of [{ type: "enabled", apiKey: "foreign" }, { type: "disabled" }, { type: "invented" }, [], null]) {
+    const invalid = structuredClone(toggle); invalid.provider.fixture.models.approved.variants.enabled.thinking = thinking;
+    assert.equal((await post(invalid)).status, 403);
+  }
   for (const variant of [{ reasoningEffort: "low", baseURL: "http://peer" }, { reasoningEffort: "high" },
     { apiKey: "foreign" }, { reasoningEffort: "low", disabled: false }, null, []]) {
     const invalid = structuredClone(reasoning); invalid.provider.fixture.models.approved.variants.low = variant;
