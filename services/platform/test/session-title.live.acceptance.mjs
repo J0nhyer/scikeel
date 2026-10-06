@@ -17,7 +17,7 @@ const env=Object.fromEntries(raw.split('\0').map(x=>{const i=x.indexOf('=');retu
 const login=await fetch(origin+'/auth/login',{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify({username:env.PLATFORM_ADMIN_USERNAME||'admin',password:env.PLATFORM_ADMIN_PASSWORD})});
 if(!login.ok)throw Error('Verification login failed');
 const headers={origin,'content-type':'application/json',cookie:login.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ')};
-async function json(path,method='GET',body){const r=await fetch(origin+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(150000)});if(!r.ok)throw Error(`${method} ${path}: ${r.status}`);return r.status===204?null:r.json()}
+async function json(path,method='GET',body){const r=await fetch(origin+path,{method,headers:{...headers,...(method==='DELETE'?{'x-scikeel-manual-approval':'1'}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(150000)});if(!r.ok)throw Error(`${method} ${path}: ${r.status}`);return r.status===204?null:r.json()}
 const sessions=[]; let browser;
 try {
  const catalog=await json('/provider');
@@ -27,7 +27,7 @@ try {
  if(process.argv.includes('--catalog'))process.exitCode=0;
  else {
   if(models.length<2)throw Error('Two authorized non-Claude models required');
-  const chosen = [...new Set(['big-pickle', 'space-bunny-free', ...models].filter(id=>models.includes(id)))].slice(0,2);
+  const chosen = [...new Set(['big-pickle', 'fledge-alpha-free', ...models.filter(id=>id!=='space-bunny-free')].filter(id=>models.includes(id)))].slice(0,2);
   const settings=JSON.parse(await readFile(commonStore(resolve(fileURLToPath(new URL('../../../', import.meta.url))))+'/web-release-settings.json','utf8'));
   const {chromium}=createRequire(import.meta.url)(settings.OSD_PLAYWRIGHT_PATH);
   browser=await chromium.launch({executablePath:settings.OSD_CHROMIUM_PATH,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
