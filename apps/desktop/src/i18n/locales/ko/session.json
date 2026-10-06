@@ -275,7 +275,11 @@
   },
   "live": {
     "starting": {
-      "bodyWeb": "호스트 앱의 응답을 기다리고 있습니다. 이 페이지를 열어 두세요. 호스트에 연결할 수 있게 되면 자동으로 연결됩니다.",
+      "titleWeb": "작업 공간에 연결하는 중…",
+      "titleSessionsWeb": "대화를 불러오는 중…",
+      "bodyWeb": "서버가 작업 공간을 준비하고 있습니다. 예상보다 오래 걸려 자동으로 다시 시도하고 있습니다.",
+      "bodySessionsWeb": "서버에서 대화 기록을 불러오고 있습니다. 실패한 요청은 자동으로 다시 시도합니다.",
+      "sessionsError": "대화 기록을 불러올 수 없습니다. 다시 연결해 주세요.",
       "title": "로컬 런타임을 시작하는 중…",
       "body": "내장 에이전트 런타임이 시작되고 있습니다. 첫 실행 시 macOS가 폴더 접근 권한을 요청할 수 있습니다. 허용하면 자동으로 완료됩니다."
     },
@@ -619,5 +623,41 @@
     "installing": "Installing…",
     "loading": "Preparing…",
     "prepare": "Prepare private dependencies"
+  },
+  "collaboration": {
+    "guidedDescription": "Confirm one research step, review its result, then choose the next step.",
+    "stepConfirmation": "Next research step",
+    "label": "자율성",
+    "modes": {
+      "guided": "낮음",
+      "collaborative": "중간",
+      "delegated": "높음",
+      "autonomous": "완전"
+    },
+    "description": "Agree on a plan; decide important choices together.",
+    "unavailable": "Available in a later stage",
+    "confirmation": "Research decision",
+    "answer": "Your answer or adjustment",
+    "continue": "Continue with the suggestion",
+    "submit": "Confirm answer",
+    "pause": "Pause",
+    "paused": "Execution is paused. Saving an answer does not restart it.",
+    "retry": "Retry",
+    "savedDecisions": "Confirmed research decisions",
+    "suggestion": "Suggestion",
+    "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
+    "delegatedDescription": "승인된 작업을 계속 수행하고, 미승인된 중요한 선택은 확인합니다.",
+    "deliveryCompleted": "결과 파일 검증 완료",
+    "deliveryFailed": "결과 검증 실패",
+    "deliverySelfCheck": "파일과 증거는 검증되지만 과학적 결론은 Agent의 자체 점검입니다.",
+    "deliveryRepairLimit": "두 번의 수정 한도에 도달했습니다. 부분 결과를 확인하세요.",
+    "deliveryIssues": {
+      "changed_inputs": "원본 입력이 없거나 변경되었습니다.",
+      "missing_progress": "실행 보고서가 없거나 유효하지 않습니다.",
+      "pending_decisions": "보고서에 해결되지 않은 연구 결정이 있습니다.",
+      "incomplete_report": "실행 보고서가 완료되지 않았습니다.",
+      "missing_outputs": "요청된 결과 파일이 없습니다.",
+      "failed_checks": "필수 점검이 실패했거나 증거가 없습니다."
+    }
   }
 }

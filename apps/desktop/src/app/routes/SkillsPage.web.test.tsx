@@ -74,6 +74,56 @@ describe("Web skill catalog", () => {
     expect(screen.queryByText(/available in every workspace/)).not.toBeInTheDocument();
   });
 
+  it("localizes all seventeen catalog descriptions and switches languages without changing runtime metadata", async () => {
+    const skillNames = ["computer-use", "domain-check", "large-file", "modal-run", "publication-figures",
+      "remote-compute", "research-workflow", "stats-integrity", "traceability-review"];
+    const agentNames = ["build", "plan", "general", "explore", "reviewer", "compaction", "summary", "title"];
+    const skills = skillNames.map((name) => ({ name, description: "Original runtime instructions",
+      location: `/opt/scikeel/tools/resources/skills-core/${name}/SKILL.md` }));
+    const agents = agentNames.map((name) => ({ name, description: "", mode: "primary" }));
+    useRuntimeStore.setState({ skillsStatus: "ready", skills, agents });
+    await i18n.changeLanguage("zh-Hans");
+    render(<MemoryRouter><SkillsPage /></MemoryRouter>);
+    const cards = screen.getAllByRole("article");
+    expect(cards).toHaveLength(17);
+    for (const card of cards) expect(card.querySelector("p")?.textContent).toMatch(/[\u4e00-\u9fff]/);
+    expect(screen.getByText("根据对话内容自动生成会话标题。")).toBeInTheDocument();
+    expect(screen.queryByText("Original runtime instructions")).not.toBeInTheDocument();
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(screen.getByText("Automatically generate a session title from the conversation.")).toBeInTheDocument();
+    expect(screen.queryByText("根据对话内容自动生成会话标题。")).not.toBeInTheDocument();
+    expect(useRuntimeStore.getState().skills).toBe(skills);
+    expect(useRuntimeStore.getState().agents).toBe(agents);
+    expect(skills.every((skill) => skill.description === "Original runtime instructions")).toBe(true);
+    expect(agents.every((agent) => agent.description === "")).toBe(true);
+  });
+
+  it("searches the descriptions displayed in Chinese", async () => {
+    const user = userEvent.setup();
+    useRuntimeStore.setState({ skillsStatus: "ready", skills: [
+      { name: "stats-integrity", description: "Statistical checks", source: "builtin" },
+      { name: "publication-figures", description: "Publication figures", source: "builtin" },
+    ] });
+    await i18n.changeLanguage("zh-Hans");
+    render(<MemoryRouter><SkillsPage /></MemoryRouter>);
+    await user.type(screen.getByRole("textbox", { name: "搜索技能和代理" }), "统计假设");
+    expect(screen.getByText("stats-integrity")).toBeInTheDocument();
+    expect(screen.queryByText("publication-figures")).not.toBeInTheDocument();
+  });
+
+  it("keeps custom descriptions and gives unknown blank entries a display fallback", async () => {
+    useRuntimeStore.setState({ skillsStatus: "ready", skills: [
+      { name: "publication-figures", description: "My custom figure workflow", source: "project" },
+      { name: "custom-skill", description: "  ", source: "user" },
+    ], agents: [{ name: "custom-agent", description: "" }] });
+    await i18n.changeLanguage("zh-Hans");
+    render(<MemoryRouter><SkillsPage /></MemoryRouter>);
+    expect(screen.getByText("My custom figure workflow")).toBeInTheDocument();
+    expect(screen.getByText("为代理提供专项任务的操作指南。")).toBeInTheDocument();
+    expect(screen.getByText("根据自身配置执行或辅助完成任务。")).toBeInTheDocument();
+    expect(screen.queryByText("制作适合论文发表的图表，检查排版、可读性和导出格式。")).not.toBeInTheDocument();
+  });
+
   it("hides installation for a read-only Web workspace", () => {
     useRuntimeStore.setState({ webReadOnly: true, skillsStatus: "ready" });
     render(<MemoryRouter><SkillsPage /></MemoryRouter>);

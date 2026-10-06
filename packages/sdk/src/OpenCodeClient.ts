@@ -740,6 +740,35 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     if (!res.ok) throw await this.apiError(res, "Failed to delete session");
   }
 
+  async listRunningSessions(directory?: string): Promise<string[] | null> {
+    const query = directory ? `?${new URLSearchParams({ directory })}` : this.dirQuery();
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("Timed out waiting for OpenCode session status"));
+      }, Math.min(this.requestTimeoutMs, 10000));
+    });
+    try {
+      return await Promise.race([deadline, (async () => {
+        const res = await this.fetchImpl(`${this.baseUrl}/session/status${query}`, { headers: this.headers(), signal: controller.signal });
+        if (res.status === 404 || res.status === 501) return null;
+        if (!res.ok) throw await this.apiError(res, "Failed to load session status");
+        const statuses: unknown = await res.json();
+        if (!statuses || typeof statuses !== "object" || Array.isArray(statuses))
+          throw new Error("Invalid session status response");
+        const running: string[] = [];
+        for (const [id, status] of Object.entries(statuses)) {
+          const type = status?.type;
+          if (type === "busy" || type === "retry") running.push(id);
+          else if (type !== "idle") throw new Error("Unknown session status");
+        }
+        return running;
+      })()]);
+    } finally { clearTimeout(timer); }
+  }
+
   async isSessionRunning(sessionId: string, directory?: string): Promise<boolean | null> {
     const query = directory
       ? `?${new URLSearchParams({ directory })}`
@@ -1365,6 +1394,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     variant?: string | null,
     files?: PromptFile[],
     attachmentContext?: AttachmentPromptContext,
+    collaborationRevision?: number,
   ): Promise<void> {
     const m = parseModel(model);
     const res = await this.fetchWithTimeout(
@@ -1386,6 +1416,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
             })),
           ],
           ...(attachmentContext ? { attachmentTurn: attachmentContext } : {}),
+          ...(collaborationRevision !== undefined ? { collaborationRevision } : {}),
           ...(agent ? { agent } : {}),
           ...(m ? { model: m } : {}),
           system: ARTIFACT_PRESENTATION_SYSTEM,
@@ -1698,6 +1729,12 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           racc.text += d.delta;
           this.emit({ type: "reasoning.updated", sessionId: racc.sessionId, partId, text: racc.text });
         }
+        break;
+      }
+      case "session.updated": {
+        const info = props.info as { id?: unknown; title?: unknown } | undefined;
+        if (typeof info?.id === "string" && info.id && typeof info.title === "string")
+          this.emit({ type: "session.updated", sessionId: info.id, title: info.title });
         break;
       }
       case "session.idle": {

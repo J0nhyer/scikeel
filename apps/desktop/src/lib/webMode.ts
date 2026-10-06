@@ -5,14 +5,18 @@
 // identical desktop app talking to the gateway, which proxies OpenCode.
 // See docs/rfc/remote-access-gateway.md.
 
-const w = typeof window !== "undefined" ? (window as unknown as { __OS_WEB__?: boolean }) : undefined;
+const w = typeof window !== "undefined" ? (window as unknown as { __OS_WEB__?: boolean; __OS_PLATFORM__?: boolean }) : undefined;
 
 /** True when this build is running as the gateway-served web client. */
 export const isGatewayWeb = w?.__OS_WEB__ === true;
 
+/** Multi-user Web authenticates with the platform session cookie. */
+export const isPlatformWeb = isGatewayWeb && w?.__OS_PLATFORM__ === true;
+
 const TOKEN_KEY = "os_gateway_token";
 
 export function gatewayToken(): string | null {
+  if (isPlatformWeb) return null;
   try {
     return localStorage.getItem(TOKEN_KEY);
   } catch {
@@ -75,23 +79,34 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
 
 let guardInstalled = false;
 
-/** Wrap window.fetch (once) so a 401 from the same-origin gateway clears the
- *  token and triggers re-auth. Must run BEFORE OpenCodeClient binds fetch. */
+/** Recover platform session expiry through login, or standalone token expiry
+ *  through the token gate. Install before OpenCodeClient binds fetch. */
 export function installGatewayAuthGuard(): void {
   if (guardInstalled || !isGatewayWeb || typeof window === "undefined") return;
   guardInstalled = true;
   const origin = gatewayOrigin();
   const original = window.fetch.bind(window);
+  let redirecting = false;
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const res = await original(input, init);
-    if (res.status === 401) {
-      const url =
-        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      // Only react to our own gateway (relative or same-origin), not third parties.
-      if (!url || url.startsWith("/") || url.startsWith(origin)) {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    // Compare parsed origins so a third-party URL sharing our prefix is excluded.
+    if (new URL(url, origin).origin !== origin) return res;
+    if (isPlatformWeb) {
+      // An upstream/provider 401 does not mean the platform session expired.
+      const sessionExpired = res.status === 401 && res.headers.get("x-scikeel-auth") === "session-required";
+      const redirectedUrl = res.redirected ? new URL(res.url, origin) : null;
+      const loginRedirect = redirectedUrl?.origin === origin && redirectedUrl.pathname === "/login";
+      if ((sessionExpired || loginRedirect) && !redirecting) {
+        redirecting = true;
         clearGatewayToken();
-        unauthorizedHandler?.();
+        const next = window.location.pathname + window.location.search;
+        window.location.replace(`/login?next=${encodeURIComponent(next)}`);
       }
+    } else if (res.status === 401) {
+      clearGatewayToken();
+      unauthorizedHandler?.();
     }
     return res;
   };

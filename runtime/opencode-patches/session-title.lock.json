@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "upstreamVersion": "1.18.32",
+  "upstreamCommit": "545f51d26cc39a907d2867492d498d9607ea5fa4",
+  "sourceTree": "b443aa2f11f402603d7911040fc9067ad65cf475",
+  "bunVersion": "1.3.14",
+  "patchSha256": "c4ab71125d2d535235fafa69d3becfcd9c58324367c99bd31dfd368e256dbfc3",
+  "policy": "conversation-v1"
+}

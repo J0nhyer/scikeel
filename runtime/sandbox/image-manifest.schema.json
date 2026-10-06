@@ -136,12 +136,103 @@
     },
     "runnerFiles": {
       "type": "object",
-      "required": ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py"],
-      "propertyNames": {"enum": ["opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py"]},
-      "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      "required": [
+        "opt/scikeel/tools/runner.mjs",
+        "opt/scikeel/tools/file-rpc.mjs",
+        "opt/scikeel/tools/cli-jobs.mjs",
+        "opt/scikeel/tools/project-environment.py"
+      ],
+      "propertyNames": {
+        "enum": [
+          "opt/scikeel/tools/runner.mjs",
+          "opt/scikeel/tools/file-rpc.mjs",
+          "opt/scikeel/tools/cli-jobs.mjs",
+          "opt/scikeel/tools/project-environment.py",
+          "opt/scikeel/tools/science-environment.mjs",
+          "opt/scikeel/tools/collaboration.mjs"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
     },
     "testEntryPoint": {
       "const": "/opt/scikeel/tools/probe-entry.mjs"
+    },
+    "sourceInputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000\\\\]+$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "sessionTitleRuntime": {
+      "type": "object",
+      "required": [
+        "schema",
+        "upstreamVersion",
+        "upstreamCommit",
+        "sourceTree",
+        "bunVersion",
+        "patchSha256",
+        "policy",
+        "target",
+        "version",
+        "binarySha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": 1
+        },
+        "upstreamVersion": {
+          "const": "1.18.32"
+        },
+        "upstreamCommit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "sourceTree": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "bunVersion": {
+          "const": "1.3.14"
+        },
+        "patchSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "policy": {
+          "const": "conversation-v1"
+        },
+        "target": {
+          "const": "bun-linux-x64"
+        },
+        "version": {
+          "const": "1.18.32"
+        },
+        "binarySha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
@@ -155,7 +246,9 @@
         }
       },
       "then": {
-        "required": ["runnerFiles"],
+        "required": [
+          "runnerFiles"
+        ],
         "not": {
           "required": [
             "testEntryPoint"

@@ -10,6 +10,7 @@ export {
   type TextUpdatedEvent,
   type ToolUpdatedEvent,
   type SessionIdleEvent,
+  type SessionUpdatedEvent,
   type RuntimeErrorEvent,
   type SessionRetryEvent,
   type RetryAction,

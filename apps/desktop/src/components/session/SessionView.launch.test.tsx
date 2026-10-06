@@ -5,8 +5,16 @@ import { useRuntimeStore } from "@/lib/runtime";
 
 // COPYCAT RULE: useRuntimeStore is module-global — restore the complete state
 // this file found, so no other suite inherits a faked runtime kind or action.
+const webMode = vi.hoisted(() => ({ enabled: false }));
+vi.mock("@/lib/webMode", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/webMode")>(),
+  get isGatewayWeb() { return webMode.enabled; },
+  get isPlatformWeb() { return webMode.enabled; },
+}));
+
 const INITIAL_RUNTIME = useRuntimeStore.getState();
 afterEach(() => {
+  webMode.enabled = false;
   useRuntimeStore.setState(INITIAL_RUNTIME, true);
   vi.useRealTimers();
 });
@@ -66,5 +74,33 @@ describe("a session pane using an administrator-managed CLI", () => {
 
     expect(await screen.findByRole("button", { name: "Switch model" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approval mode" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Web workspace loading messages", () => {
+  it("stops the loading message and offers reconnection after Web loading fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    webMode.enabled = true;
+    useRuntimeStore.setState({ status: "error", sessionListReady: false, error: "Could not load your conversations.", bootstrap: vi.fn(async () => {}) });
+    renderAt("/live");
+    await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
+    expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+    expect(screen.queryByText("Connecting to your workspace…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading conversations…")).not.toBeInTheDocument();
+    expect(screen.queryByText("OpenCode runtime")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["connecting", "Connecting to your workspace…"],
+    ["ready", "Loading conversations…"],
+  ] as const)("explains %s without desktop runtime terminology", async (status, title) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    webMode.enabled = true;
+    useRuntimeStore.setState({ status, sessionListReady: false, error: null, bootstrap: vi.fn(async () => {}) });
+    renderAt("/live");
+    await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
+    expect(screen.getByText(title)).toBeInTheDocument();
+    expect(screen.queryByText("Starting the local runtime…")).not.toBeInTheDocument();
+    expect(screen.queryByText(/macOS may ask/)).not.toBeInTheDocument();
   });
 });

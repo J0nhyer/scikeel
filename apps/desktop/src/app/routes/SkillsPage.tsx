@@ -44,16 +44,19 @@ export function SkillsPage() {
    *  does not, at that moment, care which of the two kinds it is. */
   const entries = useMemo<Entry[]>(() => {
     const all: Entry[] = [
-      ...skills.map((s) => ({
-        kind: "skill" as const,
-        name: s.name,
-        description: s.description,
-        tag: s.source ?? sourceOf(s.location),
-      })),
+      ...skills.map((s) => {
+        const source = s.source ?? sourceOf(s.location);
+        return {
+          kind: "skill" as const,
+          name: s.name,
+          description: entryDescription("skill", s.name, s.description, t, source === "builtin"),
+          tag: source,
+        };
+      }),
       ...agents.map((a) => ({
         kind: "agent" as const,
         name: a.name,
-        description: a.description,
+        description: entryDescription("agent", a.name, a.description, t),
         // The RAW mode: an SDK that grows a new one must still show it rather
         // than show nothing. `agentModeLabel` translates the ones we know.
         tag: a.mode,
@@ -69,7 +72,7 @@ export function SkillsPage() {
           (e.description ?? "").toLowerCase().includes(needle),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [skills, agents, kind, query]);
+  }, [skills, agents, kind, query, t]);
 
   return (
     <div className="h-full overflow-y-auto">
@@ -230,6 +233,12 @@ interface Entry {
   name: string;
   description: string;
   tag?: string;
+}
+
+/** Localize catalog copy for display only; never change runtime instructions. */
+function entryDescription(kind: Entry["kind"], name: string, description: string | undefined, t: Say, localize = true): string {
+  const fallback = description?.trim() || t(`skills.catalogDescriptions.fallback.${kind}`);
+  return localize ? t(`skills.catalogDescriptions.${kind}.${name}`, { defaultValue: fallback }) : fallback;
 }
 
 function EntryCard({ entry }: { entry: Entry }) {

@@ -20,6 +20,7 @@ if (!port || !token || !workspace || !stateDir) {
 }
 
 const managedHistory = [];
+let managedPermission = [];
 const server = createServer(async (request, response) => {
   if (request.url === "/v1/health") {
     response.writeHead(200, { "content-type": "application/json" });
@@ -67,12 +68,19 @@ const server = createServer(async (request, response) => {
     response.setHeader("content-type","application/json");
     const match=/^\/session\/([A-Za-z0-9_-]+)(?:\/(message|prompt_async))?$/.exec(runtimeUrl.pathname);
     if(!match || match[1]!=="owned"){response.writeHead(404);response.end();return;}
-    if(!match[2]){response.end(JSON.stringify({id:match[1],directory:workspace+"/project"}));return;}
+    if(!match[2]){
+      if(request.method === "PATCH") {
+        const buffers=[];for await(const chunk of request)buffers.push(chunk);
+        const body=JSON.parse(Buffer.concat(buffers).toString());
+        if(body.permission)managedPermission=body.permission;
+      }
+      response.end(JSON.stringify({id:match[1],directory:workspace+"/project",permission:managedPermission}));return;
+    }
     if(match[2]==="message" && request.method==="GET"){response.end(JSON.stringify(managedHistory));return;}
     if(match[2]==="prompt_async" && request.method==="POST") {
       const buffers=[];for await(const chunk of request)buffers.push(chunk);
       const body=JSON.parse(Buffer.concat(buffers).toString());
-      managedHistory.push({info:{id:body.messageID,role:"user"},parts:body.parts,fixtureSystem:body.system});
+      managedHistory.push({info:{id:body.messageID,role:"user"},parts:body.parts,fixtureSystem:body.system,fixturePermission:managedPermission});
       response.writeHead(202);response.end("{}");return;
     }
   }

@@ -150,6 +150,7 @@ export function Composer({
   placeholder,
   approvalMode,
   onApprovalModeChange,
+  collaborationControl,
   agentMode,
   onAgentModeChange,
   showModelPicker,
@@ -184,6 +185,7 @@ export function Composer({
   onApprovalModeChange?: (mode: ApprovalMode) => void;
   /** The Build/Plan agent switch — same both-or-nothing contract; the live
    *  session withholds it when the runtime has no "plan" agent. */
+  collaborationControl?: React.ReactNode;
   agentMode?: AgentMode;
   onAgentModeChange?: (mode: AgentMode) => void;
   /** Show the inline model + reasoning-effort switcher (left of send). The live
@@ -1029,7 +1031,8 @@ export function Composer({
         {/* Folder picker for a fresh draft — renders nothing once the session
             exists (its folder then shows in the header's Files toggle). */}
         {showWorkspaceChip && <WorkspaceChip draftKey={draftKey} />}
-        {agentMode && onAgentModeChange && (
+        {collaborationControl}
+        {agentMode && onAgentModeChange && !collaborationControl && (
           <div className="relative shrink-0" ref={agentRef}>
             {agentOpen && (
               <div

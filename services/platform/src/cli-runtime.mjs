@@ -474,6 +474,7 @@ export class CliRuntimeManager {
 
   async refreshProfiles() {
     for (const runtime of MANAGED_RUNTIMES) {
+      if (!this.assistantEnabled[runtime]) continue;
       const profile = await this.profileResolver.refresh(runtime);
       this.profiles.set(runtime, profile);
       this.managedRuntimes[runtime] = { models: profile.models.map((item) => item.id), defaultModel: profile.defaultModel };
@@ -506,6 +507,7 @@ export class CliRuntimeManager {
     if (!MANAGED_RUNTIMES.has(runtime) || typeof enabled !== "boolean") throw issue("invalid_runtime", "expected a managed assistant and enabled boolean");
     this.assistantEnabled[runtime] = enabled;
     await this.persistRuntime();
+    if (enabled) await this.refreshProfiles();
     return this.adminDescribe();
   }
 
@@ -879,6 +881,7 @@ export class CliRuntimeManager {
     delete session._error;
     delete session._turnFailed;
     try {
+    if (!this.assistantEnabled[session.runtime]) throw issue("runtime_unconfigured", "AI assistant is unavailable");
     const profile = await this.profileResolver.refresh(session.runtime);
     this.profiles.set(session.runtime, profile);
     this.managedRuntimes[session.runtime] = { models: profile.models.map((item) => item.id), defaultModel: profile.defaultModel };

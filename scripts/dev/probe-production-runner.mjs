@@ -40,7 +40,7 @@ try {
   if ((await request("/files", { operation: "read", root: "workspace", path: "../state/private" })).status !== 403)
     throw new Error("workspace escape accepted");
   const profile = { model: "fixture/approved", enabled_providers: ["fixture"], provider: { fixture: {
-    npm: "@ai-sdk/openai-compatible", name: "fixture", models: { approved: { name: "approved" } },
+    npm: "@ai-sdk/openai-compatible", name: "fixture", whitelist: ["approved"], models: { approved: { name: "approved" } },
     options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: "c".repeat(64) } } },
     permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
   const imageDigest=`sha256:${"d".repeat(64)}`;
