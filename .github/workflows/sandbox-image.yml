@@ -6,6 +6,8 @@ on:
   push:
     branches: [feat/tenant-science-isolation]
     paths:
+      - runtime/opencode-patches/**
+      - scripts/dev/build-opencode-title-runtime.mjs
       - runtime/sandbox/**
       - scripts/dev/probe-production-runner.mjs
       - crates/osd-cli/**
@@ -48,11 +50,29 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Prepare and verify the managed OpenCode source patch
+        shell: bash
+        env:
+          SCIKEEL_RUNTIME_BUN: bun
+        run: |
+          mkdir -p .superpowers/sdd/2026-10-06-session-title-model
+          git clone --filter=blob:none --no-checkout https://github.com/anomalyco/opencode.git .superpowers/sdd/2026-10-06-session-title-model/source-git
+          git -C .superpowers/sdd/2026-10-06-session-title-model/source-git checkout 545f51d26cc39a907d2867492d498d9607ea5fa4
+          pnpm runtime:title:prepare
+          pnpm runtime:title:check
+          pnpm runtime:title:test
+          pnpm runtime:title:build
+          OSD_SESSION_TITLE_BINARY="$PWD/.deploy/session-title-runtime/opencode" OSD_SESSION_TITLE_DEPENDENCIES="$PWD/.superpowers/sdd/2026-10-06-session-title-model/source-git/packages/opencode/node_modules" pnpm platform:test ../../runtime/opencode-patches/session-title-native.acceptance.mjs
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the headless core in a verified bounded scope
         shell: bash
         run: |
-          sudo systemd-run --scope -p MemoryHigh=1850M -p MemoryMax=2200M -p MemorySwapMax=256M \
+          mkdir -p .deploy
+          flock -n .deploy/web-release-deploy.lock flock -n .deploy/desktop-task.lock \
+            sudo systemd-run --scope -p MemoryHigh=1850M -p MemoryMax=2200M -p MemorySwapMax=256M \
             sudo -u "$USER" env PATH="$PATH" OSD_TASK_FORCE_LIMITS=1 CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 \
             node scripts/dev/safe-desktop-task.mjs core-build --guarded --package osd-cli
       - name: Resolve exact source image digests
@@ -70,9 +90,9 @@ jobs:
           cp runtime/sandbox/image/{Dockerfile,pyproject.toml,uv.lock} .deploy/science-context/
           cp target/debug/osd .deploy/science-context/tools/bin/
           cp "$(command -v node)" .deploy/science-context/tools/bin/
-          bash scripts/dev/fetch-opencode.sh x86_64-unknown-linux-gnu
-          cp apps/desktop/src-tauri/binaries/opencode-x86_64-unknown-linux-gnu .deploy/science-context/tools/bin/opencode
-          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment}.mjs .deploy/science-context/tools/
+          cp .deploy/session-title-runtime/opencode .deploy/science-context/tools/bin/opencode
+          cp .deploy/session-title-runtime/runtime-manifest.json .deploy/science-context/tools/session-title-runtime.json
+          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment,collaboration}.mjs .deploy/science-context/tools/
           cp runtime/sandbox/project-environment.py .deploy/science-context/tools/
           mkdir -p .deploy/science-context/tools/resources/skills-core
           tar -C runtime/skills/core --exclude=.gitkeep -cf - . | tar -C .deploy/science-context/tools/resources/skills-core -xf -
@@ -132,6 +152,17 @@ jobs:
             -v "$PWD/.deploy/science-test:/opt/scikeel/test:ro" \
             --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
             /opt/scikeel/test/probe-production-runner.mjs
+      - name: Verify a real unanswered checkpoint in the pinned runtime
+        shell: bash
+        run: |
+          timeout --signal=TERM --kill-after=10s 80s docker run --rm \
+            --network=none --read-only --memory=1024m --memory-swap=1152m --pids-limit=256 --cpus=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            -v "$PWD:/fixture/repo:ro" \
+            -e OSD_COLLABORATION_BINARY=/opt/scikeel/tools/bin/opencode \
+            -w /fixture/repo/services/platform \
+            --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
+            --test --test-concurrency=1 /fixture/repo/services/platform/test/collaboration-opencode.test.mjs
       - name: Export immutable artifact and measured identities
         shell: bash
         run: |

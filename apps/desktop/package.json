@@ -11,7 +11,8 @@
     "test": "node ../../scripts/dev/safe-desktop-task.mjs test",
     "test:watch": "vitest",
     "lint": "node ../../scripts/dev/safe-desktop-task.mjs lint",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "web:build": "node ../../scripts/dev/safe-desktop-task.mjs web-build"
   },
   "dependencies": {
     "3dmol": "^2.5.5",

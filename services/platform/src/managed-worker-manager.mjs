@@ -90,12 +90,13 @@ export class ManagedWorkerManager {
     catch (error) { release(); throw error; }
     return Object.freeze({ generation: record.generation, release });
   }
-  retainWorker(instanceId, { readOnly = false, maintenance = false } = {}) {
+  retainWorker(instanceId, { readOnly = false, maintenance = false, passive = false } = {}) {
     const record = this.#workers.get(instanceId);
     if (!record || record.status !== "running") throw unavailable("worker is not running");
     if (record.maintenance && !readOnly && !maintenance) throw unavailable("workspace environment installation in progress");
-    record.activeOperations++; if (!readOnly) record.activeMutations++; let released = false;
-    return Object.freeze({ generation: record.generation, release: () => { if (!released) { released = true; record.activeOperations--; if (!readOnly) record.activeMutations--; } } });
+    if (passive && !readOnly) throw new Error("passive leases must be read-only");
+    if (!passive) record.activeOperations++; if (!readOnly) record.activeMutations++; let released = false;
+    return Object.freeze({ generation: record.generation, release: () => { if (!released) { released = true; if (!passive) record.activeOperations--; if (!readOnly) record.activeMutations--; } } });
   }
   async #stop(record) {
     if (!["running", "starting"].includes(record.status)) return;

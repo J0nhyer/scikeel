@@ -143,7 +143,7 @@ export class ModelBroker {
     req.once("aborted", aborted); res.once("close", aborted); this.#operations.add(operation);
     try {
       if (this.#operations.size > this.maxConnections) throw failure("model_capacity", 429);
-      if (req.method !== "POST" || !ROUTES.has(req.url) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
+      if (req.method !== "POST" || !(ROUTES.has(req.url) || req.url === "/collaboration" && this.collaborationHandler) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
           req.headers["content-encoding"] || req.headers.expect) throw failure("model_request_denied");
       const bearer = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
       const apiKey = /^[a-f0-9]{64}$/.test(req.headers["x-api-key"] ?? "") ? req.headers["x-api-key"] : undefined;
@@ -166,6 +166,14 @@ export class ModelBroker {
       let body;
       try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw failure("model_invalid_json", 400); }
       if (!body || typeof body !== "object" || Array.isArray(body)) throw failure("model_request_denied");
+      if (req.url === "/collaboration") {
+        if (bytes > 16384 || !["guard", "state", "checkpoint", "capability", "delivery"].includes(body.action) ||
+            !validName(body.sessionId) || Object.keys(body).some(key => !["action", "sessionId", "kind", "question", "suggestedAnswer", "execution", "operation", "inputs", "deliverables"].includes(key)))
+          throw failure("model_request_denied");
+        const result = await wait(() => this.collaborationHandler(context, body), controller.signal);
+        res.writeHead(200, {"content-type":"application/json", "cache-control":"no-store"});
+        res.end(JSON.stringify(result)); return;
+      }
       const provider = this.#providers.get(capability.provider);
       authorizeModelRequest({ capability, policy: provider, now: this.now(), request: {
         ...context, provider: capability.provider, method: req.method, path: req.url, model: body.model,
@@ -191,6 +199,14 @@ export class ModelBroker {
       if (provider.authMode === "x-api-key") headers["x-api-key"] = provider.credential;
       else headers.authorization = `Bearer ${provider.credential}`;
       if (req.url === "/v1/messages") headers["anthropic-version"] = "2023-06-01";
+      // The actual OpenCode runtime supplies the free provider's attribution.
+      // Keep only these bounded metadata headers, never tenant credentials.
+      if (capability.provider === "opencode") {
+        for (const name of ["user-agent", "x-opencode-project", "x-opencode-session", "x-opencode-request", "x-opencode-client"]) {
+          const value = req.headers[name];
+          if (typeof value === "string" && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value)) headers[name] = value;
+        }
+      }
       const upstreamRequest = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, { method: "POST", headers, signal: controller.signal, agent: false });
       const upstream = await new Promise((resolve, reject) => {
         upstreamRequest.once("response", resolve); upstreamRequest.once("error", reject); upstreamRequest.end(payload);

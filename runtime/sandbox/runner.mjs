@@ -149,14 +149,14 @@ export class TenantGateway {
       skills: { paths: [skills] },
       permission: { bash: "ask", edit: "ask", webfetch: "ask", websearch: "ask", ...profile?.permission,
         external_directory: { "*": "deny", [skills]: "allow", [`${skills}/*`]: "allow" } },
-      ...(profile && imageDigest ? { plugin: [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest }]] } : {}),
+      ...(profile && imageDigest ? { plugin: [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest, collaborationToken:profile.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey }]] } : {}),
     };
     await writeFile(temporary, JSON.stringify(configured), { flag: "wx", mode: 0o600 });
     await rename(temporary, `${config}/opencode.json`);
     const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", this.address,
       "--port", String(this.port), "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,
       "--resources", "/opt/scikeel/tools/resources", "--token", this.token], {
-      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir }, detached: true,
+      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir, SCIKEEL_SESSION_TITLE_POLICY: "conversation-v1" }, detached: true,
       stdio: ["ignore", "ignore", process.env.SCIKEEL_CI_DIAGNOSTICS === "1" ? "inherit" : "ignore"],
     });
     this.#child = child; let failed = false; child.once("error", () => failed = true);

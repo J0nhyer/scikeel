@@ -275,7 +275,11 @@
   },
   "live": {
     "starting": {
-      "bodyWeb": "ホストアプリの応答を待っています。このページを開いたままにしてください。ホストに接続できるようになると自動的につながります。",
+      "titleWeb": "ワークスペースに接続しています…",
+      "titleSessionsWeb": "会話を読み込んでいます…",
+      "bodyWeb": "サーバーでワークスペースを準備しています。時間がかかっているため、自動で再試行しています。",
+      "bodySessionsWeb": "サーバーから会話履歴を取得しています。失敗したリクエストは自動で再試行します。",
+      "sessionsError": "会話履歴を読み込めませんでした。もう一度接続してください。",
       "title": "ローカルランタイムを起動中…",
       "body": "バンドルされたエージェントランタイムを起動しています。初回起動時は macOS がフォルダへのアクセス許可を求めることがあります。許可すれば自動的に完了します。"
     },
@@ -619,5 +623,41 @@
     "installing": "Installing…",
     "loading": "Preparing…",
     "prepare": "Prepare private dependencies"
+  },
+  "collaboration": {
+    "guidedDescription": "Confirm one research step, review its result, then choose the next step.",
+    "stepConfirmation": "Next research step",
+    "label": "自律度",
+    "modes": {
+      "guided": "低",
+      "collaborative": "中",
+      "delegated": "高",
+      "autonomous": "完全"
+    },
+    "description": "Agree on a plan; decide important choices together.",
+    "unavailable": "Available in a later stage",
+    "confirmation": "Research decision",
+    "answer": "Your answer or adjustment",
+    "continue": "Continue with the suggestion",
+    "submit": "Confirm answer",
+    "pause": "Pause",
+    "paused": "Execution is paused. Saving an answer does not restart it.",
+    "retry": "Retry",
+    "savedDecisions": "Confirmed research decisions",
+    "suggestion": "Suggestion",
+    "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
+    "delegatedDescription": "承認済みの作業を継続し、未承認の重要な選択は確認します。",
+    "deliveryCompleted": "成果物ファイルの検証完了",
+    "deliveryFailed": "成果物の検証に失敗",
+    "deliverySelfCheck": "ファイルと証拠は検証されますが、科学的結論は Agent の自己確認です。",
+    "deliveryRepairLimit": "修復の上限2回に達しました。部分的な結果を確認してください。",
+    "deliveryIssues": {
+      "changed_inputs": "元の入力が見つからないか、変更されています。",
+      "missing_progress": "実行レポートが見つからないか、無効です。",
+      "pending_decisions": "レポートに未解決の研究判断があります。",
+      "incomplete_report": "実行レポートは未完了です。",
+      "missing_outputs": "要求された成果物ファイルがありません。",
+      "failed_checks": "必要な確認に失敗したか、証拠がありません。"
+    }
   }
 }

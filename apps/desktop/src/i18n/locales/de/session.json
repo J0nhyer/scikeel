@@ -275,7 +275,11 @@
   },
   "live": {
     "starting": {
-      "bodyWeb": "Warte auf eine Antwort der Host-App. Lassen Sie diese Seite offen — sie verbindet sich von selbst, sobald der Host erreichbar ist.",
+      "titleWeb": "Verbindung zum Arbeitsbereich wird hergestellt…",
+      "titleSessionsWeb": "Gespräche werden geladen…",
+      "bodyWeb": "Der Server bereitet deinen Arbeitsbereich vor. Es dauert länger als erwartet; die Verbindung wird automatisch erneut versucht.",
+      "bodySessionsWeb": "Deine Gespräche werden vom Server geladen. Fehlgeschlagene Anfragen werden automatisch wiederholt.",
+      "sessionsError": "Deine Gespräche konnten nicht geladen werden. Bitte verbinde dich erneut.",
       "title": "Lokale Runtime wird gestartet…",
       "body": "Die gebündelte Agent-Runtime startet. Beim ersten Start fragt macOS möglicherweise nach Zugriff auf Ihre Ordner — erlauben Sie ihn, dann schließt der Vorgang von selbst ab."
     },
@@ -630,5 +634,41 @@
     "installing": "Installing…",
     "loading": "Preparing…",
     "prepare": "Prepare private dependencies"
+  },
+  "collaboration": {
+    "guidedDescription": "Confirm one research step, review its result, then choose the next step.",
+    "stepConfirmation": "Next research step",
+    "label": "Autonomie",
+    "modes": {
+      "guided": "Niedrig",
+      "collaborative": "Mittel",
+      "delegated": "Hoch",
+      "autonomous": "Vollständig"
+    },
+    "description": "Agree on a plan; decide important choices together.",
+    "unavailable": "Available in a later stage",
+    "confirmation": "Research decision",
+    "answer": "Your answer or adjustment",
+    "continue": "Continue with the suggestion",
+    "submit": "Confirm answer",
+    "pause": "Pause",
+    "paused": "Execution is paused. Saving an answer does not restart it.",
+    "retry": "Retry",
+    "savedDecisions": "Confirmed research decisions",
+    "suggestion": "Suggestion",
+    "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
+    "delegatedDescription": "Autorisierte Arbeit abschließen; bei nicht genehmigten wichtigen Entscheidungen nachfragen.",
+    "deliveryCompleted": "Ergebnisdateien geprüft",
+    "deliveryFailed": "Ergebnisprüfung fehlgeschlagen",
+    "deliverySelfCheck": "Dateien und Nachweise werden geprüft; wissenschaftliche Schlussfolgerungen sind Selbstprüfungen des Agenten.",
+    "deliveryRepairLimit": "Die Grenze von zwei Korrekturen ist erreicht. Teilergebnis prüfen.",
+    "deliveryIssues": {
+      "changed_inputs": "Eine ursprüngliche Eingabe fehlt oder wurde geändert.",
+      "missing_progress": "Der Ausführungsbericht fehlt oder ist ungültig.",
+      "pending_decisions": "Im Bericht ist eine Forschungsentscheidung offen.",
+      "incomplete_report": "Der Ausführungsbericht ist noch nicht abgeschlossen.",
+      "missing_outputs": "Eine angeforderte Ergebnisdatei fehlt.",
+      "failed_checks": "Eine erforderliche Prüfung ist fehlgeschlagen oder ihr Nachweis fehlt."
+    }
   }
 }

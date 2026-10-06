@@ -275,7 +275,11 @@
   },
   "live": {
     "starting": {
-      "bodyWeb": "En attente de la réponse de l'application hôte. Laissez cette page ouverte — la connexion se fera d'elle-même dès que l'hôte sera joignable.",
+      "titleWeb": "Connexion à votre espace de travail…",
+      "titleSessionsWeb": "Chargement des conversations…",
+      "bodyWeb": "Le serveur prépare votre espace de travail. Cela prend plus de temps que prévu ; une nouvelle tentative est en cours.",
+      "bodySessionsWeb": "Récupération de vos conversations sur le serveur. Les requêtes échouées seront réessayées automatiquement.",
+      "sessionsError": "Impossible de charger vos conversations. Veuillez vous reconnecter.",
       "title": "Démarrage du runtime local…",
       "body": "Le runtime d'agent intégré démarre. Au premier lancement, macOS peut demander l'autorisation d'accéder à vos dossiers — accordez-la et l'opération se termine d'elle-même."
     },
@@ -630,5 +634,41 @@
     "installing": "Installing…",
     "loading": "Preparing…",
     "prepare": "Prepare private dependencies"
+  },
+  "collaboration": {
+    "guidedDescription": "Confirm one research step, review its result, then choose the next step.",
+    "stepConfirmation": "Next research step",
+    "label": "Autonomie",
+    "modes": {
+      "guided": "Faible",
+      "collaborative": "Moyenne",
+      "delegated": "Élevée",
+      "autonomous": "Complète"
+    },
+    "description": "Agree on a plan; decide important choices together.",
+    "unavailable": "Available in a later stage",
+    "confirmation": "Research decision",
+    "answer": "Your answer or adjustment",
+    "continue": "Continue with the suggestion",
+    "submit": "Confirm answer",
+    "pause": "Pause",
+    "paused": "Execution is paused. Saving an answer does not restart it.",
+    "retry": "Retry",
+    "savedDecisions": "Confirmed research decisions",
+    "suggestion": "Suggestion",
+    "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
+    "delegatedDescription": "Terminer le travail autorisé ; demander les choix importants non approuvés.",
+    "deliveryCompleted": "Fichiers livrés vérifiés",
+    "deliveryFailed": "Échec de la vérification de livraison",
+    "deliverySelfCheck": "Les fichiers et preuves sont vérifiés ; les conclusions scientifiques restent des auto-vérifications de l’agent.",
+    "deliveryRepairLimit": "La limite de deux corrections est atteinte. Consultez le résultat partiel.",
+    "deliveryIssues": {
+      "changed_inputs": "Une entrée originale manque ou a changé.",
+      "missing_progress": "Le rapport d’exécution manque ou est invalide.",
+      "pending_decisions": "Une décision de recherche reste non résolue dans le rapport.",
+      "incomplete_report": "Le rapport d’exécution est inachevé.",
+      "missing_outputs": "Un fichier demandé manque.",
+      "failed_checks": "Une vérification requise a échoué ou sa preuve manque."
+    }
   }
 }

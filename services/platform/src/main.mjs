@@ -95,6 +95,8 @@ const platform = new PlatformServer({
   logger: (event) => console.error(JSON.stringify(event)),
 });
 
+if(controlPlane) controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
+
 let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;

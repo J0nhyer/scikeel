@@ -63,6 +63,12 @@ export interface ToolUpdatedEvent {
    *  requests (question/permission) belong to THIS conversation. */
   childSessionId?: string;
 }
+/** A durable session title update; internal job metadata stays in the runtime. */
+export interface SessionUpdatedEvent {
+  type: "session.updated";
+  sessionId: string;
+  title: string;
+}
 export interface SessionIdleEvent {
   type: "session.idle";
   sessionId: string;
@@ -204,6 +210,7 @@ export type OpenCodeEvent =
   | MessageUsageEvent
   | StepUpdatedEvent
   | ToolUpdatedEvent
+  | SessionUpdatedEvent
   | SessionIdleEvent
   | MessageAgentEvent
   | SessionRetryEvent

@@ -1,6 +1,7 @@
 [Unit]
 Description=SciKeel bounded tenant sandbox launcher
-After=network.target
+Requires=scikeel-tenant-volume.service
+After=network.target scikeel-tenant-volume.service
 ConditionPathExists=/etc/scikeel/sandbox-host.json
 
 [Service]

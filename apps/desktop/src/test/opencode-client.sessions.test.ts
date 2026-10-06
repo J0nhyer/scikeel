@@ -34,6 +34,26 @@ describe("OpenCodeClient.isSessionRunning", () => {
   });
 });
 
+describe("OpenCodeClient.listRunningSessions", () => {
+  it("discovers busy and retrying conversations in one directory-scoped request", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response(JSON.stringify({ ses_busy: { type: "busy" }, ses_retry: { type: "retry" }, ses_idle: { type: "idle" } })));
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl });
+    expect(await client.listRunningSessions("/research/project")).toEqual(["ses_busy", "ses_retry"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(`${BASE}/session/status?directory=%2Fresearch%2Fproject`);
+  });
+  it("bounds status response bodies after headers arrive", async () => {
+    const response = new Response("{}");
+    vi.spyOn(response, "json").mockImplementation(() => new Promise(() => {}));
+    const client = new OpenCodeClient({ baseUrl: BASE, requestTimeoutMs: 20, fetchImpl: async () => response });
+    await expect(client.listRunningSessions()).rejects.toThrow(/Timed out/);
+  });
+  it("keeps unsupported status discovery unknown", async () => {
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () => new Response("", { status: 404 }) });
+    expect(await client.listRunningSessions()).toBeNull();
+  });
+});
+
 interface ServerSession {
   id: string;
   title: string;
@@ -344,4 +364,18 @@ describe("pending interaction recovery errors", () => {
     const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () => new Response("not supported", { status: 404 }) });
     expect(await client[method]()).toEqual([]);
   });
+});
+
+
+it("normalizes committed title updates without exposing job metadata", async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+  const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () => new Response(stream, { headers: { "content-type": "text/event-stream" } }) });
+  const events: unknown[] = [];
+  client.onEvent(event => events.push(event));
+  try {
+    await client.connect();
+    controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "session.updated", properties: { info: { id: "ses_a", title: "Research topic", metadata: { scikeelSessionTitle: { model: "private" } } } } })}\n\n`));
+    await vi.waitFor(() => expect(events).toEqual([{ type: "session.updated", sessionId: "ses_a", title: "Research topic" }]));
+  } finally { controller.close(); client.close(); }
 });

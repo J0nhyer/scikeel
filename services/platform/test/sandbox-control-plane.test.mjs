@@ -36,6 +36,18 @@ test("fixed administrator HTTP providers remain compatible without accepting ten
     assert.throws(()=>validateBrokerConfiguration({...config,providers:{fixture:{...config.providers.fixture,baseUrl}}}));
 });
 
+test("only the standard OpenCode provider can opt into the complete free catalog with official names", () => {
+  const provider = { ...config.providers.fixture, baseUrl: "https://opencode.ai/zen/v1", catalog: "opencode-free",
+    name: "OpenCode Zen", enabledModels: ["big-pickle"], modelNames: { "big-pickle": "Big Pickle" } };
+  const free = { ...config, defaultProvider: "opencode", defaultModel: "big-pickle", providers: { opencode: provider } };
+  assert.equal(validateBrokerConfiguration(free), free);
+  for (const patch of [{ baseUrl: "https://foreign.invalid" }, { catalog: "all-models" },
+    { modelNames: { paid: "Paid" } }, { modelNames: { "big-pickle": { secret: "private" } } }]) {
+    assert.throws(() => validateBrokerConfiguration({ ...free, providers: { opencode: { ...provider, ...patch } } }));
+  }
+  assert.throws(() => validateBrokerConfiguration({ ...free, defaultProvider: "other", providers: { other: provider } }));
+});
+
 
 test("managed runtime whitelists exactly the current broker catalog without sharing mutable arrays", () => {
   const calls = [];

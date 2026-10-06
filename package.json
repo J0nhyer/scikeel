@@ -24,7 +24,17 @@
     "sandbox:mirror:install": "node scripts/dev/safe-desktop-task.mjs sandbox-mirror-install",
     "sandbox:migrate": "node scripts/dev/safe-desktop-task.mjs sandbox-migrate",
     "sandbox:storage:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-storage-prepare",
-    "sandbox:host:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-host-prepare"
+    "sandbox:host:prepare": "node scripts/dev/safe-desktop-task.mjs sandbox-host-prepare",
+    "release:test": "node scripts/dev/safe-desktop-task.mjs release-test",
+    "web:build": "pnpm --filter @ai4s/desktop web:build",
+    "web:release": "node scripts/dev/web-release.mjs",
+    "release:worker": "node scripts/dev/safe-desktop-task.mjs release --guarded",
+    "runtime:title:prepare": "node scripts/dev/safe-desktop-task.mjs opencode-title-prepare",
+    "runtime:title:test": "node scripts/dev/safe-desktop-task.mjs opencode-title-test",
+    "runtime:title:build": "node scripts/dev/safe-desktop-task.mjs opencode-title-build",
+    "runtime:title:check": "node scripts/dev/safe-desktop-task.mjs opencode-title-check",
+    "runtime:title:acceptance": "node scripts/dev/safe-desktop-task.mjs opencode-title-acceptance",
+    "web:publish": "node scripts/dev/web-publish.mjs"
   },
   "engines": {
     "node": ">=20"

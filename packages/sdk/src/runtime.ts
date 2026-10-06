@@ -62,6 +62,8 @@ export interface AgentRuntime {
   /** Live activity, independent of persisted unfinished messages. Null means
    *  this runtime does not expose the capability. */
   isSessionRunning?(sessionId: string, directory?: string): Promise<boolean | null>;
+  /** Recover active conversations after a browser reload, in one request per directory. */
+  listRunningSessions?(directory?: string): Promise<string[] | null>;
   /** Persist one synthetic text part on an existing message without starting a
    *  model turn. Used for results produced by an independent background agent. */
   appendTextPart(
@@ -86,6 +88,7 @@ export interface AgentRuntime {
     variant?: string | null,
     files?: PromptFile[],
     attachmentContext?: AttachmentPromptContext,
+    collaborationRevision?: number,
   ): Promise<void>;
   abortSession(sessionId: string): Promise<void>;
   /** Compact a session's conversation: older turns are summarized by the

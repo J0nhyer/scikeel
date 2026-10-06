@@ -26,7 +26,7 @@ const memoryHigh = 1850 * mib;
 const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
-if (!["build", "test", "typecheck", "lint", "probe", "platform-test",
+if (!["opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
   "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install", "sandbox-migrate"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
@@ -58,7 +58,8 @@ if (smallLinuxHost && !guarded) {
   const unit = `osd-task-${process.pid}-${Date.now()}.scope`;
   await new Promise((done, fail) => {
     const child = spawn("flock", [
-      "-n", join(sharedTaskRoot, "desktop-task.lock"),
+      "--conflict-exit-code", "75", "-n", join(sharedTaskRoot, "web-release-deploy.lock"),
+      "flock", "--conflict-exit-code", "75", "-n", join(sharedTaskRoot, "desktop-task.lock"),
       "systemd-run", "--user", "--scope", `--unit=${unit}`,
       "-p", "MemoryHigh=1850M", "-p", "MemoryMax=2200M", "-p", "MemorySwapMax=256M",
       "nice", "-n", "10", process.execPath, script, mode, "--guarded", ...args,
@@ -95,6 +96,7 @@ if (smallLinuxHost && !guarded) {
     child.on("close", (code) => {
       clearInterval(monitor);
       if (stoppedForPressure) fail(new Error("Task stopped to protect host responsiveness"));
+      else if (code === 75) fail(new Error("Host is busy: another release or running workspace holds the shared resource lock"));
       else if (code !== 0) fail(new Error(`Guarded task exited with status ${code}`));
       else done();
     });
@@ -114,12 +116,22 @@ function coreArgs() {
     ...(filter ? [filter] : []), ...(mode === "core-test" ? ["--", "--test-threads=1"] : [])];
 }
 
-if (smallLinuxHost) verifyLimits();
-if (mode === "probe") {
+if (smallLinuxHost) {
+  verifyLimits();
+  const { verifyTaskLocks } = await import("./web-build.mjs");
+  verifyTaskLocks();
+}
+if (mode === "release-test") {
+  run(process.execPath, ["--test", "--test-concurrency=1", ...args], root);
+} else if (mode === "probe") {
   console.log(smallLinuxHost ? "Resource limits active" : "Host does not need cloud resource limits");
 } else if (mode === "platform-test") {
   run(process.execPath, ["--test", "--test-concurrency=1", ...args], join(root, "services/platform"));
-} else if (mode === "core-test" || mode === "core-check" || mode === "core-build") {
+} else if (mode.startsWith("opencode-title-")) {
+  run(process.execPath, [join(root, "scripts/dev/build-opencode-title-runtime.mjs"), mode.slice("opencode-title-".length), ...args], root);
+  process.exit(0);
+}
+if (mode === "core-test" || mode === "core-check" || mode === "core-build") {
   run("cargo", coreArgs(), root);
 } else if (mode === "sandbox-network-test") {
   if (args.length) throw new Error("Kernel network tests have fixed isolated arguments");
@@ -163,46 +175,11 @@ if (mode === "probe") {
   // Vitest normally forks one worker per file; cap to one on the cloud host.
   run(process.execPath, [join(desktop, "node_modules/vitest/vitest.mjs"), "run",
     ...(smallLinuxHost ? ["--no-file-parallelism"] : []), ...args]);
-} else if (mode === "build") {
+ } else if (mode === "build" || mode === "web-build") {
   if (args.length) throw new Error("Build options are not supported by the guarded build");
-  run(process.execPath, [join(desktop, "node_modules/typescript/bin/tsc"), "--noEmit"]);
-  run(process.execPath, [join(root, "scripts/build-acp-server.mjs")]);
-  run(process.execPath, [join(root, "scripts/dev/build-web-vendor.mjs")]);
-
-  // Never empty a deployed dist directory before a successful replacement.
-  const stageOnly = process.env.OSD_WEB_STAGE_ONLY === "1";
-  if (stageOnly) await mkdir(stagingRoot, { recursive: true });
-  const stage = smallLinuxHost || stageOnly ? await mkdtemp(join(stagingRoot, "web-build-")) : null;
-  let retainedStage = false;
-  try {
-    run(process.execPath, [
-      `--max-old-space-size=${smallLinuxHost ? 1024 : 4096}`,
-      join(desktop, "node_modules/vite/bin/vite.js"), "build",
-      ...(stage ? ["--outDir", stage, "--emptyOutDir"] : []),
-    ]);
-    if (stage) {
-      if (!existsSync(join(stage, "index.html")) ||
-          !(await readdir(join(stage, "assets"))).length) {
-        throw new Error("Staged build is incomplete; the deployed site was not changed");
-      }
-      if (stageOnly) {
-        retainedStage = true;
-        await writeFile(join(stagingRoot, "attachments-build-path"), stage + "\n");
-        console.log(`Web build staged at ${stage}; deployed bundle unchanged`);
-      } else {
-        const dist = join(desktop, "dist");
-        const backup = join(stagingRoot, `web-before-${Date.now()}-${process.pid}`);
-        if (existsSync(dist)) await rename(dist, backup);
-        try {
-          await rename(stage, dist);
-        } catch (error) {
-          if (existsSync(backup)) await rename(backup, dist);
-          throw error;
-        }
-        console.log(`Web build deployed; previous bundle saved at ${backup}`);
-      }
-    }
-  } finally {
-    if (stage && !retainedStage && existsSync(stage)) await rm(stage, { recursive: true });
-  }
+  const { buildWeb } = await import("./web-build.mjs");
+  await buildWeb({ root, profile: mode === "build" ? "desktop" : "web", store: stagingRoot });
+} else if (mode === "release") {
+  const { releaseWorker } = await import("./web-release.mjs");
+  await releaseWorker(args, { root, sharedStore: sharedTaskRoot });
 }

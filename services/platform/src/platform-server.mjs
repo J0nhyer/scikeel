@@ -4,7 +4,8 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { URL } from "node:url";
 import { relativeInput } from "./tenant-policy.mjs";
 import { classifyRuntimeRoute, classifyGatewayRoute, validateRuntimeInput, scrubRuntimeSecrets } from "./runtime-route-policy.mjs";
-import { loginPage } from "./login-page.mjs";
+import { loginPage, loginAssetPreloads, withLoginPreparation } from "./login-page.mjs";
+import { CollaborationStore, collaborationPolicy, collaborationPermissions } from "./collaboration.mjs";
 import { ResearchTasks } from "./research-tasks.mjs";
 import { AttachmentTurns } from "./attachment-turns.mjs";
 import { ManagedResearchFiles } from "./managed-research-files.mjs";
@@ -315,6 +316,12 @@ export class PlatformServer {
       resolveContext:async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
         if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("attachment worker unavailable");
         return {userId,instanceId:worker.id,generation:worker.generation};}}) : null;
+    this.collaborationCapabilities = new Map();
+    this.collaboration = new CollaborationStore({research:this.researchTasks,readLegacy:(o)=>this.researchTasks.get(o.userId,o.sessionId),rootDir:resolve(workerManager.rootDir,"../collaboration"),
+      applyPermissions:async(owner,mode)=>{
+        if(owner.runtime !== "opencode")return;
+        await this.#workerResearchRequest(owner, `/session/${encodeURIComponent(owner.sessionId)}`, "PATCH", {permission:collaborationPermissions(mode)});
+      }, cancel:(owner)=>this.#cancelResearch(owner), running:(owner)=>this.#researchRunning(owner)});
     this.attachments = new AttachmentStore({ rootDir: resolve(workerManager.rootDir, "../attachments"),
       materializeCopies:copies ? input=>copies.materialize(input) : null });
     this.attachmentTurns = new AttachmentTurns({ store: this.attachments, readHistory: (user, owner) => this.#attachmentHistory(user, owner.sessionId) });
@@ -347,7 +354,7 @@ export class PlatformServer {
     await this.init();
     this.researchTimer = setInterval(() => {
       if (this.researchTick) return;
-      this.researchTick = this.researchTasks.tick().catch((error) => {
+      this.researchTick = Promise.all([this.researchTasks.tick(),this.collaboration.tick()]).catch((error) => {
         this.logger({ type: "research.monitor_error", error: error.message });
       }).finally(() => { this.researchTick = null; });
     }, 2000);
@@ -392,6 +399,7 @@ export class PlatformServer {
     await this.attachments.close();
     await this.researchTick;
     await this.researchTasks.close();
+    await this.collaboration.close();
     if (!this.server) return;
     const server = this.server;
     this.server = null;
@@ -406,8 +414,12 @@ export class PlatformServer {
   }
 
   #unauthorized(request, response) {
-    if (isJsonRequest(request) || request.url?.startsWith("/api/")) {
-      sendJson(response, 401, { error: "authentication required" });
+    const path = new URL(request.url ?? "/", "http://platform.invalid").pathname;
+    const navigation = request.headers["sec-fetch-mode"] === "navigate" ||
+      (path === "/v1/fs/read" && !isJsonRequest(request));
+    if (isJsonRequest(request) || path.startsWith("/api/") ||
+        (!navigation && (path.startsWith("/v1/") || path === "/event"))) {
+      sendJson(response, 401, { error: "authentication required" }, { "x-scikeel-auth": "session-required" });
       return;
     }
     const next = safeNextPath(new URL(request.url ?? "/", "http://platform.invalid").pathname);
@@ -802,13 +814,14 @@ export class PlatformServer {
     }
     sendJson(response, 200, result);
   }
-  async #workerResearchRequest(task, path, method = "GET") {
+  async #workerResearchRequest(task, path, method = "GET", body) {
     const access = this.workerManager.getWorkerAccess(workerIdForUser(task.userId));
     if (!access) throw new Error("research worker is unavailable");
     const url = new URL(path, access.url);
     url.searchParams.set("directory", task.directory);
     const result = await fetch(url, {
-      method, headers: { authorization: `Basic ${workerBasicToken(access.token)}` },
+      method, headers: { authorization: `Basic ${workerBasicToken(access.token)}`, "content-type": "application/json" },
+      ...(body === undefined ? {} : {body:JSON.stringify(body)}),
       signal: AbortSignal.timeout(5000),
     });
     if (!result.ok) throw Object.assign(new Error("research session is unavailable"), { status: result.status });
@@ -881,6 +894,65 @@ export class PlatformServer {
     await visit(task.sessionId);
   }
 
+  async #collaborationOwner(user,sessionId,access,worker) {
+    let owner=await this.#researchOwner(user,sessionId,access,worker);
+    for(let depth=0;depth<20;depth++) {
+      const info=await this.#workerResearchRequest(owner,`/session/${encodeURIComponent(owner.sessionId)}`);
+      if(!info.parentID)return owner;
+      owner=await this.#researchOwner(user,info.parentID,access,worker);
+    }
+    throw new Error("Collaboration ancestry unavailable");
+  }
+  collaborationAvailable(userId,generation){return this.collaborationCapabilities.has(userId)&&this.collaborationCapabilities.get(userId)===generation;}
+  async runtimeCollaboration(context,body){
+    const worker=this.workerManager.getWorker(context.instanceId);
+    if(!worker||worker.userId!==context.userId||worker.generation!==context.generation)throw new Error("Collaboration worker unavailable");
+    // The plugin registers while configureWorker is still awaiting runtime readiness.
+    if(body.action==="capability"&&["starting","running"].includes(worker.status)){this.collaborationCapabilities.set(context.userId,context.generation);return {ready:true};}
+    if(worker.status!=="running")throw new Error("Collaboration worker unavailable");
+    const access=this.workerManager.getWorkerAccess(context.instanceId);
+    // Runtime-created descendants must prove an already owned ancestor.
+    const register=async(sessionId,depth=0)=>{
+      if(!this.tenantPolicy)return;
+      try { this.tenantPolicy.session(context,sessionId);return; }catch{}
+      if(depth>=20)throw new Error("Collaboration ancestry unavailable");
+      const info=await this.#workerResearchRequest({userId:context.userId,directory:worker.workspaceDir},`/session/${encodeURIComponent(sessionId)}`);
+      if(info.id!==sessionId||!info.parentID)throw new Error("Collaboration descendant denied");
+      await register(info.parentID,depth+1);
+      const parent=this.tenantPolicy.session(context,info.parentID);
+      if(this.tenantPolicy.directory(context,info.directory)!==parent.directory)throw new Error("Collaboration descendant denied");
+      this.tenantPolicy.registerSession(context,{id:info.id,parentID:info.parentID,directory:info.directory});
+    };
+    await register(body.sessionId);
+    const owner=await this.#collaborationOwner({id:context.userId},body.sessionId,access,worker);
+    if(body.action==="checkpoint")return {state:await this.collaboration.checkpoint(owner,body)};
+    if(body.action==="state")return {state:await this.collaboration.get(owner)};
+    if(body.action==="delivery")return {state:await this.collaboration.delivery(owner,body)};
+    if(body.action==="guard"){const guarded=await this.collaboration.guard(owner);return {...guarded,policy:collaborationPolicy(guarded.state)};}
+    throw new Error("Collaboration operation denied");
+  }
+  async #collaborationApi(request,response,user,sessionId){
+    try{
+      if(!["GET","POST"].includes(request.method)){sendJson(response,405,{error:"Method not allowed"});return;}
+      if(request.method==="POST"&&request.headers["sec-fetch-site"]==="cross-site"){sendJson(response,403,{error:"Foreign origin"});return;}
+      if(request.method==="POST"&&request.headers.origin&&new URL(request.headers.origin).host!==request.headers.host){sendJson(response,403,{error:"Foreign origin"});return;}
+      const {access,worker}=await this.#ensureWorker(user);
+      const owner=await this.#researchOwner(user,sessionId,access,worker);
+      let state;
+      if(request.method==="GET")state=await this.collaboration.get(owner);
+      else{
+        const body=await this.#readPayload(request,response);if(!body)return;
+        if(body.action==="mode")state=await this.collaboration.setMode(owner,body.mode,body.revision);
+        else if(body.action==="answer")state=await this.collaboration.answer(owner,body);
+        else if(body.action==="pause")state=await this.collaboration.pause(owner);
+        else if(body.action==="heartbeat")state=await this.collaboration.heartbeat(owner,body.pageId);
+        else if(body.action==="release")state=await this.collaboration.release(owner,body.pageId);
+        else throw Object.assign(new Error("Invalid collaboration action"),{status:400});
+      }
+      sendJson(response,200,{state,available:this.collaborationAvailable(user.id,worker.generation)});
+    }catch(e){sendJson(response,e.status??e.statusCode??503,{error:e.status||e.statusCode?e.message:"Collaboration unavailable; retry"});}
+  }
+
   async #researchApi(request, response, user, sessionId) {
     try {
       if (request.method === "GET") {
@@ -897,7 +969,8 @@ export class PlatformServer {
       if (body.action === "create") {
         const { access, worker } = await this.#ensureWorker(user);
         const owner = await this.#researchOwner(user, sessionId, access, worker);
-        task = await this.researchTasks.create(owner, body);
+        const preference=await this.collaboration.get(owner);
+        task = await this.researchTasks.create(owner, this.collaborationAvailable(user.id,worker.generation)?{...body,mode:preference.mode}:body);
       } else if (body.action === "heartbeat") task = await this.researchTasks.heartbeat(user.id, sessionId, body.pageId);
       else if (body.action === "release") task = await this.researchTasks.release(user.id, sessionId, body.pageId);
       else task = await this.researchTasks.action(user.id, sessionId, body);
@@ -927,7 +1000,7 @@ export class PlatformServer {
         catch { throw Object.assign(new Error("invalid runtime body"), { statusCode: 400 }); }
       }
       const checkedBody = {...body};
-      if(operation.operation==="sessionPrompt_async")delete checkedBody.attachmentTurn;
+      if(operation.operation==="sessionPrompt_async"){delete checkedBody.attachmentTurn;delete checkedBody.collaborationRevision;}
       const input = validateRuntimeInput(operation, { query: parsed.searchParams, body:checkedBody, headers: request.headers });
       let directory = this.tenantPolicy.directory(context, input.directory);
       const sessionId = operation.identifiers.sessionId ?? body.sessionID;
@@ -944,15 +1017,33 @@ export class PlatformServer {
         sendJson(response, 403, { error: "approval required" }); return;
       }
       if (["modelConfig", "modelCatalog", "providerCatalog"].includes(operation.operation)) {
-        const catalog = await this.runtimeCatalog?.(context);
+        const catalog = await this.runtimeCatalog?.({ ...context, workspaceDir: directory }, { access });
         const safe = operation.operation === "modelConfig" ? { model: catalog?.model ?? null }
           : operation.operation === "providerCatalog" ? { all: catalog?.providers ?? [], connected: catalog?.connected ?? [] }
           : { providers: catalog?.providers ?? [], default: catalog?.defaults ?? {} };
         sendJson(response, 200, scrubRuntimeSecrets(safe)); return;
       }
+      if(operation.operation === "sessionCommand" && this.collaborationAvailable(user.id,worker.generation)) {
+        const owner=await this.#collaborationOwner(user,sessionId,access,worker);
+        const current=await this.collaboration.get(owner);
+        if(owner.sessionId!==sessionId&&current.phase==="running") {const guard=await this.collaboration.guard(owner);if(guard.blocked)throw Object.assign(new Error("Research decision requires an answer"),{statusCode:409});}
+        else await this.collaboration.begin(owner,current.revision);
+      }
       let attachmentTurn;
-      if(operation.operation === "sessionPrompt_async") {
-        const owner=await this.#researchOwner(user,sessionId,access,worker);
+      let collaborationExecution;
+      if(request.method==="POST"&&["sessionPrompt_async","sessionMessage"].includes(operation.operation)) {
+        const owner=await this.#collaborationOwner(user,sessionId,access,worker);
+        const revision=body.collaborationRevision; delete body.collaborationRevision;
+        if(revision !== undefined || this.collaborationAvailable(user.id,worker.generation)) {
+          if(!this.collaborationAvailable(user.id,worker.generation)) throw Object.assign(new Error("Collaboration runtime is not ready"),{statusCode:409});
+          const current=await this.collaboration.get(owner);
+          let state;
+          if(owner.sessionId!==sessionId&&current.phase==="running") {const guard=await this.collaboration.guard(owner);if(guard.blocked)throw Object.assign(new Error("Research decision requires an answer"),{statusCode:409});state=current;}
+          else state=await this.collaboration.begin(owner,revision ?? current.revision);
+          if (owner.sessionId === sessionId) collaborationExecution = { owner, execution: state.execution };
+          if(body.agent==="plan")delete body.agent;
+          body.system=[body.system??"",collaborationPolicy(state),`Confirmed research decisions: ${JSON.stringify(state.decisions)}`,`Delivery verification: ${JSON.stringify(state.delivery ?? null)}`].filter(Boolean).join("\n\n");
+        }
         const task=await this.researchTasks.get(user.id,sessionId);
         if(task)body=await this.researchTasks.prepare(user.id,sessionId,body);
         attachmentTurn=await this.attachmentTurns.prepare(user,owner,body);
@@ -1029,6 +1120,14 @@ export class PlatformServer {
         const text = Buffer.concat(chunks).toString("utf8");
         if (text) { try { value = JSON.parse(text); } catch { throw new Error("invalid runtime response"); } }
         if (upstream.ok) {
+          // A synchronous final reply has already ended the execution. Release
+          // its collaboration phase before returning, so the next prompt need
+          // not wait for the background monitor's next pass.
+          if (operation.operation === "sessionMessage" && operation.method === "POST" && collaborationExecution &&
+              value?.info?.sessionID === sessionId && value.info.role === "assistant" &&
+              Number.isFinite(value.info.time?.completed)) {
+            await this.collaboration.settled(collaborationExecution.owner, collaborationExecution.execution);
+          }
           if (["sessionCreate", "sessionFork", "sessionRead", "sessionPatch"].includes(operation.operation) && value)
             this.tenantPolicy.registerSession(context, { ...value, directory: value.directory ?? directory });
           if (["sessionList", "sessionChildren"].includes(operation.operation) && Array.isArray(value))
@@ -1054,7 +1153,7 @@ export class PlatformServer {
       } finally { clearTimeout(timeout); }
     } catch (error) {
       if (response.headersSent) { response.destroy(); return; }
-      const status = error.statusCode ?? (error.code === "body_too_large" ? 413 : 502);
+      const status = error.statusCode ?? error.status ?? (error.code === "body_too_large" ? 413 : 502);
       sendJson(response, status, { error: status < 500 ? error.message : "managed runtime unavailable" });
     }
   }
@@ -1092,9 +1191,9 @@ export class PlatformServer {
     if (kind === "index") {
       const html = body.toString("utf8").replace(
         "<head>",
-        "<head><script>window.__OS_WEB__=true;</script>",
+        "<head><script>window.__OS_WEB__=true;window.__OS_PLATFORM__=true;</script>",
       );
-      sendHtml(response, 200, html);
+      sendHtml(response, 200, withLoginPreparation(html));
       return true;
     }
     response.writeHead(200, {
@@ -1118,6 +1217,10 @@ export class PlatformServer {
         return;
       }
 
+      // Compiled client assets contain no account/workspace data. Serving them
+      // directly lets the login page preload without starting a user worker.
+      if (path.startsWith("/assets/") && await this.#serveWeb(request, response)) return;
+
       if (path === "/login") {
         const user = await this.#currentUser(request);
         if (user && request.method === "GET") {
@@ -1128,7 +1231,9 @@ export class PlatformServer {
           sendJson(response, 405, { error: "method not allowed" }, { allow: "GET" });
           return;
         }
+        const clientHtml = this.webRoot ? await readFile(resolve(this.webRoot, "index.html"), "utf8").catch(() => "") : "";
         sendHtml(response, 200, loginPage({
+          preloads: loginAssetPreloads(clientHtml),
           next: safeNextPath(parsed.searchParams.get("next")),
           locale: parsed.searchParams.get("lang"),
           explicitLocale: parsed.searchParams.has("lang"),
@@ -1162,6 +1267,11 @@ export class PlatformServer {
           sendJson(response, 403, { error: "user is disabled" });
           return;
         }
+        // A browser login starts its isolated workspace immediately; the
+        // document and client assets can load while startup continues.
+        if (this.tenantPolicy && !isJsonRequest(request)) {
+          void this.#ensureWorker(user).catch(() => this.logger({ type: "login.preparation_failed", userId: user.id }));
+        }
         const cookies = [
           sessionCookie(
             session.token,
@@ -1193,6 +1303,12 @@ export class PlatformServer {
         return;
       }
 
+      const collaborationPath = path.match(/^\/api\/collaboration\/([A-Za-z0-9_-]{1,128})$/);
+      if (collaborationPath) {
+        const user = await this.#currentUser(request);
+        if (!user) {this.#unauthorized(request,response);return;}
+        await this.#collaborationApi(request,response,user,collaborationPath[1]); return;
+      }
       if (path.startsWith("/api/")) {
         const user = await this.#currentUser(request);
         if (!user) {
@@ -1303,7 +1419,13 @@ export class PlatformServer {
       }
       if (this.tenantPolicy && await this.#serveWeb(request, response)) return;
       const { access, worker } = await this.#ensureWorker(user);
-      const lease = this.workerManager.retainWorker?.(worker.id, { readOnly: ["GET", "HEAD"].includes(request.method) });
+      // A client can disconnect while its worker is still starting.
+      // Do not register a lease after the close event has already fired.
+      if (request.aborted || response.destroyed || response.writableEnded) return;
+      const lease = this.workerManager.retainWorker?.(worker.id, {
+        readOnly: ["GET", "HEAD"].includes(request.method),
+        passive: request.method === "GET" && path === "/event",
+      });
       if (lease) {
         let released = false;
         const release = () => { if (!released) { released = true; lease.release(); } };
