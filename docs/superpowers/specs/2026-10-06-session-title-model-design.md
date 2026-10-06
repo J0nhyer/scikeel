@@ -132,6 +132,10 @@ message, or replace its title with an error. Preserve the default title and
 record a bounded diagnostic identifying the session, attempted model, and
 failure category, excluding credentials and provider error payloads.
 
+Each managed title attempt has a 30-second deadline and one provider dispatch;
+disable the upstream title stream's internal transport retries for this policy.
+An attempt that produces empty or unusable title text is a failure.
+
 Allow at most one active title job per session and one automatic retry on the
 next accepted user message after failure. The retry uses the captured first
 message model and title context. Do not run an unbounded background retry loop.
