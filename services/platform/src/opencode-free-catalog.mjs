@@ -1,8 +1,8 @@
 const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const validName = (value) => typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value);
 
-/** Match the desktop: use original models.dev metadata and remove models that
- * Zen no longer serves. Only explicitly free models enter the managed broker. */
+/** Enrich the administrator-selected models with official metadata. Discovery
+ * never broadens the allowlist or includes paid, deprecated or unserved models. */
 export async function resolveOpenCodeFreeCatalog(config, { fetchImpl = fetch } = {}) {
   const provider = config.providers.opencode;
   if (config.defaultProvider !== "opencode" || provider?.catalog !== "opencode-free" || provider.baseUrl !== "https://opencode.ai/zen/v1") return config;
@@ -25,7 +25,8 @@ export async function resolveOpenCodeFreeCatalog(config, { fetchImpl = fetch } =
     const served = new Set(serving.data.filter(record).map((model) => model.id));
     const models = Object.entries(metadata.opencode.models).filter(([id, model]) =>
       typeof id === "string" && /^[A-Za-z0-9._-]{1,160}$/.test(id) && record(model) && validName(model.name) &&
-      model.cost?.input === 0 && model.cost?.output === 0 && served.has(id));
+      model.cost?.input === 0 && model.cost?.output === 0 && model.status !== "deprecated" &&
+      served.has(id) && provider.enabledModels.includes(id));
     if (!models.length || models.length > 200 || !models.some(([id]) => id === config.defaultModel)) throw new Error("incomplete catalog");
     return { ...config, providers: { ...config.providers, opencode: { ...provider,
       name: validName(metadata.opencode.name) ? metadata.opencode.name : "OpenCode Zen",
