@@ -30,6 +30,8 @@ export async function resolveOpenCodeFreeCatalog(config, { fetchImpl = fetch } =
     if (!models.length || models.length > 200 || !models.some(([id]) => id === config.defaultModel)) throw new Error("incomplete catalog");
     return { ...config, providers: { ...config.providers, opencode: { ...provider,
       name: validName(metadata.opencode.name) ? metadata.opencode.name : "OpenCode Zen",
+      ...(provider.modelVariants ? { modelVariants: Object.fromEntries(Object.entries(provider.modelVariants)
+        .filter(([id]) => models.some(([model]) => model === id))) } : {}),
       enabledModels: models.map(([id]) => id), modelNames: Object.fromEntries(models.map(([id, model]) => [id, model.name])),
     } } };
   } catch {

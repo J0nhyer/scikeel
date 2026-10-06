@@ -62,6 +62,22 @@ test("profile updates accept only platform broker credentials and manual permiss
     assert.equal((await post(invalid)).status, 403);
   }
   assert.equal((await post(profile)).status, 200); assert.deepEqual(profiles, [profile]);
+  const reasoning = structuredClone(profile);
+  reasoning.provider.fixture.models.approved = { name: "approved", reasoning: true,
+    variants: { low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" }, max: { reasoningEffort: "max" } } };
+  assert.equal((await post(reasoning)).status, 200);
+  assert.deepEqual(profiles[1], reasoning);
+  for (const variant of [{ reasoningEffort: "low", baseURL: "http://peer" }, { reasoningEffort: "high" },
+    { apiKey: "foreign" }, { reasoningEffort: "low", disabled: false }, null, []]) {
+    const invalid = structuredClone(reasoning); invalid.provider.fixture.models.approved.variants.low = variant;
+    assert.equal((await post(invalid)).status, 403);
+  }
+  for (const entry of [{ name: "approved", reasoning: true, variants: { invented: { reasoningEffort: "invented" } } },
+    { name: "approved", reasoning: false, variants: reasoning.provider.fixture.models.approved.variants },
+    { name: "approved", options: { baseURL: "http://peer" } }, null]) {
+    const invalid = structuredClone(profile); invalid.provider.fixture.models.approved = entry;
+    assert.equal((await post(invalid)).status, 403);
+  }
 });
 test("gateway configuration is published before startup and restart preserves private state", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "scikeel-gateway-")); t.after(() => rm(root, { recursive: true, force: true }));

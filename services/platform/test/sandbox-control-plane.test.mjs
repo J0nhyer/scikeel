@@ -65,3 +65,16 @@ test("managed runtime whitelists exactly the current broker catalog without shar
   assert.deepEqual(calls[1].models, next.provider.fixture.whitelist);
   assert.deepEqual(first.provider.fixture.whitelist, ["approved"]);
 });
+
+
+test("declared reasoning levels reach the runtime without changing models or permissions", () => {
+  const configured = { ...config, providers: { fixture: { ...config.providers.fixture, modelVariants: { approved: ["low", "high", "max"] } } } };
+  const profile = brokerProfile({ config: configured, broker: { issue: () => "a".repeat(64) }, context });
+  assert.deepEqual(profile.provider.fixture.models.approved, { name: "approved", reasoning: true,
+    variants: { low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" }, max: { reasoningEffort: "max" } } });
+  assert.deepEqual(profile.provider.fixture.whitelist, ["approved"]);
+  assert.equal(profile.permission.bash, "ask");
+  for (const modelVariants of [{ unknown: ["high"] }, { approved: ["high", "high"] }, { approved: ["invented"] },
+    { approved: [] }, { approved: { apiKey: "secret" } }, []])
+    assert.throws(() => validateBrokerConfiguration({ ...configured, providers: { fixture: { ...configured.providers.fixture, modelVariants } } }));
+});

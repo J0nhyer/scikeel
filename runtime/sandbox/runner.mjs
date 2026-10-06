@@ -89,6 +89,17 @@ export class TenantRunner {
     finally { clearTimeout(timeout); req.off("aborted", cancel); res.off("close", cancel); this.#active.delete(controller); this.#operations.delete(req.url); }
   }
 }
+function validModelProfile(model, entry) {
+  if (!model || model.length > 160 || /[\0\r\n]/.test(model) || !entry || typeof entry !== "object" || Array.isArray(entry) ||
+      Object.keys(entry).some((key) => !["name", "reasoning", "variants"].includes(key)) || entry.name !== model) return false;
+  if (entry.reasoning !== undefined && typeof entry.reasoning !== "boolean") return false;
+  if (entry.variants === undefined) return true;
+  if (entry.reasoning !== true || !entry.variants || typeof entry.variants !== "object" || Array.isArray(entry.variants)) return false;
+  const levels = Object.entries(entry.variants);
+  return levels.length > 0 && levels.length <= 7 && levels.every(([effort, options]) =>
+    ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort) && options &&
+    typeof options === "object" && !Array.isArray(options) && Object.keys(options).join(",") === "reasoningEffort" && options.reasoningEffort === effort);
+}
 function validateProfile(value) {
   if (!value || Object.keys(value).sort().join(",") !== ["model", "enabled_providers", "provider", "permission"].sort().join(",") ||
       !Array.isArray(value.enabled_providers) || value.enabled_providers.length !== 1) throw new Error("invalid managed profile");
@@ -98,7 +109,7 @@ function validateProfile(value) {
       !["@ai-sdk/openai-compatible", "@ai-sdk/anthropic"].includes(provider.npm) ||
       Object.keys(provider.options ?? {}).sort().join(",") !== "apiKey,baseURL" || provider.options.baseURL !== "http://172.31.240.1:4792/v1" ||
       !/^[a-f0-9]{64}$/.test(provider.options.apiKey ?? "") || !provider.models || Array.isArray(provider.models) ||
-      Object.entries(provider.models).some(([model, entry]) => !model || model.length > 160 || /[\0\r\n]/.test(model) || Object.keys(entry).join(",") !== "name" || entry.name !== model) ||
+      Object.entries(provider.models).some(([model, entry]) => !validModelProfile(model, entry)) ||
       !Array.isArray(provider.whitelist) || provider.whitelist.length !== Object.keys(provider.models).length ||
       new Set(provider.whitelist).size !== provider.whitelist.length || !provider.whitelist.every(model => Object.hasOwn(provider.models, model)) ||
       !Object.hasOwn(provider.models, String(value.model).slice(name.length + 1)) || !String(value.model).startsWith(`${name}/`)) throw new Error("invalid managed provider");

@@ -73,3 +73,14 @@ test("managed profile ID labels cannot overwrite original OpenCode model names a
   assert.equal(catalog.providers[0].models["big-pickle"].name, "Big Pickle");
   assert.equal(catalog.providers[0].models["mimo-v2.6-flash-free"].name, "MiMo-V2.6-Flash Free");
 });
+
+
+test("declared model levels hide runtime-inferred reasoning choices", async () => {
+  const selected = { ...config, providers: { research: { ...config.providers.research,
+    modelVariants: { approved: ["low", "high", "max"] },
+  } } };
+  const catalog = await readManagedModelCatalog({ config: selected, access, context, fetchImpl: fetchFixture({ providers: [{
+    id: "research", models: { approved: { variants: { low: {}, medium: {}, high: {}, max: {} } } },
+  }] }) });
+  assert.deepEqual(Object.keys(catalog.providers[0].models.approved.variants), ["low", "high", "max"]);
+});

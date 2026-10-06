@@ -51,3 +51,12 @@ test("administrator selections cannot be broadened by a serving listing", async 
   const offline = await resolveOpenCodeFreeCatalog(selected, { fetchImpl: async () => { throw new Error("offline"); } });
   assert.equal(offline, selected);
 });
+
+
+test("retired models lose their reasoning levels while selected levels are preserved", async () => {
+  const configured = { ...config, providers: { opencode: { ...config.providers.opencode,
+    modelVariants: { "big-pickle": ["low", "high"], "deprecated-free": ["high"] },
+  } } };
+  const resolved = await resolveOpenCodeFreeCatalog(configured, { fetchImpl: fetchFixture() });
+  assert.deepEqual(resolved.providers.opencode.modelVariants, { "big-pickle": ["low", "high"] });
+});

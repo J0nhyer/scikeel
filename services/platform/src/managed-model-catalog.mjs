@@ -29,7 +29,8 @@ export async function readManagedModelCatalog({ config, access, context, fetchIm
         if (!allowed.has(id) || !record(model)) return [];
         const safe = { id, providerID: provider.id, name: label(config.providers[provider.id].modelNames?.[id], label(model.name, id)) };
         if (record(model.variants)) safe.variants = Object.fromEntries(Object.keys(model.variants)
-          .filter((name) => /^[A-Za-z0-9_-]{1,64}$/.test(name)).map((name) => [name, {}]));
+          .filter((name) => /^[A-Za-z0-9_-]{1,64}$/.test(name) &&
+            (!config.providers[provider.id].modelVariants?.[id] || config.providers[provider.id].modelVariants[id].includes(name))).map((name) => [name, {}]));
         if (record(model.limit) && Number.isSafeInteger(model.limit.context) && model.limit.context > 0)
           safe.limit = { context: model.limit.context };
         return [[id, safe]];

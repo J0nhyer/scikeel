@@ -37,12 +37,17 @@ export function validateBrokerConfiguration(config) {
     let url;
     try { url = new URL(provider.baseUrl); } catch { throw new Error("invalid managed provider configuration"); }
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || !["http:","https:"].includes(url.protocol) || url.username || url.password || url.hash || url.search ||
-        Object.keys(provider).some((key) => !["baseUrl", "credential", "authMode", "enabledModels", "routes", "catalog", "name", "modelNames"].includes(key)) ||
+        Object.keys(provider).some((key) => !["baseUrl", "credential", "authMode", "enabledModels", "routes", "catalog", "name", "modelNames", "modelVariants"].includes(key)) ||
         typeof provider.credential !== "string" || !provider.credential || /[\0\r\n]/.test(provider.credential) ||
         !["bearer", "x-api-key"].includes(provider.authMode) || !Array.isArray(provider.enabledModels) || !provider.enabledModels.length ||
         provider.enabledModels.some((model) => typeof model !== "string" || !model || model.length > 160 || /[\0\r\n]/.test(model)) ||
         !Array.isArray(provider.routes) || !provider.routes.length || provider.routes.some((route) => !routeSet.has(route)))
       throw new Error("invalid managed provider configuration");
+    if (provider.modelVariants !== undefined && (!provider.modelVariants || typeof provider.modelVariants !== "object" ||
+        Array.isArray(provider.modelVariants) || Object.entries(provider.modelVariants).some(([id, levels]) =>
+          !provider.enabledModels.includes(id) || !Array.isArray(levels) || !levels.length || levels.length > 7 ||
+          new Set(levels).size !== levels.length || levels.some((level) => !["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(level)))))
+      throw new Error("invalid managed reasoning levels");
     if ((provider.catalog !== undefined && (provider.catalog !== "opencode-free" || name !== "opencode" || provider.baseUrl !== "https://opencode.ai/zen/v1")) ||
         (provider.name !== undefined && (typeof provider.name !== "string" || !provider.name || provider.name.length > 512)) ||
         (provider.modelNames !== undefined && (!provider.modelNames || typeof provider.modelNames !== "object" || Array.isArray(provider.modelNames) ||
@@ -60,7 +65,10 @@ export function brokerProfile({ config, broker, context, now = Date.now() }) {
     [name]: { npm: provider.authMode === "x-api-key" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible", name,
       options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: token },
       whitelist: [...provider.enabledModels],
-      models: Object.fromEntries(provider.enabledModels.map((model) => [model, { name: model }])) },
+      models: Object.fromEntries(provider.enabledModels.map((model) => [model, { name: model,
+        ...(provider.modelVariants?.[model] ? { reasoning: true,
+          variants: Object.fromEntries(provider.modelVariants[model].map((effort) => [effort, { reasoningEffort: effort }])) } : {}),
+      }])) },
   }, permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
 }
 export async function readBrokerConfiguration() {
