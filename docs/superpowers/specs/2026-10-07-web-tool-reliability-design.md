@@ -1,7 +1,7 @@
 # Web Tool Reliability Design
 
 Date: 2026-10-07
-Status: The user approved the proposed direction and requested this spec first. This document is for review; it does not authorize implementation or publication.
+Status: Approved by the user; authoring the implementation plan is authorized. Implementation and publication require subsequent user authorization.
 Scope: Public multi-user gateway Web with the managed OpenCode runtime, including phone-width viewports.
 
 ## 1. Problem and intended outcome
