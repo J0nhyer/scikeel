@@ -12,13 +12,14 @@ import { SshSignInDialog } from "@/components/ui/SshSignInDialog";
 import { mockProject } from "@/lib/mock";
 import { adoptSourceFolder, useRuntimeStore } from "@/lib/runtime";
 import { useHoverTracking } from "@/lib/hoverTracking";
+import { useConversationLeases } from "@/lib/conversationLeases";
 import { ensureSetupProgressListener } from "@/lib/setup";
 import { useOverlayTitlebar, useUiStore } from "@/lib/store";
 import { overlayTitlebarStyle } from "@/lib/titlebar";
 import { ensureJupyter, openExternal, watchFullscreen } from "@/lib/tauri";
 import { useSshStore } from "@/lib/ssh";
 import { useUpdateStore } from "@/lib/update";
-import { isGatewayWeb, gatewayToken, setUnauthorizedHandler } from "@/lib/webMode";
+import { isGatewayWeb, isPlatformWeb, gatewayToken, setUnauthorizedHandler } from "@/lib/webMode";
 import { WebTokenGate } from "@/components/web/WebTokenGate";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { findLeaf, leaves, useLayoutStore, type SplitDir } from "@/lib/layout";
@@ -28,10 +29,12 @@ export function AppShell() {
   const { t } = useTranslation("nav");
   // One tracker for every message row in the app (lib/hoverTracking).
   useHoverTracking();
+  useConversationLeases();
   const { sidebarCollapsed, setSidebarCollapsed } = useUiStore();
   const isMobile = useIsMobile();
-  // Gateway web client: hold the app behind a token gate until authenticated.
-  const [webReady, setWebReady] = useState(!isGatewayWeb || !!gatewayToken());
+  // The platform verifies the login cookie before serving this page.
+  // Standalone gateways still require a browser token.
+  const [webReady, setWebReady] = useState(!isGatewayWeb || isPlatformWeb || !!gatewayToken());
 
   // Cmd/Ctrl+B toggles the sidebar, matching the button's tooltip. Not in
   // settings: there the sidebar IS the settings navigation (with the only way
@@ -131,10 +134,9 @@ export function AppShell() {
     }
   }, [webReady]);
 
-  // Web client: if the gateway rejects the token (rotated/revoked), drop back
-  // to the token gate instead of looping on a failed connection.
+  // Standalone gateways recover rotated/revoked tokens through the token gate.
   useEffect(() => {
-    if (!isGatewayWeb) return;
+    if (!isGatewayWeb || isPlatformWeb) return;
     setUnauthorizedHandler(() => setWebReady(false));
     return () => setUnauthorizedHandler(null);
   }, []);

@@ -62,6 +62,33 @@
     }
   },
   "skills": {
+    "catalogDescriptions": {
+      "skill": {
+        "computer-use": "Operate desktop apps through screenshots and interface controls, checking the result after each action.",
+        "domain-check": "Review scientific code for unit, coordinate, model and domain-specific errors, and report findings.",
+        "large-file": "Inspect large datasets with bounded memory, then read only the needed schemas, samples and ranges.",
+        "modal-run": "Run heavy or GPU jobs on Modal using your account and bring the results back to the workspace.",
+        "publication-figures": "Create publication-ready figures and tables, checking layout, readability and export formats.",
+        "remote-compute": "Submit and monitor jobs on SSH servers or Slurm clusters, then retrieve the results.",
+        "research-workflow": "Organize research from a confirmed objective through planning, method choices, reproducible outputs and evidence checks.",
+        "stats-integrity": "Check statistical assumptions, preregistration consistency and reproducibility, and flag interpretation risks.",
+        "traceability-review": "Review whether citations, reported numbers and figures can be traced back to their sources and generating code."
+      },
+      "agent": {
+        "build": "Carry out implementation tasks, edit files and run tools to complete the requested work.",
+        "plan": "Analyze the request and existing project, then prepare an implementation plan before making changes.",
+        "general": "Handle delegated tasks that require several steps of research, analysis or execution.",
+        "explore": "Search project files and code to locate implementations and understand how they relate.",
+        "reviewer": "Review research outputs for traceability, statistics and reproducibility, reporting findings without editing files.",
+        "compaction": "Condense long conversations while preserving key context so the task can continue.",
+        "summary": "Summarize the conversation and completed work for later review.",
+        "title": "Automatically generate a session title from the conversation."
+      },
+      "fallback": {
+        "skill": "Provides task-specific instructions for the agent.",
+        "agent": "Performs or assists with tasks according to its configuration."
+      }
+    },
     "title": "Skills & Agents",
     "description": {
       "prefix": "Loaded live from the OpenCode runtime — the bundled skill packs, everything under ",

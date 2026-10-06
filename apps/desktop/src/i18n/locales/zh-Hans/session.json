@@ -275,7 +275,11 @@
   },
   "live": {
     "starting": {
-      "bodyWeb": "正在等待主机应用响应。请保持此页面打开——主机可访问后会自动连接。",
+      "titleWeb": "正在连接工作区…",
+      "titleSessionsWeb": "正在加载会话…",
+      "bodyWeb": "正在连接服务器并准备你的工作区。等待时间较长，系统正在自动重试。",
+      "bodySessionsWeb": "正在从服务器读取你的会话记录。请求失败时会自动重试。",
+      "sessionsError": "无法加载会话记录，请重新连接后重试。",
       "title": "正在启动本地运行时…",
       "body": "内置的智能体运行时正在启动。首次启动时 macOS 可能会请求访问文件夹的权限——允许后即可自动完成。"
     },
@@ -619,5 +623,41 @@
     "installing": "正在安装…",
     "loading": "正在准备…",
     "prepare": "准备私人依赖"
+  },
+  "collaboration": {
+    "guidedDescription": "每次确认一个科研步骤，完成后解释结果，再决定下一步。",
+    "stepConfirmation": "下一步确认",
+    "label": "托管程度",
+    "modes": {
+      "guided": "低",
+      "collaborative": "中",
+      "delegated": "高",
+      "autonomous": "完全"
+    },
+    "description": "先确认计划，关键选择一起决定。",
+    "unavailable": "后续阶段开放",
+    "confirmation": "科研决策确认",
+    "answer": "你的答复或调整意见",
+    "continue": "按建议继续",
+    "submit": "确认答复",
+    "pause": "暂停",
+    "paused": "执行已暂停。保存答复不会自动重启任务。",
+    "retry": "重试",
+    "savedDecisions": "已确认的科研决策",
+    "suggestion": "建议",
+    "attachmentsAfterAnswer": "请先在确认卡中回答科研问题，再发送附件。已选附件会保留。",
+    "delegatedDescription": "连续完成已授权的工作；未授权的重要选择仍需你决定。",
+    "deliveryCompleted": "交付文件核验通过",
+    "deliveryFailed": "交付核验失败",
+    "deliverySelfCheck": "文件与证据检查由系统核验，科学结论仍属于 Agent 自检。",
+    "deliveryRepairLimit": "已达到两次修复上限，请查看部分结果。",
+    "deliveryIssues": {
+      "changed_inputs": "原始输入缺失或已发生变化。",
+      "missing_progress": "执行报告缺失或无效。",
+      "pending_decisions": "报告中仍有未解决的科研决策。",
+      "incomplete_report": "执行报告尚未完成。",
+      "missing_outputs": "缺少要求交付的文件。",
+      "failed_checks": "必要检查失败或缺少检查证据。"
+    }
   }
 }

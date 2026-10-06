@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { notifyPermissionRequest } from "./systemNotification";
+import { notifyPermissionRequest, notifyTurnComplete } from "./systemNotification";
 
 const notificationPlugin = vi.hoisted(() => ({
   isPermissionGranted: vi.fn(async () => true),
@@ -7,11 +7,28 @@ const notificationPlugin = vi.hoisted(() => ({
   sendNotification: vi.fn(),
 }));
 
+const environment = vi.hoisted(() => ({ isTauri: true }));
+vi.mock("./tauri", () => environment);
 vi.mock("@tauri-apps/plugin-notification", () => notificationPlugin);
 
 describe("notifyPermissionRequest", () => {
+  it("does not call native APIs in a Web browser", async () => {
+    environment.isTauri = false;
+    await expect(notifyPermissionRequest({ action: "bash", resources: [] })).resolves.toBe(false);
+    await expect(notifyTurnComplete({ title: "Complete", body: "Conversation" })).resolves.toBe(false);
+    expect(notificationPlugin.isPermissionGranted).not.toHaveBeenCalled();
+    expect(notificationPlugin.sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("contains native permission failures instead of rejecting event handlers", async () => {
+    notificationPlugin.isPermissionGranted.mockRejectedValueOnce(new Error("Native bridge unavailable"));
+    await expect(notifyPermissionRequest({ action: "bash", resources: [] })).resolves.toBe(false);
+    notificationPlugin.isPermissionGranted.mockRejectedValueOnce(new Error("Native bridge unavailable"));
+    await expect(notifyTurnComplete({ title: "Complete", body: "Conversation" })).resolves.toBe(false);
+  });
   afterEach(() => {
     vi.clearAllMocks();
+    environment.isTauri = true;
     notificationPlugin.isPermissionGranted.mockResolvedValue(true);
     notificationPlugin.requestPermission.mockResolvedValue("granted");
   });

@@ -20,7 +20,7 @@ test.skipIf(!process.env.OSD_ATTACHMENTS_ACCEPTANCE)("uploads, restores, downloa
   const root=await mkdtemp(join(tmpdir(),"scikeel-attachment-acceptance-"));const home=join(root,"codex");await mkdir(home);await writeFile(join(home,"config.toml"),'model = "fixture-model"\n');
   const authStore=new AuthStore({filePath:join(root,"auth.json"),bootstrapAdmin:{username:"fixture",password:"fixture-password"}});
   const workerManager=new WorkerManager({rootDir:join(root,"workers"),osdCommand:process.execPath,osdArgs:[resolve("../../services/platform/fixtures/fake-osd.mjs")]});
-  const cliRuntime=new CliRuntimeManager({rootDir:join(root,"cli"),codexHome:home,codexCommand:process.execPath,codexArgs:[resolve("../../services/platform/fixtures/attachment-cli.mjs"),"codex"]});
+  const cliRuntime=new CliRuntimeManager({rootDir:join(root,"cli"),codexHome:home,claudeConfigDir:join(root,"claude"),codexCommand:process.execPath,codexArgs:[resolve("../../services/platform/fixtures/attachment-cli.mjs"),"codex"]});
   const platform=new PlatformServer({authStore,workerManager,cliRuntime,webRoot:process.env.OSD_ATTACHMENTS_WEB_ROOT || resolve("dist")});const address=await platform.listen();const origin=`http://127.0.0.1:${address.port}`,httpOrigin=`http://scikeel-attachments.test:${address.port}`;
   const browser=await chromium.launch({executablePath:process.env.OSD_CHROMIUM_PATH,args:["--no-sandbox","--disable-dev-shm-usage","--no-proxy-server","--host-resolver-rules=MAP scikeel-attachments.test 127.0.0.1"],headless:true});
   try{

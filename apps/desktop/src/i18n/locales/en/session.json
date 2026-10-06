@@ -275,7 +275,11 @@
   },
   "live": {
     "starting": {
-      "bodyWeb": "Waiting for the host app to answer. Keep this page open — it connects on its own as soon as the host is reachable.",
+      "titleWeb": "Connecting to your workspace…",
+      "titleSessionsWeb": "Loading conversations…",
+      "bodyWeb": "The server is preparing your workspace. This is taking longer than expected; we are retrying automatically.",
+      "bodySessionsWeb": "Retrieving your conversations from the server. Failed requests will be retried automatically.",
+      "sessionsError": "Could not load your conversations. Please try connecting again.",
       "title": "Starting the local runtime…",
       "body": "The bundled agent runtime is coming up. On a first launch macOS may ask for permission to access your folders — allow it and this finishes on its own."
     },
@@ -630,5 +634,41 @@
     "installing": "Installing…",
     "loading": "Preparing…",
     "prepare": "Prepare private dependencies"
+  },
+  "collaboration": {
+    "guidedDescription": "Confirm one research step, review its result, then choose the next step.",
+    "stepConfirmation": "Next research step",
+    "label": "Autonomy",
+    "modes": {
+      "guided": "Low",
+      "collaborative": "Medium",
+      "delegated": "High",
+      "autonomous": "Full"
+    },
+    "description": "Agree on a plan; decide important choices together.",
+    "unavailable": "Available in a later stage",
+    "confirmation": "Research decision",
+    "answer": "Your answer or adjustment",
+    "continue": "Continue with the suggestion",
+    "submit": "Confirm answer",
+    "pause": "Pause",
+    "paused": "Execution is paused. Saving an answer does not restart it.",
+    "retry": "Retry",
+    "savedDecisions": "Confirmed research decisions",
+    "suggestion": "Suggestion",
+    "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
+    "delegatedDescription": "Complete the authorized work; ask about unapproved important choices.",
+    "deliveryCompleted": "Delivery files verified",
+    "deliveryFailed": "Delivery verification failed",
+    "deliverySelfCheck": "Files and evidence are checked; scientific conclusions are Agent self-checks.",
+    "deliveryRepairLimit": "The two-repair limit has been reached. Review the partial result.",
+    "deliveryIssues": {
+      "changed_inputs": "An original input is missing or changed.",
+      "missing_progress": "The execution report is missing or invalid.",
+      "pending_decisions": "An unresolved research decision remains in the report.",
+      "incomplete_report": "The execution report is unfinished.",
+      "missing_outputs": "A requested output is missing.",
+      "failed_checks": "A required check failed or its evidence is missing."
+    }
   }
 }

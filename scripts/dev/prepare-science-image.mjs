@@ -1,3 +1,5 @@
+import { validateRuntimeArtifact } from "./build-opencode-title-runtime.mjs";
+import { imageInputPath } from './web-release-policy.mjs';
 // CI-only artifact measurement. Never call this on the shared cloud server.
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -54,6 +56,9 @@ export async function prepareImage(args) {
     if (!version) throw new Error("unmeasured CI tool version");
     tools[name] = { version, sha256: await sha256(path), path: `opt/scikeel/tools/bin/${name}` };
   }
+  const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  const runtimeLock = JSON.parse(await readFile(join(sourceRoot, "runtime/opencode-patches/session-title.lock.json"), "utf8"));
+  const sessionTitleRuntime = validateRuntimeArtifact(JSON.parse(await readFile(join(context, "tools/session-title-runtime.json"), "utf8")), runtimeLock, tools.opencode.sha256);
   if (!args[2]) {
     const lock = { schema: 1, sources, tools, baselineLockSha256: await sha256(join(context, "uv.lock")) };
     await writeFile(join(context, "tool-lock.json"), JSON.stringify(lock, null, 2) + "\n");
@@ -81,9 +86,12 @@ print(json.dumps(out))`;
   const inventory = JSON.parse(run("python3", [inspector, archive]));
   const digest = await sha256(archive);
   const runnerFiles = {};
-  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs"])
+  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs", "collaboration.mjs"])
     runnerFiles[`opt/scikeel/tools/${name}`] = await sha256(join(context, "tools", name));
-  const manifest = { schema: 1, name: "science-v1", variant, architecture: "linux/amd64",
+  const sourceInputs = [];
+  const sourcePaths = run('git', ['-C', sourceRoot, 'ls-files', '-z']).split('\0').filter(Boolean).filter(imageInputPath).sort((a, b) => a.localeCompare(b));
+  for (const path of sourcePaths) sourceInputs.push({ path, sha256: await sha256(join(sourceRoot, path)) });
+  const manifest = { schema: 1, sourceInputs, sessionTitleRuntime, name: "science-v1", variant, architecture: "linux/amd64",
     rootfsSha256: digest, imageDigest: `sha256:${digest}`, python: tools.python.version, uv: tools.uv.version,
     baselineLockSha256: await sha256(join(artifacts, "uv.lock")), toolLockSha256: await sha256(join(artifacts, "tool-lock.json")),
     fileCount: inventory.fileCount, uncompressedBytes: inventory.uncompressedBytes, tools, enabledRuntimes: ["opencode"],

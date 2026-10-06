@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { SandboxNativeJobs } from "./sandbox-native-jobs.mjs";
 import { lstat, readFile } from "node:fs/promises";
 import { ModelBroker } from "./model-broker.mjs";
+import { readManagedModelCatalog } from "./managed-model-catalog.mjs";
+import { resolveOpenCodeFreeCatalog } from "./opencode-free-catalog.mjs";
 import { EgressBroker } from "./egress-broker.mjs";
 import { PackageBroker } from "./package-broker.mjs";
 import { SandboxClient } from "./sandbox-client.mjs";
@@ -35,12 +37,17 @@ export function validateBrokerConfiguration(config) {
     let url;
     try { url = new URL(provider.baseUrl); } catch { throw new Error("invalid managed provider configuration"); }
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || !["http:","https:"].includes(url.protocol) || url.username || url.password || url.hash || url.search ||
-        Object.keys(provider).some((key) => !["baseUrl", "credential", "authMode", "enabledModels", "routes"].includes(key)) ||
+        Object.keys(provider).some((key) => !["baseUrl", "credential", "authMode", "enabledModels", "routes", "catalog", "name", "modelNames"].includes(key)) ||
         typeof provider.credential !== "string" || !provider.credential || /[\0\r\n]/.test(provider.credential) ||
         !["bearer", "x-api-key"].includes(provider.authMode) || !Array.isArray(provider.enabledModels) || !provider.enabledModels.length ||
         provider.enabledModels.some((model) => typeof model !== "string" || !model || model.length > 160 || /[\0\r\n]/.test(model)) ||
         !Array.isArray(provider.routes) || !provider.routes.length || provider.routes.some((route) => !routeSet.has(route)))
       throw new Error("invalid managed provider configuration");
+    if ((provider.catalog !== undefined && (provider.catalog !== "opencode-free" || name !== "opencode" || provider.baseUrl !== "https://opencode.ai/zen/v1")) ||
+        (provider.name !== undefined && (typeof provider.name !== "string" || !provider.name || provider.name.length > 512)) ||
+        (provider.modelNames !== undefined && (!provider.modelNames || typeof provider.modelNames !== "object" || Array.isArray(provider.modelNames) ||
+          Object.entries(provider.modelNames).some(([id, label]) => !provider.enabledModels.includes(id) || typeof label !== "string" || !label || label.length > 512))))
+      throw new Error("invalid managed provider catalog");
   }
   if (!config.providers[config.defaultProvider]?.enabledModels.includes(config.defaultModel)) throw new Error("invalid managed default model");
   return config;
@@ -64,7 +71,7 @@ export async function readBrokerConfiguration() {
   catch { throw new Error("managed broker configuration unavailable"); }
 }
 export async function createSandboxControlPlane({ configuration, dataDir, config }) {
-  config = validateBrokerConfiguration(config ?? await readBrokerConfiguration());
+  config = validateBrokerConfiguration(await resolveOpenCodeFreeCatalog(validateBrokerConfiguration(config ?? await readBrokerConfiguration())));
   let environments;
   const accounts = new Map(); const tenantPolicy = new TenantPolicy();
   const identify = (input) => {
@@ -127,9 +134,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       defaultModel:enabled?config.defaultModel:null,status:enabled?"ready":"unavailable",enabledByProfile:enabled,files:{}};
   }};
   return { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, nativeJobs, nativeProfileResolver,
-    runtimeCatalog: () => ({ model: `${config.defaultProvider}/${config.defaultModel}`, providers: Object.entries(config.providers).map(([id, value]) => ({
-      id, name: id, models: Object.fromEntries(value.enabledModels.map((model) => [model, { id: model, name: model, providerID: id }])) })),
-      connected: Object.keys(config.providers), defaults: Object.fromEntries(Object.entries(config.providers).map(([id, value]) => [id, value.enabledModels[0]])) }),
+    runtimeCatalog: (context, { access }) => readManagedModelCatalog({ config, context, access }),
     async close() {
       try { await manager.close(); }
       finally { await Promise.allSettled([scheduler.close(), model.close(), packages.close(), egress.close()]); }

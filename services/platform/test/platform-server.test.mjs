@@ -301,6 +301,10 @@ test("does not expose worker routes without a platform session", async () => {
   const anonymous = makeClient(fixture.base);
   const response = await anonymous.request("/v1/whoami", { headers: { accept: "application/json" } });
   assert.equal(response.status, 401);
+  assert.equal(response.headers.get("x-scikeel-auth"), "session-required");
+  const withoutAccept = await anonymous.request("/v1/whoami");
+  assert.equal(withoutAccept.status, 401);
+  assert.equal(withoutAccept.headers.get("x-scikeel-auth"), "session-required");
   assert.equal(fixture.manager.listWorkers().length, 0);
 });
 
@@ -359,7 +363,10 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   assert.equal(bootstrap.status, 303);
   const web = await admin.request("/");
   assert.equal(web.status, 200);
-  assert.match(await web.text(), /window\.__OS_WEB__=true/);
+  const webHtml = await web.text();
+  assert.match(webHtml, /window\.__OS_WEB__=true/);
+  assert.match(webHtml, /window\.__OS_PLATFORM__=true/);
+  assert.equal((await admin.request("/")).status, 200);
   const asset = await admin.request("/assets/app.js");
   assert.equal(asset.status, 200);
   assert.equal(await asset.text(), "console.log('web');\n");
@@ -776,4 +783,190 @@ test("sandbox conversations send owned attachment copies and retain decorated hi
   const chunks=writes.filter(value=>value.operation==="writeChunk");assert.equal(Buffer.from(chunks[0].bytes).toString(),"x,y\n1,2\n");
   assert.equal((await post("/session/owned/prompt_async",prompt)).status,202);
   assert.equal((await json(await client.request("/session/owned/message"))).length,1);
+});
+
+
+test("managed Web identifies cookie authentication without exposing a worker token", async () => {
+  const root = await mkdtemp(join(tmpdir(), "osd-platform-cookie-web-"));
+  const webRoot = join(root, "web");
+  await mkdir(webRoot);
+  await writeFile(join(webRoot, "index.html"), "<!doctype html><html><head></head><body>web</body></html>");
+  const fixture = await makeFixture({ root, webRoot, tenantPolicy: {} });
+  const admin = makeClient(fixture.base);
+  await login(admin, "admin", "admin-password");
+  for (let reload = 0; reload < 2; reload++) {
+    const web = await admin.request("/live");
+    assert.equal(web.status, 200);
+    assert.equal(web.headers.get("location"), null);
+    assert.match(await web.text(), /window\.__OS_PLATFORM__=true/);
+    assert.equal(admin.jar.has("osd_worker_bootstrap"), false);
+  }
+  assert.equal(fixture.manager.listWorkers().length, 0);
+});
+
+test("managed model routes use the current tenant's OpenCode catalog and report failures without static fallback", async () => {
+  const policy = new TenantPolicy();
+  const fixture = await makeFixture({ tenantPolicy: policy });
+  const client = makeClient(fixture.base);
+  const { user } = await login(client, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  const worker = await fixture.manager.ensureWorker({ instanceId, userId: user.id });
+  policy.registerAccount({ userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir });
+  fixture.manager.getWorker = ((original) => (id) => ({ ...original.call(fixture.manager, id), generation: 1 }))(fixture.manager.getWorker);
+  let calls = 0;
+  fixture.server.runtimeCatalog = async (context, { access }) => {
+    assert.equal(context.userId, user.id);
+    assert.equal(context.workspaceDir, worker.workspaceDir);
+    assert.equal(context.generation, 1);
+    assert.equal(typeof access.token, "string");
+    calls++;
+    return { model: "research/live-model", providers: [{ id: "research", name: "Research", models: {
+      "live-model": { id: "live-model", name: "Live Model", providerID: "research" },
+    } }], connected: ["research"], defaults: { research: "live-model" } };
+  };
+  assert.deepEqual(await json(await client.request("/global/config")), { model: "research/live-model" });
+  const catalog = await json(await client.request("/config/providers"));
+  assert.equal(catalog.providers[0].models["live-model"].name, "Live Model");
+  assert.deepEqual(catalog.default, { research: "live-model" });
+  const providers = await json(await client.request("/provider"));
+  assert.deepEqual(providers.connected, ["research"]);
+  assert.equal(calls, 3);
+  fixture.server.runtimeCatalog = async () => { throw Object.assign(new Error("OpenCode model catalog unavailable"), { statusCode: 503 }); };
+  const failed = await client.request("/config/providers");
+  assert.equal(failed.status, 503);
+  assert.deepEqual(await json(failed), { error: "managed runtime unavailable" });
+});
+
+test("login preloads public client assets without starting a workspace, and the authenticated app includes a login preparation screen", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-login-preparation-"));
+  const webRoot = join(root, "web");
+  await mkdir(join(webRoot, "assets"), { recursive: true });
+  await writeFile(join(webRoot, "index.html"), '<html><head><script type="module" src="/assets/app.js"></script><link rel="stylesheet" href="/assets/app.css"></head><body><div id="root"></div></body></html>');
+  await writeFile(join(webRoot, "assets/app.js"), 'window.fixtureClient = true;');
+  const fixture = await makeFixture({ root, webRoot });
+  const page = await fetch(fixture.base + "/login");
+  const html = await page.text();
+  assert.match(html, /rel="modulepreload" href="\/assets\/app.js"/);
+  assert.match(html, /scikeel.login.pending/);
+  const asset = await fetch(fixture.base + "/assets/app.js", { redirect: "manual" });
+  assert.equal(asset.status, 200);
+  assert.equal(await asset.text(), 'window.fixtureClient = true;');
+  assert.equal(fixture.manager.listWorkers().length, 0);
+  const unauthenticated = await fetch(fixture.base + "/v1/whoami", { redirect: "manual" });
+  assert.equal(unauthenticated.status, 401);
+  const client = makeClient(fixture.base);
+  await login(client, "admin", "admin-password");
+  await client.request("/");
+  const app = await client.request("/");
+  assert.equal(app.status, 200);
+  assert.match(await app.text(), /scikeel:login-ready/);
+});
+
+test('conversation collaboration defaults are owned, unavailable without runtime, and proposals cannot approve',async()=>{
+  const f=await makeFixture();const c=makeClient(f.base);await login(c,'admin','admin-password');
+  await c.request('/v1/health');const session={id:'owned'};
+  const r=await c.request(`/api/collaboration/${session.id}`);assert.equal(r.status,200);const body=await r.json();assert.equal(body.state.mode,'collaborative');assert.equal(body.available,false);
+  const missing=await c.request('/api/collaboration/ses_missing');assert.equal(missing.status,404);
+  const invalid=await c.request(`/api/collaboration/${session.id}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'mode',mode:'unknown',revision:0})});assert.equal(invalid.status,400);
+});
+
+for(const mode of ["collaborative","guided","delegated"]) test(`managed ${mode} enforces pending decisions on ordinary prompts and preserves confirmed context`,async(t)=>{
+ const policy=new TenantPolicy();const f=await makeFixture({tenantPolicy:policy});const c=makeClient(f.base);
+ const {user}=await login(c,"admin","admin-password");const instanceId=`user-${user.id}`;
+ const w=await f.manager.ensureWorker({instanceId,userId:user.id});
+ let reportedStatus='starting';
+ f.manager.getWorker=((original)=>(id)=>({...original.call(f.manager,id),userId:user.id,generation:1,status:reportedStatus}))(f.manager.getWorker);
+ const account={userId:user.id,instanceId,generation:1,workspaceDir:w.workspaceDir};policy.registerAccount(account);policy.registerSession(account,{id:"owned",directory:w.workspaceDir+"/project"});
+ const post=(path,value)=>c.request(path,{method:"POST",headers:{"content-type":"application/json",origin:f.base},body:JSON.stringify(value)});
+ await f.server.runtimeCollaboration(account,{action:"capability",sessionId:"capability"});
+ await assert.rejects(f.server.runtimeCollaboration(account,{action:"guard",sessionId:"owned"}),/unavailable/);
+ reportedStatus="running";
+ const loaded=await c.request('/api/collaboration/owned');assert.equal(loaded.status,200,await loaded.clone().text());assert.equal((await json(loaded)).available,true);
+ await post('/api/collaboration/owned',{action:'heartbeat',pageId:'page'});
+ if(mode!=='collaborative')assert.equal((await post('/api/collaboration/owned',{action:'mode',mode,revision:0})).status,200);
+ const prompt={parts:[{type:'text',text:'Research'}],system:'Retain this context'};
+ assert.equal((await post('/session/owned/prompt_async',prompt)).status,202);
+ const guarded=await f.server.runtimeCollaboration(account,{action:'guard',sessionId:'owned'});assert.ok(guarded.policy.includes('mode: '+mode));
+ const waiting=await f.server.runtimeCollaboration(account,{action:'checkpoint',sessionId:'owned',kind:mode==='guided'?'step':'method',question:'Which method?',suggestedAnswer:'Method A'});
+ assert.equal((await f.server.runtimeCollaboration(account,{action:'guard',sessionId:'owned'})).blocked,true);
+ const nativeFetch=globalThis.fetch;
+ const access=f.manager.getWorkerAccess(instanceId);
+ globalThis.fetch=async(input,options)=>{
+   const url=new URL(String(input));
+   if(url.origin===new URL(access.url).origin&&['/session/child','/session/grandchild'].includes(url.pathname))return new Response(JSON.stringify({id:url.pathname.endsWith('/grandchild')?'grandchild':'child',parentID:url.pathname.endsWith('/grandchild')?'child':'owned',directory:w.workspaceDir+'/project'}),{headers:{'content-type':'application/json'}});
+   return nativeFetch(input,options);
+ };
+ t.after(()=>{globalThis.fetch=nativeFetch;});
+ assert.equal((await f.server.runtimeCollaboration(account,{action:'guard',sessionId:'grandchild'})).blocked,true);
+ assert.equal((await post('/session/grandchild/prompt_async',prompt)).status,409);
+
+ assert.equal((await post('/session/owned/prompt_async',prompt)).status,409);
+ await assert.rejects(f.server.runtimeCollaboration(account,{action:'answer',sessionId:'owned',answer:'Method A'}),/denied/);
+ const pending=waiting.state.pending;
+ assert.equal((await post('/api/collaboration/owned',{action:'answer',id:pending.id,execution:pending.execution,revision:waiting.state.revision,answer:'Method B'})).status,200);
+ assert.equal((await f.server.runtimeCollaboration(account,{action:'guard',sessionId:'owned'})).blocked,false);
+ await f.server.collaboration.settled({userId:user.id,sessionId:'owned'});
+ assert.equal((await post('/session/owned/prompt_async',prompt)).status,202);
+ const history=await json(await c.request('/session/owned/message'));
+ const bashRule=history[0].fixturePermission.filter(rule=>rule.permission==="bash"||rule.permission==="*").at(-1);
+ assert.equal(bashRule.action,mode==="delegated"?"allow":"ask");
+ assert.ok(history[0].fixtureSystem.includes('Retain this context'));assert.ok(history[0].fixtureSystem.includes('mode: '+mode));assert.ok(history.some(message=>message.fixtureSystem?.includes('Method B')));
+ assert.equal((await c.request('/api/collaboration/owned',{method:'POST',headers:{'content-type':'application/json','sec-fetch-site':'cross-site'},body:'{"action":"pause"}'})).status,403);
+});
+
+test("disconnecting during worker startup cannot leave an orphaned operation lease", async () => {
+  const f=await makeFixture();const client=makeClient(f.base);await login(client,"admin","admin-password");
+  await client.request("/v1/health");
+  const original=f.manager.ensureWorker.bind(f.manager);
+  let enter,continueStartup;
+  const entered=new Promise(resolve=>{enter=resolve;});
+  const resumed=new Promise(resolve=>{continueStartup=resolve;});
+  f.manager.ensureWorker=async input=>{enter();await resumed;return original(input);};
+  let retained=0;f.manager.retainWorker=()=>{retained++;return {release(){}};};
+  const abort=new AbortController();
+  const request=client.request("/v1/health",{signal:abort.signal}).catch(()=>{});
+  await entered;abort.abort();await request;
+  await new Promise(resolve=>setTimeout(resolve,30));continueStartup();
+  await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(retained,0);
+});
+
+
+test("completed managed synchronous replies allow the next turn without settling active parents", async (t) => {
+  const policy = new TenantPolicy();
+  const f = await makeFixture({ tenantPolicy: policy });
+  const c = makeClient(f.base);
+  const { user } = await login(c, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  const w = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => (id) => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: "running" }))(f.manager.getWorker);
+  const owner = { userId: user.id, instanceId, generation: 1, workspaceDir: w.workspaceDir };
+  policy.registerAccount(owner);
+  policy.registerSession(owner, { id: "owned", directory: w.workspaceDir + "/project" });
+  await f.server.runtimeCollaboration(owner, { action: "capability", sessionId: "capability" });
+  const access = f.manager.getWorkerAccess(instanceId);
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.origin === new URL(access.url).origin && url.pathname === "/session/child")
+      return new Response(JSON.stringify({ id: "child", parentID: "owned", directory: w.workspaceDir + "/project" }));
+    if (url.origin === new URL(access.url).origin && ["/session/owned/message", "/session/child/message"].includes(url.pathname) && init?.method === "POST")
+      return new Response(JSON.stringify({ info: { id: "msg_finished", role: "assistant", sessionID: url.pathname.split("/")[2], time: { completed: Date.now() } }, parts: [{ type: "text", text: "Done" }] }), { headers: { "content-type": "application/json" } });
+    return nativeFetch(input, init);
+  };
+  t.after(() => { globalThis.fetch = nativeFetch; });
+  const post = (path, body) => c.request(path, { method: "POST", headers: { "content-type": "application/json", origin: f.base }, body: JSON.stringify(body) });
+  await post("/api/collaboration/owned", { action: "heartbeat", pageId: "page" });
+  const prompt = { parts: [{ type: "text", text: "Reply" }] };
+  for (let i = 0; i < 2; i++) {
+    const r = await post("/session/owned/message", prompt);
+    assert.equal(r.status, 200, await r.text());
+    assert.equal((await json(await c.request("/api/collaboration/owned"))).state.phase, "idle");
+  }
+  const current = (await json(await c.request("/api/collaboration/owned"))).state;
+  await f.server.collaboration.begin(current, current.revision);
+  policy.registerSession(owner, { id: "child", parentID: "owned", directory: w.workspaceDir + "/project" });
+  const childReply = await post("/session/child/message", prompt);
+  assert.equal(childReply.status, 200, await childReply.text());
+  assert.equal((await json(await c.request("/api/collaboration/owned"))).state.phase, "running");
 });
