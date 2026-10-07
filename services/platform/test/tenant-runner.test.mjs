@@ -102,6 +102,13 @@ test("gateway configuration is published before startup and restart preserves pr
     assert.equal(options.env.SCIKEEL_SESSION_TITLE_POLICY, "conversation-v1");
     return spawn(process.execPath, [fileURLToPath(new URL("../fixtures/sandbox-gateway.mjs", import.meta.url))], { ...options, env: { ...options.env, FIXTURE_PORT: String(port) } }); } });
   t.after(() => gateway.stop());
+  await gateway.start();
+  assert.equal(gateway.ready, true);
+  assert.equal(childEnvironments[0].SCIKEEL_MANAGED_NETWORK_TOKEN, undefined);
+  assert.equal(childEnvironments[0].OPENCODE_WEBSEARCH_PROVIDER, undefined);
+  const bootstrap = JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8"));
+  assert.equal(bootstrap.permission.webfetch, "ask");
+  assert.equal(bootstrap.permission.websearch, "ask");
   const profile = { model: "fixture/one", permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
   await gateway.start(profile);
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/one");
@@ -122,9 +129,9 @@ test("gateway configuration is published before startup and restart preserves pr
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/two");
   const restarted = JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8"));
   assert.equal(restarted.searchProvider, undefined);
-  assert.equal(childEnvironments[0].OPENCODE_WEBSEARCH_PROVIDER, undefined);
-  assert.equal(childEnvironments[1].OPENCODE_WEBSEARCH_PROVIDER, "parallel");
-  assert.equal(childEnvironments[1].OPENCODE_ENABLE_PARALLEL, "1");
+  assert.equal(childEnvironments[1].OPENCODE_WEBSEARCH_PROVIDER, undefined);
+  assert.equal(childEnvironments[2].OPENCODE_WEBSEARCH_PROVIDER, "parallel");
+  assert.equal(childEnvironments[2].OPENCODE_ENABLE_PARALLEL, "1");
   assert.deepEqual(restarted.skills, { paths: [skills] });
   assert.deepEqual(restarted.plugin, [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest, collaborationToken: brokerToken }]]);
   assert.deepEqual(restarted.permission, published.permission);

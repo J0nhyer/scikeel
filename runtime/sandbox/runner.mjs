@@ -173,7 +173,7 @@ export class TenantGateway {
     const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", this.address,
       "--port", String(this.port), "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,
       "--resources", "/opt/scikeel/tools/resources", "--token", this.token], {
-      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir, SCIKEEL_SESSION_TITLE_POLICY: "conversation-v1", OPENCODE_WEBSEARCH_PROVIDER: searchProvider, OPENCODE_ENABLE_PARALLEL: searchProvider === "parallel" ? "1" : undefined, SCIKEEL_MANAGED_NETWORK_TOKEN: profile.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey }, detached: true,
+      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir, SCIKEEL_SESSION_TITLE_POLICY: "conversation-v1", OPENCODE_WEBSEARCH_PROVIDER: searchProvider, OPENCODE_ENABLE_PARALLEL: searchProvider === "parallel" ? "1" : undefined, SCIKEEL_MANAGED_NETWORK_TOKEN: profile?.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey }, detached: true,
       stdio: ["ignore", "ignore", process.env.SCIKEEL_CI_DIAGNOSTICS === "1" ? "inherit" : "ignore"],
     });
     this.#child = child; let failed = false; child.once("error", () => failed = true);
