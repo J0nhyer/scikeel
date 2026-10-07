@@ -62,6 +62,33 @@
     }
   },
   "skills": {
+    "catalogDescriptions": {
+      "skill": {
+        "computer-use": "Operate desktop apps through screenshots and interface controls, checking the result after each action.",
+        "domain-check": "Review scientific code for unit, coordinate, model and domain-specific errors, and report findings.",
+        "large-file": "Inspect large datasets with bounded memory, then read only the needed schemas, samples and ranges.",
+        "modal-run": "Run heavy or GPU jobs on Modal using your account and bring the results back to the workspace.",
+        "publication-figures": "Create publication-ready figures and tables, checking layout, readability and export formats.",
+        "remote-compute": "Submit and monitor jobs on SSH servers or Slurm clusters, then retrieve the results.",
+        "research-workflow": "Organize research from a confirmed objective through planning, method choices, reproducible outputs and evidence checks.",
+        "stats-integrity": "Check statistical assumptions, preregistration consistency and reproducibility, and flag interpretation risks.",
+        "traceability-review": "Review whether citations, reported numbers and figures can be traced back to their sources and generating code."
+      },
+      "agent": {
+        "build": "Carry out implementation tasks, edit files and run tools to complete the requested work.",
+        "plan": "Analyze the request and existing project, then prepare an implementation plan before making changes.",
+        "general": "Handle delegated tasks that require several steps of research, analysis or execution.",
+        "explore": "Search project files and code to locate implementations and understand how they relate.",
+        "reviewer": "Review research outputs for traceability, statistics and reproducibility, reporting findings without editing files.",
+        "compaction": "Condense long conversations while preserving key context so the task can continue.",
+        "summary": "Summarize the conversation and completed work for later review.",
+        "title": "Automatically generate a session title from the conversation."
+      },
+      "fallback": {
+        "skill": "Provides task-specific instructions for the agent.",
+        "agent": "Performs or assists with tasks according to its configuration."
+      }
+    },
     "title": "スキル & エージェント",
     "description": {
       "prefix": "OpenCode ランタイムからライブで読み込まれます — 同梱のスキルパック、ワークスペース内の ",
@@ -77,7 +104,9 @@
       "installed": "「{{name}}」をインストールしました — すべてのワークスペースで使えます。",
       "agentPrompt": "ユーザーがスキルのインストール欄に次の内容を入力しました：\n\n---\n{{input}}\n---\n\n根気よくインストールを手伝ってください：まずどのスキルを指しているかを特定し（URL の取得、検索、曖昧な場合はユーザーへの確認）、次にスキルファイルとして .opencode/skills/<name>/SKILL.md に保存します。必ずこのワークスペース内に保存し、外には書き込まないでください（その後アプリがすべてのワークスペースで使えるようにします）。形式は customize-opencode スキルに説明があります。最後にインストールしたスキル名を返答してください。",
       "echo": "このスキルのインストールを手伝ってください：\n\n{{input}}",
-      "adoptFailed": "スキルは書き込まれましたが、プロファイルへ移動できませんでした。このセッションのフォルダーが置き換わると消えます: {{detail}}"
+      "adoptFailed": "スキルは書き込まれましたが、プロファイルへ移動できませんでした。このセッションのフォルダーが置き換わると消えます: {{detail}}",
+      "hintWorkspace": "現在のワークスペースにインストールされ、このワークスペース内でのみ利用できます。",
+      "agentPromptWorkspace": "The user wants to install this skill:\n\n---\n{{input}}\n---\n\nConfirm its content and source, then save the skill and any required helper files at {{skillsDirectory}}/<name>/SKILL.md inside the current workspace. SKILL.md must have YAML frontmatter with name and description. Keep every file within this workspace; do not write to the user home or another workspace. This installation is available only in the current workspace. Reply with the installed name when complete; report failures accurately without claiming success."
     },
     "environment": {
       "sectionTitle": "科学計算環境",
@@ -109,7 +138,11 @@
     "search": "スキルとエージェントを検索",
     "filter": "種類",
     "all": "すべて（{{count}}）",
-    "noMatch": "「{{query}}」に一致するものはありません。"
+    "noMatch": "「{{query}}」に一致するものはありません。",
+    "refresh": "スキルを更新",
+    "loading": "スキルを読み込み中…",
+    "loadFailed": "スキルを読み込めませんでした。再試行してください。",
+    "retry": "再試行"
   },
   "notFound": {
     "title": "404 — 見つかりません",

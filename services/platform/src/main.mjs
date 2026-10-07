@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import { AuthStore } from "./auth-store.mjs";
 import { CliRuntimeManager } from "./cli-runtime.mjs";
 import { PlatformServer } from "./platform-server.mjs";
+import { sandboxConfiguration } from "./sandbox-manifest.mjs";
+import { createSandboxControlPlane } from "./sandbox-control-plane.mjs";
 import { WorkerManager } from "./worker-manager.mjs";
 
 function env(name, fallback = "") {
@@ -42,13 +44,15 @@ function optionalPath(name, fallback) {
 }
 
 const dataDir = resolve(env("PLATFORM_DATA_DIR", "/srv/osd/platform"));
+const sandbox = sandboxConfiguration(process.env, dataDir);
 const adminUsername = env("PLATFORM_ADMIN_USERNAME", "admin");
 const adminPassword = env("PLATFORM_ADMIN_PASSWORD");
 const authStore = new AuthStore({
   filePath: join(dataDir, "auth.json"),
   bootstrapAdmin: adminPassword ? { username: adminUsername, password: adminPassword } : null,
 });
-const workerManager = new WorkerManager({
+const controlPlane = sandbox?.enabled ? await createSandboxControlPlane({ configuration: sandbox, dataDir }) : null;
+const workerManager = controlPlane?.manager ?? new WorkerManager({
   rootDir: join(dataDir, "workers"),
   osdCommand: env("OSD_BIN", "osd"),
   osdArgs: optionalJsonArray("OSD_ARGS_JSON"),
@@ -59,6 +63,9 @@ const workerManager = new WorkerManager({
 });
 const cliRuntime = new CliRuntimeManager({
   rootDir: join(dataDir, "cli-runtime"),
+  sandboxJobs:controlPlane?.nativeJobs,
+  profileResolver:controlPlane?.nativeProfileResolver,
+  resourcesDir: env("OSD_RESOURCES") || null,
   // OpenCode remains every user's default. Claude Code and Codex are optional
   // per-user selections; no environment variable may flip the whole platform.
   runtime: "opencode",
@@ -77,6 +84,10 @@ const platform = new PlatformServer({
   authStore,
   workerManager,
   cliRuntime,
+  tenantPolicy: controlPlane?.tenantPolicy,
+  runtimeCatalog: controlPlane?.runtimeCatalog,
+  environments: controlPlane?.environments,
+  workspaceFiles: controlPlane?.files,
   webRoot: optionalPath("PLATFORM_WEB_ROOT", join(process.cwd(), "apps/desktop/dist")),
   // The current internal deployment is still plain HTTP; set this to true
   // when the reverse proxy terminates HTTPS.
@@ -84,14 +95,17 @@ const platform = new PlatformServer({
   logger: (event) => console.error(JSON.stringify(event)),
 });
 
+if(controlPlane) controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
+
 let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(JSON.stringify({ type: "platform.stopping", signal }));
   await platform.close().catch((error) => console.error(error));
-  await cliRuntime.close().catch((error) => console.error(error));
-  await workerManager.close().catch((error) => console.error(error));
+  await cliRuntime?.close().catch((error) => console.error(error));
+  if (controlPlane) await controlPlane.close().catch((error) => console.error(error));
+  else await workerManager.close().catch((error) => console.error(error));
   await authStore.close().catch((error) => console.error(error));
 }
 

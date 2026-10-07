@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   isTauri: true,
   /** Authenticated platform Web client, toggled only by gateway-specific tests. */
   isGatewayWeb: false,
+  isPlatformWeb: false,
   /** The host's active workspace folder, as `active-workspace.txt` holds it.
    *  `setWorkspace`/`newDatedWorkspace` move it and `workspacePath` reads it
    *  back, because that is the contract the Rust side keeps: creating a dated
@@ -29,6 +30,11 @@ const mocks = vi.hoisted(() => ({
   kernelReset: vi.fn(async () => {}),
   /** Number of connect() attempts that fail before one succeeds. */
   failConnects: 0,
+  failSessionLists: 0,
+  agentGate: null as Promise<void> | null,
+  commandGate: null as Promise<void> | null,
+  providerGate: null as Promise<void> | null,
+  skillGate: null as Promise<void> | null,
   /** Number of createSession() attempts that fail before one succeeds. */
   failCreates: 0,
   /** Fire a normalized event into the store, as the SSE stream would. */
@@ -51,6 +57,8 @@ const mocks = vi.hoisted(() => ({
   /** Captures the FULL sendPrompt arg list (incl. model + variant) — the plain
    *  spy above deliberately ignores those, so existing 3-arg assertions hold. */
   sendPromptFullSpy: vi.fn(),
+  prepareCollaborationSend: vi.fn(),
+  collaborationRevisionSpy: vi.fn(),
   runCommand: vi.fn(),
   replyPermission: vi.fn(),
   abortSession: vi.fn(),
@@ -62,6 +70,15 @@ const mocks = vi.hoisted(() => ({
    *  "aborted" error and one or more session.idle events. Empty by default. */
   abortTrailing: [] as unknown[],
   getMessages: vi.fn(),
+  listQuestions: vi.fn(async (): Promise<unknown[]> => []),
+  listPermissions: vi.fn(async (): Promise<unknown[]> => []),
+  sessionRunning: null as boolean | null,
+  runningByDirectory: {} as Record<string, string[]>,
+  statusDiscoveryFailures: 0,
+  statusDiscoveryGates: {} as Record<string, Promise<string[]> | undefined>,
+  listRunningSessions: vi.fn(),
+  failSessionStatus: false,
+  failSkills: false,
   /** Records setDefaultModel calls; `currentModel` is what getDefaultModel returns. */
   setDefaultModelSpy: vi.fn(),
   currentModel: null as string | null,
@@ -139,9 +156,11 @@ vi.mock("./webMode", () => ({
   get isGatewayWeb() {
     return mocks.isGatewayWeb;
   },
+  get isPlatformWeb() { return mocks.isPlatformWeb; },
   gatewayToken: () => "gateway-test-token",
   gatewayOrigin: () => "http://gateway.test",
 }));
+vi.mock("./collaboration",()=>({prepareCollaborationSend:mocks.prepareCollaborationSend}));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
 vi.mock("./systemNotification", () => ({
   notifyPermissionRequest: mocks.notifyPermissionRequest,
@@ -185,6 +204,10 @@ vi.mock("@ai4s/sdk", () => {
       this.statusCb("ready");
     }
     async listSessions() {
+      if (mocks.failSessionLists > 0) {
+        mocks.failSessionLists--;
+        throw new Error("Session list temporarily unavailable");
+      }
       return mocks.sessionList;
     }
     async compactSession(sid: string, providerID?: string, modelID?: string) {
@@ -199,9 +222,12 @@ vi.mock("@ai4s/sdk", () => {
       mocks.moveSessionSpy(id, directory);
     }
     async listSkills() {
+      if (mocks.skillGate) await mocks.skillGate;
+      if (mocks.failSkills) throw new Error("skill discovery failed");
       return [{ name: "stub" }];
     }
     async listAgents() {
+      if (mocks.agentGate) await mocks.agentGate;
       return [
         { name: "build", description: "", mode: "primary" },
         { name: "plan", description: "", mode: "primary" },
@@ -211,6 +237,7 @@ vi.mock("@ai4s/sdk", () => {
       return mocks.currentModel;
     }
     async listProviders() {
+      if (mocks.providerGate) await mocks.providerGate;
       return mocks.providers;
     }
     async setDefaultModel(model: string) {
@@ -244,11 +271,16 @@ vi.mock("@ai4s/sdk", () => {
       agent?: string,
       model?: string | null,
       variant?: string | null,
+      _parts?: unknown,
+      _attachments?: unknown,
+      collaborationRevision?: number,
     ) {
       mocks.sendPromptSpy(sid, text, agent);
       mocks.sendPromptFullSpy(sid, text, agent, model, variant);
+      mocks.collaborationRevisionSpy(collaborationRevision);
     }
     async listCommands() {
+      if (mocks.commandGate) await mocks.commandGate;
       return [{ name: "init", description: "guided AGENTS.md setup", source: "command" }];
     }
     // Like the real endpoints, shell/command resolve only when the turn is
@@ -293,6 +325,18 @@ vi.mock("@ai4s/sdk", () => {
       if (mocks.messagesGate) await mocks.messagesGate;
       return mocks.messages;
     }
+    async listRunningSessions(directory?: string) {
+      mocks.listRunningSessions(directory);
+      const discoveryGate = mocks.statusDiscoveryGates[directory ?? ""];
+      if (discoveryGate) return discoveryGate;
+      if (mocks.statusDiscoveryFailures-- > 0) throw new Error("transient discovery failure");
+      if (mocks.failSessionStatus) throw new Error("status unavailable");
+      return mocks.runningByDirectory[directory ?? ""] ?? [];
+    }
+    async isSessionRunning() {
+      if (mocks.failSessionStatus) throw new Error("status unavailable");
+      return mocks.sessionRunning;
+    }
     async revert(sid: string, messageID: string, partID?: string) {
       mocks.revertSpy(sid, messageID, partID);
       if (mocks.failReverts > 0) {
@@ -304,10 +348,10 @@ vi.mock("@ai4s/sdk", () => {
       mocks.unrevertSpy(sid);
     }
     async listQuestions() {
-      return [];
+      return mocks.listQuestions();
     }
     async listPermissions() {
-      return [];
+      return mocks.listPermissions();
     }
     // The real client emits "offline" on teardown — the store must keep that
     // away from the UI while reconnecting (first-boot flicker regression).
@@ -325,25 +369,39 @@ vi.mock("@ai4s/sdk", () => {
 });
 
 import type { ArtifactBlock, ThreadBlock } from "@ai4s/shared";
-import { DRAFT_KEY, adoptSourceFolder, rootSessionOf, useRuntimeStore } from "./runtime";
+import { DRAFT_KEY, adoptSourceFolder, rootSessionOf, installWebRecovery, useRuntimeStore } from "./runtime";
 import { useSshStore } from "./ssh";
 import { useToastStore } from "./toast";
 import { leaves, makeLeaf, useLayoutStore } from "./layout";
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.prepareCollaborationSend.mockReset().mockResolvedValue(0);
   mocks.isTauri = true;
   mocks.isGatewayWeb = false;
+  mocks.isPlatformWeb = false;
   mocks.activeWorkspace = "/ws/base";
   mocks.failConnects = 0;
+  mocks.failSessionLists = 0;
+  mocks.agentGate = mocks.commandGate = mocks.providerGate = mocks.skillGate = null;
   mocks.failCreates = 0;
   mocks.failShell = false;
   mocks.failCommand = false;
   mocks.dropCommandPost = false;
   mocks.abortTrailing = [];
+  mocks.listQuestions.mockReset().mockResolvedValue([]);
+  mocks.listPermissions.mockReset().mockResolvedValue([]);
   mocks.messages = [];
   mocks.messagesGate = null;
   mocks.failMessages = false;
+  mocks.sessionRunning = null;
+  mocks.runningByDirectory = {};
+  mocks.statusDiscoveryFailures = 0;
+  mocks.statusDiscoveryGates = {};
+  sessionStorage.removeItem("scikeel.running-sessions");
+  mocks.listRunningSessions.mockReset();
+  mocks.failSessionStatus = false;
+  mocks.failSkills = false;
   mocks.failReverts = 0;
   mocks.approvalMode = "approve";
   mocks.currentModel = null;
@@ -368,6 +426,8 @@ beforeEach(async () => {
     gatewayRuntimes: [],
     gatewayRuntimeSwitching: false,
     gatewayUserRole: null,
+    webReadOnly: false,
+    sessionModels: {},
     currentId: null,
     draftWorkspaces: {},
     threads: {},
@@ -394,7 +454,322 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("Web catalog readiness", () => {
+  function gate() {
+    let release!: () => void;
+    const promise = new Promise<void>(resolve => { release = resolve; });
+    return { promise, release };
+  }
+  it("publishes models before agents and skills finish", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    const slow = gate(); mocks.agentGate = mocks.skillGate = slow.promise;
+    mocks.providers = [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }];
+    mocks.currentModel = "fixture/model";
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "loading", providers: [],
+      gatewayRuntimes: [{ runtime: "opencode", kind: "opencode", label: "OpenCode", managed: false, enabled: true, models: [], defaultModel: null, selectedModel: null, status: "ready", catalogRevision: null }] });
+    const loading = useRuntimeStore.getState().loadCatalog();
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(useRuntimeStore.getState().providers).toHaveLength(1);
+      expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
+    } finally { slow.release(); await loading; }
+  });
+  it("keeps command publication when only the model catalog is retried", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    mocks.providers = [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }];
+    mocks.currentModel = "fixture/model";
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", commands: [] });
+    const slow = gate(); mocks.commandGate = slow.promise;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ runtime: "opencode", available: [{ runtime: "opencode", enabled: true, status: "ready" }] }))));
+    const loading = useRuntimeStore.getState().loadCatalog();
+    try {
+      await useRuntimeStore.getState().refreshGatewayRuntimes();
+      slow.release(); await loading;
+      expect(useRuntimeStore.getState().commands.some(command => command.name === "init")).toBe(true);
+    } finally { slow.release(); await loading; }
+  });
+  it("loads history after commands without waiting for model and skill discovery", async () => {
+    const slow = gate(); mocks.providerGate = mocks.skillGate = slow.promise;
+    useRuntimeStore.setState({ commands: [], threads: {}, sessions: [{ id: "ses_a", title: "A" }] });
+    const loading = useRuntimeStore.getState().loadCatalog();
+    const history = useRuntimeStore.getState().loadHistory("ses_a");
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(useRuntimeStore.getState().threads.ses_a?.loaded).toBe(true);
+    } finally { slow.release(); await Promise.all([loading, history]); }
+  });
+  it("preserves an explicitly selected retired identity and blocks dispatch", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    sessionStorage.setItem("scikeel.zen.models.v1", JSON.stringify({ version: 1, fetchedAt: Date.now(), models: ["paid"] }));
+    mocks.providers = [{ id: "opencode", name: "Zen", models: [{ id: "free", name: "Free" }, { id: "paid", name: "Paid" }] }];
+    mocks.currentModel = "opencode/free";
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", sessionModels: { ses_a: "opencode/free" },
+      gatewayRuntimes: [{ runtime: "opencode", kind: "opencode", label: "OpenCode", managed: false, enabled: true, models: [], defaultModel: null, selectedModel: null, status: "ready", catalogRevision: null }] });
+    try {
+      await useRuntimeStore.getState().loadCatalog();
+      expect(useRuntimeStore.getState().defaultModel).toBe("opencode/free");
+      expect(useRuntimeStore.getState().sessionModels.ses_a).toBe("opencode/free");
+      await useRuntimeStore.getState().sendPrompt("Research", "ses_a");
+      expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+      expect(mocks.setDefaultModelSpy).not.toHaveBeenCalled();
+    } finally { sessionStorage.removeItem("scikeel.zen.models.v1"); }
+  });
+
+});
+
+describe("platform connection context", () => {
+  function response(path: string): Response {
+    const data = path.endsWith("/v1/whoami") ? { directory: "/ws/base", mode: "full" }
+      : path.endsWith("/api/me") ? { user: { id: "usr_fixture", username: "fixture", role: "user" } }
+      : { runtime: "opencode", kind: "opencode", available: [{ runtime: "opencode", kind: "opencode", enabled: true }] };
+    return new Response(JSON.stringify(data));
+  }
+  it("retries failed required metadata before opening a usable connection", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/runtime") && ++attempts === 1) return new Response("offline", { status: 503 });
+      return response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(2)).toBe(true);
+    expect(attempts).toBe(2);
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("opencode");
+  });
+  it("does not discard successful runtime metadata when account metadata fails", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/me")) throw new Error("account temporarily offline");
+      return response(path);
+    }));
+    await useRuntimeStore.getState().connect();
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("opencode");
+    expect(useRuntimeStore.getState().gatewayUserRole).toBeNull();
+    expect(useRuntimeStore.getState().status).toBe("ready");
+  });
+  it("does not expose ready or writable state after a failed workspace identity", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/v1/whoami")
+      ? new Response("unavailable", { status: 503 }) : response(String(input))));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    expect(useRuntimeStore.getState().status).toBe("error");
+  });
+  it("shares simultaneous Web connection recovery", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => response(String(input)));
+    vi.stubGlobal("fetch", fetchMock);
+    await Promise.all([useRuntimeStore.getState().connectRetry(1), useRuntimeStore.getState().connectRetry(1)]);
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/v1/whoami"))).toHaveLength(1);
+  });
+  it("rejects an unknown assistant instead of falling back to OpenCode", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/api/runtime")
+      ? new Response(JSON.stringify({ runtime: "unknown", kind: "opencode", available: [] })) : response(String(input))));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    expect(useRuntimeStore.getState().status).toBe("error");
+  });
+  it("preserves verified read-only workspace permissions", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/v1/whoami")
+      ? new Response(JSON.stringify({ directory: "/ws/base", mode: "read-only" })) : response(String(input))));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    expect(useRuntimeStore.getState().webReadOnly).toBe(true);
+  });
+  it("does not let a cancelled old context close or overwrite its replacement", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    let release!: (value: Response) => void;
+    const oldMetadata = new Promise<Response>(resolve => { release = resolve; });
+    let requests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/runtime") && ++requests === 1) return oldMetadata;
+      return response(path);
+    }));
+    const old = useRuntimeStore.getState().connectRetry(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    useRuntimeStore.getState().disconnect();
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    release(new Response("old failure", { status: 503 }));
+    expect(await old).toBe(false);
+    expect(useRuntimeStore.getState().status).toBe("ready");
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("opencode");
+  });
+  it("stops retries at the overall recovery deadline", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/whoami")) now = 90_001;
+      return new Response("failed", { status: 503 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      expect(await useRuntimeStore.getState().connectRetry(4)).toBe(false);
+      expect(useRuntimeStore.getState().error).toContain("timed out");
+      expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/v1/whoami"))).toHaveLength(1);
+    } finally { clock.mockRestore(); }
+  });
+  it("does not retry an explicit platform login-expiry redirect", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    const fetchMock = vi.fn<(input: RequestInfo | URL) => Promise<Response>>(async () => new Response("expired", { status: 401, headers: { "x-scikeel-auth": "session-required" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await useRuntimeStore.getState().connectRetry(4)).toBe(false);
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/v1/whoami"))).toHaveLength(1);
+  });
+
+});
+
+describe("Web browser recovery and model retry", () => {
+  it("coalesces browser recovery events and ignores a healthy tab", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    const original = useRuntimeStore.getState().connectRetry;
+    const recover = vi.fn(async () => false);
+    useRuntimeStore.setState({ connectRetry: recover, status: "error" });
+    const stop = installWebRecovery();
+    try {
+      window.dispatchEvent(new Event("online"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("online"));
+      expect(recover).toHaveBeenCalledOnce();
+      stop();
+      window.dispatchEvent(new Event("online"));
+      expect(recover).toHaveBeenCalledOnce();
+      useRuntimeStore.setState({ status: "ready" });
+      const stopReady = installWebRecovery();
+      window.dispatchEvent(new Event("online"));
+      expect(recover).toHaveBeenCalledOnce();
+      stopReady();
+    } finally { stop(); useRuntimeStore.setState({ connectRetry: original }); }
+  });
+  it("offers model-only retry without reconnecting the stream", async () => {
+    const original = useRuntimeStore.getState().refreshGatewayRuntimes;
+    const refresh = vi.fn(async () => {});
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "unavailable", refreshGatewayRuntimes: refresh });
+    try {
+      render(createElement(WebModelPicker, { sessionId: "ses_a" }));
+      await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(refresh).toHaveBeenCalledOnce();
+    } finally { useRuntimeStore.setState({ refreshGatewayRuntimes: original }); }
+  });
+});
+
 describe("gateway runtime selection", () => {
+  it("requests account and runtime metadata while the workspace identity is still loading", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    let release!: (response: Response) => void;
+    const whoami = new Promise<Response>(resolve => { release = resolve; });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/v1/whoami")
+      ? whoami : new Response(JSON.stringify({ runtime: "opencode", available: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const connection = useRuntimeStore.getState().connect();
+    await Promise.resolve(); await Promise.resolve();
+    try {
+      expect(fetchMock.mock.calls.map(call => String(call[0]))).toEqual(expect.arrayContaining(["http://gateway.test/api/me", "http://gateway.test/api/runtime"]));
+    } finally {
+      release(new Response(JSON.stringify({ directory: "/ws/base" }), { status: 200 }));
+      await connection;
+    }
+  });
+
+
+  it("retries a failed initial Web session list before declaring the connection ready", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    mocks.failSessionLists = 1;
+    mocks.sessionList = [{ id: "ses_recovered", title: "Recovered conversation" }];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", runtime: "opencode", available: [] }), { status: 200 })));
+    expect(await useRuntimeStore.getState().connectRetry(2)).toBe(true);
+    expect(useRuntimeStore.getState().sessionListReady).toBe(true);
+    expect(useRuntimeStore.getState().sessions.some(session => session.id === "ses_recovered")).toBe(true);
+  });
+
+  it("finishes connection while another workspace's running status is still loading", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    mocks.sessionList = [{ id: "ses_slow", title: "Slow status", directory: "/ws/slow" }];
+    let release!: (value: string[]) => void;
+    mocks.statusDiscoveryGates["/ws/slow"] = new Promise(resolve => { release = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", runtime: "opencode", available: [] }))));
+    let finished = false;
+    const connection = useRuntimeStore.getState().connectRetry(1).then(result => { finished = result; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(useRuntimeStore.getState().sessionListReady).toBe(true);
+      expect(finished).toBe(true);
+    } finally { release([]); await connection; }
+  });
+
+  it("reports an unavailable Web session list after the retry window instead of waiting forever", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    mocks.failSessionLists = 10;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", runtime: "opencode", available: [] }), { status: 200 })));
+    expect(await useRuntimeStore.getState().connectRetry(2)).toBe(false);
+    expect(useRuntimeStore.getState().status).toBe("error");
+    expect(useRuntimeStore.getState().error).toContain("conversations");
+  });
+
+
+  it("binds a Web draft to its created session even when its first prompt fails", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    const source = makeLeaf(null);
+    useLayoutStore.setState({ groups: [{ id: "retry-group", name: "", tree: source, focusedLeafId: source.id, zoomedLeafId: null }], activeGroupId: "retry-group", tree: source, focusedLeafId: source.id, zoomedLeafId: null });
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
+    mocks.sessionList = [{ id: "ses_new", title: "New session" }];
+    const brief = { objective: "Rejected", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-first-retry" };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "reject fixture" }), { status: 400 })));
+    expect(await useRuntimeStore.getState().sendPrompt("Keep my text", undefined, `draft:${source.id}`, undefined, brief)).toBeNull();
+    expect(leaves(useLayoutStore.getState().tree!)[0].sessionId).toBe("ses_new");
+    expect(useRuntimeStore.getState().sessions.some((session) => session.id === "ses_new")).toBe(true);
+    expect(useRuntimeStore.getState().sendingSessions).toEqual({});
+  });
+  it("returns no acceptance when a Web prompt is rejected so the composer retains its draft", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
+    const brief = { objective: "Invalid fixture", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-rejected" };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "reject fixture" }), { status: 400 })));
+    expect(await useRuntimeStore.getState().sendPrompt("Keep my text", "ses_rejected", undefined, undefined, brief)).toBeNull();
+    expect(useRuntimeStore.getState().error).toMatch(/reject fixture/);
+  });
+
+  it("creates a confirmed research record before posting its first prompt and refuses a failed record", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
+    const brief = { objective: "Traceable baseline", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-test" };
+    const fetchMock = vi.fn(async () => {
+      expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+      return new Response(JSON.stringify({ task: { ...brief, sessionId: "ses_a" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().sendPrompt("Start research", "ses_a", undefined, undefined, brief);
+    expect(fetchMock).toHaveBeenCalledWith("http://gateway.test/api/research/ses_a", expect.objectContaining({ method: "POST", body: expect.stringContaining('"action":"create"') }));
+    expect(mocks.sendPromptSpy).toHaveBeenCalledWith("ses_a", "Start research", undefined);
+    mocks.sendPromptSpy.mockClear();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "invalid scope" }), { status: 400 })));
+    await useRuntimeStore.getState().sendPrompt("Start again", "ses_b", undefined, undefined, brief);
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().error).toContain("invalid scope");
+  });
+  it("uses the persisted collaboration revision and preserves text when its service is unavailable",async()=>{
+    mocks.isGatewayWeb=true;mocks.isPlatformWeb=true;useRuntimeStore.setState({gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }],sessionAgents:{ses_a:"plan"},agents:[{name:"plan",mode:"primary",description:"Plan fixture"}]});
+    mocks.prepareCollaborationSend.mockResolvedValue(7);
+    await useRuntimeStore.getState().sendPrompt("Research","ses_a");
+    expect(mocks.prepareCollaborationSend).toHaveBeenCalledWith("ses_a", undefined);
+    expect(mocks.collaborationRevisionSpy).toHaveBeenLastCalledWith(7);
+    expect(mocks.sendPromptSpy).toHaveBeenCalledWith("ses_a","Research",undefined);
+    mocks.sendPromptSpy.mockClear();mocks.prepareCollaborationSend.mockRejectedValue(new Error("checkpoint service unavailable"));
+    const accepted=await useRuntimeStore.getState().sendPrompt("Keep this answer","ses_b");
+    expect(accepted).toBeNull();expect(mocks.sendPromptSpy).not.toHaveBeenCalled();expect(useRuntimeStore.getState().error).toContain("checkpoint service unavailable");
+  });
+  it("reports failed skill discovery independently and recovers on retry", async () => {
+    mocks.failSkills = true;
+    await useRuntimeStore.getState().loadCatalog();
+    expect(useRuntimeStore.getState().skillsStatus).toBe("error");
+    expect(useRuntimeStore.getState().agents.some((agent) => agent.name === "build")).toBe(true);
+    mocks.failSkills = false;
+    await useRuntimeStore.getState().loadCatalog();
+    expect(useRuntimeStore.getState().skillsStatus).toBe("ready");
+    expect(useRuntimeStore.getState().skills).toEqual([{ name: "stub" }]);
+  });
   const codexCatalog = (models: string[], selectedModel: string) => ({ runtime: "codex" as const,
     kind: "server" as const, managed: true, label: "Codex", enabled: true, models,
     defaultModel: models[0] ?? null, selectedModel, status: "ready" as const });
@@ -671,6 +1046,56 @@ describe("gateway runtime selection", () => {
         selectedModel: "gpt-deep",
       }),
     ]);
+  });
+
+  it("recovers background running sessions after cold reload while viewing another conversation", async () => {
+    mocks.isTauri = false;
+    mocks.isGatewayWeb = true;
+    mocks.sessionList = [
+      { id: "ses_live", title: "Live", directory: "/ws/live" },
+      { id: "ses_other", title: "Other", directory: "/ws/other" },
+    ];
+    mocks.runningByDirectory = { "/ws/live": ["ses_live", "ses_unknown"], "/ws/other": [] };
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", runningSessions: {}, currentId: "ses_other" });
+    await useRuntimeStore.getState().refreshSessions();
+    expect(useRuntimeStore.getState().runningSessions).toEqual({ ses_live: true });
+    expect(useRuntimeStore.getState().currentId).toBe("ses_other");
+    expect(mocks.listRunningSessions.mock.calls.map(([directory]) => directory).sort()).toEqual(["/ws/live", "/ws/other"]);
+  });
+
+  it("retries unknown cold-reload status without clearing known runs or beginning work", async () => {
+    mocks.isTauri = false;
+    mocks.isGatewayWeb = true;
+    mocks.sessionList = [{ id: "ses_live", title: "Live", directory: "/ws/live" }];
+    mocks.runningByDirectory = { "/ws/live": ["ses_live"] };
+    mocks.statusDiscoveryFailures = 1;
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", runningSessions: { ses_known: true } });
+    await useRuntimeStore.getState().refreshSessions();
+    expect(useRuntimeStore.getState().runningSessions).toEqual({ ses_live: true, ses_known: true });
+    expect(mocks.listRunningSessions).toHaveBeenCalledTimes(2);
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+  });
+
+  it("renews a discovered run before another directory's slow response completes", async () => {
+    mocks.isTauri = false; mocks.isGatewayWeb = true;
+    mocks.sessionList = [{ id: "ses_slow", title: "Slow", directory: "/ws/slow" }, { id: "ses_live", title: "Live", directory: "/ws/live" }];
+    mocks.runningByDirectory = { "/ws/live": ["ses_live"] };
+    let release!: (value: string[]) => void;
+    mocks.statusDiscoveryGates["/ws/slow"] = new Promise(done => { release = done; });
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", runningSessions: {} });
+    const refreshing = useRuntimeStore.getState().refreshSessions();
+    try { await vi.waitFor(() => expect(useRuntimeStore.getState().runningSessions.ses_live).toBe(true)); }
+    finally { release([]); await refreshing; }
+  });
+
+  it("prioritizes remembered run directories without treating browser hints as live status", async () => {
+    mocks.isTauri = false; mocks.isGatewayWeb = true;
+    mocks.sessionList = Array.from({ length: 12 }, (_, i) => ({ id: "ses_" + i, title: "Session " + i, directory: "/ws/" + i }));
+    sessionStorage.setItem("scikeel.running-sessions", JSON.stringify(["ses_11", "ses_foreign"]));
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", runningSessions: {} });
+    await useRuntimeStore.getState().refreshSessions();
+    expect(mocks.listRunningSessions.mock.calls[0][0]).toBe("/ws/11");
+    expect(useRuntimeStore.getState().runningSessions).toEqual({});
   });
 
   it("keeps a draft model choice separate from the account default", () => {
@@ -1815,6 +2240,117 @@ describe("stale running locks and interrupt", () => {
     expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBe(true);
   });
 
+  const unfinishedHistory = [
+    { role: "user", parts: [{ type: "text", text: "analyze data" }] },
+    { role: "assistant", parts: [
+      { type: "text", text: "Checking fonts" },
+      { type: "tool", callID: "stale-tool", tool: "bash", state: {
+        status: "running", input: { command: "python analysis.py" }, time: { start: 1 },
+      } },
+    ] },
+  ];
+
+  it.each(["openSession", "loadHistory"] as const)("%s restores confirmed aborted history with one diagnostic", async (method) => {
+    mocks.messages = [
+      { role: "user", parts: [{ type: "text", text: "wait" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [
+        { type: "tool", tool: "bash", state: { status: "completed", input: { command: "sleep 90" } } },
+      ] },
+    ];
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState()[method]("ses_aborted");
+    const state = useRuntimeStore.getState();
+    expect(state.runningSessions["ses_aborted"]).toBeUndefined();
+    expect(state.threads["ses_aborted"].blocks.filter(b => b.kind === "status-line" && b.text.includes("did not finish"))).toHaveLength(1);
+  });
+
+  it("reconciliation recovers a persisted cancellation after a missed idle", async () => {
+    await useRuntimeStore.getState().sendPrompt("wait");
+    mocks.messages = [
+      { role: "user", parts: [{ type: "text", text: "wait" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [] },
+    ];
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBeUndefined();
+    expect(useRuntimeStore.getState().threads["ses_new"].blocks.filter(b => b.kind === "status-line" && b.text.includes("did not finish"))).toHaveLength(1);
+  });
+
+  it.each([true, null])("does not claim persisted cancellation is the current interrupted turn with status %s", async (status) => {
+    mocks.messages = [
+      { role: "user", parts: [{ type: "text", text: "wait" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [] },
+    ];
+    mocks.sessionRunning = status;
+    await useRuntimeStore.getState().openSession("ses_aborted");
+    expect(useRuntimeStore.getState().threads["ses_aborted"].blocks.some(b => b.kind === "status-line")).toBe(false);
+  });
+
+  it("reopening an unfinished history does not lock an idle server session", async () => {
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState().openSession("ses_stale");
+    const state = useRuntimeStore.getState();
+    expect(state.runningSessions["ses_stale"]).toBeUndefined();
+    expect(state.threads["ses_stale"].blocks.find((b) => b.kind === "tool-call"))
+      .toMatchObject({ status: "failed" });
+    expect(state.threads["ses_stale"].blocks.some((b) =>
+      b.kind === "status-line" && b.text.includes("did not finish"))).toBe(true);
+    expect(mocks.abortSession).not.toHaveBeenCalled();
+  });
+
+  it("a background pane does not restore an idle session as running", async () => {
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState().loadHistory("ses_stale");
+    expect(useRuntimeStore.getState().runningSessions["ses_stale"]).toBeUndefined();
+    expect(useRuntimeStore.getState().threads["ses_stale"].blocks.find((b) => b.kind === "tool-call"))
+      .toMatchObject({ status: "failed" });
+  });
+
+  it("reconciliation releases an unfinished history when the runtime is idle", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = false;
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBeUndefined();
+    expect(useRuntimeStore.getState().threads["ses_new"].blocks.find((b) => b.kind === "tool-call"))
+      .toMatchObject({ status: "failed" });
+  });
+
+  it("keeps a genuinely busy session locked with unfinished history", async () => {
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = true;
+    await useRuntimeStore.getState().openSession("ses_busy");
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().runningSessions["ses_busy"]).toBe(true);
+    expect(useRuntimeStore.getState().threads["ses_busy"].blocks.find((b) => b.kind === "tool-call"))
+      .toMatchObject({ status: "pending" });
+  });
+
+  it("does not unlock an unfinished turn when the status request fails", async () => {
+    mocks.messages = unfinishedHistory;
+    mocks.failSessionStatus = true;
+    await useRuntimeStore.getState().openSession("ses_unknown");
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().runningSessions["ses_unknown"]).toBe(true);
+  });
+
+  it("does not clear a new live event while reconciling an older history", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = unfinishedHistory;
+    mocks.sessionRunning = false;
+    let release!: () => void;
+    mocks.messagesGate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = useRuntimeStore.getState().reconcileRunning();
+    mocks.fireEvent({ type: "text.updated", sessionId: "ses_new", text: "New live answer", partId: "live" });
+    release();
+    await pending;
+    expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBe(true);
+    expect(useRuntimeStore.getState().threads["ses_new"].blocks.some((b) =>
+      b.kind === "agent" && b.markdown === "New live answer")).toBe(true);
+  });
+
   it("connect() reconciles running locks left over from before the reconnect", async () => {
     await useRuntimeStore.getState().sendPrompt("hi");
     mocks.messages = doneHistory;
@@ -2601,6 +3137,26 @@ describe("plan agent mode", () => {
 // skills dir. Writing it into the session's own .opencode/skills/ loses it with
 // that dated folder (#61).
 describe("skill install", () => {
+  it.each([
+    ["opencode", ".opencode/skills"],
+    ["claude", ".claude/skills"],
+    ["codex", ".agents/skills"],
+  ] as const)("installs Web skills inside the current %s workspace", async (runtime, directory) => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    useRuntimeStore.setState({ gatewayRuntime: runtime });
+    const result = await useRuntimeStore.getState().installSkill("Install a statistical review skill");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(result?.kind).toBe("session");
+    expect(mocks.newDatedWorkspace).not.toHaveBeenCalled();
+    expect(mocks.installSkillMarkdown).not.toHaveBeenCalled();
+    const calls = mocks.sendPromptSpy.mock.calls;
+    const prompt = calls[calls.length - 1]?.[1] as string;
+    expect(prompt).toContain(`${directory}/<name>/SKILL.md`);
+    expect(prompt).toContain("available only in the current workspace");
+    expect(prompt).not.toContain("available in every workspace");
+  });
+
   it("installs a pasted SKILL.md itself — no session, no model turn", async () => {
     const skill = "---\nname: pasted-skill\ndescription: Say hi.\n---\n\nhi\n";
     const result = await useRuntimeStore.getState().installSkill(skill);
@@ -2724,13 +3280,13 @@ describe("session rename and project filing", () => {
     ]);
   });
 
-  it("renameSession ignores an empty or unchanged title", async () => {
+  it("renameSession ignores empty input but preserves same-title manual intent", async () => {
     await useRuntimeStore.getState().connect();
     useRuntimeStore.setState({ sessions: [{ id: "ses_1", title: "Spike sorting" }] });
 
     expect(await useRuntimeStore.getState().renameSession("ses_1", "   ")).toBe(false);
-    expect(await useRuntimeStore.getState().renameSession("ses_1", "Spike sorting")).toBe(false);
-    expect(mocks.renameSessionSpy).not.toHaveBeenCalled();
+    expect(await useRuntimeStore.getState().renameSession("ses_1", "Spike sorting")).toBe(true);
+    expect(mocks.renameSessionSpy).toHaveBeenCalledWith("ses_1", "Spike sorting");
   });
 
   it("renameSession keeps the old title when the runtime rejects it", async () => {
@@ -3936,5 +4492,119 @@ describe("stall guard integration", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+
+describe("pending interaction recovery after lost SSE events", () => {
+  const permission = { type: "permission.asked", sessionId: "ses_new", requestId: "per_recover", action: "webfetch", resources: ["https://example.invalid"] };
+  const question = { type: "question.asked", sessionId: "ses_new", requestId: "que_recover", questions: [] };
+
+  it("restores approvals and questions after automatic SSE reconnection", async () => {
+    mocks.listPermissions.mockResolvedValue([permission]);
+    mocks.listQuestions.mockResolvedValue([question]);
+    mocks.fireStatus("connecting");
+    mocks.fireStatus("ready");
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().permissions).toEqual([permission]);
+      expect(useRuntimeStore.getState().questions).toEqual([question]);
+    });
+  });
+
+  it("restores a missed approval while the server is still busy", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.listPermissions.mockResolvedValue([permission]);
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    mocks.sessionRunning = true;
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().permissions).toEqual([permission]);
+    expect(useRuntimeStore.getState().runningSessions.ses_new).toBe(true);
+  });
+
+  it("recovers questions even if the permission endpoint fails and exposes that error", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    mocks.listQuestions.mockResolvedValue([question]);
+    mocks.listPermissions.mockRejectedValue(new Error("Failed to load permissions (400: metadata.timeout)"));
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().questions).toEqual([question]);
+    expect(useRuntimeStore.getState().error).toContain("metadata.timeout");
+    mocks.listPermissions.mockResolvedValue([permission]);
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().permissions).toEqual([permission]);
+    expect(useRuntimeStore.getState().error).toBeNull();
+  });
+
+  it("removes prompts resolved in another browser without requiring an SSE reply", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    useRuntimeStore.setState({ permissions: [permission] as never, questions: [question] as never });
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().permissions).toEqual([]);
+    expect(useRuntimeStore.getState().questions).toEqual([]);
+  });
+
+  it("does not restore a request resolved while the recovery response was in flight", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    let release!: (value: unknown[]) => void;
+    mocks.listPermissions.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const pending = useRuntimeStore.getState().reconcileRunning();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    mocks.fireEvent({ type: "permission.resolved", sessionId: "ses_new", requestId: permission.requestId });
+    release([permission]);
+    await pending;
+    expect(useRuntimeStore.getState().permissions).toEqual([]);
+  });
+
+  it("keeps a newly streamed question that was not yet in the recovery snapshot", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    let release!: (value: unknown[]) => void;
+    mocks.listQuestions.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const pending = useRuntimeStore.getState().reconcileRunning();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    mocks.fireEvent(question);
+    release([]);
+    await pending;
+    expect(useRuntimeStore.getState().questions).toEqual([question]);
+  });
+
+  it("does not erase an unrelated error when recovery succeeds", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.messages = [{ role: "assistant", parts: [] }];
+    useRuntimeStore.setState({ error: "An unrelated send failed" });
+    await useRuntimeStore.getState().reconcileRunning();
+    expect(useRuntimeStore.getState().error).toBe("An unrelated send failed");
+  });
+});
+
+
+it("persists a draft's Guided choice before sending its created conversation", async () => {
+  mocks.isPlatformWeb = true;
+  mocks.isGatewayWeb = true;
+  mocks.isTauri = false;
+  useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
+  mocks.prepareCollaborationSend.mockImplementation(async () => {
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+    return 5;
+  });
+  const created = await useRuntimeStore.getState().sendPrompt("Inspect data", undefined, undefined, undefined, undefined, undefined, "guided");
+  expect(created).not.toBeNull();
+  expect(mocks.prepareCollaborationSend).toHaveBeenCalledWith(created, "guided");
+  expect(mocks.collaborationRevisionSpy).toHaveBeenLastCalledWith(5);
+});
+
+
+describe("committed session title events", () => {
+  it("updates only the matching title after idle without changing row order or run state", async () => {
+    await useRuntimeStore.getState().connect();
+    useRuntimeStore.setState({ sessions: [{ id: "ses_a", title: "New session", directory: "/ws/a" }, { id: "ses_b", title: "Unrelated" }], runningSessions: {} });
+    mocks.fireEvent({ type: "session.updated", sessionId: "ses_a", title: "Research topic" });
+    expect(useRuntimeStore.getState().sessions.map(s => [s.id, s.title])).toEqual([["ses_a", "Research topic"], ["ses_b", "Unrelated"]]);
+    expect(useRuntimeStore.getState().sessions[0].directory).toBe("/ws/a");
+    expect(useRuntimeStore.getState().runningSessions).toEqual({});
+    mocks.fireEvent({ type: "session.updated", sessionId: "unknown", title: "Foreign title" });
+    expect(useRuntimeStore.getState().sessions).toHaveLength(2);
   });
 });

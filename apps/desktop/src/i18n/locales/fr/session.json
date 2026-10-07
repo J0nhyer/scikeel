@@ -1,4 +1,74 @@
 {
+  "research": {
+    "issues": {
+      "changed_inputs": "An original input changed or is missing. Inspect the source versions before accepting the results.",
+      "missing_outputs": "Some requested outputs are missing. Continue the task to produce them.",
+      "failed_checks": "Checks failed, lack evidence, or have not been completed. Inspect the check results.",
+      "missing_progress": "Execution ended without a valid final progress record. Inspect the conversation and continue explicitly."
+    },
+    "startFailed": "Could not start research. Please retry.",
+    "title": "Research task",
+    "start": "Start a research task",
+    "intro": "Turn your thesis or research idea into a clear plan, decisions, and checked outputs.",
+    "loading": "Loading research task…",
+    "retry": "Retry",
+    "objective": "Research objective",
+    "goal": "Research goal",
+    "goals": {
+      "thesis": "Undergraduate thesis / graduation design",
+      "publication": "Publication-oriented research"
+    },
+    "mode": "Working mode",
+    "modes": {
+      "guided": "Guided",
+      "collaborative": "Collaborative",
+      "delegated": "Delegated"
+    },
+    "modeHints": {
+      "guided": "Understand and confirm each meaningful research step before moving on.",
+      "collaborative": "Confirm a plan, let the Agent run routine steps, and decide important changes together.",
+      "delegated": "Let the Agent complete and check the confirmed task; it asks when information or a new decision is needed."
+    },
+    "inputs": "Input files (optional, one path per line)",
+    "deliverables": "Expected output files (one path per line)",
+    "pathsHint": "Use paths within this conversation’s workspace. Original inputs are preserved; tool approvals still apply.",
+    "confirmScope": "I confirm this objective, input files, and expected outputs within this conversation's workspace.",
+    "confirmStart": "Confirm scope and start",
+    "yourDecision": "Your decision",
+    "confirmDecision": "Confirm decision",
+    "continue": "Continue research",
+    "stop": "Stop research",
+    "pageBound": "Closing this page stops execution.",
+    "awaitingPlan": "The Agent will record the plan and actual progress here.",
+    "missingArtifact": "Not created: {{path}}",
+    "checkAttribution": "Checks reported by the Agent; file existence verified by SciKeel.",
+    "missingEvidence": "Evidence file missing",
+    "requestedOutputs": "Expected outputs: {{paths}}",
+    "inputFiles": "Inputs: {{paths}}",
+    "noInputs": "Not provided",
+    "states": {
+      "ready": "Ready",
+      "running": "Working",
+      "waiting_input": "Your decision needed",
+      "paused": "Stopped",
+      "completed": "Outputs checked",
+      "failed": "Needs attention",
+      "cancelled": "Cancelled"
+    },
+    "steps": {
+      "pending": "Planned",
+      "running": "Working",
+      "completed": "Done",
+      "failed": "Failed"
+    },
+    "checks": {
+      "passed": "Passed",
+      "failed": "Failed",
+      "pending": "Not checked"
+    },
+    "startPrompt": "Start the confirmed research task. Follow the selected working mode and record the plan, research decisions, outputs and checks.",
+    "continuePrompt": "Continue the confirmed research task using my recorded decisions. Explain the results and update the actual progress and checks."
+  },
   "notFound": {
     "title": "Session introuvable",
     "hint": "Choisissez une session dans la barre latérale."
@@ -44,6 +114,7 @@
     },
     "commandsAria": "Commandes",
     "runtime": {
+      "select": "Select assistant",
       "aria": "Assistant IA",
       "modelLabel": "Modèle",
       "unavailable": "Cet assistant IA est indisponible",
@@ -156,6 +227,17 @@
       "confirmTitle": "Compacter le contexte ?",
       "confirmBody": "Les échanges précédents sont remplacés par un résumé afin que la prochaine réponse s'exécute dans un contexte borné. La conversation d'origine complète reste stockée localement.",
       "confirmAction": "Compacter"
+    },
+    "attachments": {
+      "add": "Attach files",
+      "preview": "Preview {{name}}",
+      "download": "Download {{name}}",
+      "retry": "Retry {{name}}",
+      "remove": "Remove {{name}}",
+      "close": "Close preview",
+      "imageResized": "Image resized for the model; original retained.",
+      "imageStill": "A still image is sent to the model; original retained.",
+      "unavailable": "Preview unavailable for this file. Download the original to open it."
     }
   },
   "localCommand": {
@@ -164,6 +246,10 @@
     "cleared": "Contexte du chat effacé. Les fichiers restent dans le même dossier."
   },
   "starters": {
+    "research-idea": {
+      "title": "Start from a research idea",
+      "description": "Explore a topic, define a question, and plan your next step."
+    },
     "newSession": "Nouvelle session",
     "heading": "Que devrions-nous explorer ?",
     "subheading": "Décrivez votre analyse ci-dessous — ou partez de l'un de ces exemples.",
@@ -189,7 +275,11 @@
   },
   "live": {
     "starting": {
-      "bodyWeb": "En attente de la réponse de l'application hôte. Laissez cette page ouverte — la connexion se fera d'elle-même dès que l'hôte sera joignable.",
+      "titleWeb": "Connexion à votre espace de travail…",
+      "titleSessionsWeb": "Chargement des conversations…",
+      "bodyWeb": "Le serveur prépare votre espace de travail. Cela prend plus de temps que prévu ; une nouvelle tentative est en cours.",
+      "bodySessionsWeb": "Récupération de vos conversations sur le serveur. Les requêtes échouées seront réessayées automatiquement.",
+      "sessionsError": "Impossible de charger vos conversations. Veuillez vous reconnecter.",
       "title": "Démarrage du runtime local…",
       "body": "Le runtime d'agent intégré démarre. Au premier lancement, macOS peut demander l'autorisation d'accéder à vos dossiers — accordez-la et l'opération se termine d'elle-même."
     },
@@ -528,5 +618,57 @@
     "close": "Fermer la recherche",
     "none": "aucun résultat",
     "find": "Rechercher…"
+  },
+  "environment": {
+    "title": "Python environment",
+    "absent": "Shared science environment",
+    "valid": "Private project environment",
+    "broken": "Private environment needs repair",
+    "explanation": "Common scientific libraries are already available. Extra dependencies use a separate environment for this project.",
+    "lockRequired": "Add requirements.lock with exact package versions and SHA256 hashes to prepare a private environment.",
+    "failed": "The environment could not be prepared. Check the dependency lock and retry; the previous environment is preserved.",
+    "stopFirst": "Finish or stop the active task before installing dependencies.",
+    "confirm": "Approve installation of these locked dependencies for this project?",
+    "approve": "Approve and install",
+    "cancel": "Cancel",
+    "installing": "Installing…",
+    "loading": "Preparing…",
+    "prepare": "Prepare private dependencies"
+  },
+  "collaboration": {
+    "guidedDescription": "Confirm one research step, review its result, then choose the next step.",
+    "stepConfirmation": "Next research step",
+    "label": "Autonomie",
+    "modes": {
+      "guided": "Faible",
+      "collaborative": "Moyenne",
+      "delegated": "Élevée",
+      "autonomous": "Complète"
+    },
+    "description": "Agree on a plan; decide important choices together.",
+    "unavailable": "Available in a later stage",
+    "confirmation": "Research decision",
+    "answer": "Your answer or adjustment",
+    "continue": "Continue with the suggestion",
+    "submit": "Confirm answer",
+    "pause": "Pause",
+    "paused": "Execution is paused. Saving an answer does not restart it.",
+    "retry": "Retry",
+    "savedDecisions": "Confirmed research decisions",
+    "suggestion": "Suggestion",
+    "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
+    "delegatedDescription": "Terminer le travail autorisé ; demander les choix importants non approuvés.",
+    "deliveryCompleted": "Fichiers livrés vérifiés",
+    "deliveryFailed": "Échec de la vérification de livraison",
+    "deliverySelfCheck": "Les fichiers et preuves sont vérifiés ; les conclusions scientifiques restent des auto-vérifications de l’agent.",
+    "deliveryRepairLimit": "La limite de deux corrections est atteinte. Consultez le résultat partiel.",
+    "deliveryIssues": {
+      "changed_inputs": "Une entrée originale manque ou a changé.",
+      "missing_progress": "Le rapport d’exécution manque ou est invalide.",
+      "pending_decisions": "Une décision de recherche reste non résolue dans le rapport.",
+      "incomplete_report": "Le rapport d’exécution est inachevé.",
+      "missing_outputs": "Un fichier demandé manque.",
+      "failed_checks": "Une vérification requise a échoué ou sa preuve manque."
+    }
   }
 }

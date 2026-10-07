@@ -19,6 +19,8 @@ if (!port || !token || !workspace || !stateDir) {
   process.exit(2);
 }
 
+const managedHistory = [];
+let managedPermission = [];
 const server = createServer(async (request, response) => {
   if (request.url === "/v1/health") {
     response.writeHead(200, { "content-type": "application/json" });
@@ -60,6 +62,28 @@ const server = createServer(async (request, response) => {
     }));
     return;
   }
+  const runtimeUrl=new URL(request.url,"http://worker.invalid");
+  if(runtimeUrl.pathname.startsWith("/session/")) {
+    if(request.headers.authorization!==expectedBasic){response.writeHead(401);response.end();return;}
+    response.setHeader("content-type","application/json");
+    const match=/^\/session\/([A-Za-z0-9_-]+)(?:\/(message|prompt_async))?$/.exec(runtimeUrl.pathname);
+    if(!match || match[1]!=="owned"){response.writeHead(404);response.end();return;}
+    if(!match[2]){
+      if(request.method === "PATCH") {
+        const buffers=[];for await(const chunk of request)buffers.push(chunk);
+        const body=JSON.parse(Buffer.concat(buffers).toString());
+        if(body.permission)managedPermission=body.permission;
+      }
+      response.end(JSON.stringify({id:match[1],directory:workspace+"/project",permission:managedPermission}));return;
+    }
+    if(match[2]==="message" && request.method==="GET"){response.end(JSON.stringify(managedHistory));return;}
+    if(match[2]==="prompt_async" && request.method==="POST") {
+      const buffers=[];for await(const chunk of request)buffers.push(chunk);
+      const body=JSON.parse(Buffer.concat(buffers).toString());
+      managedHistory.push({info:{id:body.messageID,role:"user"},parts:body.parts,fixtureSystem:body.system,fixturePermission:managedPermission});
+      response.writeHead(202);response.end("{}");return;
+    }
+  }
   if (request.headers.authorization !== `Bearer ${token}`) {
     response.writeHead(401, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: "unauthorized" }));
@@ -70,6 +94,7 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify({
       authorization: request.headers.authorization,
       directory: workspace,
+      mode: "full",
       stateDir,
     }));
     return;

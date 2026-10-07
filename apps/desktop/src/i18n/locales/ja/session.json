@@ -1,4 +1,74 @@
 {
+  "research": {
+    "issues": {
+      "changed_inputs": "An original input changed or is missing. Inspect the source versions before accepting the results.",
+      "missing_outputs": "Some requested outputs are missing. Continue the task to produce them.",
+      "failed_checks": "Checks failed, lack evidence, or have not been completed. Inspect the check results.",
+      "missing_progress": "Execution ended without a valid final progress record. Inspect the conversation and continue explicitly."
+    },
+    "startFailed": "Could not start research. Please retry.",
+    "title": "Research task",
+    "start": "Start a research task",
+    "intro": "Turn your thesis or research idea into a clear plan, decisions, and checked outputs.",
+    "loading": "Loading research task…",
+    "retry": "Retry",
+    "objective": "Research objective",
+    "goal": "Research goal",
+    "goals": {
+      "thesis": "Undergraduate thesis / graduation design",
+      "publication": "Publication-oriented research"
+    },
+    "mode": "Working mode",
+    "modes": {
+      "guided": "Guided",
+      "collaborative": "Collaborative",
+      "delegated": "Delegated"
+    },
+    "modeHints": {
+      "guided": "Understand and confirm each meaningful research step before moving on.",
+      "collaborative": "Confirm a plan, let the Agent run routine steps, and decide important changes together.",
+      "delegated": "Let the Agent complete and check the confirmed task; it asks when information or a new decision is needed."
+    },
+    "inputs": "Input files (optional, one path per line)",
+    "deliverables": "Expected output files (one path per line)",
+    "pathsHint": "Use paths within this conversation’s workspace. Original inputs are preserved; tool approvals still apply.",
+    "confirmScope": "I confirm this objective, input files, and expected outputs within this conversation's workspace.",
+    "confirmStart": "Confirm scope and start",
+    "yourDecision": "Your decision",
+    "confirmDecision": "Confirm decision",
+    "continue": "Continue research",
+    "stop": "Stop research",
+    "pageBound": "Closing this page stops execution.",
+    "awaitingPlan": "The Agent will record the plan and actual progress here.",
+    "missingArtifact": "Not created: {{path}}",
+    "checkAttribution": "Checks reported by the Agent; file existence verified by SciKeel.",
+    "missingEvidence": "Evidence file missing",
+    "requestedOutputs": "Expected outputs: {{paths}}",
+    "inputFiles": "Inputs: {{paths}}",
+    "noInputs": "Not provided",
+    "states": {
+      "ready": "Ready",
+      "running": "Working",
+      "waiting_input": "Your decision needed",
+      "paused": "Stopped",
+      "completed": "Outputs checked",
+      "failed": "Needs attention",
+      "cancelled": "Cancelled"
+    },
+    "steps": {
+      "pending": "Planned",
+      "running": "Working",
+      "completed": "Done",
+      "failed": "Failed"
+    },
+    "checks": {
+      "passed": "Passed",
+      "failed": "Failed",
+      "pending": "Not checked"
+    },
+    "startPrompt": "Start the confirmed research task. Follow the selected working mode and record the plan, research decisions, outputs and checks.",
+    "continuePrompt": "Continue the confirmed research task using my recorded decisions. Explain the results and update the actual progress and checks."
+  },
   "notFound": {
     "title": "セッションが見つかりません",
     "hint": "サイドバーからセッションを選択してください。"
@@ -44,6 +114,7 @@
     },
     "commandsAria": "コマンド",
     "runtime": {
+      "select": "Select assistant",
       "aria": "AI アシスタント",
       "modelLabel": "モデル",
       "unavailable": "この AI アシスタントは使用できません",
@@ -156,6 +227,17 @@
       "confirmTitle": "コンテキストを圧縮しますか？",
       "confirmBody": "これまでのやり取りは要約に置き換えられ、次の応答は限られたコンテキストで実行されます。元の会話全体はローカルに保存されたままです。",
       "confirmAction": "圧縮"
+    },
+    "attachments": {
+      "add": "Attach files",
+      "preview": "Preview {{name}}",
+      "download": "Download {{name}}",
+      "retry": "Retry {{name}}",
+      "remove": "Remove {{name}}",
+      "close": "Close preview",
+      "imageResized": "Image resized for the model; original retained.",
+      "imageStill": "A still image is sent to the model; original retained.",
+      "unavailable": "Preview unavailable for this file. Download the original to open it."
     }
   },
   "localCommand": {
@@ -164,6 +246,10 @@
     "cleared": "チャット文脈を消去しました。ファイルは同じフォルダに残ります。"
   },
   "starters": {
+    "research-idea": {
+      "title": "Start from a research idea",
+      "description": "Explore a topic, define a question, and plan your next step."
+    },
     "newSession": "新規セッション",
     "heading": "何を調べましょうか？",
     "subheading": "以下に分析内容を記入してください — またはこちらから始められます。",
@@ -189,7 +275,11 @@
   },
   "live": {
     "starting": {
-      "bodyWeb": "ホストアプリの応答を待っています。このページを開いたままにしてください。ホストに接続できるようになると自動的につながります。",
+      "titleWeb": "ワークスペースに接続しています…",
+      "titleSessionsWeb": "会話を読み込んでいます…",
+      "bodyWeb": "サーバーでワークスペースを準備しています。時間がかかっているため、自動で再試行しています。",
+      "bodySessionsWeb": "サーバーから会話履歴を取得しています。失敗したリクエストは自動で再試行します。",
+      "sessionsError": "会話履歴を読み込めませんでした。もう一度接続してください。",
       "title": "ローカルランタイムを起動中…",
       "body": "バンドルされたエージェントランタイムを起動しています。初回起動時は macOS がフォルダへのアクセス許可を求めることがあります。許可すれば自動的に完了します。"
     },
@@ -517,5 +607,57 @@
     "close": "検索を閉じる",
     "none": "該当なし",
     "find": "検索…"
+  },
+  "environment": {
+    "title": "Python environment",
+    "absent": "Shared science environment",
+    "valid": "Private project environment",
+    "broken": "Private environment needs repair",
+    "explanation": "Common scientific libraries are already available. Extra dependencies use a separate environment for this project.",
+    "lockRequired": "Add requirements.lock with exact package versions and SHA256 hashes to prepare a private environment.",
+    "failed": "The environment could not be prepared. Check the dependency lock and retry; the previous environment is preserved.",
+    "stopFirst": "Finish or stop the active task before installing dependencies.",
+    "confirm": "Approve installation of these locked dependencies for this project?",
+    "approve": "Approve and install",
+    "cancel": "Cancel",
+    "installing": "Installing…",
+    "loading": "Preparing…",
+    "prepare": "Prepare private dependencies"
+  },
+  "collaboration": {
+    "guidedDescription": "Confirm one research step, review its result, then choose the next step.",
+    "stepConfirmation": "Next research step",
+    "label": "自律度",
+    "modes": {
+      "guided": "低",
+      "collaborative": "中",
+      "delegated": "高",
+      "autonomous": "完全"
+    },
+    "description": "Agree on a plan; decide important choices together.",
+    "unavailable": "Available in a later stage",
+    "confirmation": "Research decision",
+    "answer": "Your answer or adjustment",
+    "continue": "Continue with the suggestion",
+    "submit": "Confirm answer",
+    "pause": "Pause",
+    "paused": "Execution is paused. Saving an answer does not restart it.",
+    "retry": "Retry",
+    "savedDecisions": "Confirmed research decisions",
+    "suggestion": "Suggestion",
+    "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
+    "delegatedDescription": "承認済みの作業を継続し、未承認の重要な選択は確認します。",
+    "deliveryCompleted": "成果物ファイルの検証完了",
+    "deliveryFailed": "成果物の検証に失敗",
+    "deliverySelfCheck": "ファイルと証拠は検証されますが、科学的結論は Agent の自己確認です。",
+    "deliveryRepairLimit": "修復の上限2回に達しました。部分的な結果を確認してください。",
+    "deliveryIssues": {
+      "changed_inputs": "元の入力が見つからないか、変更されています。",
+      "missing_progress": "実行レポートが見つからないか、無効です。",
+      "pending_decisions": "レポートに未解決の研究判断があります。",
+      "incomplete_report": "実行レポートは未完了です。",
+      "missing_outputs": "要求された成果物ファイルがありません。",
+      "failed_checks": "必要な確認に失敗したか、証拠がありません。"
+    }
   }
 }

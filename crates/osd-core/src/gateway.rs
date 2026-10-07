@@ -1,3 +1,6 @@
+#[cfg(all(test, target_os = "linux"))]
+use crate::file_policy::WORKSPACE_ROOT;
+
 // Remote Access Gateway — one authenticated HTTP surface that re-exposes the
 // agent runtime + workspace files to CLI / LAN-web / tunnel clients. Loopback by
 // default; LAN (0.0.0.0) is an explicit opt-in. Std-only `TcpListener` with a
@@ -139,8 +142,8 @@ fn normalize_mode(m: &str) -> String {
 struct Shared {
     token: Mutex<String>,
     read_only: AtomicBool,
-    /// Live file tickets: id → (issued, resolved absolute path). See `issue_ticket`.
-    tickets: Mutex<HashMap<String, (Instant, PathBuf)>>,
+    /// Tickets are scoped relative capabilities in managed mode.
+    tickets: Mutex<HashMap<String, (Instant, FileTarget)>>,
 }
 
 /// How long a file ticket stays valid. Long enough for a <video> to stream and
@@ -154,7 +157,14 @@ const TICKET_TTL: Duration = Duration::from_secs(600);
 /// its own `location` whatever its sandbox, and the agent writes the HTML in
 /// this workspace: one prompt-injected report would post the token out and hand
 /// an attacker the whole gateway. A ticket names one file and expires.
-fn issue_ticket(ctx: &Ctx, full: PathBuf) -> String {
+#[derive(Clone)]
+enum FileTarget {
+    Desktop(PathBuf),
+    #[cfg(target_os = "linux")]
+    Managed { ticket: crate::file_policy::FileTicket, name: String },
+}
+
+fn issue_ticket(ctx: &Ctx, full: FileTarget) -> String {
     let mut tickets = ctx.shared.tickets.lock().unwrap();
     let now = Instant::now();
     tickets.retain(|_, (issued, _)| now.duration_since(*issued) < TICKET_TTL);
@@ -163,7 +173,7 @@ fn issue_ticket(ctx: &Ctx, full: PathBuf) -> String {
     id
 }
 
-fn redeem_ticket(ctx: &Ctx, id: &str) -> Option<PathBuf> {
+fn redeem_ticket(ctx: &Ctx, id: &str) -> Option<FileTarget> {
     let tickets = ctx.shared.tickets.lock().unwrap();
     let (issued, path) = tickets.get(id)?;
     (Instant::now().duration_since(*issued) < TICKET_TTL).then(|| path.clone())
@@ -247,7 +257,10 @@ impl Ctx {
 /// leave every script pointed somewhere nothing is listening. With no explicit
 /// port we prefer the well-known one and accept any free port if it is taken.
 fn bind_listener(lan: bool, requested: Option<u16>) -> std::io::Result<TcpListener> {
-    let host = if lan { "0.0.0.0" } else { "127.0.0.1" };
+    bind_listener_address(lan, requested, None)
+}
+fn bind_listener_address(lan: bool, requested: Option<u16>, address: Option<std::net::Ipv4Addr>) -> std::io::Result<TcpListener> {
+    let host = address.unwrap_or(if lan { std::net::Ipv4Addr::UNSPECIFIED } else { std::net::Ipv4Addr::LOCALHOST });
     match requested {
         Some(port) => TcpListener::bind((host, port)),
         None => match TcpListener::bind((host, PREFERRED_PORT)) {
@@ -268,6 +281,18 @@ pub fn start_at(
     p: &Persisted,
     requested: Option<u16>,
 ) -> Result<u16, String> {
+    start_at_bind_address(env, state, p, requested, None)
+}
+
+/// Bind an internal worker to its assigned interface without changing desktop defaults.
+/// The CLI validates the managed address; callers never provide a hostname for resolution.
+pub fn start_at_bind_address(
+    env: &Env,
+    state: &GatewayState,
+    p: &Persisted,
+    requested: Option<u16>,
+    address: Option<std::net::Ipv4Addr>,
+) -> Result<u16, String> {
     // An empty token would make `ct_eq` accept `Authorization: Bearer ` (also
     // empty) — i.e. no auth at all on an off-loopback listener. Callers mint one
     // before enabling; refuse here too rather than trust every caller to.
@@ -275,7 +300,7 @@ pub fn start_at(
         return Err("gateway token is not set".into());
     }
     stop(env, state);
-    let listener = bind_listener(p.lan, requested)
+    let listener = if address.is_some() { bind_listener_address(p.lan, requested, address) } else { bind_listener(p.lan, requested) }
         .map_err(|e| match requested {
             Some(port) => format!("port {port} is not available: {e}"),
             None => format!("gateway bind failed: {e}"),
@@ -477,7 +502,7 @@ fn route(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     if req.method == "GET" && path == "/v1/fs/read" {
         if let Some(id) = req.query_get("ticket") {
             match redeem_ticket(ctx, &id) {
-                Some(full) => send_file(stream, &full),
+                Some(full) => send_target(stream, ctx, &full),
                 None => respond_json(stream, 403, "{\"error\":\"ticket expired\"}"),
             }
             return;
@@ -694,6 +719,25 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str) {
                 Err(e) => respond_json(stream, 400, &err_json(&e)),
             }
         }
+        ("PATCH", ["projects", id]) => {
+            let name=json_str_field(&req.body,"name").unwrap_or_default();
+            match crate::project::rename_project(&ctx.env,id,&name) {
+                Ok(())=>respond_json(stream,200,"{\"ok\":true}"),
+                Err(error)=>respond_json(stream,400,&err_json(&error)),
+            }
+        }
+        ("POST", ["projects", id, "pin"]) => {
+            let value:serde_json::Value=match serde_json::from_slice(&req.body){Ok(value)=>value,Err(_)=>return respond_json(stream,400,&err_json("invalid pin request"))};
+            let Some(pinned)=value["pinned"].as_bool() else {return respond_json(stream,400,&err_json("invalid pin value"));};
+            match crate::project::set_project_pinned(&ctx.env,id,pinned) {
+                Ok(())=>respond_json(stream,200,"{\"ok\":true}"),
+                Err(error)=>respond_json(stream,400,&err_json(&error)),
+            }
+        }
+        ("DELETE", ["projects", id]) => match crate::project::delete_project(&ctx.env,id) {
+            Ok(())=>respond_json(stream,200,"{\"ok\":true}"),
+            Err(error)=>respond_json(stream,400,&err_json(&error)),
+        },
         ("GET", ["runs"]) => match crate::runs::list_runs(&ctx.env) {
             Ok(list) => respond_json(stream, 200, &serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())),
             Err(e) => respond_json(stream, 500, &err_json(&e)),
@@ -950,6 +994,13 @@ fn redact_config(body: &[u8]) -> Vec<u8> {
 /// workspace (so a client can't read arbitrary paths). Otherwise fall back to
 /// the `root` scope (workspace = host active, base = the base folder).
 fn fs_base(ctx: &Ctx, req: &Request) -> Result<PathBuf, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = ctx.env.managed_files() {
+        let base = if let Some(dir) = req.query_get("dir") { PathBuf::from(dir) }
+            else { scope_root(&ctx.env, req.query_get("root").as_deref())? };
+        policy.validate_directory(&base).map_err(|_| "managed directory unavailable")?;
+        return Ok(base);
+    }
     if let Some(dir) = req.query_get("dir").filter(|d| !d.is_empty()) {
         let base_root = crate::runtime::base_workspace_dir(&ctx.env)?
             .canonicalize()
@@ -971,6 +1022,23 @@ fn fs_list(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
         Ok(b) => b,
         Err(e) => return respond_json(stream, 400, &err_json(&e)),
     };
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = ctx.env.managed_files() {
+        let probe = if rel.is_empty() { "probe".to_owned() } else { format!("{rel}/probe") };
+        let result = policy.scoped_path(&base, &probe).and_then(|(root, name)| {
+            let relative = name.strip_suffix("probe").unwrap().trim_end_matches('/');
+            policy.list(&root, relative, 10000).map(|entries| entries.into_iter().map(|entry| {
+                let path = if rel.is_empty() { entry.name.clone() } else { format!("{rel}/{}", entry.name) };
+                serde_json::json!({"name":entry.name, "path":path, "isDir":entry.is_dir,
+                    "size":entry.size, "modified":entry.modified_at / 1000})
+            }).collect::<Vec<_>>())
+        });
+        match result {
+            Ok(entries) => respond_json(stream, 200, &serde_json::to_string(&entries).unwrap()),
+            Err(_) => respond_json(stream, 403, "{\"error\":\"managed directory unavailable\"}"),
+        }
+        return;
+    }
     match crate::artifact_file::dir_entries(&base, &rel) {
         Ok(entries) => {
             let json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".into());
@@ -982,18 +1050,25 @@ fn fs_list(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
 
 /// The workspace file a `path` (+ `root`/`dir` scope) query names, sandboxed by
 /// `fs_base` + `resolve_under`.
-fn fs_resolve(ctx: &Ctx, req: &Request) -> Result<PathBuf, String> {
+fn fs_resolve(ctx: &Ctx, req: &Request) -> Result<FileTarget, String> {
     let rel = req.query_get("path").unwrap_or_default();
     let base = fs_base(ctx, req)?;
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = ctx.env.managed_files() {
+        let (root, name) = policy.locate(&base, &rel).map_err(|_| "managed file unavailable")?
+            .ok_or("managed file not found")?;
+        let ticket = policy.ticket(&root, &name, TICKET_TTL).map_err(|_| "managed file unavailable")?;
+        return Ok(FileTarget::Managed { ticket, name });
+    }
     // Resolve by basename like the desktop preview server: agent prose often
     // names a file without its directory ("figure1.png" for "figures/figure1.png").
     let located = locate_under(&base, &rel).unwrap_or(rel);
-    resolve_under(&base, &located)
+    resolve_under(&base, &located).map(FileTarget::Desktop)
 }
 
 fn fs_read(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     match fs_resolve(ctx, req) {
-        Ok(full) => send_file(stream, &full),
+        Ok(full) => send_target(stream, ctx, &full),
         Err(e) => respond_json(stream, 404, &err_json(&e)),
     }
 }
@@ -1010,14 +1085,34 @@ fn send_file(stream: &mut TcpStream, full: &Path) {
     if !full.is_file() {
         return respond_json(stream, 404, "{\"error\":\"not a file\"}");
     }
-    let ext = full.extension().and_then(|s| s.to_str()).unwrap_or("");
+    match std::fs::File::open(full) {
+        Ok(file) => send_open_file(stream, full, file),
+        Err(e) => respond_json(stream, 404, &err_json(&e.to_string())),
+    }
+}
+
+fn send_target(stream: &mut TcpStream, ctx: &Ctx, target: &FileTarget) {
+    match target {
+        FileTarget::Desktop(full) => send_file(stream, full),
+        #[cfg(target_os = "linux")]
+        FileTarget::Managed { ticket, name } => match ctx.env.managed_files().ok_or_else(|| "managed policy unavailable".to_string())
+            .and_then(|policy| policy.redeem(ticket).map_err(|_| "managed file unavailable".to_string())) {
+            Ok(file) => send_open_file(stream, Path::new(name), file),
+            Err(_) => respond_json(stream, 403, "{\"error\":\"managed file unavailable\"}"),
+        },
+    }
+}
+
+fn send_open_file(stream: &mut TcpStream, name: &Path, file: std::fs::File) {
+    let ext = name.extension().and_then(|s| s.to_str()).unwrap_or("");
     let (mime, _is_text) = mime_for(ext);
-    let extra = if mime == "text/html" {
+    let extra = if mime == "text/html" || mime == "image/svg+xml" {
         "Content-Security-Policy: sandbox allow-scripts\r\n"
-    } else {
-        ""
-    };
-    match std::fs::File::open(full).and_then(|f| Ok((f.metadata()?.len(), f))) {
+    } else { "" };
+    match file.metadata().and_then(|meta| {
+        if !meta.is_file() { return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "not a file")); }
+        Ok((meta.len(), file))
+    }) {
         Ok((total, mut file)) => {
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {total}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n"
@@ -1468,6 +1563,16 @@ pub fn regenerate_gateway_token(env: &Env, state: &GatewayState) -> Result<Gatew
 mod tests {
     use super::*;
 
+    #[test]
+    fn explicit_internal_bind_uses_the_requested_interface_and_never_changes_a_pinned_port() {
+        let address = std::net::Ipv4Addr::new(127, 0, 0, 2);
+        let listener = bind_listener_address(false, Some(0), Some(address)).unwrap();
+        let bound = listener.local_addr().unwrap();
+        assert_eq!(bound.ip(), std::net::IpAddr::V4(address));
+        assert!(std::net::TcpStream::connect(bound).is_ok());
+        assert!(bind_listener_address(false, Some(bound.port()), Some(address)).is_err());
+    }
+
     /// A gateway record with `port` set, in a throwaway data dir.
     fn env_with_recorded_port(name: &str, port: Option<u16>) -> (Env, PathBuf) {
         let dir = std::env::temp_dir().join(format!("gw-record-{name}-{}", std::process::id()));
@@ -1802,4 +1907,37 @@ mod tests {
         assert_eq!(normalize_mode("full"), "full");
         assert_eq!(normalize_mode("garbage"), "full");
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_gateway_tickets_never_reopen_an_escaped_path() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir().join(format!("managed-gw-{}", random_hex(12)));
+        let owned = base.join("owned"); let peer = base.join("peer");
+        std::fs::create_dir_all(&owned).unwrap(); std::fs::create_dir_all(&peer).unwrap();
+        std::fs::write(owned.join("note.txt"), b"owned").unwrap();
+        std::fs::write(peer.join("secret"), b"peer-canary").unwrap();
+        let env = Env::new(base.join("state"), base.join("res"), None, "test".into())
+            .with_managed_files(crate::file_policy::ManagedFilePolicy::new("a".into(), 1,
+                vec![(WORKSPACE_ROOT.into(), owned.clone())]).unwrap());
+        let state = GatewayState::default();
+        let p = Persisted { token: "test-token".into(), ..Persisted::default() };
+        let port = start_at(&env, &state, &p, Some(0)).unwrap();
+        let client = reqwest::blocking::Client::new();
+        let url = format!("http://127.0.0.1:{port}");
+        let read = client.get(format!("{url}/v1/fs/read?path=note.txt"))
+            .bearer_auth("test-token").send().unwrap();
+        assert_eq!(read.status(), 200); assert_eq!(read.text().unwrap(), "owned");
+        let ticket: serde_json::Value = serde_json::from_str(&client.get(format!("{url}/v1/fs/ticket?path=note.txt"))
+            .bearer_auth("test-token").send().unwrap().text().unwrap()).unwrap();
+        std::fs::remove_file(owned.join("note.txt")).unwrap();
+        symlink("../peer/secret", owned.join("note.txt")).unwrap();
+        let redeemed = client.get(format!("{url}/v1/fs/read?ticket={}", ticket["ticket"].as_str().unwrap()))
+            .send().unwrap();
+        assert!(!redeemed.status().is_success());
+        let foreign = client.get(format!("{url}/v1/fs/read?dir={}&path=secret", peer.display()))
+            .bearer_auth("test-token").send().unwrap();
+        assert!(!foreign.status().is_success());
+        stop(&env, &state); std::fs::remove_dir_all(base).unwrap();
+    }
+
 }

@@ -1,0 +1,194 @@
+name: sandbox-image
+
+# Explicit CI-only baseline selection. Outputs must be reviewed and the exact
+# generated locks committed before the launcher can accept a production image.
+on:
+  push:
+    branches: [feat/tenant-science-isolation]
+    paths:
+      - runtime/opencode-patches/**
+      - scripts/dev/build-opencode-title-runtime.mjs
+      - runtime/sandbox/**
+      - scripts/dev/probe-production-runner.mjs
+      - crates/osd-cli/**
+      - crates/osd-core/**
+      - scripts/dev/fetch-sandbox-codex.mjs
+      - scripts/dev/prepare-science-image.mjs
+      - scripts/dev/stage-sandbox-image.mjs
+      - .github/workflows/sandbox-image.yml
+  workflow_dispatch:
+    inputs:
+      python_image:
+        description: Exact Python 3.12 image tag or digest to select
+        required: true
+        default: python:3.12.12-slim-bookworm
+      uv_image:
+        description: Image for the repository-pinned uv version
+        required: true
+        default: ghcr.io/astral-sh/uv:0.11.26
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: sandbox-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  science-probe-image:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 1
+      CARGO_PROFILE_DEV_DEBUG: 0
+      SCIKEEL_IMAGE_VARIANT: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Prepare and verify the managed OpenCode source patch
+        shell: bash
+        env:
+          SCIKEEL_RUNTIME_BUN: bun
+        run: |
+          mkdir -p .superpowers/sdd/2026-10-06-session-title-model
+          git clone --filter=blob:none --no-checkout https://github.com/anomalyco/opencode.git .superpowers/sdd/2026-10-06-session-title-model/source-git
+          git -C .superpowers/sdd/2026-10-06-session-title-model/source-git checkout 545f51d26cc39a907d2867492d498d9607ea5fa4
+          pnpm runtime:title:prepare
+          pnpm runtime:title:check
+          pnpm runtime:title:test
+          pnpm runtime:title:build
+          OSD_SESSION_TITLE_BINARY="$PWD/.deploy/session-title-runtime/opencode" OSD_SESSION_TITLE_DEPENDENCIES="$PWD/.superpowers/sdd/2026-10-06-session-title-model/source-git/packages/opencode/node_modules" pnpm platform:test ../../runtime/opencode-patches/session-title-native.acceptance.mjs
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the headless core in a verified bounded scope
+        shell: bash
+        run: |
+          mkdir -p .deploy
+          flock -n .deploy/web-release-deploy.lock flock -n .deploy/desktop-task.lock \
+            sudo systemd-run --scope -p MemoryHigh=1850M -p MemoryMax=2200M -p MemorySwapMax=256M \
+            sudo -u "$USER" env PATH="$PATH" OSD_TASK_FORCE_LIMITS=1 CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 \
+            node scripts/dev/safe-desktop-task.mjs core-build --guarded --package osd-cli
+      - name: Resolve exact source image digests
+        env:
+          PYTHON_SOURCE: ${{ inputs.python_image || 'python:3.12.12-slim-bookworm' }}
+          UV_SOURCE: ${{ inputs.uv_image || 'ghcr.io/astral-sh/uv:0.11.26' }}
+        shell: bash
+        run: |
+          node --input-type=module -e 'for (const key of ["PYTHON_SOURCE","UV_SOURCE"]) { const value=process.env[key]; if (!/^[a-zA-Z0-9._/:@-]+$/.test(value) || value.endsWith(":latest")) process.exit(1); }'
+          mkdir -p .deploy/science-context/tools/bin .deploy/science-artifacts
+          docker pull "$PYTHON_SOURCE"
+          docker pull "$UV_SOURCE"
+          docker image inspect --format '{{index .RepoDigests 0}}' "$PYTHON_SOURCE" > .deploy/science-artifacts/python-image.txt
+          docker image inspect --format '{{index .RepoDigests 0}}' "$UV_SOURCE" > .deploy/science-artifacts/uv-image.txt
+          cp runtime/sandbox/image/{Dockerfile,pyproject.toml,uv.lock} .deploy/science-context/
+          cp target/debug/osd .deploy/science-context/tools/bin/
+          cp "$(command -v node)" .deploy/science-context/tools/bin/
+          cp .deploy/session-title-runtime/opencode .deploy/science-context/tools/bin/opencode
+          cp .deploy/session-title-runtime/runtime-manifest.json .deploy/science-context/tools/session-title-runtime.json
+          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment,collaboration}.mjs .deploy/science-context/tools/
+          cp runtime/sandbox/project-environment.py .deploy/science-context/tools/
+          mkdir -p .deploy/science-context/tools/resources/skills-core
+          tar -C runtime/skills/core --exclude=.gitkeep -cf - . | tar -C .deploy/science-context/tools/resources/skills-core -xf -
+      - name: Resolve scientific dependencies on the dedicated CI host
+        shell: bash
+        run: |
+          PYTHON_IMAGE=$(cat .deploy/science-artifacts/python-image.txt)
+          UV_IMAGE=$(cat .deploy/science-artifacts/uv-image.txt)
+          docker create --name scikeel-uv "$UV_IMAGE"
+          docker cp scikeel-uv:/uv .deploy/science-context/tools/bin/uv
+          docker rm scikeel-uv
+          docker run --rm --memory=512m --memory-swap=640m --pids-limit=128 --cpus=1 \
+            -v "$PWD/.deploy/science-context:/baseline" -w /baseline \
+            -e UV_PYTHON_DOWNLOADS=never "$PYTHON_IMAGE" /baseline/tools/bin/uv lock --locked --python /usr/local/bin/python3.12
+          cp .deploy/science-context/uv.lock .deploy/science-artifacts/
+          node scripts/dev/prepare-science-image.mjs .deploy/science-context .deploy/science-artifacts
+      - name: Build with bounded dedicated BuildKit resources
+        shell: bash
+        run: |
+          docker buildx create --name scikeel-science-builder --driver docker-container \
+            --driver-opt memory=2g,memory-swap=2304m --use
+          docker buildx build --load --tag scikeel-science-probe:ci \
+            --build-arg "PYTHON_IMAGE=$(cat .deploy/science-artifacts/python-image.txt)" \
+            --build-arg "UV_IMAGE=$(cat .deploy/science-artifacts/uv-image.txt)" .deploy/science-context
+      - name: Verify offline imports and immutable baseline
+        shell: bash
+        run: |
+          mkdir -p .deploy/science-workspace .deploy/science-test
+          chmod 777 .deploy/science-workspace
+          node --input-type=module -e 'import {writeFileSync} from "node:fs"; writeFileSync(".deploy/science-test/case.json", JSON.stringify({schema:1,synthetic:true,case:"science-image"}));'
+          cp runtime/sandbox/probe-entry.mjs .deploy/science-test/probe-entry.mjs
+          sudo chown root:root .deploy/science-test/case.json
+          docker run --rm --network=none --read-only --memory=640m --memory-swap=768m --pids-limit=256 --cpus=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            -v "$PWD/.deploy/science-workspace:/workspace" \
+            -v "$PWD/.deploy/science-test:/opt/scikeel/test:ro" \
+            --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
+            /opt/scikeel/test/probe-entry.mjs /opt/scikeel/test/case.json
+      - name: Verify the real production runner, gateway and authenticated file helper
+        shell: bash
+        run: |
+          mkdir -p .deploy/runner-fixture/{workspace,state,home,codex-home,scratch,config}
+          chmod 777 .deploy/runner-fixture/{workspace,state,home,codex-home,scratch}
+          node --input-type=module -e 'import {writeFileSync} from "node:fs"; const dir=".deploy/runner-fixture/config/"; writeFileSync(dir+"tenant.json",JSON.stringify({schema:1,instanceId:"sandbox-test-ci",generation:1,workspaceDir:"/fixture/workspace",stateDir:"/fixture/state",home:"/fixture/home",scratchDir:"/fixture/scratch"})); writeFileSync(dir+"runner-auth.json",JSON.stringify({schema:1,token:"a".repeat(64)}));'
+          sudo chown root:root .deploy/runner-fixture/config/*.json
+          cp scripts/dev/probe-production-runner.mjs .deploy/science-test/
+          timeout --signal=TERM --kill-after=10s 70s docker run --rm --name scikeel-production-runner-test \
+            --network=none --read-only --memory=1024m --memory-swap=1152m --pids-limit=256 --cpus=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            -v "$PWD/.deploy/runner-fixture/workspace:/fixture/workspace" \
+            -v "$PWD/.deploy/runner-fixture/state:/fixture/state" \
+            -v "$PWD/.deploy/runner-fixture/home:/fixture/home" \
+            -v "$PWD/.deploy/runner-fixture/codex-home:/fixture/codex-home" \
+            -v "$PWD/.deploy/runner-fixture/scratch:/fixture/scratch" \
+            -v "$PWD/.deploy/runner-fixture/config/tenant.json:/opt/scikeel/tenant.json:ro" \
+            -v "$PWD/.deploy/runner-fixture/config/runner-auth.json:/opt/scikeel/runner-auth.json:ro" \
+            -v "$PWD/.deploy/science-test:/opt/scikeel/test:ro" \
+            --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
+            /opt/scikeel/test/probe-production-runner.mjs
+      - name: Verify a real unanswered checkpoint in the pinned runtime
+        shell: bash
+        run: |
+          timeout --signal=TERM --kill-after=10s 120s docker run --rm \
+            --network=none --read-only --memory=1024m --memory-swap=1152m --pids-limit=256 --cpus=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            -v "$PWD:/fixture/repo:ro" \
+            -e OSD_COLLABORATION_BINARY=/opt/scikeel/tools/bin/opencode \
+            -w /fixture/repo/services/platform \
+            --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
+            --test --test-concurrency=1 /fixture/repo/services/platform/test/collaboration-opencode.test.mjs
+      - name: Export immutable artifact and measured identities
+        shell: bash
+        run: |
+          docker create --name scikeel-science-export scikeel-science-probe:ci
+          docker export scikeel-science-export | gzip -n > .deploy/science-artifacts/rootfs.tar.gz
+          docker rm scikeel-science-export
+          node scripts/dev/prepare-science-image.mjs .deploy/science-context .deploy/science-artifacts --manifest
+      - uses: actions/attest-build-provenance@v2
+        id: attest
+        with:
+          subject-path: |
+            .deploy/science-artifacts/rootfs.tar.gz
+            .deploy/science-artifacts/image-manifest.json
+      - name: Save the signed attestation bundle with the artifacts
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        shell: bash
+        run: cp "$ATTESTATION_BUNDLE" .deploy/science-artifacts/attestation.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: science-v1-production-${{ github.sha }}
+          path: .deploy/science-artifacts/
+          retention-days: 14
+      - name: Clean up dedicated CI containers
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f scikeel-uv scikeel-science-export scikeel-production-runner-test 2>/dev/null || true
+          docker buildx rm scikeel-science-builder 2>/dev/null || true

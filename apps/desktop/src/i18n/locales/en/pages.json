@@ -62,6 +62,33 @@
     }
   },
   "skills": {
+    "catalogDescriptions": {
+      "skill": {
+        "computer-use": "Operate desktop apps through screenshots and interface controls, checking the result after each action.",
+        "domain-check": "Review scientific code for unit, coordinate, model and domain-specific errors, and report findings.",
+        "large-file": "Inspect large datasets with bounded memory, then read only the needed schemas, samples and ranges.",
+        "modal-run": "Run heavy or GPU jobs on Modal using your account and bring the results back to the workspace.",
+        "publication-figures": "Create publication-ready figures and tables, checking layout, readability and export formats.",
+        "remote-compute": "Submit and monitor jobs on SSH servers or Slurm clusters, then retrieve the results.",
+        "research-workflow": "Organize research from a confirmed objective through planning, method choices, reproducible outputs and evidence checks.",
+        "stats-integrity": "Check statistical assumptions, preregistration consistency and reproducibility, and flag interpretation risks.",
+        "traceability-review": "Review whether citations, reported numbers and figures can be traced back to their sources and generating code."
+      },
+      "agent": {
+        "build": "Carry out implementation tasks, edit files and run tools to complete the requested work.",
+        "plan": "Analyze the request and existing project, then prepare an implementation plan before making changes.",
+        "general": "Handle delegated tasks that require several steps of research, analysis or execution.",
+        "explore": "Search project files and code to locate implementations and understand how they relate.",
+        "reviewer": "Review research outputs for traceability, statistics and reproducibility, reporting findings without editing files.",
+        "compaction": "Condense long conversations while preserving key context so the task can continue.",
+        "summary": "Summarize the conversation and completed work for later review.",
+        "title": "Automatically generate a session title from the conversation."
+      },
+      "fallback": {
+        "skill": "Provides task-specific instructions for the agent.",
+        "agent": "Performs or assists with tasks according to its configuration."
+      }
+    },
     "title": "Skills & Agents",
     "description": {
       "prefix": "Loaded live from the OpenCode runtime — the bundled skill packs, everything under ",
@@ -77,7 +104,9 @@
       "installed": "Installed “{{name}}” — available in every workspace.",
       "agentPrompt": "The user typed this into the Skills install box:\n\n---\n{{input}}\n---\n\nPlease help them install it patiently: work out which skill they mean (fetch the URL, search for it, or ask them if it is ambiguous), then save it as a skill file at .opencode/skills/<name>/SKILL.md inside this workspace — never outside it; the app then makes it available in every workspace. The customize-opencode skill documents the format. Finally reply with the installed skill's name.",
       "echo": "Please help me install this skill:\n\n{{input}}",
-      "adoptFailed": "The skill was written but could not be moved into your profile, so it will disappear when this session's folder is replaced: {{detail}}"
+      "adoptFailed": "The skill was written but could not be moved into your profile, so it will disappear when this session's folder is replaced: {{detail}}",
+      "hintWorkspace": "Installed in the current workspace; available only in this workspace.",
+      "agentPromptWorkspace": "The user wants to install this skill:\n\n---\n{{input}}\n---\n\nConfirm its content and source, then save the skill and any required helper files at {{skillsDirectory}}/<name>/SKILL.md inside the current workspace. SKILL.md must have YAML frontmatter with name and description. Keep every file within this workspace; do not write to the user home or another workspace. This installation is available only in the current workspace. Reply with the installed name when complete; report failures accurately without claiming success."
     },
     "environment": {
       "sectionTitle": "Scientific environment",
@@ -109,7 +138,11 @@
     "search": "Search skills and agents",
     "filter": "Kind",
     "all": "All ({{count}})",
-    "noMatch": "Nothing matches “{{query}}”."
+    "noMatch": "Nothing matches “{{query}}”.",
+    "refresh": "Refresh skills",
+    "loading": "Loading skills…",
+    "loadFailed": "Could not load skills. Please retry.",
+    "retry": "Retry"
   },
   "notFound": {
     "title": "404 — Not found",

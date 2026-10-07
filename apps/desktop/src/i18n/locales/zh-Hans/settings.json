@@ -136,6 +136,16 @@
     "change": "更换",
     "noProvidersHint": "在下方连接一个 Provider。"
   },
+  "managedAgents": {
+    "title": "Agent 使用管理",
+    "hint": "设置对所有用户生效。关闭后，该 Agent 将从助手列表中隐藏，正在执行的任务继续完成，后续调用将被禁止。开启后，服务器配置可用时会重新显示。",
+    "allow": "允许使用 {{runtime}}",
+    "saving": "正在保存…",
+    "saved": "已保存 {{runtime}}。",
+    "failed": "无法保存 {{runtime}}，请重试。",
+    "loadFailed": "无法加载 Agent 使用设置。",
+    "retry": "重试"
+  },
   "managedModels": {
     "title": "托管的 CLI 模型",
     "hint": "只有管理员可以更改用户可选择的 Claude Code 和 Codex 模型。",

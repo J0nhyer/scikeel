@@ -62,6 +62,33 @@
     }
   },
   "skills": {
+    "catalogDescriptions": {
+      "skill": {
+        "computer-use": "通过截图和界面操作控制桌面应用，并在每次操作后核对结果。",
+        "domain-check": "检查科学代码中的单位、坐标、模型及领域规则问题，报告发现的风险。",
+        "large-file": "以有限内存检查大型数据集，按需读取结构、样本和指定范围。",
+        "modal-run": "使用你的 Modal 账户运行高负载或 GPU 任务，并将结果带回工作区。",
+        "publication-figures": "制作适合论文发表的图表，检查排版、可读性和导出格式。",
+        "remote-compute": "通过 SSH 或 Slurm 提交、监控远程计算任务，并取回结果。",
+        "research-workflow": "围绕已确认的研究目标组织计划、方法选择、可复现产出和证据检查。",
+        "stats-integrity": "检查统计假设、预注册计划一致性和结果可复现性，提示解释风险。",
+        "traceability-review": "核对引用、报告数值和图表能否追溯到原始来源及生成代码。"
+      },
+      "agent": {
+        "build": "执行具体实现任务，修改文件并调用工具完成所需工作。",
+        "plan": "分析需求和项目现状，在开始修改前制定实现计划。",
+        "general": "处理需要多步调研、分析或执行的委派任务。",
+        "explore": "搜索项目文件和代码，定位实现并梳理相关逻辑。",
+        "reviewer": "审查研究产出的可追溯性、统计方法和可复现性，仅报告问题，不修改文件。",
+        "compaction": "压缩较长的对话，保留关键上下文，便于继续当前任务。",
+        "summary": "汇总对话内容和已完成的工作，便于回顾。",
+        "title": "根据对话内容自动生成会话标题。"
+      },
+      "fallback": {
+        "skill": "为代理提供专项任务的操作指南。",
+        "agent": "根据自身配置执行或辅助完成任务。"
+      }
+    },
     "title": "技能与代理",
     "description": {
       "prefix": "从 OpenCode 运行时实时加载——内置技能包、工作区中位于 ",
@@ -77,7 +104,9 @@
       "installed": "已安装“{{name}}”——在所有工作区均可用。",
       "agentPrompt": "用户在技能安装框中输入了以下内容：\n\n---\n{{input}}\n---\n\n请耐心协助用户完成安装：先确认用户指的是哪个技能（可以抓取该 URL、搜索，或在含义不明时直接询问用户），然后把它保存为技能文件 .opencode/skills/<name>/SKILL.md，必须写在当前工作区内、不要写到工作区之外（之后由应用负责让它在所有工作区可用）。技能文件的格式见 customize-opencode 技能。最后回复已安装技能的名称。",
       "echo": "请协助我安装这个技能：\n\n{{input}}",
-      "adoptFailed": "技能已写入，但未能移动到你的配置目录；当这个会话文件夹被替换时它会消失：{{detail}}"
+      "adoptFailed": "技能已写入，但未能移动到你的配置目录；当这个会话文件夹被替换时它会消失：{{detail}}",
+      "hintWorkspace": "技能安装在当前工作区，仅在此工作区内可用。",
+      "agentPromptWorkspace": "用户希望安装以下技能：\n\n---\n{{input}}\n---\n\n先确认技能的内容和来源，再将它及必要的辅助文件保存到当前工作区的 {{skillsDirectory}}/<name>/SKILL.md。SKILL.md 需有包含 name 和 description 的 YAML frontmatter。所有文件都必须保留在当前工作区内，不要写入用户主目录或其他工作区。此安装仅在当前工作区内可用。完成后告知安装名称；安装失败时明确说明原因，不要宣称已安装。"
     },
     "environment": {
       "sectionTitle": "科学计算环境",
@@ -109,7 +138,11 @@
     "search": "搜索技能和代理",
     "filter": "类型",
     "all": "全部（{{count}}）",
-    "noMatch": "没有匹配“{{query}}”的结果。"
+    "noMatch": "没有匹配“{{query}}”的结果。",
+    "refresh": "刷新技能",
+    "loading": "正在加载技能…",
+    "loadFailed": "无法加载技能，请重试。",
+    "retry": "重试"
   },
   "notFound": {
     "title": "404 — 未找到",

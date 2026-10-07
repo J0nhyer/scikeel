@@ -62,6 +62,33 @@
     }
   },
   "skills": {
+    "catalogDescriptions": {
+      "skill": {
+        "computer-use": "Operate desktop apps through screenshots and interface controls, checking the result after each action.",
+        "domain-check": "Review scientific code for unit, coordinate, model and domain-specific errors, and report findings.",
+        "large-file": "Inspect large datasets with bounded memory, then read only the needed schemas, samples and ranges.",
+        "modal-run": "Run heavy or GPU jobs on Modal using your account and bring the results back to the workspace.",
+        "publication-figures": "Create publication-ready figures and tables, checking layout, readability and export formats.",
+        "remote-compute": "Submit and monitor jobs on SSH servers or Slurm clusters, then retrieve the results.",
+        "research-workflow": "Organize research from a confirmed objective through planning, method choices, reproducible outputs and evidence checks.",
+        "stats-integrity": "Check statistical assumptions, preregistration consistency and reproducibility, and flag interpretation risks.",
+        "traceability-review": "Review whether citations, reported numbers and figures can be traced back to their sources and generating code."
+      },
+      "agent": {
+        "build": "Carry out implementation tasks, edit files and run tools to complete the requested work.",
+        "plan": "Analyze the request and existing project, then prepare an implementation plan before making changes.",
+        "general": "Handle delegated tasks that require several steps of research, analysis or execution.",
+        "explore": "Search project files and code to locate implementations and understand how they relate.",
+        "reviewer": "Review research outputs for traceability, statistics and reproducibility, reporting findings without editing files.",
+        "compaction": "Condense long conversations while preserving key context so the task can continue.",
+        "summary": "Summarize the conversation and completed work for later review.",
+        "title": "Automatically generate a session title from the conversation."
+      },
+      "fallback": {
+        "skill": "Provides task-specific instructions for the agent.",
+        "agent": "Performs or assists with tasks according to its configuration."
+      }
+    },
     "title": "Skills & Agenten",
     "description": {
       "prefix": "Live aus der OpenCode-Runtime geladen — die gebündelten Skill-Pakete, alles unter ",
@@ -77,7 +104,9 @@
       "installed": "„{{name}}“ installiert — in jedem Arbeitsbereich verfügbar.",
       "agentPrompt": "Der Nutzer hat dies in das Feld zum Installieren von Skills eingegeben:\n\n---\n{{input}}\n---\n\nBitte hilf geduldig bei der Installation: Finde heraus, welcher Skill gemeint ist (URL abrufen, suchen oder bei Unklarheit nachfragen), und speichere ihn dann als Skill-Datei unter .opencode/skills/<name>/SKILL.md innerhalb dieses Arbeitsbereichs — niemals außerhalb; die App stellt ihn danach in jedem Arbeitsbereich bereit. Das Format ist im Skill customize-opencode beschrieben. Antworte am Ende mit dem Namen des installierten Skills.",
       "echo": "Bitte hilf mir, diesen Skill zu installieren:\n\n{{input}}",
-      "adoptFailed": "Der Skill wurde geschrieben, ließ sich aber nicht in dein Profil verschieben — er verschwindet, sobald der Ordner dieser Sitzung ersetzt wird: {{detail}}"
+      "adoptFailed": "Der Skill wurde geschrieben, ließ sich aber nicht in dein Profil verschieben — er verschwindet, sobald der Ordner dieser Sitzung ersetzt wird: {{detail}}",
+      "hintWorkspace": "Im aktuellen Arbeitsbereich installiert; nur dort verfügbar.",
+      "agentPromptWorkspace": "The user wants to install this skill:\n\n---\n{{input}}\n---\n\nConfirm its content and source, then save the skill and any required helper files at {{skillsDirectory}}/<name>/SKILL.md inside the current workspace. SKILL.md must have YAML frontmatter with name and description. Keep every file within this workspace; do not write to the user home or another workspace. This installation is available only in the current workspace. Reply with the installed name when complete; report failures accurately without claiming success."
     },
     "environment": {
       "sectionTitle": "Wissenschaftliche Umgebung",
@@ -109,7 +138,11 @@
     "search": "Skills und Agents durchsuchen",
     "filter": "Art",
     "all": "Alle ({{count}})",
-    "noMatch": "Nichts passt zu „{{query}}“."
+    "noMatch": "Nichts passt zu „{{query}}“.",
+    "refresh": "Skills aktualisieren",
+    "loading": "Skills werden geladen…",
+    "loadFailed": "Skills konnten nicht geladen werden. Bitte erneut versuchen.",
+    "retry": "Erneut versuchen"
   },
   "notFound": {
     "title": "404 — Nicht gefunden",

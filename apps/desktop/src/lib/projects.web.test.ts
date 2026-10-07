@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-const { createProject, listProjects } = await import("./tauri");
+const { createProject, listProjects, renameProject, setProjectPinned, deleteProject } = await import("./tauri");
 
 describe("projects in the web client", () => {
   beforeEach(() => {
@@ -65,4 +65,11 @@ describe("projects in the web client", () => {
     });
     expect(await listProjects()).toHaveLength(1);
   });
+});
+
+it("renames, pins and removes a Web project without native filesystem calls", async () => {
+  fetchMock.mockReset();fetchMock.mockImplementation(async()=>new Response('{"ok":true}',{headers:{"content-type":"application/json"}}));
+  await renameProject("abcdef0123456789","Renamed");await setProjectPinned("abcdef0123456789",true);await deleteProject("abcdef0123456789");
+  expect(fetchMock.mock.calls.map(call=>[String(call[0]),call[1].method])).toEqual([
+    ["http://gw/v1/projects/abcdef0123456789","PATCH"],["http://gw/v1/projects/abcdef0123456789/pin","POST"],["http://gw/v1/projects/abcdef0123456789","DELETE"]]);
 });

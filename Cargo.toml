@@ -15,7 +15,7 @@
 # why the core is its own crate rather than a feature flag on the desktop.
 [workspace]
 resolver = "2"
-members = ["apps/desktop/src-tauri", "crates/osd-core", "crates/osd-cli"]
+members = ["apps/desktop/src-tauri", "crates/osd-core", "crates/osd-cli", "crates/osd-sandbox-host"]
 
 [workspace.package]
 version = "0.5.2"

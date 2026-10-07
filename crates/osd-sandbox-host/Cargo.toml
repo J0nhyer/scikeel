@@ -1,0 +1,13 @@
+[package]
+name = "osd-sandbox-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+sha2 = "0.10"

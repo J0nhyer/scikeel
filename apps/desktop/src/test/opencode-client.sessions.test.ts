@@ -4,6 +4,56 @@ import { OpenCodeClient } from "@ai4s/sdk";
 
 const BASE = "http://127.0.0.1:9999";
 
+describe("OpenCodeClient.isSessionRunning", () => {
+  it.each([
+    [{}, false],
+    [{ ses_live: { type: "idle" } }, false],
+    [{ ses_live: { type: "busy" } }, true],
+    [{ ses_live: { type: "retry", attempt: 2 } }, true],
+  ])("reads live status independently of unfinished history", async (statuses, running) => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response(JSON.stringify(statuses)));
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl });
+    expect(await client.isSessionRunning("ses_live", "/research/project")).toBe(running);
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(
+      `${BASE}/session/status?directory=%2Fresearch%2Fproject`,
+    );
+  });
+
+  it.each([404, 501])("leaves unsupported runtimes unknown (%s)", async (status) => {
+    const client = new OpenCodeClient({
+      baseUrl: BASE, fetchImpl: async () => new Response("not supported", { status }),
+    });
+    expect(await client.isSessionRunning("ses_live")).toBeNull();
+  });
+
+  it.each([[], null, { ses_live: null }, { ses_live: { type: "unknown" } }])("rejects ambiguous responses", async (body) => {
+    const client = new OpenCodeClient({
+      baseUrl: BASE, fetchImpl: async () => new Response(JSON.stringify(body)),
+    });
+    await expect(client.isSessionRunning("ses_live")).rejects.toThrow(/session status/);
+  });
+});
+
+describe("OpenCodeClient.listRunningSessions", () => {
+  it("discovers busy and retrying conversations in one directory-scoped request", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response(JSON.stringify({ ses_busy: { type: "busy" }, ses_retry: { type: "retry" }, ses_idle: { type: "idle" } })));
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl });
+    expect(await client.listRunningSessions("/research/project")).toEqual(["ses_busy", "ses_retry"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(`${BASE}/session/status?directory=%2Fresearch%2Fproject`);
+  });
+  it("bounds status response bodies after headers arrive", async () => {
+    const response = new Response("{}");
+    vi.spyOn(response, "json").mockImplementation(() => new Promise(() => {}));
+    const client = new OpenCodeClient({ baseUrl: BASE, requestTimeoutMs: 20, fetchImpl: async () => response });
+    await expect(client.listRunningSessions()).rejects.toThrow(/Timed out/);
+  });
+  it("keeps unsupported status discovery unknown", async () => {
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () => new Response("", { status: 404 }) });
+    expect(await client.listRunningSessions()).toBeNull();
+  });
+});
+
 interface ServerSession {
   id: string;
   title: string;
@@ -288,4 +338,44 @@ describe("OpenCodeClient session edits", () => {
     expect(id).toBe("ses_new");
     expect(calls).toEqual(["/session"]);
   });
+});
+describe("OpenCodeClient private environment transport",()=>{
+  it("uses owned session identifiers and sends explicit manual approval without filesystem paths",async()=>{
+    const fetchImpl=vi.fn(async(_input: RequestInfo | URL, _init?: RequestInit)=>new Response(JSON.stringify({id:"a".repeat(64)})));
+    const client=new OpenCodeClient({baseUrl:BASE,fetchImpl});
+    await client.describeProjectEnvironment("owned");
+    await client.requestProjectEnvironment("owned");
+    await client.approveProjectEnvironment("owned","a".repeat(64));
+    expect(fetchImpl.mock.calls.map(call=>String(call[0]))).toEqual([
+      BASE+"/api/environments/owned",BASE+"/api/environments/owned/request",BASE+"/api/environments/owned/install"]);
+    expect(JSON.parse(String(fetchImpl.mock.calls[2][1]?.body))).toEqual({id:"a".repeat(64),manual:true});
+  });
+});
+
+
+describe("pending interaction recovery errors", () => {
+  it.each(["listQuestions", "listPermissions"] as const)("%s reports a broken endpoint instead of an empty list", async (method) => {
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () =>
+      new Response(JSON.stringify({ data: { message: "Expected JSON value at metadata.timeout" } }), { status: 400 }) });
+    await expect(client[method]()).rejects.toThrow(/400.*metadata.timeout/);
+  });
+
+  it.each(["listQuestions", "listPermissions"] as const)("%s tolerates an unsupported endpoint", async (method) => {
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () => new Response("not supported", { status: 404 }) });
+    expect(await client[method]()).toEqual([]);
+  });
+});
+
+
+it("normalizes committed title updates without exposing job metadata", async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+  const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () => new Response(stream, { headers: { "content-type": "text/event-stream" } }) });
+  const events: unknown[] = [];
+  client.onEvent(event => events.push(event));
+  try {
+    await client.connect();
+    controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "session.updated", properties: { info: { id: "ses_a", title: "Research topic", metadata: { scikeelSessionTitle: { model: "private" } } } } })}\n\n`));
+    await vi.waitFor(() => expect(events).toEqual([{ type: "session.updated", sessionId: "ses_a", title: "Research topic" }]));
+  } finally { controller.close(); client.close(); }
 });

@@ -72,6 +72,18 @@ local workspace + SQLite + JSONL provenance.
   implementation, deployment, and acceptance testing to Web. Shared code must
   not intentionally break desktop builds, but desktop UX and feature parity are
   not current deliverables.
+- Runtime availability (user-confirmed on 2026-10-02): Claude is currently
+  unusable. Exclude Claude from live acceptance tests and release gates; do not
+  probe alternative Claude models or endpoints unless the user explicitly
+  confirms that Claude service has been restored. Preserve adapter compatibility
+  and deterministic tests, but do not treat Claude unavailability as a feature
+  defect or deployment blocker.
+- Internal testing operations (user-confirmed on 2026-10-05): the user is the
+  sole current user. Agents may stop or restart project-related services and
+  processes as needed for deployment, testing, or troubleshooting without
+  asking again, including active project workloads. Preserve workspace files,
+  conversations, credentials, and recoverable state; this authorization does
+  not permit deleting user data or stopping unrelated system services.
 - One progress file: `PROGRESS.md`. Append one line per real milestone,
   `YYYY-MM-DD HH:MM` + a one-sentence conclusion, newest on top. Results and
   blockers only.

@@ -1,3 +1,4 @@
+import type { AttachmentPromptContext, ConversationAttachment } from "@ai4s/shared";
 import type {
   AgentInfo,
   CommandInfo,
@@ -27,6 +28,21 @@ import type { MessageUsage } from "@ai4s/shared";
 import { DEFAULT_OPENCODE_URL } from "./types";
 import type { AgentRuntime } from "./runtime";
 import { BaseAgentRuntime } from "./base-runtime";
+
+export interface ProjectEnvironmentInfo {
+  imageDigest: string;
+  inputHash: string | null;
+  packages: string[];
+  venvState: "absent" | "valid" | "broken";
+}
+export interface ProjectEnvironmentApproval {
+  id: string;
+  expiresAt: number;
+  patterns: string[];
+  metadata: { project: string; operation: "install" | "rebuild"; inputHash: string };
+}
+/** Optional bounds for Web catalog reads; existing callers keep their behavior. */
+export type OpenCodeCatalogReadOptions = { signal?: AbortSignal; timeoutMs?: number };
 
 export type CustomProviderModality = "text" | "audio" | "image" | "video" | "pdf";
 
@@ -314,6 +330,55 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       throw err;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  private async projectEnvironmentRequest<T>(sessionId: string, operation?: "request" | "install", body: Record<string, unknown> = {}): Promise<T> {
+    const path = `/api/environments/${encodeURIComponent(sessionId)}${operation ? `/${operation}` : ""}`;
+    const response = await this.fetchWithTimeout(`${this.baseUrl}${path}`, {
+      method: operation ? "POST" : "GET", headers: this.headers(!!operation),
+      ...(operation ? {body: JSON.stringify(body)} : {}),
+    }, operation === "install" ? 360000 : this.requestTimeoutMs);
+    if (!response.ok) throw await this.apiError(response, "Project environment request failed");
+    return response.json() as Promise<T>;
+  }
+  describeProjectEnvironment(sessionId: string): Promise<ProjectEnvironmentInfo> {
+    return this.projectEnvironmentRequest(sessionId);
+  }
+  requestProjectEnvironment(sessionId: string): Promise<ProjectEnvironmentApproval> {
+    return this.projectEnvironmentRequest(sessionId, "request");
+  }
+  approveProjectEnvironment(sessionId: string, approvalId: string): Promise<{selection: {kind: "private"}}> {
+    return this.projectEnvironmentRequest(sessionId, "install", {id: approvalId, manual: true});
+  }
+
+  private async fetchCatalog(url: string, options?: OpenCodeCatalogReadOptions): Promise<Response> {
+    if (!options) return this.fetchImpl(url, { headers: this.headers() });
+    const controller = new AbortController();
+    const cancel = () => controller.abort(options.signal?.reason);
+    const timer = setTimeout(() => controller.abort(new Error("Timed out reading model catalog")),
+      Math.max(1, Math.min(options.timeoutMs ?? this.requestTimeoutMs, this.requestTimeoutMs)));
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    if (options.signal?.aborted) cancel();
+    let rejectAbort!: () => void;
+    try {
+      const aborted = new Promise<never>((_resolve, reject) => {
+        rejectAbort = () => reject(controller.signal.reason ?? new Error("Catalog read cancelled"));
+        controller.signal.addEventListener("abort", rejectAbort, { once: true });
+        if (controller.signal.aborted) rejectAbort();
+      });
+      const read = async () => {
+        controller.signal.throwIfAborted();
+        const response = await this.fetchImpl(url, { headers: this.headers(), signal: controller.signal });
+        // Keep the deadline through body reception; decoding uses this buffered response.
+        const bytes = await response.arrayBuffer();
+        return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+      };
+      return await Promise.race([read(), aborted]);
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", cancel);
+      controller.signal.removeEventListener("abort", rejectAbort);
     }
   }
 
@@ -692,7 +757,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       `${this.baseUrl}/experimental/control-plane/move-session`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers: {...this.headers(true), "x-scikeel-manual-approval": "1"},
         body: JSON.stringify({ sessionID: sessionId, destination: { directory }, moveChanges: false }),
       },
     );
@@ -703,9 +768,58 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   async deleteSession(sessionId: string): Promise<void> {
     const res = await this.fetchImpl(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}`, {
       method: "DELETE",
-      headers: this.headers(),
+      headers: {...this.headers(), "x-scikeel-manual-approval": "1"},
     });
     if (!res.ok) throw await this.apiError(res, "Failed to delete session");
+  }
+
+  async listRunningSessions(directory?: string): Promise<string[] | null> {
+    const query = directory ? `?${new URLSearchParams({ directory })}` : this.dirQuery();
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("Timed out waiting for OpenCode session status"));
+      }, Math.min(this.requestTimeoutMs, 10000));
+    });
+    try {
+      return await Promise.race([deadline, (async () => {
+        const res = await this.fetchImpl(`${this.baseUrl}/session/status${query}`, { headers: this.headers(), signal: controller.signal });
+        if (res.status === 404 || res.status === 501) return null;
+        if (!res.ok) throw await this.apiError(res, "Failed to load session status");
+        const statuses: unknown = await res.json();
+        if (!statuses || typeof statuses !== "object" || Array.isArray(statuses))
+          throw new Error("Invalid session status response");
+        const running: string[] = [];
+        for (const [id, status] of Object.entries(statuses)) {
+          const type = status?.type;
+          if (type === "busy" || type === "retry") running.push(id);
+          else if (type !== "idle") throw new Error("Unknown session status");
+        }
+        return running;
+      })()]);
+    } finally { clearTimeout(timer); }
+  }
+
+  async isSessionRunning(sessionId: string, directory?: string): Promise<boolean | null> {
+    const query = directory
+      ? `?${new URLSearchParams({ directory })}`
+      : this.dirQuery();
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/session/status${query}`, {
+      headers: this.headers(),
+    });
+    if (res.status === 404 || res.status === 501) return null;
+    if (!res.ok) throw await this.apiError(res, "Failed to load session status");
+    const statuses: unknown = await res.json();
+    if (!statuses || typeof statuses !== "object" || Array.isArray(statuses)) {
+      throw new Error("Invalid session status response");
+    }
+    if (!Object.prototype.hasOwnProperty.call(statuses, sessionId)) return false;
+    const status = (statuses as Record<string, { type?: string } | null>)[sessionId];
+    if (status?.type === "idle") return false;
+    if (status?.type === "busy" || status?.type === "retry") return true;
+    throw new Error("Unknown session status");
   }
 
   /** Load a session's message history. */
@@ -725,6 +839,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         cost?: number;
         tokens?: RawTokens;
       };
+      attachments?: ConversationAttachment[];
       parts: HistoryMessage["parts"];
     }>;
     return arr.map((m) => {
@@ -732,6 +847,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       const usage = toUsage(m.info.tokens, m.info.cost);
       return {
         role: m.info.role,
+        ...(m.attachments ? { attachments: m.attachments } : {}),
         ...(m.info.id ? { id: m.info.id } : {}),
         completed: m.info.time?.completed,
         created: m.info.time?.created,
@@ -832,12 +948,10 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  from config-declared sources — config dirs plus `.opencode/skill(s)` —
    *  so home-level skills are missing from it even though sessions (which run
    *  on this same v1 API) load and use them (#61). */
-  async listSkills(): Promise<SkillInfo[]> {
+  async listSkills(options?: OpenCodeCatalogReadOptions): Promise<SkillInfo[]> {
     // Scope to the workspace: skill instances are created lazily per directory,
     // and the unscoped endpoint answers from an instance that may have none.
-    const res = await this.fetchImpl(`${this.baseUrl}/skill${this.dirQuery()}`, {
-      headers: this.headers(),
-    });
+    const res = await this.fetchCatalog(`${this.baseUrl}/skill${this.dirQuery()}`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list skills");
     // v1 answers with a bare array; tolerate the v2 envelope so a server
     // pinned to either shape still lists.
@@ -849,12 +963,12 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   /** The configured default model ("provider/model"), or null when unset. */
-  async getDefaultModel(): Promise<string | null> {
+  async getDefaultModel(options?: OpenCodeCatalogReadOptions): Promise<string | null> {
     // Read the same global config that setDefaultModel PATCHes. The instance-
     // scoped /config only reflects a model change after OpenCode rebuilds the
     // instance (~1s later), so reading it right after a switch returns the
     // previous model.
-    const res = await this.fetchImpl(`${this.baseUrl}/global/config`, { headers: this.headers() });
+    const res = await this.fetchCatalog(`${this.baseUrl}/global/config`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to read config");
     const cfg = (await res.json()) as { model?: string };
     return cfg.model ?? null;
@@ -877,10 +991,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   /** Providers OpenCode can use right now, with their models. */
-  async listProviders(): Promise<ProviderInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/config/providers`, {
-      headers: this.headers(),
-    });
+  async listProviders(options?: OpenCodeCatalogReadOptions): Promise<ProviderInfo[]> {
+    const res = await this.fetchCatalog(`${this.baseUrl}/config/providers`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list providers");
     const body = (await res.json()) as {
       providers?: Array<{
@@ -1230,18 +1342,16 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   /** Real agents configured in OpenCode. */
-  async listAgents(): Promise<AgentInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/agent`, { headers: this.headers() });
+  async listAgents(options?: OpenCodeCatalogReadOptions): Promise<AgentInfo[]> {
+    const res = await this.fetchCatalog(`${this.baseUrl}/agent`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list agents");
     return (await res.json()) as AgentInfo[];
   }
 
   /** Slash commands the runtime can run — config commands, skills and MCP
    *  prompts all surface in this one list (directory-scoped like skills). */
-  async listCommands(): Promise<CommandInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/command${this.dirQuery()}`, {
-      headers: this.headers(),
-    });
+  async listCommands(options?: OpenCodeCatalogReadOptions): Promise<CommandInfo[]> {
+    const res = await this.fetchCatalog(`${this.baseUrl}/command${this.dirQuery()}`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list commands");
     const arr = (await res.json()) as Array<{
       name: string;
@@ -1269,7 +1379,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/shell`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers: {...this.headers(true), "x-scikeel-manual-approval": "1"},
         body: JSON.stringify({ agent, command }),
       },
     );
@@ -1284,7 +1394,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/command`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers: {...this.headers(true), "x-scikeel-manual-approval": "1"},
         body: JSON.stringify({ command, ...(args ? { arguments: args } : {}) }),
       },
     );
@@ -1310,6 +1420,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     model?: string | null,
     variant?: string | null,
     files?: PromptFile[],
+    attachmentContext?: AttachmentPromptContext,
+    collaborationRevision?: number,
   ): Promise<void> {
     const m = parseModel(model);
     const res = await this.fetchWithTimeout(
@@ -1330,6 +1442,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
               url: f.url,
             })),
           ],
+          ...(attachmentContext ? { attachmentTurn: attachmentContext } : {}),
+          ...(collaborationRevision !== undefined ? { collaborationRevision } : {}),
           ...(agent ? { agent } : {}),
           ...(m ? { model: m } : {}),
           system: ARTIFACT_PRESENTATION_SYSTEM,
@@ -1368,7 +1482,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/question${this.dirQuery()}`, {
       headers: this.headers(),
     });
-    if (!res.ok) return [];
+    if (res.status === 404 || res.status === 501) return [];
+    if (!res.ok) throw await this.apiError(res, "Failed to load questions");
     const arr = (await res.json()) as Array<{
       id: string;
       sessionID: string;
@@ -1405,7 +1520,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/permission${this.dirQuery()}`, {
       headers: this.headers(),
     });
-    if (!res.ok) return [];
+    if (res.status === 404 || res.status === 501) return [];
+    if (!res.ok) throw await this.apiError(res, "Failed to load permissions");
     // Same dual field names as the SSE event: `permission`/`patterns` (V2)
     // with `action`/`resources` as the legacy fallback.
     const arr = (await res.json()) as Array<{
@@ -1640,6 +1756,12 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           racc.text += d.delta;
           this.emit({ type: "reasoning.updated", sessionId: racc.sessionId, partId, text: racc.text });
         }
+        break;
+      }
+      case "session.updated": {
+        const info = props.info as { id?: unknown; title?: unknown } | undefined;
+        if (typeof info?.id === "string" && info.id && typeof info.title === "string")
+          this.emit({ type: "session.updated", sessionId: info.id, title: info.title });
         break;
       }
       case "session.idle": {

@@ -6,6 +6,7 @@ import {
   datedWorkspaceName,
   explainRuntimeError,
   turnStillStreaming,
+  turnIsOver,
   foldCarriageReturns,
   foldEvent,
   historyToThread,
@@ -623,12 +624,43 @@ describe("historyToThread", () => {
     expect(line.kind === "status-line" && line.text).toMatch(/OpenCode Zen/);
   });
 
-  it("keeps user-interrupted turns quiet: an aborted error adds no red line", () => {
+  it("keeps aborted turns quiet until server idleness is confirmed", () => {
     const msgs: HistoryMessage[] = [
       { role: "user", parts: [{ type: "text", text: "hi" }] },
       { role: "assistant", completed: 2, error: "The operation was aborted.", parts: [] },
     ];
     expect(historyToThread(msgs).blocks).toEqual([{ kind: "user", text: "hi" }]);
+  });
+
+  it("reports one confirmed cancellation even when the runtime finalized its tool", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "wait" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [
+        { type: "tool", tool: "bash", state: { status: "completed", input: { command: "sleep 90" } } },
+      ] },
+    ];
+    expect(historyToThread(msgs, undefined, true).blocks.filter(b => b.kind === "status-line" && b.tone === "error")).toHaveLength(1);
+    expect(historyToThread(msgs).blocks.some(b => b.kind === "status-line")).toBe(false);
+  });
+
+  it("does not carry a previous aborted turn into a later successful reply", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "old turn" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [] },
+      { role: "user", parts: [{ type: "text", text: "new turn" }] },
+      { role: "assistant", completed: 4, parts: [{ type: "text", text: "done" }] },
+    ];
+    expect(historyToThread(msgs, undefined, true).blocks.some(b => b.kind === "status-line")).toBe(false);
+  });
+
+  it("does not carry an abandoned frozen tool into a later successful reply", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "old turn" }] },
+      { role: "assistant", parts: [{ type: "tool", tool: "read", state: { status: "running" } }] },
+      { role: "user", parts: [{ type: "text", text: "new turn" }] },
+      { role: "assistant", completed: 4, parts: [{ type: "text", text: "done" }] },
+    ];
+    expect(historyToThread(msgs, undefined, true).blocks.some(b => b.kind === "status-line")).toBe(false);
   });
 
   it("falls back to the bash command as the row title (agent steps too)", () => {
@@ -657,11 +689,43 @@ describe("historyToThread", () => {
         ],
       },
     ];
-    const t = historyToThread(msgs);
-    expect(t.blocks[1]).toMatchObject({ kind: "tool-call", status: "pending" });
-    expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "pending" });
+    // serverIdle = true: the server confirms the session is no longer running, so
+    // the frozen steps really were abandoned.
+    const t = historyToThread(msgs, undefined, true);
+    // serverIdle also drives the row itself: a step abandoned by a dead session
+    // reads as failed, not as still-pending.
+    expect(t.blocks[1]).toMatchObject({ kind: "tool-call", status: "failed" });
+    expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "failed" });
     const last = t.blocks[t.blocks.length - 1];
     expect(last).toMatchObject({ kind: "status-line", tone: "error" });
+  });
+
+  it("leaves a live turn unflagged: frozen steps with serverIdle=false add no red line", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "explore" }] },
+      {
+        role: "assistant",
+        parts: [
+          { type: "tool", tool: "read", state: { status: "running", title: "README.md" } },
+          { type: "tool", tool: "glob", state: { status: "pending", title: "*.md" } },
+        ],
+      },
+    ];
+    const t = historyToThread(msgs, undefined, false);
+    expect(t.blocks[1]).toMatchObject({ kind: "tool-call", status: "pending" });
+    expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "pending" });
+    expect(t.blocks.some((b) => b.kind === "status-line")).toBe(false);
+  });
+
+  it("stays quiet when the running status could not be read (serverIdle omitted)", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "explore" }] },
+      {
+        role: "assistant",
+        parts: [{ type: "tool", tool: "read", state: { status: "running", title: "README.md" } }],
+      },
+    ];
+    expect(historyToThread(msgs).blocks.some((b) => b.kind === "status-line")).toBe(false);
   });
 
   it("shows a slash command as what the user typed, not its expanded template", () => {
@@ -942,5 +1006,25 @@ describe("turnStillStreaming", () => {
     const failed = [{ role: "assistant" as const, parts: [], created: 3_000, error: "boom" }];
     expect(turnStillStreaming(done, RUNTIME_START)).toBe(false);
     expect(turnStillStreaming(failed, RUNTIME_START)).toBe(false);
+  });
+});
+
+describe("turnIsOver", () => {
+  // The gate reconcileRunning uses before it asks the server whether a turn is
+  // live. A finished turn must read as over, or a completed conversation gets a
+  // red interruption line on every reconciliation. A trailing user message is
+  // also "over" here — and it cannot produce that line anyway, because the line
+  // only appears when a tool part is frozen and a trailing user message has no
+  // assistant parts after it.
+  it("reads a finished assistant turn as over and an unfinished one as not", () => {
+    const done = [{ role: "assistant" as const, parts: [], completed: 3_100 }];
+    const live = [{ role: "assistant" as const, parts: [] }];
+    expect(turnIsOver(done)).toBe(true);
+    expect(turnIsOver(live)).toBe(false);
+  });
+
+  it("does not call a trailing user message a finished turn", () => {
+    expect(turnIsOver([{ role: "user" as const, parts: [] }])).toBe(false);
+    expect(turnIsOver([])).toBe(false);
   });
 });

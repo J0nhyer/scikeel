@@ -2,6 +2,16 @@ import { request as httpRequest, createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { URL } from "node:url";
+import { relativeInput } from "./tenant-policy.mjs";
+import { classifyRuntimeRoute, classifyGatewayRoute, validateRuntimeInput, scrubRuntimeSecrets } from "./runtime-route-policy.mjs";
+import { loginPage, loginAssetPreloads, withLoginPreparation } from "./login-page.mjs";
+import { CollaborationStore, collaborationPolicy, collaborationPermissions } from "./collaboration.mjs";
+import { ResearchTasks } from "./research-tasks.mjs";
+import { AttachmentTurns } from "./attachment-turns.mjs";
+import { ManagedResearchFiles } from "./managed-research-files.mjs";
+import { ManagedAttachmentCopies } from "./managed-attachment-copies.mjs";
+import { AttachmentStore } from "./attachments.mjs";
+import { createAttachmentRouter } from "./attachment-routes.mjs";
 
 const SESSION_COOKIE = "osd_session";
 const BOOTSTRAP_COOKIE = "osd_worker_bootstrap";
@@ -240,20 +250,11 @@ function booleanValue(value, fallback = false) {
   return Boolean(value);
 }
 
-function loginPage(error = "", next = "/") {
-  const errorMarkup = error
-    ? `<p role="alert" style="color:#a33d2e;margin:0 0 16px">${escapeHtml(error)}</p>`
-    : "";
-  return `<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Open Science Desktop</title>
-<style>body{margin:0;background:#f5f4f1;color:#252321;font:16px system-ui,sans-serif}main{box-sizing:border-box;width:min(100% - 32px,420px);margin:12vh auto;padding:32px;border:1px solid #d9d5cf;background:#fff;border-radius:8px;box-shadow:0 12px 40px #25232112}h1{margin:0 0 8px;font-size:22px}p{color:#6b6660;line-height:1.5}label{display:block;margin:16px 0 6px;font-size:14px}input{box-sizing:border-box;width:100%;height:42px;padding:0 12px;border:1px solid #c8c3bc;border-radius:6px;font:inherit}button{width:100%;height:42px;margin-top:22px;border:0;border-radius:6px;background:#2f5fa8;color:#fff;font:inherit;cursor:pointer}button:hover{background:#254f8f}</style>
-</head><body><main><h1>Open Science Desktop</h1><p>Sign in to your research workspace.</p>${errorMarkup}<form method="post" action="/auth/login"><input type="hidden" name="next" value="${escapeHtml(next)}"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">Sign in</button></form></main></body></html>`;
-}
 
 function upstreamRequestPath(requestUrl, workerToken) {
   const parsed = new URL(requestUrl ?? "/", "http://platform.invalid");
   parsed.searchParams.delete("token");
+      parsed.searchParams.delete("auth_token");
   parsed.searchParams.delete("auth_token");
   if (parsed.pathname === "/event") {
     parsed.searchParams.set("auth_token", workerBasicToken(workerToken));
@@ -288,6 +289,11 @@ export class PlatformServer {
     secureCookies = false,
     maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
     logger = () => {},
+    tenantPolicy = null,
+    approvalGate = null,
+    runtimeCatalog = null,
+    environments = null,
+    workspaceFiles = null,
   } = {}) {
     if (!authStore) throw new Error("authStore is required");
     if (!workerManager) throw new Error("workerManager is required");
@@ -296,10 +302,41 @@ export class PlatformServer {
     this.authStore = authStore;
     this.workerManager = workerManager;
     this.cliRuntime = cliRuntime;
+    const resolveContext=async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
+      if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("managed worker unavailable");
+      return {userId,instanceId:worker.id,generation:worker.generation};};
+    this.researchTasks = new ResearchTasks({
+      rootDir: resolve(workerManager.rootDir, "../research"),
+      cancel: (task) => this.#cancelResearch(task),
+      running: (task) => this.#researchRunning(task),
+      logger,
+      workspace:tenantPolicy && workspaceFiles ? new ManagedResearchFiles({files:workspaceFiles,tenantPolicy,resolveContext}) : null,
+    });
+    const copies = tenantPolicy && workspaceFiles ? new ManagedAttachmentCopies({files:workspaceFiles,tenantPolicy,
+      resolveContext:async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
+        if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("attachment worker unavailable");
+        return {userId,instanceId:worker.id,generation:worker.generation};}}) : null;
+    this.collaborationCapabilities = new Map();
+    this.collaboration = new CollaborationStore({research:this.researchTasks,readLegacy:(o)=>this.researchTasks.get(o.userId,o.sessionId),rootDir:resolve(workerManager.rootDir,"../collaboration"),
+      applyPermissions:async(owner,mode)=>{
+        if(owner.runtime !== "opencode")return;
+        await this.#workerResearchRequest(owner, `/session/${encodeURIComponent(owner.sessionId)}`, "PATCH", {permission:collaborationPermissions(mode)});
+      }, cancel:(owner)=>this.#cancelResearch(owner), running:(owner)=>this.#researchRunning(owner)});
+    this.attachments = new AttachmentStore({ rootDir: resolve(workerManager.rootDir, "../attachments"),
+      materializeCopies:copies ? input=>copies.materialize(input) : null });
+    this.attachmentTurns = new AttachmentTurns({ store: this.attachments, readHistory: (user, owner) => this.#attachmentHistory(user, owner.sessionId) });
+    this.attachmentRouter = createAttachmentRouter({ store: this.attachments, resolveOwner: async (user, sessionId) => {
+      const { access, worker } = await this.#ensureWorker(user);
+      return this.#researchOwner(user, sessionId, access, worker);
+    } });
     this.webRoot = webRoot ? resolve(webRoot) : null;
     this.secureCookies = secureCookies;
     this.maxBodyBytes = maxBodyBytes;
     this.logger = logger;
+    this.tenantPolicy = tenantPolicy;
+    this.approvalGate = approvalGate ?? ((_context,request)=>request.manual===true);
+    this.runtimeCatalog = runtimeCatalog;
+    this.environments = environments;
     this.server = null;
     this.listenPromise = null;
   }
@@ -308,12 +345,24 @@ export class PlatformServer {
     await this.authStore.init();
     await this.workerManager.init();
     await this.cliRuntime?.init();
+    await this.attachments.init();
   }
 
   async listen() {
     if (this.server?.listening) return this.address();
     if (this.listenPromise) return this.listenPromise;
     await this.init();
+    this.researchTimer = setInterval(() => {
+      if (this.researchTick) return;
+      this.researchTick = Promise.all([this.researchTasks.tick(),this.collaboration.tick()]).catch((error) => {
+        this.logger({ type: "research.monitor_error", error: error.message });
+      }).finally(() => { this.researchTick = null; });
+    }, 2000);
+    this.researchTimer.unref();
+    this.attachmentTimer = setInterval(() => {
+      if (!this.attachmentSweep) this.attachmentSweep = this.attachments.expire().catch(() => {}).finally(() => { this.attachmentSweep = null; });
+    }, 60000);
+    this.attachmentTimer.unref();
     this.server = createServer((request, response) => {
       void this.#handle(request, response);
     });
@@ -344,6 +393,13 @@ export class PlatformServer {
   }
 
   async close() {
+    clearInterval(this.researchTimer);
+    clearInterval(this.attachmentTimer);
+    await this.attachmentSweep;
+    await this.attachments.close();
+    await this.researchTick;
+    await this.researchTasks.close();
+    await this.collaboration.close();
     if (!this.server) return;
     const server = this.server;
     this.server = null;
@@ -358,8 +414,12 @@ export class PlatformServer {
   }
 
   #unauthorized(request, response) {
-    if (isJsonRequest(request) || request.url?.startsWith("/api/")) {
-      sendJson(response, 401, { error: "authentication required" });
+    const path = new URL(request.url ?? "/", "http://platform.invalid").pathname;
+    const navigation = request.headers["sec-fetch-mode"] === "navigate" ||
+      (path === "/v1/fs/read" && !isJsonRequest(request));
+    if (isJsonRequest(request) || path.startsWith("/api/") ||
+        (!navigation && (path.startsWith("/v1/") || path === "/event"))) {
+      sendJson(response, 401, { error: "authentication required" }, { "x-scikeel-auth": "session-required" });
       return;
     }
     const next = safeNextPath(new URL(request.url ?? "/", "http://platform.invalid").pathname);
@@ -435,6 +495,44 @@ export class PlatformServer {
     }
   }
 
+  async #environmentRequest(request, response, user, worker) {
+    const parsed = new URL(request.url ?? "/", "http://platform.invalid");
+    if (!parsed.pathname.startsWith("/api/environments/")) return false;
+    const match = /^\/api\/environments\/([A-Za-z0-9_-]{1,128})(?:\/(request|install))?$/.exec(parsed.pathname);
+    if (!this.environments || !this.tenantPolicy || !match) { sendJson(response, 404, { error: "not found" }); return true; }
+    if (parsed.search) { sendJson(response, 400, { error: "query parameters are not accepted" }); return true; }
+    const [, sessionId, operation] = match;
+    if (request.method !== (operation ? "POST" : "GET")) { sendJson(response, 405, { error: "method not allowed" }); return true; }
+    if (operation && request.headers.origin && request.headers.origin !== `${this.secureCookies ? "https" : "http"}://${request.headers.host}`) {
+      sendJson(response, 403, { error: "origin rejected" }); return true;
+    }
+    const context = { userId: user.id, instanceId: worker.id, generation: worker.generation };
+    const controller = new AbortController();
+    request.once("aborted", () => controller.abort());
+    response.once("close", () => { if (!response.writableEnded) controller.abort(); });
+    try {
+      this.tenantPolicy.session(context, sessionId);
+      if (!operation) sendJson(response, 200, await this.environments.describe(context, sessionId, {signal: controller.signal}));
+      else {
+        const payload = await this.#readPayload(request, response);
+        if (!payload) return true;
+        const allowed = operation === "install" ? ["id", "manual"] : [];
+        if (Object.keys(payload).some(key => !allowed.includes(key)) ||
+            (operation === "install" && (!/^[a-f0-9]{64}$/.test(payload.id ?? "") || payload.manual !== true))) {
+          sendJson(response, 400, { error: "invalid environment request" }); return true;
+        }
+        const value = operation === "install"
+          ? await this.environments.install(context, sessionId, {...payload, signal: controller.signal})
+          : await this.environments.request(context, sessionId, {signal: controller.signal});
+        sendJson(response, 200, value);
+      }
+    } catch (error) {
+      const status = [400,403,404,429,503].includes(error?.statusCode) ? error.statusCode : 409;
+      sendJson(response, status, {error: status === 503 ? "workspace is busy; retry after the active task finishes" : "environment request denied"});
+    }
+    return true;
+  }
+
   async #ensureWorker(user) {
     const workerId = workerIdForUser(user.id);
     await this.workerManager.ensureWorker({ instanceId: workerId, userId: user.id });
@@ -446,7 +544,7 @@ export class PlatformServer {
   }
 
   #bootstrapRequired(request, user) {
-    if (request.method !== "GET") return false;
+    if (this.tenantPolicy || request.method !== "GET") return false;
     const path = new URL(request.url ?? "/", "http://platform.invalid").pathname;
     if (path.startsWith("/api/") || path.startsWith("/v1/") || path === "/event") return false;
     const marker = parseCookies(request.headers.cookie).get(BOOTSTRAP_COOKIE);
@@ -462,18 +560,165 @@ export class PlatformServer {
   }
 
   async #proxy(request, response, access, user, worker) {
-    if (this.cliRuntime) {
+    // This branch is enabled only for explicitly migrated managed accounts.
+    // It never invokes the legacy host CLI adapters.
+    if (this.tenantPolicy && (!this.cliRuntime?.isManaged(user.id) || (request.method==="GET" && (request.url??"").split("?")[0]==="/skill")) && !(request.url ?? "").startsWith("/v1/")) {
+      await this.#managedRuntimeProxy(request, response, access, user, worker);
+      return;
+    }
+    let gatewayBody;
+    if (this.tenantPolicy) {
+      const operation = classifyGatewayRoute(request.method, (request.url ?? "").split("?")[0]);
+      if (!operation) { sendJson(response, 404, { error: "not found" }); return; }
+      try {
+        const context = { userId: user.id, instanceId: workerIdForUser(user.id), generation: worker.generation };
+        this.tenantPolicy.account(context);
+        const url = new URL(request.url, "http://platform.invalid");
+        for (const key of url.searchParams.keys()) if (!operation.query.includes(key) || url.searchParams.getAll(key).length !== 1)
+          throw Object.assign(new Error("invalid gateway input"), { statusCode: 400 });
+        if (url.searchParams.has("dir")) this.tenantPolicy.directory(context, url.searchParams.get("dir"));
+        if (url.searchParams.has("root") && !["workspace", "base"].includes(url.searchParams.get("root")))
+          throw Object.assign(new Error("invalid file scope"), { statusCode: 400 });
+        const path = url.searchParams.get("path");
+        if (path) relativeInput(path);
+        if(!["GET","HEAD"].includes(request.method)) {
+          const origin=`${this.secureCookies ? "https" : "http"}://${request.headers.host}`;
+          if(request.headers.origin!==origin || request.headers["sec-fetch-site"]==="cross-site")
+            throw Object.assign(new Error("foreign origin"),{statusCode:403});
+          gatewayBody=await this.#readPayload(request,response);if(!gatewayBody)return;
+          if(Object.keys(gatewayBody).some(key=>!operation.fields.includes(key)) ||
+              (operation.fields.includes("name") && (typeof gatewayBody.name!=="string" || !gatewayBody.name.trim() || gatewayBody.name.length>240)) ||
+              (operation.fields.includes("pinned") && typeof gatewayBody.pinned!=="boolean"))
+            throw Object.assign(new Error("invalid project input"),{statusCode:400});
+        }
+        if (operation.operation === "runsLog" && !/^[a-fA-F0-9]{1,128}$/.test(url.searchParams.get("hash") ?? ""))
+          throw Object.assign(new Error("invalid log id"), { statusCode: 400 });
+      } catch (error) { sendJson(response, error.statusCode ?? 403, { error: error.message }); return; }
+    }
+    if(this.tenantPolicy && this.cliRuntime?.isManaged(user.id) && !["GET","HEAD"].includes(request.method)) {
+      if(request.headers.origin!==`${this.secureCookies ? "https" : "http"}://${request.headers.host}` || request.headers["sec-fetch-site"]==="cross-site") {
+        sendJson(response,403,{error:"foreign origin"});return;
+      }
+    }
+    const parsed = new URL(request.url ?? "/", "http://platform.invalid");
+    const sessionRoute = parsed.pathname.match(/^\/session\/([^/]+)(?:\/(message|fork))?$/);
+    if (sessionRoute && request.method === "GET" && sessionRoute[2] === "message") {
+      const sessionId = decodeURIComponent(sessionRoute[1]);
+      const owner = await this.#researchOwner(user, sessionId, access, worker);
+      const listing = await this.attachments.list(user.id, sessionId);
+      if (listing.attachments.length) {
+        const history = await this.#attachmentHistory(user, sessionId, access);
+        sendJson(response, 200, await this.attachmentTurns.decorate(user, owner, history));
+        return;
+      }
+    }
+    const lifecycle = sessionRoute && ((request.method === "DELETE" && !sessionRoute[2]) || (request.method === "POST" && sessionRoute[2] === "fork"));
+    if (lifecycle) {
+      const sessionId = decodeURIComponent(sessionRoute[1]);
+      const owner = await this.#researchOwner(user, sessionId, access, worker);
+      const listing = await this.attachments.list(user.id, sessionId);
+      if (listing.attachments.length) {
+        await this.#attachmentLifecycle(request, response, user, owner, access, worker, sessionRoute[2]);
+        return;
+      }
+    }
+    const promptMatch = parsed.pathname.match(/^\/session\/([^/]+)\/(prompt_async|message|command|shell)$/);
+    let promptBody;
+    let serializedBody=gatewayBody===undefined ? undefined : JSON.stringify(gatewayBody);
+    let preparedAttachments;
+    if (promptMatch && request.method === "POST") {
+      const sessionId = decodeURIComponent(promptMatch[1]);
+      if (promptMatch[2] === "prompt_async") {
+        promptBody = await this.#readPayload(request, response);
+        if (!promptBody) return;
+      }
+      const task = await this.researchTasks.get(user.id, sessionId);
+      if (!task) {
+        // A forked review inherits the page lifetime and research boundary.
+        let parentId;
+        if (this.cliRuntime?.isManaged(user.id)) {
+          const state = await this.cliRuntime.ensureUser(user.id);
+          parentId = state.sessions.get(sessionId)?.parentId;
+        } else {
+          if(this.tenantPolicy) {
+      const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+      try { this.tenantPolicy.session(context,sessionId); }
+      catch { throw Object.assign(new Error("research session not found"),{status:404}); }
+    }
+    const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}`, access.url), {
+            headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(5000),
+          });
+          if (result.ok) parentId = (await result.json()).parentID;
+        }
+        for (let depth = 0; parentId && depth < 20; depth++) {
+          const parent = await this.researchTasks.get(user.id, parentId);
+          if (parent) {
+            if (!this.researchTasks.alive(user.id, parentId) || ["paused", "waiting_input", "cancelled"].includes(parent.status)) {
+              sendJson(response, 409, { error: "the owning research page is stopped or waiting for a decision" });
+              return;
+            }
+            break;
+          }
+          if (this.cliRuntime?.isManaged(user.id)) parentId = (await this.cliRuntime.ensureUser(user.id)).sessions.get(parentId)?.parentId;
+          else {
+            const result = await fetch(new URL(`/session/${encodeURIComponent(parentId)}`, access.url), {
+              headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(5000),
+            });
+            parentId = result.ok ? (await result.json()).parentID : null;
+          }
+        }
+      }
+      if (task) {
+        if (promptMatch[2] !== "prompt_async") {
+          sendJson(response, 409, { error: "use the research conversation to continue this task" });
+          return;
+        }
+        const body = promptBody ?? await this.#readPayload(request, response);
+        if (!body) return;
+        try {
+          const owner = await this.#researchOwner(user, sessionId, access, worker);
+          if (owner.runtime !== task.runtime || resolve(owner.directory) !== task.directory) throw Object.assign(new Error("research task belongs to a different assistant or workspace"), { status: 409 });
+          promptBody = await this.researchTasks.prepare(user.id, sessionId, body);
+          serializedBody = JSON.stringify(promptBody);
+        } catch (error) {
+          sendJson(response, error.status ?? 400, { error: error.message });
+          return;
+        }
+        response.once("finish", () => {
+          if (response.statusCode >= 400) void this.researchTasks.settled(user.id, sessionId).catch(() => {});
+        });
+      }
+    }
+    if (promptBody && promptMatch?.[2] === "prompt_async") {
+      try {
+        const owner = await this.#researchOwner(user, decodeURIComponent(promptMatch[1]), access, worker);
+        preparedAttachments = await this.attachmentTurns.prepare(user, owner, promptBody);
+        if (preparedAttachments?.replayAccepted) { sendJson(response, 202, {}); return; }
+        if (preparedAttachments) promptBody = preparedAttachments.body;
+        serializedBody = JSON.stringify(promptBody);
+        if (preparedAttachments) {
+          response.once("finish", () => { void preparedAttachments.finish(response.statusCode < 400).catch(() => {}); });
+          response.once("close", () => { if (!response.writableFinished) preparedAttachments.abandon(); });
+        }
+      } catch (error) { sendJson(response, error.status ?? 400, { error: error.message, code: error.code }); return; }
+    }
+    if (this.cliRuntime && (!this.tenantPolicy || this.cliRuntime.sandboxJobs)) {
       const handled = await this.cliRuntime.handle(request, response, {
         userId: user.id,
         workspaceDir: worker.workspaceDir,
+        promptBody,
+        attachmentInput: preparedAttachments,
       });
       if (handled) return;
     }
     const workerUrl = new URL(access.url);
-    const parsed = new URL(request.url ?? "/", "http://platform.invalid");
     const isV1 = parsed.pathname.startsWith("/v1/");
     const token = isV1 ? `Bearer ${access.token}` : `Basic ${workerBasicToken(access.token)}`;
     const headers = { ...request.headers };
+    if (serializedBody !== undefined) {
+      headers["content-length"] = String(Buffer.byteLength(serializedBody));
+      delete headers["transfer-encoding"];
+    }
     delete headers.host;
     delete headers.connection;
     delete headers.cookie;
@@ -525,7 +770,392 @@ export class PlatformServer {
     response.on("close", () => {
       if (!response.writableEnded) upstream.destroy();
     });
-    request.pipe(upstream);
+    if (serializedBody !== undefined) upstream.end(serializedBody);
+    else request.pipe(upstream);
+  }
+
+  async #attachmentHistory(user, sessionId, access) {
+    if (this.cliRuntime?.isManaged(user.id)) {
+      const { session } = await this.cliRuntime.getOwnedSession(user.id, sessionId);
+      return structuredClone(session.history);
+    }
+    access ??= (await this.#ensureWorker(user)).access;
+    const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}/message`, access.url), {
+      headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(10000),
+    });
+    if (!result.ok) throw Object.assign(new Error("Conversation history is unavailable"), { status: result.status });
+    return result.json();
+  }
+  async #attachmentLifecycle(request, response, user, owner, access, worker, route) {
+    let result;
+    if (this.cliRuntime?.isManaged(user.id)) {
+      if (!route) { await this.cliRuntime.abortSession(user.id, owner.sessionId); const { state } = await this.cliRuntime.getOwnedSession(user.id, owner.sessionId); state.sessions.delete(owner.sessionId); await this.cliRuntime.persistUser(state); result = true; }
+      else {
+        const { session } = await this.cliRuntime.getOwnedSession(user.id, owner.sessionId);
+        const copy = await this.cliRuntime.createSession({ userId: user.id, workspaceDir: worker.workspaceDir, directory: session.directory, title: `${session.title} (fork)` });
+        const target = await this.cliRuntime.getOwnedSession(user.id, copy.id); target.session.parentId = session.id; target.session.history = structuredClone(session.history); await this.cliRuntime.persistUser(target.state); result = { id: copy.id };
+      }
+    } else {
+      const payload = route ? await this.#readPayload(request, response) : undefined;
+      if (route && !payload) return;
+      const native = await fetch(new URL(request.url, access.url), { method: request.method,
+        headers: { authorization: `Basic ${workerBasicToken(access.token)}`, "content-type": "application/json" },
+        ...(payload ? { body: JSON.stringify(payload) } : {}), signal: AbortSignal.timeout(10000) });
+      if (!native.ok) { sendJson(response, native.status, { error: "Conversation operation failed" }); return; }
+      result = await native.json();
+    }
+    if (!route) await this.attachments.deleteSession(user.id, owner.sessionId);
+    else {
+      const history = await this.#attachmentHistory(user, result.id, access);
+      const markers = history.flatMap((m) => (m.parts ?? []).filter((p) => p.synthetic && p.text?.startsWith("SciKeel attachment turn: ")).map((p) => p.text.slice("SciKeel attachment turn: ".length)));
+      const listing = await this.attachments.list(user.id, owner.sessionId);
+      const ids = listing.turns.filter((t) => markers.includes(t.turnId) || history.some((m) => m.info?.id === t.messageID)).map((t) => t.messageID);
+      await this.attachments.cloneSession(user.id, owner.sessionId, result.id, ids);
+    }
+    sendJson(response, 200, result);
+  }
+  async #workerResearchRequest(task, path, method = "GET", body) {
+    const access = this.workerManager.getWorkerAccess(workerIdForUser(task.userId));
+    if (!access) throw new Error("research worker is unavailable");
+    const url = new URL(path, access.url);
+    url.searchParams.set("directory", task.directory);
+    const result = await fetch(url, {
+      method, headers: { authorization: `Basic ${workerBasicToken(access.token)}`, "content-type": "application/json" },
+      ...(body === undefined ? {} : {body:JSON.stringify(body)}),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!result.ok) throw Object.assign(new Error("research session is unavailable"), { status: result.status });
+    return result.json();
+  }
+  async #researchOwner(user, sessionId, access, worker) {
+    if (this.cliRuntime?.isManaged(user.id)) {
+      const { session } = await this.cliRuntime.getOwnedSession(user.id, sessionId);
+      if(this.tenantPolicy) {
+        const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+        this.tenantPolicy.directory(context,session.directory);
+        this.tenantPolicy.registerSession(context,{id:sessionId,directory:session.directory});
+      }
+      return { userId: user.id, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime };
+    }
+    if(this.tenantPolicy) {
+      const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+      try { this.tenantPolicy.session(context,sessionId); }
+      catch { throw Object.assign(new Error("research session not found"),{status:404}); }
+    }
+    const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}`, access.url), {
+      headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(5000),
+    });
+    if (!result.ok) throw Object.assign(new Error("research session not found"), { status: 404 });
+    const session = await result.json();
+    if (session.id !== sessionId || typeof session.directory !== "string") throw Object.assign(new Error("research session not found"), { status: 404 });
+    if(this.tenantPolicy) {
+      const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+      const registered=this.tenantPolicy.session(context,sessionId);
+      if(this.tenantPolicy.directory(context,session.directory)!==registered.directory)throw Object.assign(new Error("research session changed"),{status:409});
+    }
+    return { userId: user.id, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: "opencode", revertMessageID: session.revert?.messageID };
+  }
+  async #researchRunning(task) {
+    if (task.runtime !== "opencode") {
+      const state = await this.cliRuntime.ensureUser(task.userId);
+      return [...state.sessions.values()].some((session) => (session.id === task.sessionId || session.parentId === task.sessionId) && session.status === "running");
+    }
+    const statuses = await this.#workerResearchRequest(task, "/session/status");
+    const busy = (sid) => statuses[sid]?.type === "busy" || statuses[sid]?.type === "retry";
+    if (busy(task.sessionId)) return true;
+    if (!Object.values(statuses).some((status) => status?.type === "busy" || status?.type === "retry")) return false;
+    const visit = async (sessionId, depth = 0) => {
+      if (depth > 20) return false;
+      const children = await this.#workerResearchRequest(task, `/session/${encodeURIComponent(sessionId)}/children`);
+      for (const child of Array.isArray(children) ? children : []) if (busy(child.id) || await visit(child.id, depth + 1)) return true;
+      return false;
+    };
+    return visit(task.sessionId);
+  }
+  async #cancelResearch(task) {
+    if (task.runtime !== "opencode") {
+      const state = await this.cliRuntime?.ensureUser(task.userId);
+      for (const session of state?.sessions.values() ?? []) if (session.parentId === task.sessionId) await this.cliRuntime.abortSession(task.userId, session.id, true);
+      await this.cliRuntime?.abortSession(task.userId, task.sessionId, true);
+      return;
+    }
+    // Forked reviews and subagents are ordinary session descendants.
+    const visit = async (sessionId, depth = 0) => {
+      if (depth > 20) return;
+      let children = [];
+      try { children = await this.#workerResearchRequest(task, `/session/${encodeURIComponent(sessionId)}/children`); }
+      catch (error) { this.logger({ type: "research.children_unavailable", error: error.message }); }
+      for (const child of Array.isArray(children) ? children : []) {
+        try { await visit(child.id, depth + 1); }
+        catch (error) { this.logger({ type: "research.child_abort_error", error: error.message }); }
+      }
+      await this.#workerResearchRequest(task, `/session/${encodeURIComponent(sessionId)}/abort`, "POST");
+    };
+    await visit(task.sessionId);
+  }
+
+  async #collaborationOwner(user,sessionId,access,worker) {
+    let owner=await this.#researchOwner(user,sessionId,access,worker);
+    for(let depth=0;depth<20;depth++) {
+      const info=await this.#workerResearchRequest(owner,`/session/${encodeURIComponent(owner.sessionId)}`);
+      if(!info.parentID)return owner;
+      owner=await this.#researchOwner(user,info.parentID,access,worker);
+    }
+    throw new Error("Collaboration ancestry unavailable");
+  }
+  collaborationAvailable(userId,generation){return this.collaborationCapabilities.has(userId)&&this.collaborationCapabilities.get(userId)===generation;}
+  async runtimeCollaboration(context,body){
+    const worker=this.workerManager.getWorker(context.instanceId);
+    if(!worker||worker.userId!==context.userId||worker.generation!==context.generation)throw new Error("Collaboration worker unavailable");
+    // The plugin registers while configureWorker is still awaiting runtime readiness.
+    if(body.action==="capability"&&["starting","running"].includes(worker.status)){this.collaborationCapabilities.set(context.userId,context.generation);return {ready:true};}
+    if(worker.status!=="running")throw new Error("Collaboration worker unavailable");
+    const access=this.workerManager.getWorkerAccess(context.instanceId);
+    // Runtime-created descendants must prove an already owned ancestor.
+    const register=async(sessionId,depth=0)=>{
+      if(!this.tenantPolicy)return;
+      try { this.tenantPolicy.session(context,sessionId);return; }catch{}
+      if(depth>=20)throw new Error("Collaboration ancestry unavailable");
+      const info=await this.#workerResearchRequest({userId:context.userId,directory:worker.workspaceDir},`/session/${encodeURIComponent(sessionId)}`);
+      if(info.id!==sessionId||!info.parentID)throw new Error("Collaboration descendant denied");
+      await register(info.parentID,depth+1);
+      const parent=this.tenantPolicy.session(context,info.parentID);
+      if(this.tenantPolicy.directory(context,info.directory)!==parent.directory)throw new Error("Collaboration descendant denied");
+      this.tenantPolicy.registerSession(context,{id:info.id,parentID:info.parentID,directory:info.directory});
+    };
+    await register(body.sessionId);
+    const owner=await this.#collaborationOwner({id:context.userId},body.sessionId,access,worker);
+    if(body.action==="checkpoint")return {state:await this.collaboration.checkpoint(owner,body)};
+    if(body.action==="state")return {state:await this.collaboration.get(owner)};
+    if(body.action==="delivery")return {state:await this.collaboration.delivery(owner,body)};
+    if(body.action==="guard"){const guarded=await this.collaboration.guard(owner);return {...guarded,policy:collaborationPolicy(guarded.state)};}
+    throw new Error("Collaboration operation denied");
+  }
+  async #collaborationApi(request,response,user,sessionId){
+    try{
+      if(!["GET","POST"].includes(request.method)){sendJson(response,405,{error:"Method not allowed"});return;}
+      if(request.method==="POST"&&request.headers["sec-fetch-site"]==="cross-site"){sendJson(response,403,{error:"Foreign origin"});return;}
+      if(request.method==="POST"&&request.headers.origin&&new URL(request.headers.origin).host!==request.headers.host){sendJson(response,403,{error:"Foreign origin"});return;}
+      const {access,worker}=await this.#ensureWorker(user);
+      const owner=await this.#researchOwner(user,sessionId,access,worker);
+      let state;
+      if(request.method==="GET")state=await this.collaboration.get(owner);
+      else{
+        const body=await this.#readPayload(request,response);if(!body)return;
+        if(body.action==="mode")state=await this.collaboration.setMode(owner,body.mode,body.revision);
+        else if(body.action==="answer")state=await this.collaboration.answer(owner,body);
+        else if(body.action==="pause")state=await this.collaboration.pause(owner);
+        else if(body.action==="heartbeat")state=await this.collaboration.heartbeat(owner,body.pageId);
+        else if(body.action==="release")state=await this.collaboration.release(owner,body.pageId);
+        else throw Object.assign(new Error("Invalid collaboration action"),{status:400});
+      }
+      sendJson(response,200,{state,available:this.collaborationAvailable(user.id,worker.generation)});
+    }catch(e){sendJson(response,e.status??e.statusCode??503,{error:e.status||e.statusCode?e.message:"Collaboration unavailable; retry"});}
+  }
+
+  async #researchApi(request, response, user, sessionId) {
+    try {
+      if (request.method === "GET") {
+        sendJson(response, 200, { task: await this.researchTasks.refresh(user.id, sessionId) });
+        return;
+      }
+      if (request.method !== "POST") {
+        sendJson(response, 405, { error: "method not allowed" }, { allow: "GET, POST" });
+        return;
+      }
+      const body = await this.#readPayload(request, response);
+      if (!body) return;
+      let task;
+      if (body.action === "create") {
+        const { access, worker } = await this.#ensureWorker(user);
+        const owner = await this.#researchOwner(user, sessionId, access, worker);
+        const preference=await this.collaboration.get(owner);
+        task = await this.researchTasks.create(owner, this.collaborationAvailable(user.id,worker.generation)?{...body,mode:preference.mode}:body);
+      } else if (body.action === "heartbeat") task = await this.researchTasks.heartbeat(user.id, sessionId, body.pageId);
+      else if (body.action === "release") task = await this.researchTasks.release(user.id, sessionId, body.pageId);
+      else task = await this.researchTasks.action(user.id, sessionId, body);
+      sendJson(response, body.action === "create" ? 201 : 200, { task });
+    } catch (error) { sendJson(response, error.status ?? 400, { error: error.message }); }
+  }
+
+  async #managedRuntimeProxy(request, response, access, user, worker) {
+    try {
+      const context = { userId: user.id, instanceId: workerIdForUser(user.id), generation: worker.generation };
+      this.tenantPolicy.account(context);
+      const rawPath = (request.url ?? "/").split("?")[0];
+      const operation = classifyRuntimeRoute(request.method, rawPath);
+      if (!operation) { sendJson(response, 404, { error: "not found" }); return; }
+      if (!["GET", "HEAD"].includes(request.method)) {
+        const expectedOrigin = `${this.secureCookies ? "https" : "http"}://${request.headers.host}`;
+        if (request.headers.origin !== expectedOrigin ||
+            request.headers["sec-fetch-site"] === "cross-site") {
+          sendJson(response, 403, { error: "foreign origin" }); return;
+        }
+      }
+      const parsed = new URL(request.url, "http://platform.invalid");
+      let body = {};
+      if (["POST", "PATCH", "DELETE"].includes(request.method)) {
+        const bytes = await readBody(request, this.maxBodyBytes);
+        try { body = parseBody(request, bytes); }
+        catch { throw Object.assign(new Error("invalid runtime body"), { statusCode: 400 }); }
+      }
+      const checkedBody = {...body};
+      if(operation.operation==="sessionPrompt_async"){delete checkedBody.attachmentTurn;delete checkedBody.collaborationRevision;}
+      const input = validateRuntimeInput(operation, { query: parsed.searchParams, body:checkedBody, headers: request.headers });
+      let directory = this.tenantPolicy.directory(context, input.directory);
+      const sessionId = operation.identifiers.sessionId ?? body.sessionID;
+      if (sessionId) {
+        const session = this.tenantPolicy.session(context, sessionId);
+        if (input.directory !== undefined && operation.operation !== "sessionMove" && input.directory !== session.directory)
+          throw Object.assign(new Error("directory does not match session"), { statusCode: 403 });
+        if (operation.operation !== "sessionMove") directory = session.directory;
+      }
+      if (body.parentID) this.tenantPolicy.session(context, body.parentID);
+      if (operation.identifiers.requestId) this.tenantPolicy.request(context, operation.identifiers.requestId);
+      if (operation.approval && operation.approval !== "reply" &&
+          !(await this.approvalGate?.(context, { operation: operation.operation, sessionId, body, manual:request.headers["x-scikeel-manual-approval"]==="1" }))) {
+        sendJson(response, 403, { error: "approval required" }); return;
+      }
+      if (["modelConfig", "modelCatalog", "providerCatalog"].includes(operation.operation)) {
+        const catalog = await this.runtimeCatalog?.({ ...context, workspaceDir: directory }, { access });
+        const safe = operation.operation === "modelConfig" ? { model: catalog?.model ?? null }
+          : operation.operation === "providerCatalog" ? { all: catalog?.providers ?? [], connected: catalog?.connected ?? [] }
+          : { providers: catalog?.providers ?? [], default: catalog?.defaults ?? {} };
+        sendJson(response, 200, scrubRuntimeSecrets(safe)); return;
+      }
+      if(operation.operation === "sessionCommand" && this.collaborationAvailable(user.id,worker.generation)) {
+        const owner=await this.#collaborationOwner(user,sessionId,access,worker);
+        const current=await this.collaboration.get(owner);
+        if(owner.sessionId!==sessionId&&current.phase==="running") {const guard=await this.collaboration.guard(owner);if(guard.blocked)throw Object.assign(new Error("Research decision requires an answer"),{statusCode:409});}
+        else await this.collaboration.begin(owner,current.revision);
+      }
+      let attachmentTurn;
+      let collaborationExecution;
+      if(request.method==="POST"&&["sessionPrompt_async","sessionMessage"].includes(operation.operation)) {
+        const owner=await this.#collaborationOwner(user,sessionId,access,worker);
+        const revision=body.collaborationRevision; delete body.collaborationRevision;
+        if(revision !== undefined || this.collaborationAvailable(user.id,worker.generation)) {
+          if(!this.collaborationAvailable(user.id,worker.generation)) throw Object.assign(new Error("Collaboration runtime is not ready"),{statusCode:409});
+          const current=await this.collaboration.get(owner);
+          let state;
+          if(owner.sessionId!==sessionId&&current.phase==="running") {const guard=await this.collaboration.guard(owner);if(guard.blocked)throw Object.assign(new Error("Research decision requires an answer"),{statusCode:409});state=current;}
+          else state=await this.collaboration.begin(owner,revision ?? current.revision);
+          if (owner.sessionId === sessionId) collaborationExecution = { owner, execution: state.execution };
+          if(body.agent==="plan")delete body.agent;
+          body.system=[body.system??"",collaborationPolicy(state),`Confirmed research decisions: ${JSON.stringify(state.decisions)}`,`Delivery verification: ${JSON.stringify(state.delivery ?? null)}`].filter(Boolean).join("\n\n");
+        }
+        const task=await this.researchTasks.get(user.id,sessionId);
+        if(task)body=await this.researchTasks.prepare(user.id,sessionId,body);
+        attachmentTurn=await this.attachmentTurns.prepare(user,owner,body);
+        if(attachmentTurn?.replayAccepted){sendJson(response,202,{});return;}
+        if(attachmentTurn) {
+          body=attachmentTurn.body;
+          response.once("finish",()=>{void attachmentTurn.finish(response.statusCode<400).catch(()=>{});});
+          response.once("close",()=>{if(!response.writableFinished)attachmentTurn.abandon();});
+        }
+        validateRuntimeInput(operation,{query:parsed.searchParams,body,headers:request.headers});
+      }
+      parsed.searchParams.delete("token");
+      parsed.searchParams.delete("auth_token");
+      parsed.searchParams.set("directory", directory);
+      const target = new URL(`${operation.path}${parsed.search}`, access.url);
+      const controller = new AbortController();
+      request.on("aborted", () => controller.abort());
+      response.on("close", () => { if (!response.writableEnded) controller.abort(); });
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      try {
+        const upstream = await fetch(target, { method: operation.method, redirect: "error", signal: controller.signal,
+          headers: { authorization: `Basic ${workerBasicToken(access.token)}`, accept: operation.operation === "event"
+            ? "text/event-stream" : "application/json", "content-type": "application/json" },
+          ...(["POST", "PATCH", "DELETE"].includes(operation.method) ? { body: JSON.stringify(body) } : {}),
+        });
+        if (operation.operation === "event" && upstream.ok) {
+          clearTimeout(timeout);
+          response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+          const reader = upstream.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+              if (Buffer.byteLength(buffer) > this.maxBodyBytes) throw new Error("event exceeds limit");
+              let boundary;
+              while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+                const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+                const data = frame.split("\n").filter((line) => line.startsWith("data:"))
+                  .map((line) => line.slice(5).trimStart()).join("\n");
+                if (!data) continue;
+                let event;
+                try { event = scrubRuntimeSecrets(JSON.parse(data)); } catch { continue; }
+                const properties = event.properties ?? event.payload?.properties;
+                const type = event.type ?? event.payload?.type;
+                if (["session.created", "session.updated"].includes(type) && properties?.info)
+                  this.tenantPolicy.registerSession(context, properties.info);
+                if (["permission.asked", "question.asked"].includes(type) && properties)
+                  this.tenantPolicy.registerRequest(context, properties);
+                if (properties?.sessionID) this.tenantPolicy.session(context, properties.sessionID);
+                if (!response.write(`data: ${JSON.stringify(event)}\n\n`)) {
+                  await new Promise((resolve, reject) => {
+                    const onDrain = () => { cleanup(); resolve(); };
+                    const onClose = () => { cleanup(); reject(new Error("event client closed")); };
+                    const cleanup = () => { response.off("drain", onDrain); response.off("close", onClose); };
+                    response.once("drain", onDrain); response.once("close", onClose);
+                  });
+                }
+              }
+            }
+          } finally { await reader.cancel().catch(() => {}); }
+          response.end(); return;
+        }
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of upstream.body ?? []) {
+          size += chunk.length;
+          if (size > this.maxBodyBytes) throw new Error("runtime response exceeds limit");
+          chunks.push(chunk);
+        }
+        let value;
+        const text = Buffer.concat(chunks).toString("utf8");
+        if (text) { try { value = JSON.parse(text); } catch { throw new Error("invalid runtime response"); } }
+        if (upstream.ok) {
+          // A synchronous final reply has already ended the execution. Release
+          // its collaboration phase before returning, so the next prompt need
+          // not wait for the background monitor's next pass.
+          if (operation.operation === "sessionMessage" && operation.method === "POST" && collaborationExecution &&
+              value?.info?.sessionID === sessionId && value.info.role === "assistant" &&
+              Number.isFinite(value.info.time?.completed)) {
+            await this.collaboration.settled(collaborationExecution.owner, collaborationExecution.execution);
+          }
+          if (["sessionCreate", "sessionFork", "sessionRead", "sessionPatch"].includes(operation.operation) && value)
+            this.tenantPolicy.registerSession(context, { ...value, directory: value.directory ?? directory });
+          if (["sessionList", "sessionChildren"].includes(operation.operation) && Array.isArray(value))
+            this.tenantPolicy.registerSessionList(context, value);
+          if (["permissionList", "questionList"].includes(operation.operation) && Array.isArray(value))
+            for (const pending of value) this.tenantPolicy.registerRequest(context, pending);
+          if(operation.operation === "sessionMessage" && operation.method === "GET" && Array.isArray(value)) {
+            const owner=await this.#researchOwner(user,sessionId,access,worker);
+            value=await this.attachmentTurns.decorate(user,owner,value);
+          }
+          if(operation.operation === "sessionDelete")await this.attachments.deleteSession(user.id,sessionId);
+          if(operation.operation === "sessionFork" && value?.id) {
+            const history=await this.#attachmentHistory(user,value.id,access);
+            const listing=await this.attachments.list(user.id,sessionId);
+            const ids=listing.turns.filter(turn=>history.some(message=>message.info?.id===turn.messageID ||
+              message.parts?.some(part=>part.synthetic && part.text===`SciKeel attachment turn: ${turn.turnId}`))).map(turn=>turn.messageID);
+            await this.attachments.cloneSession(user.id,sessionId,value.id,ids);
+          }
+          if (operation.operation === "sessionDelete") this.tenantPolicy.removeSession(context, sessionId);
+          if (operation.operation === "sessionMove") this.tenantPolicy.registerSession(context, { id: sessionId, directory });
+        }
+        sendJson(response, upstream.status, scrubRuntimeSecrets(value ?? null));
+      } finally { clearTimeout(timeout); }
+    } catch (error) {
+      if (response.headersSent) { response.destroy(); return; }
+      const status = error.statusCode ?? error.status ?? (error.code === "body_too_large" ? 413 : 502);
+      sendJson(response, status, { error: status < 500 ? error.message : "managed runtime unavailable" });
+    }
   }
 
   async #serveWeb(request, response) {
@@ -561,9 +1191,9 @@ export class PlatformServer {
     if (kind === "index") {
       const html = body.toString("utf8").replace(
         "<head>",
-        "<head><script>window.__OS_WEB__=true;</script>",
+        "<head><script>window.__OS_WEB__=true;window.__OS_PLATFORM__=true;</script>",
       );
-      sendHtml(response, 200, html);
+      sendHtml(response, 200, withLoginPreparation(html));
       return true;
     }
     response.writeHead(200, {
@@ -587,6 +1217,10 @@ export class PlatformServer {
         return;
       }
 
+      // Compiled client assets contain no account/workspace data. Serving them
+      // directly lets the login page preload without starting a user worker.
+      if (path.startsWith("/assets/") && await this.#serveWeb(request, response)) return;
+
       if (path === "/login") {
         const user = await this.#currentUser(request);
         if (user && request.method === "GET") {
@@ -597,7 +1231,13 @@ export class PlatformServer {
           sendJson(response, 405, { error: "method not allowed" }, { allow: "GET" });
           return;
         }
-        sendHtml(response, 200, loginPage("", safeNextPath(parsed.searchParams.get("next"))));
+        const clientHtml = this.webRoot ? await readFile(resolve(this.webRoot, "index.html"), "utf8").catch(() => "") : "";
+        sendHtml(response, 200, loginPage({
+          preloads: loginAssetPreloads(clientHtml),
+          next: safeNextPath(parsed.searchParams.get("next")),
+          locale: parsed.searchParams.get("lang"),
+          explicitLocale: parsed.searchParams.has("lang"),
+        }));
         return;
       }
 
@@ -612,7 +1252,12 @@ export class PlatformServer {
             sendHtml(
               response,
               401,
-              loginPage("Invalid username or password.", safeNextPath(payload.next)),
+              loginPage({
+                invalidCredentials: true,
+                next: safeNextPath(payload.next),
+                username: typeof payload.username === "string" ? payload.username : "",
+                locale: payload.lang,
+              }),
             );
           }
           return;
@@ -621,6 +1266,11 @@ export class PlatformServer {
         if (!session) {
           sendJson(response, 403, { error: "user is disabled" });
           return;
+        }
+        // A browser login starts its isolated workspace immediately; the
+        // document and client assets can load while startup continues.
+        if (this.tenantPolicy && !isJsonRequest(request)) {
+          void this.#ensureWorker(user).catch(() => this.logger({ type: "login.preparation_failed", userId: user.id }));
         }
         const cookies = [
           sessionCookie(
@@ -653,14 +1303,35 @@ export class PlatformServer {
         return;
       }
 
+      const collaborationPath = path.match(/^\/api\/collaboration\/([A-Za-z0-9_-]{1,128})$/);
+      if (collaborationPath) {
+        const user = await this.#currentUser(request);
+        if (!user) {this.#unauthorized(request,response);return;}
+        await this.#collaborationApi(request,response,user,collaborationPath[1]); return;
+      }
       if (path.startsWith("/api/")) {
         const user = await this.#currentUser(request);
         if (!user) {
           this.#unauthorized(request, response);
           return;
         }
+        if (path.startsWith("/api/environments/")) {
+          if (!this.environments || !this.tenantPolicy) { sendJson(response, 404, {error: "not found"}); return; }
+          const {worker,access} = await this.#ensureWorker(user);
+          if(this.cliRuntime?.isManaged(user.id)) {
+            const id=/^\/api\/environments\/([A-Za-z0-9_-]+)/.exec(path)?.[1];
+            if(id)await this.#researchOwner(user,id,access,worker);
+          }
+          await this.#environmentRequest(request, response, user, worker); return;
+        }
+        if (await this.attachmentRouter(request, response, user)) return;
         if (path === "/api/me" && request.method === "GET") {
           sendJson(response, 200, { user });
+          return;
+        }
+        const researchMatch = path.match(/^\/api\/research\/([^/]+)$/);
+        if (researchMatch) {
+          await this.#researchApi(request, response, user, decodeURIComponent(researchMatch[1]));
           return;
         }
         if (path === "/api/runtime") {
@@ -746,7 +1417,20 @@ export class PlatformServer {
         this.#unauthorized(request, response);
         return;
       }
+      if (this.tenantPolicy && await this.#serveWeb(request, response)) return;
       const { access, worker } = await this.#ensureWorker(user);
+      // A client can disconnect while its worker is still starting.
+      // Do not register a lease after the close event has already fired.
+      if (request.aborted || response.destroyed || response.writableEnded) return;
+      const lease = this.workerManager.retainWorker?.(worker.id, {
+        readOnly: ["GET", "HEAD"].includes(request.method),
+        passive: request.method === "GET" && path === "/event",
+      });
+      if (lease) {
+        let released = false;
+        const release = () => { if (!released) { released = true; lease.release(); } };
+        response.once("finish", release); response.once("close", release);
+      }
       if (this.#bootstrapRequired(request, user)) {
         this.#bootstrapRedirect(request, response, user, access.token);
         return;
@@ -756,7 +1440,8 @@ export class PlatformServer {
     } catch (error) {
       this.logger({ type: "platform.request_error", error: error?.message ?? String(error) });
       if (!response.headersSent) {
-        sendJson(response, 500, { error: "internal server error" });
+        sendJson(response, error?.retryable && error?.statusCode === 503 ? 503 : 500,
+          { error: error?.retryable ? "workspace capacity unavailable; retry shortly" : "internal server error" });
       } else {
         response.destroy(error);
       }

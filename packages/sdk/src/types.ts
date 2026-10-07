@@ -1,3 +1,5 @@
+import type { ConversationAttachment } from "@ai4s/shared";
+export type { AttachmentPromptContext } from "@ai4s/shared";
 import type { MessageUsage, RuntimeStatus, ToolCallStatus } from "@ai4s/shared";
 
 export type { RuntimeStatus, ToolCallStatus };
@@ -60,6 +62,12 @@ export interface ToolUpdatedEvent {
   /** A `task` tool's spawned subagent session — that session's interactive
    *  requests (question/permission) belong to THIS conversation. */
   childSessionId?: string;
+}
+/** A durable session title update; internal job metadata stays in the runtime. */
+export interface SessionUpdatedEvent {
+  type: "session.updated";
+  sessionId: string;
+  title: string;
 }
 export interface SessionIdleEvent {
   type: "session.idle";
@@ -202,6 +210,7 @@ export type OpenCodeEvent =
   | MessageUsageEvent
   | StepUpdatedEvent
   | ToolUpdatedEvent
+  | SessionUpdatedEvent
   | SessionIdleEvent
   | MessageAgentEvent
   | SessionRetryEvent
@@ -262,6 +271,7 @@ export interface SkillInfo {
   name: string;
   description: string;
   location?: string;
+  source?: "builtin" | "project" | "user";
 }
 
 export interface AgentInfo {
@@ -288,6 +298,7 @@ export interface CommandInfo {
 
 /** A message loaded from history (GET /session/:id/message). */
 export interface HistoryMessage {
+  attachments?: ConversationAttachment[];
   role: "user" | "assistant";
   /** OpenCode's message id — the handle for reverting/editing a user message
    *  (`POST /session/:id/revert`). Absent only on synthetic/mock messages. */

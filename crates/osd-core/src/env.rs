@@ -22,6 +22,8 @@ struct Inner {
     document_dir: Option<PathBuf>,
     version: String,
     runtime: RuntimeState,
+    #[cfg(target_os = "linux")]
+    managed_files: Option<Arc<crate::file_policy::ManagedFilePolicy>>,
 }
 
 /// Cheap to clone (one `Arc`), so it can be handed to threads and stored in
@@ -42,7 +44,21 @@ impl Env {
             document_dir,
             version,
             runtime: RuntimeState::default(),
+            #[cfg(target_os = "linux")]
+            managed_files: None,
         }))
+    }
+
+    /// Install launcher-approved roots before starting any runtime thread.
+    #[cfg(target_os = "linux")]
+    pub fn with_managed_files(mut self, policy: crate::file_policy::ManagedFilePolicy) -> Self {
+        Arc::get_mut(&mut self.0).expect("managed policy must be installed before sharing Env")
+            .managed_files = Some(Arc::new(policy));
+        self
+    }
+    #[cfg(target_os = "linux")]
+    pub fn managed_files(&self) -> Option<&crate::file_policy::ManagedFilePolicy> {
+        self.0.managed_files.as_deref()
     }
 
     /// The headless layout: the platform data dir Tauri would have chosen — or
