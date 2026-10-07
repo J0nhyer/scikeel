@@ -118,7 +118,7 @@ function validateProfile(value) {
       !Array.isArray(provider.whitelist) || provider.whitelist.length !== Object.keys(provider.models).length ||
       new Set(provider.whitelist).size !== provider.whitelist.length || !provider.whitelist.every(model => Object.hasOwn(provider.models, model)) ||
       !Object.hasOwn(provider.models, String(value.model).slice(name.length + 1)) || !String(value.model).startsWith(`${name}/`)) throw new Error("invalid managed provider");
-  const permissions = { bash: "allow", edit: "allow", external_directory: "deny", webfetch: "allow", websearch: "allow" };
+  const permissions = { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" };
   if (!value.permission || Object.keys(value.permission).length !== Object.keys(permissions).length ||
       Object.entries(permissions).some(([key, mode]) => value.permission[key] !== mode)) throw new Error("invalid managed permission policy");
   return value;
@@ -158,13 +158,13 @@ export class TenantGateway {
     catch (error) { if (error.code !== "ENOENT") throw error; }
     const temporary = `${config}/profile-${process.pid}-${Date.now()}.tmp`;
     // Skill resources live outside the workspace. Put the deny first because
-    // OpenCode evaluates the last matching rule; allow routine writes and commands within the workspace.
+    // OpenCode evaluates the last matching rule; retain manual writes/commands.
     const skills = "/opt/scikeel/tools/resources/skills-core";
     const { searchProvider, ...openCodeProfile } = profile ?? {};
     const configured = {
       ...openCodeProfile,
       skills: { paths: [skills] },
-      permission: { bash: "allow", edit: "allow", webfetch: "allow", websearch: "allow", ...profile?.permission,
+      permission: { bash: "ask", edit: "ask", webfetch: "ask", websearch: "ask", ...profile?.permission,
         external_directory: { "*": "deny", [skills]: "allow", [`${skills}/*`]: "allow" } },
       ...(profile && imageDigest ? { plugin: [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest, collaborationToken:profile.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey }]] } : {}),
     };
