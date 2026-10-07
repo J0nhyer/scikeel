@@ -186,3 +186,10 @@ test("patched title runtime identity is measured against the exact locked binary
     assert.throws(() => validateImageManifest({ ...manifest(), sessionTitleRuntime: { ...runtime, ...patch } }), /runtime|identity|locked/);
   }
 });
+
+test('the outcome parser is an explicitly measured image input and runner resource', async () => {
+  const { imageInputPath } = await import('../../../scripts/dev/web-release-policy.mjs');
+  assert.equal(imageInputPath('packages/sdk/src/tool-outcome.mjs'), true);
+  assert.equal(imageInputPath('packages/sdk/src/unrelated.ts'), false);
+  assert.doesNotThrow(() => validateBuildContext(['tools/tool-outcome.mjs']));
+});

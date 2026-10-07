@@ -970,3 +970,149 @@ test("completed managed synchronous replies allow the next turn without settling
   assert.equal(childReply.status, 200, await childReply.text());
   assert.equal((await json(await c.request("/api/collaboration/owned"))).state.phase, "running");
 });
+
+test('managed network binds a running owned call, current execution and real permission reply', async t => {
+  const policy = new TenantPolicy(); const f = await makeFixture({ tenantPolicy: policy });
+  const c = makeClient(f.base); const { user } = await login(c, 'admin', 'admin-password');
+  const instanceId = `user-${user.id}`; const w = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => id => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: 'running' }))(f.manager.getWorker);
+  const context = { userId: user.id, instanceId, generation: 1, workspaceDir: w.workspaceDir };
+  policy.registerAccount(context); policy.registerSession(context, { id: 'owned', directory: w.workspaceDir + '/project' });
+  const grants = [], revoked = [];
+  f.server.configureNetwork({ grant(value) { grants.push(value); return { id: String(grants.length).padStart(64, '0'), expiresAt: value.expiresAt }; }, revokeGrant(_context, id) { revoked.push(id); return true; } });
+  const access = f.manager.getWorkerAccess(instanceId), nativeFetch = globalThis.fetch;
+  let permissionReply, terminal = false;
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    if (url.origin === new URL(access.url).origin) {
+      if (url.pathname === '/session/owned/message') return new Response(JSON.stringify([{ info: { id: 'msg_a', sessionID: 'owned', role: 'assistant' }, parts: [{ type: 'tool', callID: 'call_fetch', tool: 'webfetch', state: { status: terminal ? 'completed' : 'running', input: { url: 'https://science.example/data', timeout: 10 } } }] }]));
+      if (url.pathname === '/permission') return new Response(JSON.stringify([{ id: 'req_a', sessionID: 'owned', permission: 'webfetch', patterns: ['https://science.example/data'], tool: { messageID: 'msg_a', callID: 'call_fetch' } }]));
+      if (url.pathname === '/permission/req_a/reply') { await new Promise(resolve => { permissionReply = resolve; }); return new Response('{}'); }
+    }
+    return nativeFetch(input, options);
+  };
+  t.after(async () => { globalThis.fetch = nativeFetch; await f.server.network.revokeContext(context); });
+  const owner = { userId: user.id, sessionId: 'owned', directory: w.workspaceDir + '/project' };
+  await f.server.collaboration.heartbeat(owner, 'page');
+  await f.server.collaboration.setMode(owner, 'guided', 0);
+  const state = await f.server.collaboration.begin(owner, 1);
+  const proposal = { version: 1, action: 'authorize', sessionId: 'owned', callId: 'call_fetch', tool: 'webfetch', execution: state.execution, origins: ['https://science.example'] };
+  await assert.rejects(f.server.runtimeNetwork(context, proposal), { code: 'tool_permission_denied' }); assert.equal(grants.length, 0);
+  await c.request('/permission');
+  const forwarded = c.request('/permission/req_a/reply', { method: 'POST', headers: { 'content-type': 'application/json', origin: f.base }, body: JSON.stringify({ reply: 'once' }) });
+  for (let i = 0; !permissionReply && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.ok(permissionReply);
+  const authorized = f.server.runtimeNetwork(context, proposal);
+  permissionReply(); assert.equal((await forwarded).status, 200);
+  const operation = await authorized; assert.equal(grants.length, 1); assert.ok(operation.expiresAt <= Date.now() + 10000);
+  await assert.rejects(f.server.runtimeNetwork({ ...context, generation: 2 }, proposal));
+  await assert.rejects(f.server.runtimeNetwork(context, { ...proposal, origins: ['https://foreign.example'] }));
+  assert.equal(grants.length, 1);
+  await f.server.runtimeNetwork(context, { version: 1, action: 'complete', operationId: operation.operationId }); assert.equal(revoked.length, 1);
+  terminal = true; await assert.rejects(f.server.runtimeNetwork(context, proposal));
+});
+
+test('gateway outcome overlays preserve raw history, remove forged metadata and require matching Stop', async () => {
+  const f = await makeFixture(); const { makeToolOutcome } = await import('../../../packages/sdk/src/tool-outcome.mjs');
+  const owner = { userId: 'a', sessionId: 'ses_a', execution: 1 };
+  const part = { type: 'tool', callID: 'call_a', tool: 'research_delivery', state: { status: 'error', error: 'Research checkpoint service unavailable', metadata: { scikeelOutcome: makeToolOutcome('execution_cancelled', { source: 'gateway', correlationId: 'call_a' }) } } };
+  assert.equal((await f.server.decorateToolPart('a', 'ses_a', part)).state.metadata.scikeelOutcome, undefined);
+  const business = makeToolOutcome('delivery_missing_input', { source: 'collaboration', correlationId: 'call_a', details: { path: 'input.csv' } });
+  await f.server.toolOutcomes.record(owner, 'call_a', business);
+  const decorated = await f.server.decorateToolPart('a', 'ses_a', part);
+  assert.equal(decorated.state.error, part.state.error); assert.equal(decorated.state.metadata.scikeelOutcome.code, business.code);
+  assert.equal(part.state.metadata.scikeelOutcome.code, 'execution_cancelled');
+  assert.equal((await f.server.decorateToolPart('b', 'ses_a', part)).state.metadata.scikeelOutcome, undefined);
+  await f.server.toolOutcomes.recordStop(owner, ['call_abort']);
+  const aborted = { type: 'tool', callID: 'call_abort', tool: 'bash', state: { status: 'error', error: 'Tool execution aborted' } };
+  assert.equal((await f.server.decorateToolPart('a', 'ses_a', aborted)).state.metadata.scikeelOutcome.code, 'execution_cancelled');
+  assert.equal((await f.server.decorateToolPart('a', 'ses_other', aborted)).state.metadata.scikeelOutcome, undefined);
+  const successful = { ...aborted, state: { status: 'completed', output: 'Actual completed result' } };
+  assert.equal((await f.server.decorateToolPart('a', 'ses_a', successful)).state.metadata.scikeelOutcome, undefined);
+});
+
+test('an identical edit is unchanged only after an owned read; stopped and foreign paths are not read', async () => {
+  const policy = new TenantPolicy(); const f = await makeFixture({ tenantPolicy: policy });
+  const c = makeClient(f.base); const { user } = await login(c, 'admin', 'admin-password');
+  const instanceId = `user-${user.id}`, worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => id => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: 'running' }))(f.manager.getWorker);
+  const context = { userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir };
+  policy.registerAccount(context); policy.registerSession(context, { id: 'owned', directory: worker.workspaceDir + '/project' });
+  const owner = { userId: user.id, sessionId: 'owned', directory: worker.workspaceDir + '/project', workspaceDir: worker.workspaceDir };
+  await f.server.collaboration.heartbeat(owner, 'page'); const state = await f.server.collaboration.begin(owner, 0);
+  let reads = 0;
+  f.server.researchTasks.workspace = { readReport: async (_owner, path) => { reads++; assert.equal(path, 'input.txt'); return 'requested text already present'; } };
+  const part = { type: 'tool', tool: 'edit', callID: 'call_edit', state: { status: 'error', error: 'No changes to apply: oldString and newString are identical.', input: { filePath: 'input.txt', oldString: 'requested text', newString: 'requested text' } } };
+  const verified = await f.server.decorateToolPart(user.id, 'owned', part);
+  assert.equal(verified.state.metadata.scikeelOutcome.details.verifiedNoChange, true); assert.equal(reads, 1);
+  const foreign = { ...part, callID: 'call_foreign', state: { ...part.state, input: { ...part.state.input, filePath: '/etc/passwd' } } };
+  assert.equal((await f.server.decorateToolPart(user.id, 'owned', foreign)).state.metadata.scikeelOutcome, undefined); assert.equal(reads, 1);
+  await f.server.toolOutcomes.recordStop({ ...owner, execution: state.execution }, ['call_stopped']);
+  assert.equal((await f.server.decorateToolPart(user.id, 'owned', { ...part, callID: 'call_stopped' })).state.metadata.scikeelOutcome, undefined); assert.equal(reads, 1);
+});
+
+test('Stop records intent before forwarding and only a successful response confirms cancellation', async t => {
+  const policy = new TenantPolicy(), f = await makeFixture({ tenantPolicy: policy });
+  const c = makeClient(f.base), { user } = await login(c, 'admin', 'admin-password');
+  const instanceId = `user-${user.id}`, worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => id => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: 'running' }))(f.manager.getWorker);
+  const context = { userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir };
+  policy.registerAccount(context); policy.registerSession(context, { id: 'owned', directory: worker.workspaceDir + '/project' });
+  const owner = { userId: user.id, sessionId: 'owned', directory: worker.workspaceDir + '/project' };
+  await f.server.collaboration.heartbeat(owner, 'page'); const state = await f.server.collaboration.begin(owner, 0);
+  const access = f.manager.getWorkerAccess(instanceId), original = globalThis.fetch; let status = 502;
+  const part = { type: 'tool', tool: 'bash', callID: 'call_stop', state: { status: 'running', input: { command: 'fixture' } } };
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    if (url.origin === new URL(access.url).origin) {
+      if (url.pathname === '/session/owned/message') return new Response(JSON.stringify([{ parts: [part] }]));
+      if (url.pathname === '/session/owned/children') return new Response('[]');
+      if (url.pathname === '/session/owned/abort') {
+        const saved = await f.server.toolOutcomes.list({ ...owner, execution: state.execution });
+        assert.equal(saved.stops.confirmed, false); assert.deepEqual(saved.stops.callIds, ['call_stop']);
+        return new Response('{}', { status });
+      }
+    }
+    return original(input, options);
+  };
+  t.after(() => { globalThis.fetch = original; });
+  const stop = () => c.request('/session/owned/abort', { method: 'POST', headers: { origin: f.base, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal((await stop()).status, 502);
+  const aborted = { ...part, state: { status: 'error', error: 'Tool execution aborted' } };
+  assert.equal((await f.server.decorateToolPart(user.id, 'owned', aborted)).state.metadata.scikeelOutcome, undefined);
+  status = 200; assert.equal((await stop()).status, 200);
+  assert.equal((await f.server.decorateToolPart(user.id, 'owned', aborted)).state.metadata.scikeelOutcome.code, 'execution_cancelled');
+});
+
+test('an authenticated always decision covers only its origin and active owned execution', async t => {
+  const policy = new TenantPolicy(), f = await makeFixture({ tenantPolicy: policy });
+  const c = makeClient(f.base), { user } = await login(c, 'admin', 'admin-password');
+  const instanceId = `user-${user.id}`, worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => id => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: 'running' }))(f.manager.getWorker);
+  const context = { userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir };
+  policy.registerAccount(context); policy.registerSession(context, { id: 'owned', directory: worker.workspaceDir + '/project' });
+  const grants = [];
+  f.server.configureNetwork({ grant(value) { grants.push(value); return { id: String(grants.length).padStart(64, '0'), expiresAt: value.expiresAt }; }, revokeGrant() { return true; } });
+  const owner = { userId: user.id, sessionId: 'owned', directory: worker.workspaceDir + '/project' };
+  await f.server.collaboration.heartbeat(owner, 'page'); await f.server.collaboration.setMode(owner, 'guided', 0); const state = await f.server.collaboration.begin(owner, 1);
+  const access = f.manager.getWorkerAccess(instanceId), original = globalThis.fetch;
+  let callId = 'call_first', origin = 'https://science.example';
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    if (url.origin === new URL(access.url).origin) {
+      if (url.pathname === '/session/owned/message') return new Response(JSON.stringify([{ parts: [{ type: 'tool', tool: 'webfetch', callID: callId, state: { status: 'running', input: { url: origin + '/data' } } }] }]));
+      if (url.pathname === '/permission') return new Response(JSON.stringify([{ id: 'req_always', sessionID: 'owned', permission: 'webfetch', patterns: [origin + '/data'], tool: { callID: callId } }]));
+      if (url.pathname === '/permission/req_always/reply') return new Response('{}');
+    }
+    return original(input, options);
+  };
+  t.after(async () => { globalThis.fetch = original; await f.server.network.revokeContext(context); });
+  await c.request('/permission');
+  assert.equal((await c.request('/permission/req_always/reply', { method: 'POST', headers: { origin: f.base, 'content-type': 'application/json' }, body: JSON.stringify({ reply: 'always' }) })).status, 200);
+  callId = 'call_later';
+  const proposal = () => ({ version: 1, action: 'authorize', sessionId: 'owned', callId, tool: 'webfetch', execution: state.execution, origins: [origin] });
+  const result = await f.server.runtimeNetwork(context, proposal()); assert.equal(grants.length, 1);
+  await f.server.runtimeNetwork(context, { version: 1, action: 'complete', operationId: result.operationId });
+  callId = 'call_foreign'; origin = 'https://foreign.example';
+  await assert.rejects(f.server.runtimeNetwork(context, proposal()), { code: 'tool_permission_denied' }); assert.equal(grants.length, 1);
+});

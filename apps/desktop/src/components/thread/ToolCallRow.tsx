@@ -47,10 +47,10 @@ export const ToolCallRow = memo(function ToolCallRow({ block }: { block: ToolCal
         <span className={cn("shrink-0", s.className)} aria-label={t(`tool.status.${block.status}`)} role="img">
           {s.icon}
         </span>
-        {block.verb && <span className="shrink-0 text-muted">{t(`tool.verb.${block.verb}`)}</span>}
+        {block.verb && !block.outcome && <span className="shrink-0 text-muted">{t(`tool.verb.${block.verb}`)}</span>}
         <span
           className={cn(
-            "flex-1 truncate",
+            "min-w-0 flex-1 truncate",
             prominent ? "text-text" : cn("font-mono", block.status === "running" ? "text-text" : "text-muted"),
           )}
           title={block.command ?? block.title}
@@ -59,6 +59,17 @@ export const ToolCallRow = memo(function ToolCallRow({ block }: { block: ToolCal
         </span>
         {block.meta && <span className="shrink-0 text-xs text-muted">{block.meta}</span>}
       </div>
+      {block.outcome && (
+        <div className="mx-2 mt-1 min-w-0 rounded-input bg-surface-2 px-3 py-2 text-xs text-muted">
+          <p className="break-words text-text">{t(`tool.outcome.${block.outcome.code}.message`)}</p>
+          <p className="mt-1 break-words">{t(`tool.outcome.${block.outcome.code}.nextAction`)}</p>
+          <details className="mt-1">
+            <summary className="cursor-pointer">{t("tool.outcomeDetails")}</summary>
+            {block.outcome.details?.path && <p className="mt-1 break-all font-mono">{block.outcome.details.path}</p>}
+            <p className="mt-1 break-all font-mono">{block.outcome.correlationId}</p>
+          </details>
+        </div>
+      )}
       {/* Live pulse of the subagent this task spawned — what it is doing right
           now, one quiet line. Vanishes when the task settles. It self-subscribes
           to the child thread so its updates never re-render this memoized row. */}
@@ -67,7 +78,7 @@ export const ToolCallRow = memo(function ToolCallRow({ block }: { block: ToolCal
       )}
       {/* Output of a user-typed "!" shell command — the result they asked
           for — and of a FAILED step, where the error text is the point. */}
-      {(block.outputSummary ?? (block.status === "failed" ? block.output : undefined)) && (
+      {(block.outputSummary ?? (block.status === "failed" && !block.outcome ? block.output : undefined)) && (
         <pre className="ml-2 mt-0.5 max-h-64 overflow-y-auto whitespace-pre-wrap break-all rounded-input bg-surface-2 px-3 py-2 font-mono text-xs leading-5 text-text">
           {block.outputSummary ?? block.output}
         </pre>

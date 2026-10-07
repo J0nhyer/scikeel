@@ -243,3 +243,38 @@ test("every DNS answer and new request is checked, preventing rebinding and mixe
     addresses = values; await assert.rejects(broker.target(request));
   }
 });
+
+
+test("revoking one owned grant preserves another grant",async t=>{
+  const {broker,grant,seen}=await fixture(t,(_req,res)=>res.end("okay"));
+  const second=broker.grant({context,destinations:["https://science.example"],expiresAt:Date.now()+10000});
+  assert.equal(broker.revokeGrant({...context,userId:"foreign"},grant.id),false);
+  assert.equal(broker.revokeGrant(context,grant.id),true);
+  assert.equal((await fetchThrough(broker,grant)).status,403);
+  assert.equal((await fetchThrough(broker,second)).status,200);
+  assert.equal(seen.length,1);
+  assert.equal(broker.revokeGrant(context,grant.id),false);
+});
+
+test('revoking an inactive second grant leaves an active owned tunnel alone; its own revoke closes it', async t => {
+  const sockets = new Set();
+  const remote = createTcpServer(socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+  const port = await listen(remote);
+  t.after(async () => { for (const socket of sockets) socket.destroy(); await new Promise(resolve => remote.close(resolve)); });
+  const observed = [];
+  const broker = new EgressBroker({ identify: async () => context, resolve: async () => [{ address: '1.1.1.1', family: 4 }],
+    onFailure: value => { observed.push(value); throw new Error('observer must not prevent cleanup'); },
+    connect: () => createConnection({ host: '127.0.0.1', port }) });
+  await broker.listen({ host: '127.0.0.1', port: 0 }); t.after(() => broker.close());
+  const active = broker.grant({ context, destinations: ['https://science.example'], expiresAt: Date.now() + 10000 });
+  const inactive = broker.grant({ context, destinations: ['https://science.example'], expiresAt: Date.now() + 10000 });
+  const tunnel = createConnection({ host: '127.0.0.1', port: broker.server.address().port });
+  tunnel.on('error', () => {}); t.after(() => tunnel.destroy());
+  tunnel.write(`CONNECT science.example:443 HTTP/1.1\r\nHost: science.example:443\r\nProxy-Authorization: Bearer ${active.id}\r\n\r\n`);
+  assert.match((await once(tunnel, 'data'))[0].toString(), /200 Connection Established/);
+  assert.equal(broker.revokeGrant(context, inactive.id), true);
+  assert.equal(tunnel.destroyed, false);
+  const closed = once(tunnel, 'close'); assert.equal(broker.revokeGrant(context, active.id), true); await closed;
+  assert.equal(observed[0].code, 'egress_grant_revoked');
+  assert.deepEqual(Object.keys(observed[0]).sort(), ['code', 'context', 'grantId', 'status']);
+});

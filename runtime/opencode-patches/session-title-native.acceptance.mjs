@@ -36,7 +36,7 @@ test('patched OpenCode titles follow individual models and preserve manual inten
     assert.equal(identity(['rev-parse', 'HEAD^{tree}']), lock.sourceTree);
     const patch = spawnSync('git', ['diff', 'HEAD', '--binary'], { cwd: source });
     assert.equal(patch.status, 0);
-    assert.equal(createHash('sha256').update(patch.stdout).digest('hex'), lock.patchSha256);
+    assert.equal(createHash('sha256').update(patch.stdout).digest('hex'), JSON.parse(await readFile(new URL("./network.lock.json", import.meta.url))).combinedPatchSha256);
     assert.equal(spawnSync(bun, ['--version'], { encoding: 'utf8' }).stdout.trim(), lock.bunVersion);
     t.diagnostic('Executing the verified source runtime; compiled binary acceptance is still required in CI.');
   }

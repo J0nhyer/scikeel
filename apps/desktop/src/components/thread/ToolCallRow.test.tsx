@@ -86,3 +86,11 @@ describe("ToolCallRow", () => {
     expect(screen.getByText("/ws/2026-07-04-1030")).toBeInTheDocument();
   });
 });
+
+it('shows safe failure guidance with an expandable reason without repeating success wording', async () => {
+  const { makeToolOutcome } = await import('@ai4s/sdk/tool-outcome');
+  render(<ToolCallRow block={{ kind: 'tool-call', title: 'data/input.csv', status: 'failed', outcome: makeToolOutcome('delivery_missing_input', { source: 'collaboration', correlationId: 'call_a', details: { path: 'data/input.csv' } }) }} />);
+  expect(screen.getByText('An original input is missing.')).toBeInTheDocument();
+  expect(screen.getByText('Correct its workspace-relative path.')).toBeInTheDocument();
+  expect(screen.getByText('call_a')).toBeInTheDocument();
+});

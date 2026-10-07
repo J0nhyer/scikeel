@@ -105,3 +105,15 @@ test("a checkpoint preflight registers before a concurrent write can pass its ba
   const write = h["tool.execute.before"]({ sessionID: "s", tool: "write" }, {});
   await Promise.all([checkpoint, assert.rejects(write, /answer/)]);
 });
+
+test('bridge preserves a bounded business error and masks an unknown upstream body', async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const { makeToolOutcome } = await import('../../../packages/sdk/src/tool-outcome.mjs');
+  const outcome = makeToolOutcome('delivery_missing_input', { source: 'collaboration', status: 400, correlationId: 'call_test', details: { path: 'data/input.csv' } });
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: outcome }), { status: 400 });
+  const hooks = collaborationHooks({ token: 'a'.repeat(64) });
+  await assert.rejects(hooks['tool.execute.before']({ sessionID: 'ses_test', callID: 'call_test', tool: 'research_delivery' }, { args: { action: 'prepare' } }), e => e.code === 'delivery_missing_input' && e.outcome.correlationId === 'call_test');
+  globalThis.fetch = async () => new Response('private upstream secret', { status: 502 });
+  await assert.rejects(hooks['tool.execute.before']({ sessionID: 'ses_test' }), e => !e.message.includes('private upstream secret'));
+});

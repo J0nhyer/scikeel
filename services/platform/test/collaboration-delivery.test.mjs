@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CollaborationStore } from "../src/collaboration.mjs";
@@ -176,4 +176,25 @@ test("Full autonomy verifies actual deliverables without requiring method approv
   assert.equal(done.delivery.status, "completed");
   assert.equal(done.pending, null);
   assert.equal(done.decisions.length, 0);
+});
+
+
+test("missing input keeps its safe code without capturing delivery scope", async (t) => {
+  const f = await fixture(t);
+  const execution = (await f.store.get(f.owner)).execution;
+  await assert.rejects(f.store.delivery(f.owner, {operation:"prepare",execution,
+    inputs:["workspace/input.csv"],deliverables:["result.csv"]}),
+    error=>error.code==="delivery_missing_input" && error.status===400 && error.details.path==="workspace/input.csv");
+  assert.equal((await f.store.get(f.owner)).delivery ?? null,null);
+  assert.equal(await readFile(join(f.owner.directory,"input.csv"),"utf8"),"value\n1\n2\n3\n");
+  await mkdir(join(f.owner.directory,"workspace"));
+  await writeFile(join(f.owner.directory,"workspace/input.csv"),"nested original");
+  const prepared=await f.prepare(["workspace/input.csv"]);
+  assert.equal(prepared.delivery.inputs[0].path,"workspace/input.csv");
+});
+test("delivery mode and paused execution keep distinct errors",async(t)=>{
+  const f=await fixture(t,"collaborative");
+  await assert.rejects(f.prepare(),{code:"delivery_mode_mismatch",status:400});
+  await f.store.pause(f.owner);
+  await assert.rejects(f.prepare(),{code:"delivery_execution_paused",status:409});
 });

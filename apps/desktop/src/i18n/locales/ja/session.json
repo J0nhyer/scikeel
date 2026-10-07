@@ -370,7 +370,82 @@
         "default_other": "{{count}} ステップを実行"
       },
       "failedCount": "{{count}} 件失敗"
-    }
+    },
+    "outcome": {
+      "tool_permission_denied": {
+        "message": "実行は許可されませんでした。",
+        "nextAction": "現在のツール権限を確認してください。"
+      },
+      "network_admission_denied": {
+        "message": "ネットワークの認可を取得できませんでした。",
+        "nextAction": "管理対象のネットワーク接続を確認してください。"
+      },
+      "network_destination_denied": {
+        "message": "接続先は許可された範囲外です。",
+        "nextAction": "許可された公開接続先を選んでください。"
+      },
+      "network_grant_expired": {
+        "message": "ネットワークの認可が期限切れになりました。",
+        "nextAction": "必要であれば、新しい認可済み呼び出しを開始してください。"
+      },
+      "network_grant_revoked": {
+        "message": "ネットワークの認可が取り消されました。",
+        "nextAction": "実行が停止されたか確認してください。"
+      },
+      "network_busy": {
+        "message": "ネットワークの処理容量が一時的に不足しています。",
+        "nextAction": "現在の呼び出しの制限時間内で再試行してください。"
+      },
+      "network_timeout": {
+        "message": "ネットワーク要求がタイムアウトしました。",
+        "nextAction": "現在の呼び出しの制限時間内で再試行してください。"
+      },
+      "network_upstream_refused": {
+        "message": "リモートサービスが要求を拒否しました。",
+        "nextAction": "既知の状態と利用可能性を確認してください。"
+      },
+      "search_unavailable": {
+        "message": "設定済みの検索サービスを利用できません。",
+        "nextAction": "設定を確認するか、利用可能な機能を使ってください。"
+      },
+      "delivery_missing_input": {
+        "message": "元の入力ファイルが見つかりません。",
+        "nextAction": "ワークスペースからの相対パスを修正してください。"
+      },
+      "delivery_mode_mismatch": {
+        "message": "成果物の提出は現在のモードに対応していません。",
+        "nextAction": "現在の研究モードを確認してください。"
+      },
+      "delivery_execution_paused": {
+        "message": "研究の実行は一時停止中です。",
+        "nextAction": "必要であれば、認可済みの実行を再開してください。"
+      },
+      "edit_ambiguous_match": {
+        "message": "置換対象が複数の箇所に一致しています。",
+        "nextAction": "ファイルを読み、一意に特定できる前後のテキストを指定してください。"
+      },
+      "edit_no_change": {
+        "message": "置換しても変更はありません。",
+        "nextAction": "要求された内容がすでに存在するか確認してください。"
+      },
+      "tool_unavailable": {
+        "message": "選択されたツールを利用できません。",
+        "nextAction": "現在利用可能なツールの一覧を使ってください。"
+      },
+      "execution_cancelled": {
+        "message": "実行はキャンセルされました。",
+        "nextAction": "続行する前に、部分的な変更や結果を確認してください。"
+      },
+      "execution_interrupted": {
+        "message": "実行は中断されました。",
+        "nextAction": "別の呼び出しを始める前に、その影響を確認してください。"
+      },
+      "tool_internal_error": {
+        "message": "ツールは処理を完了できませんでした。",
+        "nextAction": "相関識別子を使って失敗の原因を確認してください。"
+      }
+    },
+    "outcomeDetails": "詳細"
   },
   "artifact": {
     "kind": {

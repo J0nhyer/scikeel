@@ -149,7 +149,8 @@
           "opt/scikeel/tools/cli-jobs.mjs",
           "opt/scikeel/tools/project-environment.py",
           "opt/scikeel/tools/science-environment.mjs",
-          "opt/scikeel/tools/collaboration.mjs"
+          "opt/scikeel/tools/collaboration.mjs",
+          "opt/scikeel/tools/tool-outcome.mjs"
         ]
       },
       "additionalProperties": {
@@ -230,6 +231,42 @@
         "binarySha256": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
+        },
+        "networkRuntime": {
+          "type": "object",
+          "required": [
+            "schema",
+            "policy",
+            "upstreamCommit",
+            "patchSha256",
+            "combinedPatchSha256",
+            "outcomeSha256"
+          ],
+          "properties": {
+            "schema": {
+              "const": 1
+            },
+            "policy": {
+              "const": "call-scope-v1"
+            },
+            "upstreamCommit": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            },
+            "patchSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "combinedPatchSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "outcomeSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

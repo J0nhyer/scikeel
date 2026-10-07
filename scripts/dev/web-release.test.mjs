@@ -344,6 +344,9 @@ test('session verification includes recovery even when continuity already exists
   await mkdir(desktop, { recursive: true });
   await writeFile(join(desktop, 'webSessionContinuity.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webRuntimeRecovery.acceptance.test.mjs'), 'fixture');
+  await writeFile(join(desktop, 'webToolReliability.acceptance.test.mjs'), 'fixture');
+  await mkdir(join(root, 'runtime/opencode-patches'), { recursive: true });
+  await writeFile(join(root, 'runtime/opencode-patches/network.lock.json'), '{}');
   const saved = [process.env.OSD_PLAYWRIGHT_PATH, process.env.OSD_CHROMIUM_PATH];
   process.env.OSD_PLAYWRIGHT_PATH = root; process.env.OSD_CHROMIUM_PATH = root;
   t.after(() => {
@@ -356,9 +359,23 @@ test('session verification includes recovery even when continuity already exists
     assert(args.includes('src/test/webRuntimeRecovery.acceptance.test.mjs'));
     assert.equal(environment.OSD_CONTINUITY_BROWSER, '1');
     assert.equal(environment.OSD_RECOVERY_ACCEPTANCE, '1');
-    await writeFile(join(root, 'browser-results.json'), JSON.stringify({ success: true, numPassedTests: 3, numPendingTests: 0 }));
+    assert(args.includes('src/test/webToolReliability.acceptance.test.mjs'));
+    assert.equal(environment.OSD_TOOL_BROWSER, '1');
+    await writeFile(join(root, 'browser-results.json'), JSON.stringify({ success: true, numPassedTests: 4, numPendingTests: 0 }));
   });
-  assert.equal(result.passedTests, 3);
+  assert.equal(result.passedTests, 4);
+  await rm(join(desktop, 'webToolReliability.acceptance.test.mjs'));
+  await assert.rejects(browserStage({ directory: root, source: { root }, artifacts: { web: { directory: root } }, selection: { browserGroups: ['session'] } }), /tool reliability scenario/);
+  await writeFile(join(desktop, 'webToolReliability.acceptance.test.mjs'), 'fixture');
   await rm(join(desktop, 'webRuntimeRecovery.acceptance.test.mjs'));
   await assert.rejects(browserStage({ directory: root, source: { root }, artifacts: { web: { directory: root } }, selection: { browserGroups: ['session'] } }), /recovery scenario/);
+});
+
+
+test('every tool-reliability path selects the staged session browser gate', () => {
+  for (const path of ['apps/desktop/src/components/thread/ToolCallRow.tsx', 'apps/desktop/src/components/thread/ToolGroup.tsx', 'services/platform/src/network-operations.mjs', 'services/platform/src/tool-outcomes.mjs', 'runtime/opencode-patches/managed-network.ts', 'runtime/sandbox/tool-outcome.mjs', 'packages/sdk/src/tool-outcome.mjs']) {
+    const selection = selectVerification([path], { known: true });
+    assert.equal(selection.buildWeb, true, path);
+    assert.ok(selection.browserGroups.includes('session'), path);
+  }
 });

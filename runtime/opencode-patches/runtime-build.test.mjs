@@ -25,3 +25,12 @@ test('stored patch and standalone policy cannot silently diverge', async () => {
   const stored = JSON.parse(await readFile(new URL('./session-title.lock.json', import.meta.url)));
   await verifyPatchInputs(stored);
 });
+
+test('network patch and canonical outcomes require the same combined runtime identity', async () => {
+  const { verifyNetworkInputs, validateNetworkRuntime } = await import('../../scripts/dev/build-opencode-title-runtime.mjs');
+  const network = JSON.parse(await readFile(new URL('./network.lock.json', import.meta.url)));
+  await verifyNetworkInputs(network);
+  assert.equal(validateNetworkRuntime(network, network), network);
+  assert.throws(() => validateNetworkRuntime(undefined, network));
+  assert.throws(() => validateNetworkRuntime({ ...network, outcomeSha256: 'd'.repeat(64) }, network));
+});

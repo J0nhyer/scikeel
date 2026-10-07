@@ -423,3 +423,31 @@ test("alternating authorized models continue beyond the former account request c
   assert.equal(continued.status, 200, continued.body);
   assert.deepEqual(received, [...expected, enabledModels[1]]);
 });
+
+
+test("collaboration preserves known business errors while sanitizing unknown exceptions",async t=>{
+  const f=await fixture(t,(_req,res)=>res.end("unused"));
+  const post=()=>fetch(`http://127.0.0.1:${f.broker.server.address().port}/collaboration`,{
+    method:"POST",headers:{authorization:`Bearer ${f.token}`,"content-type":"application/json"},
+    body:JSON.stringify({sessionId:"ses_test",action:"delivery",callId:"call_test"})});
+  f.broker.collaborationHandler=()=>{throw Object.assign(new Error("private upstream secret"),{
+    code:"delivery_missing_input",status:400,details:{path:"data/input.csv"}});};
+  const response=await post();assert.equal(response.status,400);
+  const body=await response.json();assert.equal(body.error.code,"delivery_missing_input");
+  assert.equal(body.error.correlationId,"call_test");assert.equal(body.error.details.path,"data/input.csv");
+  assert.equal(JSON.stringify(body).includes("private upstream secret"),false);
+  f.broker.collaborationHandler=()=>{throw new Error("private upstream secret");};
+  const unknown=await post();assert.equal(unknown.status,502);
+  assert.equal((await unknown.text()).includes("private upstream secret"),false);
+});
+
+test('network route requires an owned broker context and a bounded closed request', async t => {
+  const f = await fixture(t, (_req, res) => res.end('unused')); let calls = 0;
+  f.broker.networkHandler = (owned, body) => { assert.deepEqual(owned, context); calls++; return { operationId: 'op_a', grant: 'b'.repeat(64), expiresAt: 2000 }; };
+  const post = (body, token = f.token) => fetch(`http://127.0.0.1:${f.broker.server.address().port}/network`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const proposal = { version: 1, action: 'authorize', sessionId: 'ses_a', callId: 'call_a', execution: 1, tool: 'webfetch', origins: ['https://science.example'] };
+  assert.equal((await post(proposal)).status, 200);
+  assert.equal((await post({ ...proposal, proxy: 'http://foreign' })).status, 403);
+  assert.equal((await post(proposal, 'f'.repeat(64))).status, 403);
+  assert.equal(calls, 1);
+});

@@ -65,7 +65,9 @@ jobs:
           pnpm runtime:title:check
           pnpm runtime:title:test
           pnpm runtime:title:build
-          OSD_SESSION_TITLE_BINARY="$PWD/.deploy/session-title-runtime/opencode" OSD_SESSION_TITLE_DEPENDENCIES="$PWD/.superpowers/sdd/2026-10-06-session-title-model/source-git/packages/opencode/node_modules" pnpm platform:test ../../runtime/opencode-patches/session-title-native.acceptance.mjs
+          sudo ip address add 172.31.240.1/32 dev lo
+          trap 'sudo ip address del 172.31.240.1/32 dev lo' EXIT
+          OSD_SESSION_TITLE_BINARY="$PWD/.deploy/session-title-runtime/opencode" OSD_SESSION_TITLE_DEPENDENCIES="$PWD/.superpowers/sdd/2026-10-06-session-title-model/source-git/packages/opencode/node_modules" pnpm platform:test ../../runtime/opencode-patches/session-title-native.acceptance.mjs ../../runtime/opencode-patches/network-native.acceptance.mjs
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the headless core in a verified bounded scope
         shell: bash
@@ -92,7 +94,7 @@ jobs:
           cp "$(command -v node)" .deploy/science-context/tools/bin/
           cp .deploy/session-title-runtime/opencode .deploy/science-context/tools/bin/opencode
           cp .deploy/session-title-runtime/runtime-manifest.json .deploy/science-context/tools/session-title-runtime.json
-          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment,collaboration}.mjs .deploy/science-context/tools/
+          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment,collaboration,tool-outcome}.mjs .deploy/science-context/tools/
           cp runtime/sandbox/project-environment.py .deploy/science-context/tools/
           mkdir -p .deploy/science-context/tools/resources/skills-core
           tar -C runtime/skills/core --exclude=.gitkeep -cf - . | tar -C .deploy/science-context/tools/resources/skills-core -xf -

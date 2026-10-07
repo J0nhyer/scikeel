@@ -1,3 +1,4 @@
+import { normalizeToolResult } from "./tool-outcome.mjs";
 import type { AttachmentPromptContext, ConversationAttachment } from "@ai4s/shared";
 import type {
   AgentInfo,
@@ -22,7 +23,6 @@ import type {
   SessionPage,
   SessionQuery,
   SkillInfo,
-  ToolCallStatus,
 } from "./types";
 import type { MessageUsage } from "@ai4s/shared";
 import { DEFAULT_OPENCODE_URL } from "./types";
@@ -129,18 +129,6 @@ type CustomProviderModelConfig = {
   [key: string]: unknown;
 };
 
-function mapToolStatus(status: string): ToolCallStatus {
-  switch (status) {
-    case "running":
-      return "running";
-    case "completed":
-      return "success";
-    case "error":
-      return "failed";
-    default:
-      return "pending";
-  }
-}
 
 /** OpenCode's error objects nest the human-readable message at
  *  error.data.message; keep the first line (some errors append a stack). */
@@ -1702,11 +1690,12 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
             tool: string;
             state?: {
               status?: string;
+              error?: string;
               title?: string;
               input?: Record<string, unknown>;
               output?: string;
               time?: { start?: number; end?: number };
-              metadata?: { sessionId?: unknown; output?: unknown; diff?: unknown };
+              metadata?: { sessionId?: unknown; output?: unknown; diff?: unknown; scikeelOutcome?: unknown };
             };
           };
           // A task tool's metadata names the subagent session it spawned.
@@ -1717,7 +1706,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
             sessionId,
             callId: tp.callID,
             tool: tp.tool,
-            status: mapToolStatus(tp.state?.status ?? "pending"),
+            ...normalizeToolResult(tp.tool, tp.state, tp.callID),
             title: tp.state?.title,
             input: tp.state?.input,
             output: typeof tp.state?.output === "string" ? tp.state.output : undefined,

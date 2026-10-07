@@ -80,7 +80,7 @@ export async function readBrokerConfiguration() {
 }
 export async function createSandboxControlPlane({ configuration, dataDir, config }) {
   config = validateBrokerConfiguration(await resolveOpenCodeFreeCatalog(validateBrokerConfiguration(config ?? await readBrokerConfiguration())));
-  let environments;
+  let environments; let plane;
   const accounts = new Map(); const tenantPolicy = new TenantPolicy();
   const identify = (input) => {
     const address = typeof input === "string" ? input : input.socket?.remoteAddress;
@@ -117,12 +117,14 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       }, 300000);
       timer.unref(); accounts.get(address).timer = timer;
     },
-    revokeWorker: (context) => {
+    revokeWorker: async (context) => {
       scheduler.invalidate(context);
       model.revokeContext(context); egress.revoke(context); packageGrants.revokeContext(context); environments?.revokeContext(context);
       for (const [address, account] of accounts) if (account.context.instanceId === context.instanceId && account.context.generation === context.generation) {
         clearInterval(account.timer); accounts.delete(address);
       }
+      // Diagnostic persistence must not prevent revocation of broker authority.
+      await plane?.revokeNetwork?.(context);
     },
   });
   try {
@@ -141,11 +143,12 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       models:enabled?provider.enabledModels.map(id=>({id,name:id,variants:{},inputModalities:["text","image"]})):[],
       defaultModel:enabled?config.defaultModel:null,status:enabled?"ready":"unavailable",enabledByProfile:enabled,files:{}};
   }};
-  return { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, nativeJobs, nativeProfileResolver,
+  plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, nativeJobs, nativeProfileResolver,
     runtimeCatalog: (context, { access }) => readManagedModelCatalog({ config, context, access }),
     async close() {
       try { await manager.close(); }
       finally { await Promise.allSettled([scheduler.close(), model.close(), packages.close(), egress.close()]); }
     },
   };
+  return plane;
 }

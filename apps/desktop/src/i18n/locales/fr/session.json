@@ -377,7 +377,82 @@
         "default_other": "a exécuté {{count}} étapes"
       },
       "failedCount": "{{count}} en échec"
-    }
+    },
+    "outcome": {
+      "tool_permission_denied": {
+        "message": "L’exécution n’a pas été autorisée.",
+        "nextAction": "Vérifiez l’autorisation actuelle de l’outil."
+      },
+      "network_admission_denied": {
+        "message": "L’autorisation réseau n’a pas pu être obtenue.",
+        "nextAction": "Vérifiez la connexion réseau gérée."
+      },
+      "network_destination_denied": {
+        "message": "La destination est hors du périmètre autorisé.",
+        "nextAction": "Choisissez une destination publique autorisée."
+      },
+      "network_grant_expired": {
+        "message": "L’autorisation réseau a expiré.",
+        "nextAction": "Lancez un nouvel appel autorisé si nécessaire."
+      },
+      "network_grant_revoked": {
+        "message": "L’autorisation réseau a été révoquée.",
+        "nextAction": "Vérifiez si l’exécution a été arrêtée."
+      },
+      "network_busy": {
+        "message": "La capacité réseau est temporairement saturée.",
+        "nextAction": "Réessayez dans le délai imparti à cet appel."
+      },
+      "network_timeout": {
+        "message": "La requête réseau a dépassé le délai.",
+        "nextAction": "Réessayez dans le délai imparti à cet appel."
+      },
+      "network_upstream_refused": {
+        "message": "Le service distant a refusé la requête.",
+        "nextAction": "Vérifiez son état connu et sa disponibilité."
+      },
+      "search_unavailable": {
+        "message": "Le service de recherche configuré est indisponible.",
+        "nextAction": "Vérifiez sa configuration ou utilisez une fonction disponible."
+      },
+      "delivery_missing_input": {
+        "message": "Une entrée d’origine est manquante.",
+        "nextAction": "Corrigez son chemin relatif à l’espace de travail."
+      },
+      "delivery_mode_mismatch": {
+        "message": "La livraison est incompatible avec le mode actuel.",
+        "nextAction": "Vérifiez le mode de recherche actuel."
+      },
+      "delivery_execution_paused": {
+        "message": "L’exécution de la recherche est en pause.",
+        "nextAction": "Reprenez l’exécution autorisée si nécessaire."
+      },
+      "edit_ambiguous_match": {
+        "message": "Le remplacement correspond à plusieurs emplacements.",
+        "nextAction": "Lisez le fichier et fournissez un contexte textuel unique."
+      },
+      "edit_no_change": {
+        "message": "Le remplacement ne modifierait rien.",
+        "nextAction": "Vérifiez si le contenu demandé existe déjà."
+      },
+      "tool_unavailable": {
+        "message": "L’outil sélectionné est indisponible.",
+        "nextAction": "Utilisez la liste actuelle des outils disponibles."
+      },
+      "execution_cancelled": {
+        "message": "L’exécution a été annulée.",
+        "nextAction": "Vérifiez les effets partiels éventuels avant de continuer."
+      },
+      "execution_interrupted": {
+        "message": "L’exécution a été interrompue.",
+        "nextAction": "Vérifiez ses effets avant de lancer un nouvel appel."
+      },
+      "tool_internal_error": {
+        "message": "L’outil n’a pas pu terminer l’opération.",
+        "nextAction": "Utilisez son identifiant de corrélation pour examiner l’échec."
+      }
+    },
+    "outcomeDetails": "Détails"
   },
   "artifact": {
     "kind": {

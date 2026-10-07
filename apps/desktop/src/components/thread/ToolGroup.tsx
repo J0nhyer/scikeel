@@ -59,7 +59,7 @@ export function groupToolBlocks(blocks: ThreadBlock[]): BlockListItem[] {
     items.push({ kind: "group", start: g.start, blocks: g.blocks });
   };
   blocks.forEach((b, i) => {
-    const groupable = b.kind === "tool-call" && b.status !== "waiting-approval";
+    const groupable = b.kind === "tool-call" && b.status !== "waiting-approval" && !b.outcome;
     if (groupable) {
       group ??= { start: i, blocks: [] };
       group.blocks.push(b);

@@ -100,7 +100,11 @@ export class TenantPolicy {
   }
   registerRequest(context, record) {
     this.session(context, record.sessionID);
-    const safe = Object.freeze({ id: identifier(record.id), sessionID: record.sessionID });
+    const safe = Object.freeze({ id: identifier(record.id), sessionID: record.sessionID,
+      ...(typeof record.permission === "string" ? { permission: record.permission } : {}),
+      ...(Array.isArray(record.patterns) && record.patterns.length <= 20 && record.patterns.every(v => typeof v === "string" && v.length <= 4096) ? { patterns: Object.freeze([...record.patterns]) } : {}),
+      ...(record.tool?.callID ? { callId: identifier(record.tool.callID) } : {}),
+    });
     this.#requests.set(this.#key(context, record.id), safe);
     return safe;
   }

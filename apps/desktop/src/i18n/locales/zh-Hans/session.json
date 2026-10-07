@@ -370,7 +370,82 @@
         "default_other": "执行了 {{count}} 个步骤"
       },
       "failedCount": "{{count}} 个失败"
-    }
+    },
+    "outcome": {
+      "tool_permission_denied": {
+        "message": "未获准执行。",
+        "nextAction": "检查当前工具权限。"
+      },
+      "network_admission_denied": {
+        "message": "无法建立网络授权。",
+        "nextAction": "检查受管网络连接。"
+      },
+      "network_destination_denied": {
+        "message": "目标地址超出允许范围。",
+        "nextAction": "选择允许的公共地址。"
+      },
+      "network_grant_expired": {
+        "message": "网络授权已过期。",
+        "nextAction": "仍有需要时重新发起授权调用。"
+      },
+      "network_grant_revoked": {
+        "message": "网络授权已撤销。",
+        "nextAction": "检查执行是否已停止。"
+      },
+      "network_busy": {
+        "message": "网络暂时繁忙。",
+        "nextAction": "在当前调用时限内重试。"
+      },
+      "network_timeout": {
+        "message": "网络请求超时。",
+        "nextAction": "在当前调用时限内重试。"
+      },
+      "network_upstream_refused": {
+        "message": "远端服务拒绝了请求。",
+        "nextAction": "检查该服务的状态和可用性。"
+      },
+      "search_unavailable": {
+        "message": "未配置或无法使用搜索服务。",
+        "nextAction": "检查配置或使用当前可用能力。"
+      },
+      "delivery_missing_input": {
+        "message": "原始输入文件缺失。",
+        "nextAction": "修正工作区内的相对路径。"
+      },
+      "delivery_mode_mismatch": {
+        "message": "当前模式不支持交付验证。",
+        "nextAction": "检查当前研究模式。"
+      },
+      "delivery_execution_paused": {
+        "message": "研究执行已暂停。",
+        "nextAction": "需要继续时恢复已授权的执行。"
+      },
+      "edit_ambiguous_match": {
+        "message": "替换文本匹配了多个位置。",
+        "nextAction": "读取文件并提供唯一的上下文。"
+      },
+      "edit_no_change": {
+        "message": "替换不会产生变化。",
+        "nextAction": "检查所需内容是否已存在。"
+      },
+      "tool_unavailable": {
+        "message": "所选工具不可用。",
+        "nextAction": "使用当前可用的工具列表。"
+      },
+      "execution_cancelled": {
+        "message": "执行已取消。",
+        "nextAction": "继续前检查是否已有部分修改。"
+      },
+      "execution_interrupted": {
+        "message": "执行已中断。",
+        "nextAction": "重新调用前检查已有影响。"
+      },
+      "tool_internal_error": {
+        "message": "工具未能完成。",
+        "nextAction": "使用调用编号定位故障。"
+      }
+    },
+    "outcomeDetails": "详情"
   },
   "artifact": {
     "kind": {

@@ -370,7 +370,82 @@
         "default_other": "단계 {{count}}개 실행"
       },
       "failedCount": "{{count}}개 실패"
-    }
+    },
+    "outcome": {
+      "tool_permission_denied": {
+        "message": "실행이 허용되지 않았습니다.",
+        "nextAction": "현재 도구 권한을 확인하세요."
+      },
+      "network_admission_denied": {
+        "message": "네트워크 승인을 받을 수 없습니다.",
+        "nextAction": "관리되는 네트워크 연결을 확인하세요."
+      },
+      "network_destination_denied": {
+        "message": "대상이 허용된 범위를 벗어났습니다.",
+        "nextAction": "허용된 공개 대상을 선택하세요."
+      },
+      "network_grant_expired": {
+        "message": "네트워크 승인이 만료되었습니다.",
+        "nextAction": "필요하면 새로 승인된 호출을 시작하세요."
+      },
+      "network_grant_revoked": {
+        "message": "네트워크 승인이 취소되었습니다.",
+        "nextAction": "실행이 중지되었는지 확인하세요."
+      },
+      "network_busy": {
+        "message": "네트워크 처리 용량이 일시적으로 부족합니다.",
+        "nextAction": "현재 호출의 제한 시간 안에 다시 시도하세요."
+      },
+      "network_timeout": {
+        "message": "네트워크 요청 시간이 초과되었습니다.",
+        "nextAction": "현재 호출의 제한 시간 안에 다시 시도하세요."
+      },
+      "network_upstream_refused": {
+        "message": "원격 서비스가 요청을 거부했습니다.",
+        "nextAction": "알려진 상태와 가용성을 확인하세요."
+      },
+      "search_unavailable": {
+        "message": "설정된 검색 서비스를 사용할 수 없습니다.",
+        "nextAction": "설정을 확인하거나 사용 가능한 기능을 이용하세요."
+      },
+      "delivery_missing_input": {
+        "message": "원본 입력 파일이 없습니다.",
+        "nextAction": "작업 공간 기준 상대 경로를 수정하세요."
+      },
+      "delivery_mode_mismatch": {
+        "message": "결과물 제출이 현재 모드와 호환되지 않습니다.",
+        "nextAction": "현재 연구 모드를 확인하세요."
+      },
+      "delivery_execution_paused": {
+        "message": "연구 실행이 일시 중지되었습니다.",
+        "nextAction": "필요하면 승인된 실행을 재개하세요."
+      },
+      "edit_ambiguous_match": {
+        "message": "바꿀 텍스트가 여러 위치와 일치합니다.",
+        "nextAction": "파일을 읽고 위치를 고유하게 식별하는 주변 텍스트를 제공하세요."
+      },
+      "edit_no_change": {
+        "message": "바꿔도 내용이 달라지지 않습니다.",
+        "nextAction": "요청한 내용이 이미 존재하는지 확인하세요."
+      },
+      "tool_unavailable": {
+        "message": "선택한 도구를 사용할 수 없습니다.",
+        "nextAction": "현재 사용 가능한 도구 목록을 이용하세요."
+      },
+      "execution_cancelled": {
+        "message": "실행이 취소되었습니다.",
+        "nextAction": "계속하기 전에 부분적인 변경과 결과를 확인하세요."
+      },
+      "execution_interrupted": {
+        "message": "실행이 중단되었습니다.",
+        "nextAction": "다른 호출을 시작하기 전에 그 영향을 확인하세요."
+      },
+      "tool_internal_error": {
+        "message": "도구가 작업을 완료하지 못했습니다.",
+        "nextAction": "상관 식별자를 사용하여 실패 원인을 확인하세요."
+      }
+    },
+    "outcomeDetails": "상세 정보"
   },
   "artifact": {
     "kind": {

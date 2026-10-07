@@ -1,3 +1,4 @@
+import { normalizeToolResult, makeToolOutcome } from "@ai4s/sdk/tool-outcome";
 import { prepareCollaborationSend, type CollaborationMode } from "./collaboration";
 import type { AttachmentPromptContext } from "@ai4s/shared";
 import { attachmentRequestKey, claimAttachments, listConversationAttachments } from "./conversationAttachments";
@@ -19,7 +20,6 @@ import {
   type RetryAction,
   type SessionMeta,
   type SkillInfo,
-  type ToolCallStatus,
 } from "@ai4s/sdk";
 import { AcpRuntime, toAcpMcpServers, type AcpConfigOption } from "@ai4s/sdk/acp";
 import type {
@@ -4965,7 +4965,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           ...t,
           blocks: t.blocks.map((b) =>
             b.kind === "tool-call" && (b.status === "running" || b.status === "waiting-approval")
-              ? { ...b, status: "pending" as const }
+              ? b.callId ? { ...b, status: "warning" as const, outcome: makeToolOutcome("execution_cancelled", { source: "gateway", correlationId: b.callId, details: { effectUnknown: true } }) } : { ...b, status: "pending" as const }
               : b,
           ),
         };
@@ -5439,6 +5439,8 @@ export function foldEvent(
         kind: "tool-call",
         title,
         status: event.status,
+        callId: event.callId,
+        ...(event.outcome ? { outcome: event.outcome } : {}),
         tool: event.tool,
         ...(verb ? { verb } : {}),
         ...(command ? { command } : {}),
@@ -5449,8 +5451,8 @@ export function foldEvent(
         ...(event.status === "running" && event.partialOutput
           ? { partialOutput: capTail(foldCarriageReturns(event.partialOutput), LIVE_TAIL_MAX) }
           : {}),
-        ...(event.output?.trim()
-          ? { output: capTail(foldCarriageReturns(event.output), DETAIL_MAX).replace(/\s+$/, "") }
+        ...((event.error ?? event.output)?.trim()
+          ? { output: capTail(foldCarriageReturns(event.error ?? event.output!), DETAIL_MAX).replace(/\s+$/, "") }
           : {}),
         ...(startedAt ? { startedAt } : {}),
         ...(endedAt ? { endedAt } : {}),
@@ -5562,18 +5564,6 @@ export function subagentActivity(blocks?: ThreadBlock[]): string {
   return "Working…";
 }
 
-function mapToolStatus(status?: string): ToolCallStatus {
-  switch (status) {
-    case "running":
-      return "running";
-    case "completed":
-      return "success";
-    case "error":
-      return "failed";
-    default:
-      return "pending";
-  }
-}
 
 /** Convert loaded message history into thread blocks. */
 /** The agent mode a session's history says it is in: the last user message's
@@ -5709,7 +5699,8 @@ export function historyToThread(
           // Interactive tools are surfaced by InteractionPrompt, not the thread;
           // `todo*` tools are opaque "N todos" noise — skip both.
           if (/question|permission|^ask$|todo/i.test(p.tool ?? "")) continue;
-          const status = mapToolStatus(p.state?.status);
+          const normalized = normalizeToolResult(p.tool ?? "", p.state, p.callID);
+          const status = normalized.status;
           const frozen = status === "running" || status === "pending";
           if (frozen && serverIdle) interrupted = true;
           const command = str(p.state?.input?.command);
@@ -5731,14 +5722,16 @@ export function historyToThread(
             kind: "tool-call",
             title,
             status: frozen ? (serverIdle ? "failed" : "pending") : status,
+            callId: p.callID,
+            ...(normalized.outcome ? { outcome: normalized.outcome } : {}),
             tool: p.tool,
             ...(verb ? { verb } : {}),
             ...(command ? { command } : {}),
             ...(filePath ? { filePath: tidyToolTitle(filePath) } : {}),
             ...(content ? { content: capHead(content, DETAIL_MAX) } : {}),
             ...(diff ? { diff: capHead(diff, DETAIL_MAX) } : {}),
-            ...(p.state?.output?.trim()
-              ? { output: capTail(foldCarriageReturns(p.state.output), DETAIL_MAX).replace(/\s+$/, "") }
+            ...((p.state?.error ?? p.state?.output)?.trim()
+              ? { output: capTail(foldCarriageReturns(p.state?.error ?? p.state?.output ?? ""), DETAIL_MAX).replace(/\s+$/, "") }
               : {}),
             ...(typeof p.state?.time?.start === "number" ? { startedAt: p.state.time.start } : {}),
             ...(typeof p.state?.time?.end === "number" ? { endedAt: p.state.time.end } : {}),

@@ -1028,3 +1028,16 @@ describe("turnIsOver", () => {
     expect(turnIsOver([])).toBe(false);
   });
 });
+
+describe('tool failure evidence', () => {
+  it('keeps the same failure detail in live folding and reloaded history', () => {
+    const live = foldEvent(empty, { type: 'tool.updated', sessionId: S, callId: 'call_bad', tool: 'webfetch', status: 'failed', error: 'Remote service rejected the request.' });
+    const history = historyToThread([{ role: 'assistant', parts: [{ type: 'tool', callID: 'call_bad', tool: 'webfetch', state: { status: 'error', error: 'Remote service rejected the request.' } }] }]);
+    expect(live.blocks[0]).toMatchObject({ status: 'failed', output: 'Remote service rejected the request.' });
+    expect(history.blocks[0]).toMatchObject({ status: 'failed', output: 'Remote service rejected the request.' });
+  });
+  it('does not treat completed invalid-tool wrappers as successful execution', () => {
+    const result = historyToThread([{ role: 'assistant', parts: [{ type: 'tool', callID: 'call_invalid', tool: 'invalid', state: { status: 'completed', output: 'Unknown tool recovery' } }] }]);
+    expect(result.blocks[0]).toMatchObject({ status: 'failed', outcome: { code: 'tool_unavailable' } });
+  });
+});

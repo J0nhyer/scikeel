@@ -1,6 +1,6 @@
 import type { ConversationAttachment } from "@ai4s/shared";
 export type { AttachmentPromptContext } from "@ai4s/shared";
-import type { MessageUsage, RuntimeStatus, ToolCallStatus } from "@ai4s/shared";
+import type { MessageUsage, RuntimeStatus, ToolCallStatus, ToolOutcome } from "@ai4s/shared";
 
 export type { RuntimeStatus, ToolCallStatus };
 
@@ -41,6 +41,8 @@ export interface StepUpdatedEvent {
   step: number;
 }
 export interface ToolUpdatedEvent {
+  error?: string;
+  outcome?: ToolOutcome;
   type: "tool.updated";
   sessionId: string;
   callId: string;
@@ -363,6 +365,7 @@ export interface HistoryPart {
       diff?: string;
       sessionId?: string;
       interrupted?: boolean;
+      scikeelOutcome?: ToolOutcome;
     };
   };
 }

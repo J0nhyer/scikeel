@@ -327,3 +327,11 @@ describe("groupIcon", () => {
     expect(groupIcon([tool({ verb: "Teleported" as never })])).toBeTruthy();
   });
 });
+
+it('keeps an actionable outcome visible instead of hiding it inside a quiet activity group', async () => {
+  const { makeToolOutcome } = await import('@ai4s/sdk/tool-outcome');
+  const blocks = [tool({ title: 'one' }), tool({ title: 'input.csv', status: 'failed', outcome: makeToolOutcome('delivery_missing_input', { source: 'collaboration', correlationId: 'call_a' }) }), tool({ title: 'two' })];
+  const groups = groupToolBlocks(blocks);
+  expect(groups).toHaveLength(3);
+  expect(groups[1]).toMatchObject({ kind: 'block', block: { title: 'input.csv' } });
+});

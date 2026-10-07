@@ -1,3 +1,4 @@
+import { makeToolOutcome, readToolError, serializeToolError } from "../../../packages/sdk/src/tool-outcome.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -130,6 +131,7 @@ export class ModelBroker {
   }
   async #handle(req, res) {
     const controller = new AbortController(); const operation = { controller };
+    let collaborationCorrelation; let networkCorrelation;
     const timer = setTimeout(() => controller.abort(failure("model_timeout", 504)), this.timeoutMs);
     const aborted = () => controller.abort(failure("model_client_cancelled", 499));
     const stopRead = () => {
@@ -143,7 +145,7 @@ export class ModelBroker {
     req.once("aborted", aborted); res.once("close", aborted); this.#operations.add(operation);
     try {
       if (this.#operations.size > this.maxConnections) throw failure("model_capacity", 429);
-      if (req.method !== "POST" || !(ROUTES.has(req.url) || req.url === "/collaboration" && this.collaborationHandler) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
+      if (req.method !== "POST" || !(ROUTES.has(req.url) || req.url === "/collaboration" && this.collaborationHandler || req.url === "/network" && this.networkHandler) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
           req.headers["content-encoding"] || req.headers.expect) throw failure("model_request_denied");
       const bearer = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
       const apiKey = /^[a-f0-9]{64}$/.test(req.headers["x-api-key"] ?? "") ? req.headers["x-api-key"] : undefined;
@@ -166,10 +168,22 @@ export class ModelBroker {
       let body;
       try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw failure("model_invalid_json", 400); }
       if (!body || typeof body !== "object" || Array.isArray(body)) throw failure("model_request_denied");
+      if (req.url === "/network") {
+        if (bytes > 8192 || body.version !== 1 || !["authorize", "complete", "cancel"].includes(body.action) ||
+            Object.keys(body).some(key => !["version", "action", "sessionId", "callId", "execution", "tool", "origins", "operationId", "outcome"].includes(key))) throw failure("model_request_denied");
+        if (body.action === "authorize" && (!validName(body.sessionId) || !validName(body.callId) || !Number.isSafeInteger(body.execution) || body.execution < 1 ||
+            !["webfetch", "websearch"].includes(body.tool) || !Array.isArray(body.origins) || body.origins.length !== 1 || typeof body.origins[0] !== "string" || body.origins[0].length > 2048)) throw failure("model_request_denied");
+        if ((body.action !== "authorize" || body.operationId !== undefined) && !validName(body.operationId)) throw failure("model_request_denied");
+        networkCorrelation = body.callId ?? `network_${randomBytes(16).toString("hex")}`;
+        const result = await wait(() => this.networkHandler(context, body), controller.signal);
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(JSON.stringify(result)); return;
+      }
       if (req.url === "/collaboration") {
         if (bytes > 16384 || !["guard", "state", "checkpoint", "capability", "delivery"].includes(body.action) ||
-            !validName(body.sessionId) || Object.keys(body).some(key => !["action", "sessionId", "kind", "question", "suggestedAnswer", "execution", "operation", "inputs", "deliverables"].includes(key)))
+            !validName(body.sessionId) || (body.callId !== undefined && !validName(body.callId)) || Object.keys(body).some(key => !["action", "sessionId", "kind", "question", "suggestedAnswer", "execution", "operation", "inputs", "deliverables", "callId"].includes(key)))
           throw failure("model_request_denied");
+        collaborationCorrelation = body.callId ?? `collab_${randomBytes(16).toString("hex")}`;
         const result = await wait(() => this.collaborationHandler(context, body), controller.signal);
         res.writeHead(200, {"content-type":"application/json", "cache-control":"no-store"});
         res.end(JSON.stringify(result)); return;
@@ -224,7 +238,18 @@ export class ModelBroker {
       } });
       await pipeline(upstream, limiter, res, { signal: controller.signal });
     } catch (reason) {
-      sendFailure(res, controller.signal.aborted ? controller.signal.reason : reason);
+      const error = controller.signal.aborted ? controller.signal.reason : reason;
+      const networkOutcome = networkCorrelation && readToolError(JSON.stringify({ error: error?.outcome }));
+      if (networkOutcome && !res.headersSent && !res.destroyed) {
+        res.writeHead(networkOutcome.status ?? 502, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(JSON.stringify(serializeToolError(networkOutcome)));
+      } else if (collaborationCorrelation && ["delivery_missing_input", "delivery_mode_mismatch", "delivery_execution_paused"].includes(error?.code) && !res.headersSent && !res.destroyed) {
+        try {
+          const outcome = makeToolOutcome(error.code, { source: "collaboration", status: error.status, correlationId: collaborationCorrelation, details: error.details });
+          res.writeHead(error.status, { "content-type": "application/json", "cache-control": "no-store" });
+          res.end(JSON.stringify(serializeToolError(outcome)));
+        } catch { sendFailure(res, error); }
+      } else sendFailure(res, error);
     } finally {
       clearTimeout(timer); clearTimeout(operation.expiration);
       req.off("aborted", aborted); res.off("close", aborted); this.#operations.delete(operation);

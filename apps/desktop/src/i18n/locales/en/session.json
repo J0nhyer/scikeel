@@ -377,7 +377,82 @@
         "default_other": "ran {{count}} steps"
       },
       "failedCount": "{{count}} failed"
-    }
+    },
+    "outcome": {
+      "tool_permission_denied": {
+        "message": "Execution was not allowed.",
+        "nextAction": "Review the current tool permission."
+      },
+      "network_admission_denied": {
+        "message": "Network authorization could not be established.",
+        "nextAction": "Check the managed network connection."
+      },
+      "network_destination_denied": {
+        "message": "The destination is outside the allowed scope.",
+        "nextAction": "Choose an allowed public destination."
+      },
+      "network_grant_expired": {
+        "message": "Network authorization expired.",
+        "nextAction": "Start a new authorized call if still needed."
+      },
+      "network_grant_revoked": {
+        "message": "Network authorization was revoked.",
+        "nextAction": "Check whether the execution was stopped."
+      },
+      "network_busy": {
+        "message": "Network capacity is temporarily busy.",
+        "nextAction": "Retry within the current call budget."
+      },
+      "network_timeout": {
+        "message": "The network request timed out.",
+        "nextAction": "Retry within the current call budget."
+      },
+      "network_upstream_refused": {
+        "message": "The remote service rejected the request.",
+        "nextAction": "Check its known status and availability."
+      },
+      "search_unavailable": {
+        "message": "The configured search service is unavailable.",
+        "nextAction": "Check its configuration or use an available capability."
+      },
+      "delivery_missing_input": {
+        "message": "An original input is missing.",
+        "nextAction": "Correct its workspace-relative path."
+      },
+      "delivery_mode_mismatch": {
+        "message": "Delivery is incompatible with the current mode.",
+        "nextAction": "Review the current research mode."
+      },
+      "delivery_execution_paused": {
+        "message": "Research execution is paused.",
+        "nextAction": "Resume the authorized execution if needed."
+      },
+      "edit_ambiguous_match": {
+        "message": "The replacement matches more than one location.",
+        "nextAction": "Read the file and supply unique surrounding text."
+      },
+      "edit_no_change": {
+        "message": "The replacement would make no change.",
+        "nextAction": "Verify whether the requested content already exists."
+      },
+      "tool_unavailable": {
+        "message": "The selected tool is unavailable.",
+        "nextAction": "Use the current available-tool list."
+      },
+      "execution_cancelled": {
+        "message": "The execution was cancelled.",
+        "nextAction": "Review any partial effects before continuing."
+      },
+      "execution_interrupted": {
+        "message": "The execution was interrupted.",
+        "nextAction": "Check its effect before starting another call."
+      },
+      "tool_internal_error": {
+        "message": "The tool could not complete.",
+        "nextAction": "Use its correlation identifier to inspect the failure."
+      }
+    },
+    "outcomeDetails": "Details"
   },
   "artifact": {
     "kind": {

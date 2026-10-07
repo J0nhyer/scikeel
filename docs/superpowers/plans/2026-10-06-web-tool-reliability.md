@@ -18,6 +18,14 @@ Approved spec: `docs/superpowers/specs/2026-10-07-web-tool-reliability-design.md
 
 Run heavy checks sequentially through package scripts. Never call Vite, Vitest, Cargo, upstream Bun build/test/typecheck, or parallel heavy jobs directly on this production host. Never set `CI=true` to bypass the managed runtime build restriction. Dedicated CI performs the full upstream runtime build. Use the existing image attestation and resumable Web publication workflow; do not introduce deployment shell scripts or copy candidate files over production by hand. Preserve user data and unrelated checkout modifications.
 
+## Execution evidence (October 7, 2026)
+
+The implementation checkout is `.worktrees/web-tool-reliability-2026-10-06`, branch `feat/web-tool-reliability`, with effective production baseline committed as `87695fd`. The baseline platform source is `.deploy/web-releases/2026-10-06T20-14-35-561Z-a8b6bfe7/source`; its served Web bundle remains `.deploy/web-releases/2026-10-06T19-33-59-757Z-4974f3fc/web`. Baseline fingerprints and red/green logs are in the ignored `.deploy/verification/web-tool-reliability/` directory.
+
+The pinned native acceptance reproduced zero scoped authorizations after permission allow before the patch. The patched source passes deny/allow ordering, explicit HTTP proxy credentials, certificate-verified HTTPS CONNECT, two additional read attempts, and no retries for upstream 403. Browser acceptance passes at 1280px and 360px using the built candidate, including live failure details, Stop, invalid-tool status and history reload. Full CI compilation, attested-image installation and live installed-stack acceptance remain required; these results do not constitute deployment acceptance.
+
+There is no administrator-selected search backend in the current managed configuration. This candidate hides the managed V1 search advertisement and rejects direct search invocations with `search_unavailable`; it does not add a backend or shared credentials. Unmanaged search behavior remains compatible. A linked sparse pinned source checkout reuses existing dependency bytes; full runtime builds stay CI-only. Low free disk space and incomplete full-checkout fetching were investigated using existing sparse-source and build/cache patterns; no deployed bundle, historical release or user data was deleted.
+
 ## Planning evidence and implementation decisions
 
 The inspected production service source is `.deploy/web-releases/2026-10-06T10-00-57-668Z-78253dd5/source`; re-inspect it before execution. The approved spec distinguishes verified code paths from historical diagnostic leads.
@@ -84,6 +92,12 @@ type OperationGrant = {
 Public methods are `authorize(context, proposal)`, `continueOrigin(context, operationId, origin)`, `finish(context, operationId, detail)`, `cancelExecution(context, sessionId, execution, reason)`, and `revokeContext(context)`. Only `authorize`, `complete`, and `cancel` are allowed `/network` actions; a cross-origin continuation uses `authorize` with its existing `operationId`. A caller cannot choose identity, proxy address, arbitrary callback, HTTP headers or shared credentials through this route.
 
 `ToolOutcomes` receives `{rootDir, now}` and exposes `record(owner, callId, outcome)`, `recordStop(owner, callIds)`, and `list(owner)`; `owner` includes authenticated user/session and execution. Runtime completion may report safe upstream/runtime results but may not assert a gateway denial, user Stop, or verification of scientific outputs. Grant bytes are never persisted.
+
+Final local checks: 1,883 frontend tests passed (27 existing conditional skips), 363 platform tests passed (6 conditional skips), and all 41 release/cache checks passed. Typecheck, lint and the guarded Web build passed. Both pinned native source gates passed without skips, and the final built Web bundle passed two consecutive browser runs at 1280px and 360px, including keyboard-operated details, Stop and reload. Browser startup now follows the existing session fixture by awaiting history hydration and SSE readiness before publishing tool events. Compiled-image and production acceptance have not run.
+
+Local implementation status: Tasks 1–5 and 7–10 have a reviewable implementation and deterministic coverage. Task 6 has the combined runtime recipe, exact source/resource hashes and image validation, but no CI artifact has been produced here. Task 11 registers the staged-browser and native-runtime gates; installed-stack acceptance is still pending. Task 12 remains gated on publication authorization and the exact CI-attested image. Unchecked publication and installed-runtime steps below must not be interpreted as completed.
+
+The tool browser scenario reuses the existing `session` release group instead of introducing a separate group or live-test command. Tool adapter, operation/store, SDK and row changes select that group, and a source containing the network lock requires the scenario to exist and execute. This follows the current release pattern while keeping one browser pipeline. Native coverage also verifies deadline-bound body reads, runtime abort, and a rejected cross-origin redirect; authority revocation precedes diagnostic writes even when storage fails.
 
 ## Task 1: Freeze the effective baseline and prove the permission insertion point
 

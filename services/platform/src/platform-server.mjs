@@ -1,3 +1,6 @@
+import { NetworkOperations } from "./network-operations.mjs";
+import { ToolOutcomes } from "./tool-outcomes.mjs";
+import { makeToolOutcome, readToolError, ToolOutcomeError } from "../../../packages/sdk/src/tool-outcome.mjs";
 import { request as httpRequest, createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -291,6 +294,7 @@ export class PlatformServer {
     logger = () => {},
     tenantPolicy = null,
     approvalGate = null,
+    networkEgress = null,
     runtimeCatalog = null,
     environments = null,
     workspaceFiles = null,
@@ -335,6 +339,9 @@ export class PlatformServer {
     this.logger = logger;
     this.tenantPolicy = tenantPolicy;
     this.approvalGate = approvalGate ?? ((_context,request)=>request.manual===true);
+    this.toolOutcomes = new ToolOutcomes({ rootDir: resolve(workerManager.rootDir, "../tool-outcomes") });
+    this.permissionDecisions = new Map();
+    if (networkEgress) this.configureNetwork(networkEgress);
     this.runtimeCatalog = runtimeCatalog;
     this.environments = environments;
     this.server = null;
@@ -873,6 +880,13 @@ export class PlatformServer {
     return visit(task.sessionId);
   }
   async #cancelResearch(task) {
+    if (this.network && task.runtime === "opencode") {
+      const worker = this.workerManager.getWorker(workerIdForUser(task.userId));
+      if (!worker) return;
+      const context = { userId: task.userId, instanceId: worker.id, generation: worker.generation };
+      const state = this.collaboration.records.get(this.collaboration.key(task));
+      void this.network.cancelExecution(context, task.sessionId, state.execution, "interrupted").catch(() => {});
+    }
     if (task.runtime !== "opencode") {
       const state = await this.cliRuntime?.ensureUser(task.userId);
       for (const session of state?.sessions.values() ?? []) if (session.parentId === task.sessionId) await this.cliRuntime.abortSession(task.userId, session.id, true);
@@ -903,6 +917,110 @@ export class PlatformServer {
     }
     throw new Error("Collaboration ancestry unavailable");
   }
+  async decorateToolPart(userId, sessionId, part, saved) {
+    if (part?.type !== "tool" || !part.state) return part;
+    const metadata = { ...part.state.metadata }; delete metadata.scikeelOutcome;
+    const snapshot = saved ?? await this.toolOutcomes.list({ userId, sessionId });
+    let outcome = ["completed", "error"].includes(part.state.status) ? snapshot.records.findLast(record => record.callId === part.callID)?.outcome : null;
+    if (part.state.status === "completed" && part.tool !== "invalid") outcome = null;
+    if (!outcome && part.tool === "edit" && part.state.status === "error" && part.state.error === "No changes to apply: oldString and newString are identical." &&
+        !snapshot.stops?.callIds.includes(part.callID) && this.researchTasks.workspace) {
+      const input = part.state.input;
+      if (typeof input?.oldString === "string" && input.oldString.length > 0 && input.oldString === input.newString && typeof input.filePath === "string") {
+        try {
+          const worker = this.workerManager.getWorker(workerIdForUser(userId));
+          const context = { userId, instanceId: worker.id, generation: worker.generation };
+          const session = this.tenantPolicy.session(context, sessionId);
+          const owner = { userId, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir };
+          const state = await this.collaboration.get(owner);
+          if (state.phase === "running") {
+            const path = relativeInput(isAbsolute(input.filePath) ? relative(owner.directory, input.filePath) : input.filePath);
+            const text = await this.researchTasks.workspace.readReport(owner, path);
+            // Recheck Stop after the read; no stopped tool may acquire a verified-success label.
+            if (typeof text === "string" && text.includes(input.newString) && !(await this.toolOutcomes.list(owner)).stops?.callIds.includes(part.callID)) {
+              outcome = makeToolOutcome("edit_no_change", { source: "gateway", correlationId: part.callID, details: { verifiedNoChange: true } });
+              await this.toolOutcomes.record({ ...owner, execution: state.execution }, part.callID, outcome);
+            }
+          }
+        } catch { /* Missing or unowned files retain the actual failed edit. */ }
+      }
+    }
+    if (["running", "pending", "error"].includes(part.state.status) && snapshot.stops?.confirmed !== false && snapshot.stops?.callIds.includes(part.callID) &&
+        (part.state.status !== "error" || /^(?:Tool execution aborted|The operation was aborted\.?|Aborted)$/.test(part.state.error ?? ""))) {
+      outcome = makeToolOutcome("execution_cancelled", { source: "gateway", correlationId: part.callID, details: { effectUnknown: true } });
+    }
+    if (outcome) metadata.scikeelOutcome = outcome;
+    return { ...part, state: { ...part.state, metadata } };
+  }
+  configureNetwork(egress) {
+    this.network = new NetworkOperations({ egress, outcomes: this.toolOutcomes,
+      resolveCall: (context, proposal) => this.resolveNetworkCall(context, proposal),
+      authorizeCall: (context, call) => this.authorizeNetworkCall(context, call) });
+    egress.onAttempt = value => this.network.observeAttempt(value);
+    egress.onFailure = value => this.network.observeFailure(value);
+  }
+  async resolveNetworkCall(context, proposal) {
+    const { state } = await this.runtimeCollaboration(context, { action: "state", sessionId: proposal.sessionId });
+    if (state.phase !== "running" || state.execution !== proposal.execution) throw new ToolOutcomeError(makeToolOutcome("network_admission_denied", { source: "gateway", status: 403, correlationId: proposal.callId }));
+    const session = this.tenantPolicy.session(context, proposal.sessionId);
+    const part = await this.runningToolPart(context, proposal.sessionId, proposal.callId);
+    if (!["webfetch", "websearch"].includes(part.tool) || part.tool !== proposal.tool) throw new Error("Network tool denied");
+    // Search is unavailable until an administrator selects and enables its managed backend.
+    if (part.tool === "websearch") throw new ToolOutcomeError(makeToolOutcome("search_unavailable", { source: "gateway", status: 503, correlationId: proposal.callId }));
+    const url = new URL(part.state.input?.url);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port || url.hash ||
+        !Array.isArray(proposal.origins) || proposal.origins.length !== 1 || proposal.origins[0] !== url.origin) throw new Error("Network destination denied");
+    const seconds = part.state.input.timeout ?? 30;
+    if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("Network timeout denied");
+    return { sessionId: proposal.sessionId, ownerSessionId: state.sessionId, execution: state.execution, callId: proposal.callId,
+      tool: part.tool, origins: [url.origin], budgetMs: Math.min(120000, Math.floor(seconds * 1000)), directory: session.directory };
+  }
+  async runningToolPart(context, sessionId, callId) {
+    const worker = this.workerManager.getWorker(context.instanceId);
+    if (!worker || worker.userId !== context.userId || worker.generation !== context.generation || worker.status !== "running") throw new Error("Tool worker unavailable");
+    const session = this.tenantPolicy.session(context, sessionId);
+    const history = await this.#workerResearchRequest({ userId: context.userId, directory: session.directory }, `/session/${encodeURIComponent(sessionId)}/message`);
+    const part = Array.isArray(history) && history.flatMap(message => message.parts ?? []).findLast(part => part.type === "tool" && part.callID === callId);
+    if (!part || part.state?.status !== "running") throw new Error("Running tool not found");
+    return part;
+  }
+  permissionKey(context, sessionId, callId) { return JSON.stringify([context.userId, context.instanceId, context.generation, sessionId, callId]); }
+  async authorizeNetworkCall(context, call) {
+    const { state } = await this.runtimeCollaboration(context, { action: "state", sessionId: call.sessionId });
+    if (state.phase !== "running" || state.execution !== call.execution) return { allowed: false };
+    const action = collaborationPermissions(state.executionMode ?? state.mode).filter(rule => ["*", call.tool].includes(rule.permission)).at(-1)?.action;
+    if (action === "deny") return { allowed: false };
+    if (action === "allow") return { allowed: true, kind: "automatic", expiresAt: Date.now() + 120000 };
+    const ownerKey = JSON.stringify([context.userId, context.instanceId, context.generation]);
+    const decision = this.permissionDecisions.get(this.permissionKey(context, call.sessionId, call.callId)) ??
+      [...this.permissionDecisions.values()].find(value => value.reusable && value.ownerKey === ownerKey && value.sessionId === call.sessionId && value.tool === call.tool && value.execution === call.execution && call.origins.every(origin => value.origins.includes(origin)));
+    if (!decision || decision.execution !== call.execution) return { allowed: false };
+    await decision.ready;
+    return { allowed: decision.allowed && call.origins.every(origin => decision.origins.includes(origin)), kind: "manual", expiresAt: decision.reusable ? Date.now() + 120000 : decision.expiresAt };
+  }
+  async runtimeNetwork(context, body) {
+    if (!this.network || body.version !== 1) throw new Error("Managed network unavailable");
+    this.tenantPolicy.account(context);
+    if (body.action === "authorize") {
+      if (body.operationId) return this.network.continueOrigin(context, body.operationId, body.origins?.[0]);
+      return this.network.authorize(context, body);
+    }
+    if (body.action === "complete" || body.action === "cancel") {
+      let outcome = body.outcome;
+      if (outcome) {
+        const safe = readToolError(JSON.stringify({ error: outcome }));
+        if (!safe || !["runtime", "upstream"].includes(safe.source) || !["tool_permission_denied", "network_timeout", "network_upstream_refused", "tool_internal_error"].includes(safe.code)) throw new Error("Runtime outcome denied");
+        outcome = safe;
+      }
+      // A runtime cancellation is interruption; only authenticated Stop can label cancellation.
+      if (body.action === "cancel") {
+        const operation = this.network.owner(context, body.operationId);
+        outcome = makeToolOutcome("execution_interrupted", { source: "gateway", correlationId: operation.call.callId, details: { effectUnknown: true } });
+      }
+      await this.network.finish(context, body.operationId, outcome ?? null); return { completed: true };
+    }
+    throw new Error("Network action denied");
+  }
   collaborationAvailable(userId,generation){return this.collaborationCapabilities.has(userId)&&this.collaborationCapabilities.get(userId)===generation;}
   async runtimeCollaboration(context,body){
     const worker=this.workerManager.getWorker(context.instanceId);
@@ -927,7 +1045,23 @@ export class PlatformServer {
     const owner=await this.#collaborationOwner({id:context.userId},body.sessionId,access,worker);
     if(body.action==="checkpoint")return {state:await this.collaboration.checkpoint(owner,body)};
     if(body.action==="state")return {state:await this.collaboration.get(owner)};
-    if(body.action==="delivery")return {state:await this.collaboration.delivery(owner,body)};
+    if(body.action==="delivery") {
+      if (body.callId) {
+        const part = await this.runningToolPart(context, body.sessionId, body.callId);
+        if (part.tool !== "research_delivery" || part.state.input?.action !== body.operation ||
+            JSON.stringify(part.state.input?.inputs ?? []) !== JSON.stringify(body.inputs ?? []) ||
+            JSON.stringify(part.state.input?.deliverables ?? []) !== JSON.stringify(body.deliverables ?? [])) throw new Error("Delivery call denied");
+      }
+      try { return {state:await this.collaboration.delivery(owner,body)}; }
+      catch (error) {
+        if (body.callId && ["delivery_missing_input", "delivery_mode_mismatch", "delivery_execution_paused"].includes(error.code)) {
+          const state = await this.collaboration.get(owner);
+          await this.toolOutcomes.record({ userId: context.userId, sessionId: body.sessionId, execution: state.execution }, body.callId,
+            makeToolOutcome(error.code, { source: "collaboration", status: error.status, correlationId: body.callId, details: error.details }));
+        }
+        throw error;
+      }
+    }
     if(body.action==="guard"){const guarded=await this.collaboration.guard(owner);return {...guarded,policy:collaborationPolicy(guarded.state)};}
     throw new Error("Collaboration operation denied");
   }
@@ -1058,6 +1192,46 @@ export class PlatformServer {
       parsed.searchParams.delete("token");
       parsed.searchParams.delete("auth_token");
       parsed.searchParams.set("directory", directory);
+      let stopping;
+      if (operation.operation === "sessionAbort") {
+        const owner = await this.#collaborationOwner(user, sessionId, access, worker);
+        const state = await this.collaboration.get(owner);
+        const sessions = [];
+        const visit = async (id, depth = 0) => {
+          if (depth > 20 || sessions.length >= 256) throw new Error("Stop descendant limit exceeded");
+          const info = this.tenantPolicy.session(context, id);
+          const history = await this.#workerResearchRequest({ userId: user.id, directory: info.directory }, `/session/${id}/message`);
+          const callIds = (Array.isArray(history) ? history : []).flatMap(message => message.parts ?? []).filter(part => part.type === "tool" && ["running", "pending"].includes(part.state?.status)).map(part => part.callID).filter(id => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id)).slice(-256);
+          sessions.push({ owner: { userId: user.id, sessionId: id, execution: state.execution }, callIds });
+          const children = await this.#workerResearchRequest({ userId: user.id, directory: info.directory }, `/session/${id}/children`);
+          for (const child of Array.isArray(children) ? children : []) {
+            this.tenantPolicy.registerSession(context, child); await visit(child.id, depth + 1);
+          }
+        };
+        await visit(sessionId);
+        for (const item of sessions) item.stopId = await this.toolOutcomes.recordStop(item.owner, item.callIds, false);
+        // Revoke grants and block pending issuance synchronously before abort forwarding.
+        void this.network?.cancelExecution(context, owner.sessionId, state.execution, "interrupted").catch(() => {});
+        stopping = { owner, state, sessions };
+      }
+      let permissionDecision;
+      if (operation.operation === "permissionReply") {
+        const pending = this.tenantPolicy.request(context, operation.identifiers.requestId);
+        if (pending.callId && ["webfetch", "websearch"].includes(pending.permission)) {
+          if (!["once", "always", "reject"].includes(body.reply)) throw Object.assign(new Error("Invalid permission reply"), { statusCode: 400 });
+          const owner = await this.#collaborationOwner(user, pending.sessionID, access, worker);
+          const state = await this.collaboration.get(owner);
+          const key = this.permissionKey(context, pending.sessionID, pending.callId);
+          for (const [savedKey, saved] of this.permissionDecisions) if ((!saved.reusable && saved.expiresAt <= Date.now()) || saved.ownerKey === JSON.stringify([context.userId, context.instanceId, context.generation]) && saved.sessionId === pending.sessionID && saved.execution !== state.execution) this.permissionDecisions.delete(savedKey);
+          if (this.permissionDecisions.get(key)?.requestId === pending.id || this.permissionDecisions.size >= 1000) throw Object.assign(new Error("Permission decision unavailable"), { statusCode: 409 });
+          let release;
+          permissionDecision = { requestId: pending.id, execution: state.execution, reusable: body.reply === "always",
+            ownerKey: JSON.stringify([context.userId, context.instanceId, context.generation]), sessionId: pending.sessionID, tool: pending.permission, allowed: false, expiresAt: Date.now() + 120000,
+            origins: (pending.patterns ?? []).flatMap(value => { try { return [new URL(value).origin]; } catch { return []; } }),
+            ready: new Promise(resolve => { release = resolve; }) };
+          permissionDecision.release = release; this.permissionDecisions.set(key, permissionDecision);
+        }
+      }
       const target = new URL(`${operation.path}${parsed.search}`, access.url);
       const controller = new AbortController();
       request.on("aborted", () => controller.abort());
@@ -1069,6 +1243,11 @@ export class PlatformServer {
             ? "text/event-stream" : "application/json", "content-type": "application/json" },
           ...(["POST", "PATCH", "DELETE"].includes(operation.method) ? { body: JSON.stringify(body) } : {}),
         });
+        if (stopping && upstream.ok) {
+          for (const { owner, stopId } of stopping.sessions) await this.toolOutcomes.confirmStop(owner, stopId);
+          await this.network?.cancelExecution(context, stopping.owner.sessionId, stopping.state.execution, "stop");
+        }
+        if (permissionDecision) { permissionDecision.allowed = upstream.ok && body.reply !== "reject"; permissionDecision.release(); }
         if (operation.operation === "event" && upstream.ok) {
           clearTimeout(timeout);
           response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
@@ -1096,6 +1275,10 @@ export class PlatformServer {
                 if (["permission.asked", "question.asked"].includes(type) && properties)
                   this.tenantPolicy.registerRequest(context, properties);
                 if (properties?.sessionID) this.tenantPolicy.session(context, properties.sessionID);
+                if (type === "message.part.updated" && properties?.part?.type === "tool") {
+                  const id = properties.part.sessionID; this.tenantPolicy.session(context, id);
+                  properties.part = await this.decorateToolPart(user.id, id, properties.part);
+                }
                 if (!response.write(`data: ${JSON.stringify(event)}\n\n`)) {
                   await new Promise((resolve, reject) => {
                     const onDrain = () => { cleanup(); resolve(); };
@@ -1137,6 +1320,8 @@ export class PlatformServer {
           if(operation.operation === "sessionMessage" && operation.method === "GET" && Array.isArray(value)) {
             const owner=await this.#researchOwner(user,sessionId,access,worker);
             value=await this.attachmentTurns.decorate(user,owner,value);
+            const outcomes = await this.toolOutcomes.list({ userId: user.id, sessionId });
+            value = await Promise.all(value.map(async message => ({ ...message, parts: await Promise.all((message.parts ?? []).map(part => this.decorateToolPart(user.id, sessionId, part, outcomes))) })));
           }
           if(operation.operation === "sessionDelete")await this.attachments.deleteSession(user.id,sessionId);
           if(operation.operation === "sessionFork" && value?.id) {
@@ -1150,7 +1335,7 @@ export class PlatformServer {
           if (operation.operation === "sessionMove") this.tenantPolicy.registerSession(context, { id: sessionId, directory });
         }
         sendJson(response, upstream.status, scrubRuntimeSecrets(value ?? null));
-      } finally { clearTimeout(timeout); }
+      } finally { clearTimeout(timeout); permissionDecision?.release(); }
     } catch (error) {
       if (response.headersSent) { response.destroy(); return; }
       const status = error.statusCode ?? error.status ?? (error.code === "body_too_large" ? 413 : 502);

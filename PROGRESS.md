@@ -1,3 +1,7 @@
+2026-10-07 17:32 · The isolated Web tool-reliability implementation passes 1,883 frontend tests, 363 platform tests, 41 release checks, pinned native title/network acceptance, bounded build/typecheck/lint and repeated 1280px/360px browser acceptance; publication remains gated on the CI-attested image and installed-stack acceptance.
+
+2026-10-07 16:39 · The isolated Web tool-reliability candidate passes native permission/proxy/TLS/retry acceptance, bounded Web build, and 1280px/360px live-history/Stop browser checks; production remains unchanged and the combined CI-attested runtime image is still required.
+
 # Progress
 
 2026-10-01 17:11 · Published SciKeel to the public J0nhyer/scikeel GitHub repository with main as the default branch, preserved the complete upstream history and upstream remote, and verified the remote commit after a clean scan of 4750 historical file objects.

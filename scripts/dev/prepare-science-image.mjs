@@ -1,4 +1,4 @@
-import { validateRuntimeArtifact } from "./build-opencode-title-runtime.mjs";
+import { validateRuntimeArtifact, validateNetworkRuntime } from "./build-opencode-title-runtime.mjs";
 import { imageInputPath } from './web-release-policy.mjs';
 // CI-only artifact measurement. Never call this on the shared cloud server.
 import { createHash } from "node:crypto";
@@ -85,8 +85,9 @@ print(json.dumps(out))`;
   const archive = join(artifacts, "rootfs.tar.gz");
   const inventory = JSON.parse(run("python3", [inspector, archive]));
   const digest = await sha256(archive);
+  validateNetworkRuntime(sessionTitleRuntime.networkRuntime, JSON.parse(await readFile(join(sourceRoot, "runtime/opencode-patches/network.lock.json"), "utf8")));
   const runnerFiles = {};
-  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs", "collaboration.mjs"])
+  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs", "collaboration.mjs", "tool-outcome.mjs"])
     runnerFiles[`opt/scikeel/tools/${name}`] = await sha256(join(context, "tools", name));
   const sourceInputs = [];
   const sourcePaths = run('git', ['-C', sourceRoot, 'ls-files', '-z']).split('\0').filter(Boolean).filter(imageInputPath).sort((a, b) => a.localeCompare(b));

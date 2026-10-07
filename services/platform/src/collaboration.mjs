@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import { researchPaths } from "./research-tasks.mjs";
 const fail = (message, status = 409) =>
   Object.assign(new Error(message), { status });
+const businessFailure = (code, message, status = 409, details) =>
+  Object.assign(fail(message, status), { code, ...(details ? { details } : {}) });
 const id = (v) => {
   if (typeof v !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(v))
     throw fail("Invalid collaboration identifier", 400);
@@ -206,10 +208,10 @@ export class CollaborationStore {
       const s = await this.load(o);
       if (s.pending) throw fail("Research decision requires an answer");
       if (!this.alive(o) || s.phase !== "running")
-        throw fail("Research execution is paused");
+        throw businessFailure("delivery_execution_paused", "Research execution is paused");
       if (value.execution !== s.execution) throw fail("Research execution changed");
       if (!["delegated", "autonomous"].includes(s.executionMode ?? s.mode))
-        throw fail("Delivery verification requires Delegated mode", 400);
+        throw businessFailure("delivery_mode_mismatch", "Delivery verification requires Delegated mode", 400);
       if (!this.research) throw fail("Delivery verification is unavailable", 503);
       if (value.operation === "prepare") {
         const inputs = researchPaths(value.inputs ?? []);
@@ -221,7 +223,8 @@ export class CollaborationStore {
           return structuredClone(s);
         }
         const versions = await Promise.all(inputs.map((path) => this.research.artifact(o, path)));
-        if (versions.some((v) => !v.exists)) throw fail("An original input is missing", 400);
+        const missingIndex = versions.findIndex((v) => !v.exists);
+        if (missingIndex !== -1) throw businessFailure("delivery_missing_input", "An original input is missing", 400, { path: inputs[missingIndex] });
         s.delivery = {
           execution: s.execution,
           reportPath: `.scikeel/delivery-${id(s.sessionId)}-${s.execution}.json`,

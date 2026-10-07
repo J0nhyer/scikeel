@@ -1,3 +1,5 @@
+import type { ToolOutcome } from "./toolOutcome";
+export type { ToolOutcome, ToolOutcomeCode } from "./toolOutcome";
 // Stable domain types for AI4S Workbench.
 // Imported by the desktop app now, and by the SDK / runtime in later slices.
 
@@ -154,6 +156,8 @@ export type ToolCallStatus =
 export type ToolVerb = "Ran" | "Created" | "Edited" | "Read" | "Searched" | "Listed" | "Fetched";
 
 export interface ToolCallBlock {
+  outcome?: ToolOutcome;
+  callId?: string;
   kind: "tool-call";
   /** What to recognize the step by: a de-noised command, a file path, a
    *  pattern — never the raw `cd … && …` line (that lives in `command`). */

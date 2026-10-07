@@ -1,3 +1,4 @@
+import { readToolError, ToolOutcomeError } from "./tool-outcome.mjs";
 /** Trusted plugin options carry only the existing scoped broker token. */
 export function collaborationHooks({ token, request: provided }) {
   if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token))
@@ -16,8 +17,26 @@ export function collaborationHooks({ token, request: provided }) {
           ? AbortSignal.any([signal, AbortSignal.timeout(5000)])
           : AbortSignal.timeout(5000),
       });
-      if (!response.ok)
+      if (!response.ok) {
+        // Cap bytes while reading: a malicious upstream must not allocate an unbounded body.
+        const reader = response.body?.getReader();
+        const chunks = []; let bytes = 0;
+        if (reader) {
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              bytes += value.byteLength;
+              if (bytes > 8192) { await reader.cancel(); break; }
+              chunks.push(value);
+            }
+          } finally { reader.releaseLock(); }
+        }
+        const text = bytes <= 8192 ? new TextDecoder().decode(Uint8Array.from(chunks.flatMap(value => [...value]))) : "";
+        const outcome = readToolError(text);
+        if (outcome) throw new ToolOutcomeError(outcome);
         throw new Error("Research checkpoint service unavailable");
+      }
       return response.json();
     });
   const registrations = new Map(),
@@ -36,7 +55,7 @@ export function collaborationHooks({ token, request: provided }) {
           throw new Error("Delivery repair limit reached; explain the partial outcome");
         if (input.tool === "research_delivery") {
           const saved = await request(key, {
-            action: "delivery", operation: output.args.action,
+            action: "delivery", callId: input.callID, operation: output.args.action,
             execution: result.state.execution,
             inputs: output.args.inputs, deliverables: output.args.deliverables,
           });
@@ -45,7 +64,7 @@ export function collaborationHooks({ token, request: provided }) {
         if (input.tool === "research_checkpoint") {
           const registered = await request(key, {
             action: "checkpoint",
-            ...output.args,
+            ...output.args, callId: input.callID,
           });
           registrations.set(`${key}/${input.callID}`, registered);
         }
@@ -71,7 +90,7 @@ export function collaborationHooks({ token, request: provided }) {
         registrations.get(key) ??
         (await request(
           context.sessionID,
-          { action: "checkpoint", ...args },
+          { action: "checkpoint", ...args, callId: context.callID },
           context.abort,
         ));
       registrations.delete(key);
@@ -125,7 +144,7 @@ export function collaborationHooks({ token, request: provided }) {
         if (guarded.blocked) throw new Error("Research decision requires an answer");
         if (guarded.repairExhausted) throw new Error("Delivery repair limit reached");
         saved = await request(context.sessionID, {
-          action: "delivery", operation: args.action, execution: guarded.state.execution,
+          action: "delivery", callId: context.callID, operation: args.action, execution: guarded.state.execution,
           inputs: args.inputs, deliverables: args.deliverables,
         }, context.abort);
       }

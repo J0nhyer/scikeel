@@ -80,10 +80,11 @@ export class EgressBroker {
   #grants = new Map(); #active = new Map(); #clients = new Set(); #operations = new Set(); #pending = 0;
   constructor({ now = Date.now, resolve = (host) => lookup(host, { all: true, verbatim: true }), identify,
     request = (options) => (options.protocol === "https:" ? httpsRequest : httpRequest)(options), connect = createConnection,
-    maxBytes = 32 * 1024 ** 2, timeoutMs = 120000, dnsTimeoutMs = 5000, maxConnections = 8 } = {}) {
+    onFailure = null, maxBytes = 32 * 1024 ** 2, timeoutMs = 120000, dnsTimeoutMs = 5000, maxConnections = 8 } = {}) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 128 * 1024 ** 2 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000 ||
         !Number.isSafeInteger(dnsTimeoutMs) || dnsTimeoutMs < 1 || dnsTimeoutMs > 5000 ||
         !Number.isSafeInteger(maxConnections) || maxConnections < 1 || maxConnections > 8) throw new Error("invalid egress limits");
+    this.onFailure = onFailure;
     this.now = now; this.resolve = resolve; this.identify = identify; this.request = request; this.connect = connect;
     this.maxBytes = maxBytes; this.timeoutMs = timeoutMs; this.dnsTimeoutMs = dnsTimeoutMs; this.maxConnections = maxConnections;
   }
@@ -99,7 +100,15 @@ export class EgressBroker {
   revoke(context) {
     const owner = identity(context);
     for (const [id, grant] of this.#grants) if (grant.owner === owner) this.#grants.delete(id);
-    this.#active.get(owner)?.abort(failure("egress_grant_revoked"));
+    this.#active.get(owner)?.controller.abort(failure("egress_grant_revoked"));
+  }
+  revokeGrant(context, grantId) {
+    const owner = identity(context), grant = this.#grants.get(grantId);
+    if (!grant || grant.owner !== owner) return false;
+    this.#grants.delete(grantId);
+    const active = this.#active.get(owner);
+    if (active?.grantId === grantId) active.controller.abort(failure("egress_grant_revoked"));
+    return true;
   }
   async target({ context, grantId, url, signal }) {
     const owner = identity(context); const grant = this.#grants.get(grantId); const parsed = destination(url);
@@ -131,9 +140,11 @@ export class EgressBroker {
     finally { this.#pending--; }
     const owner = identity(context);
     if (this.#active.has(owner)) throw failure("egress_busy", 429);
-    this.#active.set(owner, controller);
+    try { this.onAttempt?.({ context, grantId }); } catch {}
+    const active = { grantId, controller };
+    this.#active.set(owner, active);
     let released = false;
-    const release = () => { if (!released) { released = true; this.#active.delete(owner); } };
+    const release = () => { if (!released) { released = true; if (this.#active.get(owner) === active) this.#active.delete(owner); } };
     return { context, owner, grantId, release };
   }
   async #http(req, res) {
@@ -158,7 +169,8 @@ export class EgressBroker {
       res.writeHead(response.statusCode, headers(response.headers));
       await pipeline(response, byteLimit(this.maxBytes), res, { signal: controller.signal });
     } catch (error) {
-      sendFailure(res, controller.signal.aborted ? controller.signal.reason : error);
+      const reason = controller.signal.aborted ? controller.signal.reason : error;
+      this.observeFailure(lease, reason); sendFailure(res, reason);
     } finally {
       upstream?.destroy(); lease?.release(); clearTimeout(timer); clearTimeout(expiry);
       res.removeListener("close", cancel); this.#operations.delete(controller);
@@ -186,12 +198,17 @@ export class EgressBroker {
         pipeline(upstream, byteLimit(this.maxBytes), socket, { signal: controller.signal })]);
     } catch (error) {
       const reason = controller.signal.aborted ? controller.signal.reason : error;
+      this.observeFailure(lease, reason);
       if (!established && !socket.destroyed) socket.end(`HTTP/1.1 ${reason?.status ?? 502} Connection Failed\r\nConnection: close\r\n\r\n`);
       else socket.destroy();
     } finally {
       upstream?.destroy(); lease?.release(); clearTimeout(timer); clearTimeout(expiry);
       socket.removeListener("close", cancel); socket.removeListener("error", cancel); this.#operations.delete(controller);
     }
+  }
+  observeFailure(lease, error) {
+    if (!lease || !/^egress_[a-z_]+$/.test(error?.code ?? "") || !Number.isInteger(error.status)) return;
+    try { Promise.resolve(this.onFailure?.({ context: lease.context, grantId: lease.grantId, code: error.code, status: error.status })).catch(() => {}); } catch {}
   }
   async listen({ host = "172.31.240.1", port = 4794 } = {}) {
     if (this.server) throw new Error("egress broker already listening");

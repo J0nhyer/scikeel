@@ -377,7 +377,82 @@
         "default_other": "ejecutó {{count}} pasos"
       },
       "failedCount": "{{count}} fallidos"
-    }
+    },
+    "outcome": {
+      "tool_permission_denied": {
+        "message": "La ejecución no fue autorizada.",
+        "nextAction": "Revisa el permiso actual de la herramienta."
+      },
+      "network_admission_denied": {
+        "message": "No se pudo obtener autorización de red.",
+        "nextAction": "Comprueba la conexión de red administrada."
+      },
+      "network_destination_denied": {
+        "message": "El destino está fuera del ámbito permitido.",
+        "nextAction": "Elige un destino público permitido."
+      },
+      "network_grant_expired": {
+        "message": "La autorización de red ha caducado.",
+        "nextAction": "Inicia una nueva llamada autorizada si sigue siendo necesaria."
+      },
+      "network_grant_revoked": {
+        "message": "La autorización de red fue revocada.",
+        "nextAction": "Comprueba si se detuvo la ejecución."
+      },
+      "network_busy": {
+        "message": "La capacidad de red está ocupada temporalmente.",
+        "nextAction": "Reintenta dentro del tiempo disponible para esta llamada."
+      },
+      "network_timeout": {
+        "message": "La solicitud de red agotó el tiempo de espera.",
+        "nextAction": "Reintenta dentro del tiempo disponible para esta llamada."
+      },
+      "network_upstream_refused": {
+        "message": "El servicio remoto rechazó la solicitud.",
+        "nextAction": "Comprueba su estado conocido y su disponibilidad."
+      },
+      "search_unavailable": {
+        "message": "El servicio de búsqueda configurado no está disponible.",
+        "nextAction": "Comprueba su configuración o usa una función disponible."
+      },
+      "delivery_missing_input": {
+        "message": "Falta una entrada original.",
+        "nextAction": "Corrige su ruta relativa al espacio de trabajo."
+      },
+      "delivery_mode_mismatch": {
+        "message": "La entrega no es compatible con el modo actual.",
+        "nextAction": "Revisa el modo de investigación actual."
+      },
+      "delivery_execution_paused": {
+        "message": "La ejecución de la investigación está pausada.",
+        "nextAction": "Reanuda la ejecución autorizada si es necesario."
+      },
+      "edit_ambiguous_match": {
+        "message": "La sustitución coincide con más de una ubicación.",
+        "nextAction": "Lee el archivo y proporciona un contexto de texto único."
+      },
+      "edit_no_change": {
+        "message": "La sustitución no produciría ningún cambio.",
+        "nextAction": "Comprueba si el contenido solicitado ya existe."
+      },
+      "tool_unavailable": {
+        "message": "La herramienta seleccionada no está disponible.",
+        "nextAction": "Usa la lista actual de herramientas disponibles."
+      },
+      "execution_cancelled": {
+        "message": "La ejecución fue cancelada.",
+        "nextAction": "Revisa los posibles efectos parciales antes de continuar."
+      },
+      "execution_interrupted": {
+        "message": "La ejecución fue interrumpida.",
+        "nextAction": "Comprueba sus efectos antes de iniciar otra llamada."
+      },
+      "tool_internal_error": {
+        "message": "La herramienta no pudo completar la operación.",
+        "nextAction": "Usa su identificador de correlación para investigar el fallo."
+      }
+    },
+    "outcomeDetails": "Detalles"
   },
   "artifact": {
     "kind": {

@@ -377,7 +377,82 @@
         "default_other": "führte {{count}} Schritte aus"
       },
       "failedCount": "{{count}} fehlgeschlagen"
-    }
+    },
+    "outcome": {
+      "tool_permission_denied": {
+        "message": "Die Ausführung wurde nicht erlaubt.",
+        "nextAction": "Prüfen Sie die aktuelle Werkzeugberechtigung."
+      },
+      "network_admission_denied": {
+        "message": "Die Netzwerkberechtigung konnte nicht erteilt werden.",
+        "nextAction": "Prüfen Sie die verwaltete Netzwerkverbindung."
+      },
+      "network_destination_denied": {
+        "message": "Das Ziel liegt außerhalb des erlaubten Bereichs.",
+        "nextAction": "Wählen Sie ein erlaubtes öffentliches Ziel."
+      },
+      "network_grant_expired": {
+        "message": "Die Netzwerkberechtigung ist abgelaufen.",
+        "nextAction": "Starten Sie bei Bedarf einen neuen autorisierten Aufruf."
+      },
+      "network_grant_revoked": {
+        "message": "Die Netzwerkberechtigung wurde widerrufen.",
+        "nextAction": "Prüfen Sie, ob die Ausführung gestoppt wurde."
+      },
+      "network_busy": {
+        "message": "Die Netzwerkkapazität ist vorübergehend ausgelastet.",
+        "nextAction": "Versuchen Sie es innerhalb des Zeitlimits dieses Aufrufs erneut."
+      },
+      "network_timeout": {
+        "message": "Die Netzwerkanfrage hat das Zeitlimit überschritten.",
+        "nextAction": "Versuchen Sie es innerhalb des Zeitlimits dieses Aufrufs erneut."
+      },
+      "network_upstream_refused": {
+        "message": "Der externe Dienst hat die Anfrage abgelehnt.",
+        "nextAction": "Prüfen Sie seinen bekannten Status und seine Verfügbarkeit."
+      },
+      "search_unavailable": {
+        "message": "Der konfigurierte Suchdienst ist nicht verfügbar.",
+        "nextAction": "Prüfen Sie seine Konfiguration oder nutzen Sie eine verfügbare Funktion."
+      },
+      "delivery_missing_input": {
+        "message": "Eine ursprüngliche Eingabedatei fehlt.",
+        "nextAction": "Korrigieren Sie ihren Pfad relativ zum Arbeitsbereich."
+      },
+      "delivery_mode_mismatch": {
+        "message": "Die Übergabe ist mit dem aktuellen Modus nicht vereinbar.",
+        "nextAction": "Prüfen Sie den aktuellen Forschungsmodus."
+      },
+      "delivery_execution_paused": {
+        "message": "Die Forschungsausführung ist pausiert.",
+        "nextAction": "Setzen Sie die autorisierte Ausführung bei Bedarf fort."
+      },
+      "edit_ambiguous_match": {
+        "message": "Die Ersetzung passt auf mehrere Stellen.",
+        "nextAction": "Lesen Sie die Datei und geben Sie eindeutigen umgebenden Text an."
+      },
+      "edit_no_change": {
+        "message": "Die Ersetzung würde nichts ändern.",
+        "nextAction": "Prüfen Sie, ob der gewünschte Inhalt bereits vorhanden ist."
+      },
+      "tool_unavailable": {
+        "message": "Das ausgewählte Werkzeug ist nicht verfügbar.",
+        "nextAction": "Nutzen Sie die aktuelle Liste verfügbarer Werkzeuge."
+      },
+      "execution_cancelled": {
+        "message": "Die Ausführung wurde abgebrochen.",
+        "nextAction": "Prüfen Sie vor dem Fortfahren mögliche Teilergebnisse."
+      },
+      "execution_interrupted": {
+        "message": "Die Ausführung wurde unterbrochen.",
+        "nextAction": "Prüfen Sie ihre Auswirkungen vor einem neuen Aufruf."
+      },
+      "tool_internal_error": {
+        "message": "Das Werkzeug konnte den Vorgang nicht abschließen.",
+        "nextAction": "Untersuchen Sie den Fehler anhand seiner Korrelationskennung."
+      }
+    },
+    "outcomeDetails": "Details"
   },
   "artifact": {
     "kind": {

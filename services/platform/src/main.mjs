@@ -85,6 +85,7 @@ const platform = new PlatformServer({
   workerManager,
   cliRuntime,
   tenantPolicy: controlPlane?.tenantPolicy,
+  networkEgress: controlPlane?.egress,
   runtimeCatalog: controlPlane?.runtimeCatalog,
   environments: controlPlane?.environments,
   workspaceFiles: controlPlane?.files,
@@ -95,7 +96,14 @@ const platform = new PlatformServer({
   logger: (event) => console.error(JSON.stringify(event)),
 });
 
-if(controlPlane) controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
+if(controlPlane) {
+  controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
+  controlPlane.model.networkHandler=(context,body)=>platform.runtimeNetwork(context,body);
+  controlPlane.revokeNetwork=async(context)=>{
+    for (const [key, value] of platform.permissionDecisions) if (value.ownerKey === JSON.stringify([context.userId, context.instanceId, context.generation])) platform.permissionDecisions.delete(key);
+    await platform.network?.revokeContext(context);
+  };
+}
 
 let shuttingDown = false;
 async function shutdown(signal) {

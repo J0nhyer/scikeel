@@ -1,0 +1,367 @@
+diff --git a/packages/core/src/tool/scikeel-network.ts b/packages/core/src/tool/scikeel-network.ts
+new file mode 100644
+index 0000000..d541226
+--- /dev/null
++++ b/packages/core/src/tool/scikeel-network.ts
+@@ -0,0 +1,131 @@
++import { Cause, Effect } from "effect"
++import { HttpClient, HttpClientError, HttpClientResponse } from "effect/unstable/http"
++import { makeToolOutcome, readToolError } from "./scikeel-outcome.mjs"
++
++const BROKER = "http://172.31.240.1:4792"
++const PROXY = "http://172.31.240.1:4794"
++type Call = { sessionID: string; callID?: string; toolCallID?: string; abort?: AbortSignal }
++const transientCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE"])
++export const isManaged = () => process.env.SCIKEEL_MANAGED_NETWORK_TOKEN !== undefined
++export function retryAfter(value: string | null, now = Date.now()): number | undefined {
++  if (!value) return
++  const seconds = /^\d+(?:\.\d+)?$/.test(value) ? Number(value) * 1000 : NaN
++  const date = Number.isFinite(seconds) ? seconds : Date.parse(value) - now
++  if (!Number.isFinite(date)) return
++  return Math.min(10000, Math.max(0, date))
++}
++const wait = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
++  signal.throwIfAborted()
++  const abort = () => { clearTimeout(timer); reject(signal.reason) }
++  const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve() }, ms)
++  signal.addEventListener("abort", abort, { once: true })
++})
++async function boundedBody(response: Response, maximum: number, signal: AbortSignal) {
++  const reader = response.body?.getReader(), chunks: Uint8Array[] = []
++  let bytes = 0
++  const abort = () => { void reader?.cancel() }
++  signal.addEventListener("abort", abort, { once: true })
++  try {
++    if (reader) for (;;) {
++      signal.throwIfAborted()
++      const { done, value } = await reader.read()
++      signal.throwIfAborted()
++      if (done) break
++      bytes += value.byteLength
++      if (bytes > maximum) throw new Error("Response too large")
++      chunks.push(value)
++    }
++    const result = new Uint8Array(bytes); let offset = 0
++    for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength }
++    return result
++  } finally { signal.removeEventListener("abort", abort); await reader?.cancel().catch(() => {}); reader?.releaseLock() }
++}
++export function managedClient(unmanaged: HttpClient.HttpClient, call: Call, tool: "webfetch" | "websearch", redirect: (url: string) => Effect.Effect<void, unknown>) {
++  if (!isManaged()) return unmanaged
++  return HttpClient.make((request, url, signal) => Effect.gen(function* () {
++    const services = yield* Effect.context<never>()
++    const response = yield* Effect.tryPromise({
++      try: async () => {
++        const token = process.env.SCIKEEL_MANAGED_NETWORK_TOKEN
++        const callId = call.callID ?? call.toolCallID
++        if (!token || !/^[a-f0-9]{64}$/.test(token) || !callId) throw new Error("Managed network configuration unavailable")
++        let operation: { operationId: string; grant: string; expiresAt: number } | undefined
++        let terminal: ReturnType<typeof makeToolOutcome> | undefined
++        const bridge = async (path: string, body: object, abort: AbortSignal) => {
++          const response = await fetch(BROKER + path, { method: "POST", proxy: "", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: abort })
++          const bytes = await boundedBody(response, 8192, abort)
++          const text = new TextDecoder().decode(bytes)
++          if (!response.ok) { const outcome = readToolError(text); throw new Error(outcome ? JSON.stringify({ error: outcome }) : "Managed network unavailable") }
++          return JSON.parse(text)
++        }
++        const lifetime = AbortSignal.any([signal, ...(call.abort ? [call.abort] : [])])
++        let current = url, method = request.method
++        const eligible = method === "GET" || method === "HEAD" || tool === "websearch" && method === "POST" && ["https://mcp.exa.ai", "https://search.parallel.ai"].includes(url.origin)
++        const body = request.body._tag === "Uint8Array" ? Uint8Array.from(request.body.body).buffer : request.body._tag === "Raw" ? request.body.body as BodyInit : undefined
++        if (!["Empty", "Uint8Array", "Raw"].includes(request.body._tag)) throw new Error("Unsupported managed network body")
++        try {
++          const state = await bridge("/collaboration", { sessionId: call.sessionID, action: "state" }, AbortSignal.any([lifetime, AbortSignal.timeout(5000)]))
++          const proposal = { version: 1, action: "authorize", sessionId: call.sessionID, callId, tool, execution: state.state.execution }
++          const validate = (value: typeof operation) => {
++            if (!value || !/^op_[A-Za-z0-9_-]+$/.test(value.operationId) || !/^[a-f0-9]{64}$/.test(value.grant) || !Number.isSafeInteger(value.expiresAt) || value.expiresAt <= Date.now() || value.expiresAt > Date.now() + 120000) throw new Error("Invalid network authorization")
++            return value
++          }
++          operation = validate(await bridge("/network", { ...proposal, origins: [current.origin] }, AbortSignal.any([lifetime, AbortSignal.timeout(5000)])))
++          let deadline = operation.expiresAt
++          let active = AbortSignal.any([lifetime, AbortSignal.timeout(Math.max(1, deadline - Date.now()))])
++          let redirects = 0, attempts = 0
++          for (;;) {
++            active.throwIfAborted()
++            try {
++              const result = await fetch(current, { method, headers: request.headers, body: method === "GET" || method === "HEAD" ? undefined : body,
++                redirect: "manual", proxy: { url: PROXY, headers: { "Proxy-Authorization": `Bearer ${operation.grant}` } }, signal: active })
++              if ([301, 302, 303, 307, 308].includes(result.status) && result.headers.has("location")) {
++                const next = new URL(result.headers.get("location")!, current); await result.body?.cancel()
++                if (++redirects > 5 || !["http:", "https:"].includes(next.protocol) || next.username || next.password || next.port) throw new Error("Redirect destination denied")
++                if (next.origin !== current.origin) {
++                  await Effect.runPromise(redirect(next.href).pipe(
++                    Effect.tapCause(cause => Effect.sync(() => {
++                      const error = Cause.squash(cause)
++                      if (["PermissionRejectedError", "PermissionCorrectedError", "PermissionDeniedError"].includes((error as { _tag?: string })?._tag ?? ""))
++                        terminal = makeToolOutcome("tool_permission_denied", { source: "runtime", status: 403, correlationId: callId })
++                    })), Effect.provide(services)), { signal: active })
++                  operation = validate(await bridge("/network", { ...proposal, operationId: operation.operationId, origins: [next.origin] }, active))
++                  if (operation.expiresAt > deadline) throw new Error("Network deadline changed")
++                  deadline = operation.expiresAt
++                  active = AbortSignal.any([lifetime, AbortSignal.timeout(Math.max(1, deadline - Date.now()))])
++                }
++                if (result.status === 303) method = "GET"
++                current = next; continue
++              }
++              const bytes = await boundedBody(result, tool === "webfetch" ? 5 * 1024 ** 2 : 2 * 1024 ** 2, active)
++              if (eligible && [429, 502, 503, 504].includes(result.status) && attempts < 2) {
++                const delay = retryAfter(result.headers.get("retry-after")) ?? (attempts + 1) * 1000
++                if (delay < deadline - Date.now()) { attempts++; await wait(delay, active); continue }
++              }
++              if (!result.ok) terminal = makeToolOutcome("network_upstream_refused", { source: "upstream", status: result.status, correlationId: callId, details: { attempts: attempts + 1 } })
++              // Buffered under the same deadline; parsers receive exactly the bounded original bytes.
++              return new Response(bytes, { status: result.status, statusText: result.statusText, headers: result.headers })
++            } catch (error) {
++              active.throwIfAborted()
++              const failure = error as { code?: string }
++              if (!eligible || !transientCodes.has(failure.code ?? "") || attempts >= 2) throw error
++              const delay = (attempts + 1) * 1000
++              if (delay >= deadline - Date.now()) throw error
++              attempts++; await wait(delay, active)
++            }
++          }
++        } catch (error) {
++          const observed = readToolError((error as Error)?.message)
++          if (!observed && !terminal) terminal = makeToolOutcome(operation && Date.now() >= operation.expiresAt ? "network_timeout" : "tool_internal_error", { source: "runtime", status: 502, correlationId: callId })
++          throw new Error(JSON.stringify({ error: observed ?? terminal }))
++        } finally {
++          if (operation) {
++            await bridge("/network", { version: 1, action: lifetime.aborted ? "cancel" : "complete", operationId: operation.operationId, ...(terminal ? { outcome: terminal } : {}) }, AbortSignal.timeout(2000)).catch(() => {})
++          }
++        }
++      },
++      catch: cause => new HttpClientError.HttpClientError({ reason: new HttpClientError.TransportError({ request, cause }) }),
++    })
++    return HttpClientResponse.fromWeb(request, response)
++  }))
++}
+diff --git a/packages/core/src/tool/scikeel-outcome.d.mts b/packages/core/src/tool/scikeel-outcome.d.mts
+new file mode 100644
+index 0000000..42b2c74
+--- /dev/null
++++ b/packages/core/src/tool/scikeel-outcome.d.mts
+@@ -0,0 +1,2 @@
++export function makeToolOutcome(code: string, options: {source: string; correlationId: string; status?: number; details?: Record<string, unknown>}): {code: string; message: string; source: string; status?: number; correlationId: string};
++export function readToolError(text: unknown): ReturnType<typeof makeToolOutcome> | null;
+diff --git a/packages/core/src/tool/scikeel-outcome.mjs b/packages/core/src/tool/scikeel-outcome.mjs
+new file mode 100644
+index 0000000..0f7687a
+--- /dev/null
++++ b/packages/core/src/tool/scikeel-outcome.mjs
+@@ -0,0 +1,92 @@
++const rows = [
++  ["tool_permission_denied", "permission", "Execution was not allowed.", "Review the current tool permission.", "never"],
++  ["network_admission_denied", "configuration", "Network authorization could not be established.", "Check the managed network connection.", "never"],
++  ["network_destination_denied", "permission", "The destination is outside the allowed scope.", "Choose an allowed public destination.", "never"],
++  ["network_grant_expired", "permission", "Network authorization expired.", "Start a new authorized call if still needed.", "never"],
++  ["network_grant_revoked", "permission", "Network authorization was revoked.", "Check whether the execution was stopped.", "never"],
++  ["network_busy", "transient", "Network capacity is temporarily busy.", "Retry within the current call budget.", "transient_read"],
++  ["network_timeout", "transient", "The network request timed out.", "Retry within the current call budget.", "transient_read"],
++  ["network_upstream_refused", "upstream", "The remote service rejected the request.", "Check its known status and availability.", "never"],
++  ["search_unavailable", "configuration", "The configured search service is unavailable.", "Check its configuration or use an available capability.", "never"],
++  ["delivery_missing_input", "input", "An original input is missing.", "Correct its workspace-relative path.", "repair_input"],
++  ["delivery_mode_mismatch", "input", "Delivery is incompatible with the current mode.", "Review the current research mode.", "never"],
++  ["delivery_execution_paused", "input", "Research execution is paused.", "Resume the authorized execution if needed.", "never"],
++  ["edit_ambiguous_match", "input", "The replacement matches more than one location.", "Read the file and supply unique surrounding text.", "repair_input"],
++  ["edit_no_change", "input", "The replacement would make no change.", "Verify whether the requested content already exists.", "repair_input"],
++  ["tool_unavailable", "input", "The selected tool is unavailable.", "Use the current available-tool list.", "never"],
++  ["execution_cancelled", "cancelled", "The execution was cancelled.", "Review any partial effects before continuing.", "never"],
++  ["execution_interrupted", "interrupted", "The execution was interrupted.", "Check its effect before starting another call.", "never"],
++  ["tool_internal_error", "internal", "The tool could not complete.", "Use its correlation identifier to inspect the failure.", "never"]
++];
++export const OUTCOME_DESCRIPTORS = Object.freeze(Object.fromEntries(rows.map(
++  ([code, category, message, nextAction, retry]) => [code, Object.freeze({category,message,nextAction,retry})]
++)));
++const sources = new Set(["gateway", "egress", "collaboration", "runtime", "upstream"]);
++export function makeToolOutcome(code, {source, status, correlationId, details} = {}) {
++  const descriptor = Object.hasOwn(OUTCOME_DESCRIPTORS, code) ? OUTCOME_DESCRIPTORS[code] : null;
++  if (!descriptor || !sources.has(source) || typeof correlationId !== "string" ||
++      !/^[A-Za-z0-9_-]{1,128}$/.test(correlationId) ||
++      (status !== undefined && (!Number.isInteger(status) || status < 100 || status > 599)))
++    throw new TypeError("Invalid tool outcome");
++  const safe = {};
++  if (details !== undefined) {
++    if (!details || typeof details !== "object" || Array.isArray(details)) throw new TypeError("Invalid outcome details");
++    for (const [key, value] of Object.entries(details)) {
++      if (key === "path" && typeof value === "string" && value.length <= 1024 &&
++          !value.startsWith("/") && !/[\\:?\u0000-\u001f\u007f]/.test(value) &&
++          value.split("/").every(part => part && part !== "." && part !== "..")) safe.path = value;
++      else if (key === "origin" && typeof value === "string") {
++        const url = new URL(value);
++        if (!["http:","https:"].includes(url.protocol) || url.origin !== value || url.username || url.password)
++          throw new TypeError("Invalid outcome origin");
++        safe.origin = value;
++      } else if (["attempts","elapsedMs"].includes(key) && Number.isSafeInteger(value) && value >= 0) safe[key] = value;
++      else if (key === "effectUnknown" && typeof value === "boolean") safe.effectUnknown = value;
++      else if (key === "verifiedNoChange" && code === "edit_no_change" && typeof value === "boolean") safe.verifiedNoChange = value;
++      else throw new TypeError("Invalid outcome detail field");
++    }
++  }
++  const outcome = {version:1, code, ...descriptor, source, correlationId,
++    ...(status === undefined ? {} : {status}), ...(Object.keys(safe).length ? {details:safe} : {})};
++  if (new TextEncoder().encode(JSON.stringify({error:outcome})).byteLength > 8192)
++    throw new TypeError("Tool outcome exceeds limit");
++  return outcome;
++}
++export class ToolOutcomeError extends Error {
++  constructor(outcome) { super(outcome.message); this.code=outcome.code; this.status=outcome.status; this.outcome=outcome; }
++}
++export const serializeToolError = outcome => ({error:outcome});
++export function readToolError(text) {
++  if (typeof text !== "string" || new TextEncoder().encode(text).byteLength > 8192) return null;
++  try {
++    const body=JSON.parse(text), value=body?.error;
++    if (!value || value.version !== 1 || Object.keys(body).some(key=>key!=="error") ||
++        Object.keys(value).some(key=>!["version","code","category","source","status","message","nextAction","retry","correlationId","details"].includes(key))) return null;
++    const safe=makeToolOutcome(value.code,value);
++    return ["category","message","nextAction","retry"].every(key=>safe[key]===value[key]) ? safe : null;
++  } catch { return null; }
++}
++
++/** The gateway replaces runtime metadata before forwarding it. Legacy errors only
++ * identify concrete runtime observations and never prove authenticated Stop. */
++export function normalizeToolResult(tool, state = {}, callId = 'unknown') {
++  const status = state.status === 'completed' ? 'success' : state.status === 'error' ? 'failed' : state.status === 'running' ? 'running' : 'pending';
++  const error = typeof state.error === 'string' ? state.error : undefined;
++  let outcome = readToolError(JSON.stringify({ error: state.metadata?.scikeelOutcome }));
++  if (outcome?.correlationId !== callId) outcome = null;
++  if (!outcome && error) {
++    const reported = readToolError(error);
++    if (reported && ['runtime', 'upstream'].includes(reported.source) && reported.correlationId === callId) outcome = reported;
++  }
++  if (!outcome && /^[A-Za-z0-9_-]{1,128}$/.test(callId)) {
++    let code;
++    if (tool === 'invalid') code = 'tool_unavailable';
++    else if (error === 'The user rejected permission to use this specific tool call.') code = 'tool_permission_denied';
++    else if (error === 'No changes to apply: oldString and newString are identical.') code = 'edit_no_change';
++    else if (error === 'Found multiple matches for oldString. Provide more surrounding context to make the match unique.') code = 'edit_ambiguous_match';
++    else if (error && /^(?:Tool execution aborted|The operation was aborted\.?|Aborted)$/.test(error)) code = 'execution_interrupted';
++    if (code) outcome = makeToolOutcome(code, { source: 'runtime', correlationId: callId });
++  }
++  const warning = outcome && (['execution_cancelled', 'execution_interrupted'].includes(outcome.code) || outcome.code === 'edit_no_change' && outcome.details?.verifiedNoChange === true);
++  return { status: warning ? 'warning' : outcome ? 'failed' : status, ...(error === undefined ? {} : { error }), ...(outcome ? { outcome } : {}) };
++}
+diff --git a/packages/core/src/tool/webfetch.ts b/packages/core/src/tool/webfetch.ts
+index d3889d6..d209ca1 100644
+--- a/packages/core/src/tool/webfetch.ts
++++ b/packages/core/src/tool/webfetch.ts
+@@ -1,3 +1,4 @@
++import { managedClient, isManaged } from "./scikeel-network"
+ export * as WebFetchTool from "./webfetch"
+ 
+ import { ToolFailure } from "@opencode-ai/llm"
+@@ -145,9 +146,10 @@ const layer = Layer.effectDiscard(
+                 source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+               })
+ 
++              const managed = managedClient(http, context, "webfetch", url => permission.assert({ action: name, resources: [url], save: ["*"], metadata: { url }, sessionID: context.sessionID, agent: context.agent, source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID } }))
+               const { body, contentType } = yield* Effect.gen(function* () {
+-                const response = yield* execute(http, input.url, input.format).pipe(
+-                  Effect.catchIf(isCloudflareChallenge, () => execute(http, input.url, input.format, "opencode")),
++                const response = yield* execute(managed, input.url, input.format).pipe(
++                  Effect.catchIf(error => !isManaged() && isCloudflareChallenge(error), () => execute(managed, input.url, input.format, "opencode")),
+                 )
+                 const contentType = response.headers["content-type"] || ""
+                 const mime = mimeFrom(contentType)
+diff --git a/packages/core/src/tool/websearch.ts b/packages/core/src/tool/websearch.ts
+index 6d62236..8b8c252 100644
+--- a/packages/core/src/tool/websearch.ts
++++ b/packages/core/src/tool/websearch.ts
+@@ -1,3 +1,4 @@
++import { managedClient } from "./scikeel-network"
+ export * as WebSearchTool from "./websearch"
+ 
+ import { ToolFailure } from "@opencode-ai/llm"
+@@ -216,9 +217,10 @@ const layer = Layer.effectDiscard(
+                 source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+               })
+ 
++              const managed = managedClient(http, context, "websearch", url => permission.assert({ action: name, resources: [url], save: ["*"], metadata: { url }, sessionID: context.sessionID, agent: context.agent, source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID } }))
+               const text =
+                 provider === "exa"
+-                  ? yield* callMcp(http, exaUrl(config.exaApiKey), "web_search_exa", ExaArgs, {
++                  ? yield* callMcp(managed, exaUrl(config.exaApiKey), "web_search_exa", ExaArgs, {
+                       query: input.query,
+                       type: input.type || "auto",
+                       numResults: input.numResults || 8,
+@@ -226,7 +228,7 @@ const layer = Layer.effectDiscard(
+                       contextMaxCharacters: input.contextMaxCharacters,
+                     })
+                   : yield* callMcp(
+-                      http,
++                      managed,
+                       PARALLEL_URL,
+                       "web_search",
+                       ParallelArgs,
+diff --git a/packages/opencode/src/tool/registry.ts b/packages/opencode/src/tool/registry.ts
+index 9167cb3..d25cd2c 100644
+--- a/packages/opencode/src/tool/registry.ts
++++ b/packages/opencode/src/tool/registry.ts
+@@ -1,3 +1,4 @@
++import { isManaged } from "../../../core/src/tool/scikeel-network"
+ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+ import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
+ import { Ripgrep } from "@opencode-ai/core/ripgrep"
+@@ -291,7 +292,7 @@ const layer = Layer.effect(
+     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
+       const filtered = (yield* all()).filter((tool) => {
+         if (tool.id === WebSearchTool.id) {
+-          return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
++          return !isManaged() && webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
+         }
+ 
+         const usePatch =
+diff --git a/packages/opencode/src/tool/webfetch.ts b/packages/opencode/src/tool/webfetch.ts
+index e615034..3c38579 100644
+--- a/packages/opencode/src/tool/webfetch.ts
++++ b/packages/opencode/src/tool/webfetch.ts
+@@ -1,3 +1,4 @@
++import { managedClient, isManaged } from "../../../core/src/tool/scikeel-network"
+ import { Effect, Schema } from "effect"
+ import { HttpClient, HttpClientRequest } from "effect/unstable/http"
+ import { Parser } from "htmlparser2"
+@@ -25,7 +26,6 @@ export const WebFetchTool = Tool.define(
+   "webfetch",
+   Effect.gen(function* () {
+     const http = yield* HttpClient.HttpClient
+-    const httpOk = HttpClient.filterStatusOk(http)
+ 
+     return {
+       description: DESCRIPTION,
+@@ -47,6 +47,8 @@ export const WebFetchTool = Tool.define(
+             },
+           })
+ 
++          const managed = managedClient(http, ctx, "webfetch", url => ctx.ask({ permission: "webfetch", patterns: [url], always: ["*"], metadata: { url } }))
++          const httpOk = HttpClient.filterStatusOk(managed)
+           const timeout = Math.min((params.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000, MAX_TIMEOUT)
+ 
+           // Build Accept header based on requested format with q parameters for fallbacks
+@@ -79,7 +81,7 @@ export const WebFetchTool = Tool.define(
+           const response = yield* httpOk.execute(request).pipe(
+             Effect.catchIf(
+               (err) =>
+-                err.reason._tag === "StatusCodeError" &&
++                !isManaged() && err.reason._tag === "StatusCodeError" &&
+                 err.reason.response.status === 403 &&
+                 err.reason.response.headers["cf-mitigated"] === "challenge",
+               () =>
+diff --git a/packages/opencode/src/tool/websearch.ts b/packages/opencode/src/tool/websearch.ts
+index d08ae1d..e7c1beb 100644
+--- a/packages/opencode/src/tool/websearch.ts
++++ b/packages/opencode/src/tool/websearch.ts
+@@ -1,3 +1,4 @@
++import { managedClient } from "../../../core/src/tool/scikeel-network"
+ import { Effect, Schema } from "effect"
+ import { HttpClient } from "effect/unstable/http"
+ import * as Tool from "./tool"
+@@ -130,7 +131,8 @@ export const WebSearchTool = Tool.define(
+             },
+           })
+ 
+-          const result = yield* callProvider(http, provider, params, ctx)
++          const managed = managedClient(http, ctx, "websearch", url => ctx.ask({ permission: "websearch", patterns: [url], always: ["*"], metadata: { url } }))
++          const result = yield* callProvider(managed, provider, params, ctx)
+ 
+           return {
+             output: result ?? "No search results found. Please try a different query.",

@@ -91,6 +91,11 @@ export async function validateInstalledImage(candidate, digest) {
     const { validateRuntimeArtifact } = await import(pathToFileURL(join(candidate.source.root, "scripts/dev/build-opencode-title-runtime.mjs")));
     validateRuntimeArtifact(manifest.sessionTitleRuntime, JSON.parse(await readFile(runtimeLockPath, "utf8")), manifest.tools.opencode.sha256);
   }
+  const networkLockPath = join(candidate.source.root, "runtime/opencode-patches/network.lock.json");
+  if (existsSync(networkLockPath)) {
+    const { validateNetworkRuntime } = await import(pathToFileURL(join(candidate.source.root, "scripts/dev/build-opencode-title-runtime.mjs")));
+    validateNetworkRuntime(manifest.sessionTitleRuntime?.networkRuntime, JSON.parse(await readFile(networkLockPath, "utf8")));
+  }
   if (ready.imageDigest !== digest || manifest.imageDigest !== digest || manifest.variant !== 'production') throw new Error('Installed image is not ready');
   for (const [path, hash] of Object.entries(manifest.runnerFiles)) {
     const local = join(candidate.source.root, 'runtime/sandbox', path.split('/').at(-1));
@@ -125,6 +130,10 @@ export async function browserStage(candidate, run = runProcess) {
     const recovery = 'src/test/webRuntimeRecovery.acceptance.test.mjs';
     if (!await lstat(join(desktop, recovery)).catch(() => null)) throw new Error('Required Web runtime recovery scenario is unavailable');
     tests.push(recovery); environment.OSD_RECOVERY_ACCEPTANCE = '1';
+    const toolScenario = 'src/test/webToolReliability.acceptance.test.mjs';
+    const hasToolScenario = await lstat(join(desktop, toolScenario)).catch(() => null);
+    if (!hasToolScenario && await lstat(join(candidate.source.root, 'runtime/opencode-patches/network.lock.json')).catch(() => null)) throw new Error('Required Web tool reliability scenario is unavailable');
+    if (hasToolScenario) { tests.push(toolScenario); environment.OSD_TOOL_BROWSER = '1'; }
     const titleScenario = 'src/test/webSessionTitle.acceptance.test.mjs';
     if (await lstat(join(desktop, titleScenario)).catch(() => null)) { tests.push(titleScenario); environment.OSD_TITLE_BROWSER = '1'; }
   }
@@ -133,7 +142,7 @@ export async function browserStage(candidate, run = runProcess) {
   await run(process.execPath, [join(desktop, 'node_modules/vitest/vitest.mjs'), 'run', '--no-file-parallelism', '--reporter=json', '--outputFile', report, ...tests], desktop, environment);
   const result = JSON.parse(await readFile(report, 'utf8'));
   if (!result.success || result.numPassedTests < tests.length || result.numPendingTests) throw new Error('Required browser acceptance failed or was skipped');
-  return { passedTests: result.numPassedTests, widths: process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? [1280] : [1280, 390], scenarios: tests };
+  return { passedTests: result.numPassedTests, widths: [...new Set([...(process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? [1280] : [1280, 390]), ...(tests.includes('src/test/webToolReliability.acceptance.test.mjs') ? [360] : [])])], scenarios: tests };
 }
 export function assertSelectedSource(selectedFiles, candidateFiles) {
   if (fingerprintFiles(selectedFiles) !== fingerprintFiles(candidateFiles)) throw new Error('Source changed between verification selection and snapshot; prepare again');

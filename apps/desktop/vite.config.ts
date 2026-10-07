@@ -27,6 +27,7 @@ export default defineConfig({
       "@ai4s/sdk/acp/serve-stdio": r("../../packages/sdk/src/acp/serve-stdio.ts"),
       "@ai4s/sdk/acp/stdio": r("../../packages/sdk/src/acp/stdio.ts"),
       "@ai4s/sdk/acp": r("../../packages/sdk/src/acp/index.ts"),
+      "@ai4s/sdk/tool-outcome": r("../../packages/sdk/src/tool-outcome.mjs"),
       "@ai4s/sdk": r("../../packages/sdk/src/index.ts"),
     },
   },
