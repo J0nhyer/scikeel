@@ -12,13 +12,15 @@ import { AttachmentStore } from "../src/attachments.mjs";
 import { AttachmentTurns } from "../src/attachment-turns.mjs";
 
 // Opt-in contract check against the installed OpenCode, without remote model calls.
-test("installed OpenCode accepts actual image parts and durable message attachment IDs", { skip: !process.env.OSD_ATTACHMENTS_NATIVE, timeout: 90000 }, async (t) => {
+test("installed OpenCode accepts actual image parts and durable message attachment IDs", { skip: !process.env.OSD_ATTACHMENTS_NATIVE, timeout: 120000 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "scikeel-native-attachments-"));
   t.after(async () => { await rm(root, { recursive: true, force: true }); });
   const images = [];
+  const providerRequests = [];
   const relay = createServer(async (request, response) => {
     let raw = ""; for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw);
+    providerRequests.push(body);
     for (const message of body.messages ?? []) for (const part of Array.isArray(message.content) ? message.content : []) {
       if (part.type === "image_url") images.push(Buffer.from(part.image_url.url.split(",")[1], "base64"));
     }
@@ -82,7 +84,40 @@ test("installed OpenCode accepts actual image parts and durable message attachme
     assert.ok(message.info.id.startsWith("msg_"));
     assert.ok(images.some((image) => image.equals(png)), "the installed runtime must deliver image bytes to its provider");
     const assistant = history.find((m) => m.info.role === "assistant" && m.info.time?.completed); assert.ok(assistant); assert.equal(assistant.info.error, undefined);
-    console.log("OpenCode: installed native image transport and persistent history passed");
+    const greetingCreated = await request("/session", json({ title: "Greeting contract" }));
+    assert.equal(greetingCreated.status, 200);
+    const greetingSession = await greetingCreated.json();
+    const greetingOwner = { sessionId: greetingSession.id };
+    const greeting = await turns.prepare(user, greetingOwner, {
+      model: { providerID: "attachment-fixture", modelID: "pixels" },
+      parts: [{ type: "text", text: "你好" }],
+      attachmentTurn: { turnId: "native_greeting_turn", attachmentIds: [] },
+    });
+    const requestsBeforeGreeting = providerRequests.length;
+    const greetingSent = await request(`/session/${greetingSession.id}/prompt_async`, json(greeting.body));
+    assert.ok([202, 204].includes(greetingSent.status));
+    await greeting.finish(true);
+    let greetingHistory = [];
+    const greetingDeadline = Date.now() + 35000;
+    while (Date.now() < greetingDeadline) {
+      greetingHistory = await (await request(`/session/${greetingSession.id}/message`)).json();
+      if (greetingHistory.some((message) => message.info.role === "assistant" && message.info.time?.completed)) break;
+      await new Promise((done) => setTimeout(done, 250));
+    }
+    const greetingUser = greetingHistory.find((message) => message.info.role === "user");
+    assert.ok(greetingUser);
+    assert.equal(greetingUser.info.id, greeting.body.messageID);
+    assert.equal(greetingUser.parts.some((part) => part.type === "text" && part.text?.includes("SciKeel attachment turn:")), false);
+    const greetingAssistant = greetingHistory.find((message) => message.info.role === "assistant" && message.info.time?.completed);
+    assert.ok(greetingAssistant);
+    assert.equal(greetingAssistant.info.error, undefined);
+    const greetingRequests = providerRequests.slice(requestsBeforeGreeting);
+    assert.ok(greetingRequests.length > 0);
+    assert.ok(greetingRequests.some((payload) => JSON.stringify(payload.messages).includes("你好")));
+    for (const payload of greetingRequests) {
+      assert.doesNotMatch(JSON.stringify(payload.messages), /SciKeel attachment turn:|Conversation attachments/);
+    }
+    console.log("OpenCode: native image transport, persistent message identity and marker-free greeting input passed");
   } finally {
     child.kill("SIGTERM"); await new Promise((done) => child.exitCode !== null ? done() : child.once("exit", done)); await store.close(); await new Promise((done) => relay.close(done)); await rm(root, { recursive: true, force: true });
   }
