@@ -32,7 +32,14 @@ async function fixture(t){
     res.end('true');return;
   }
   if(path==='/session' || path==='/experimental/session'){res.end(JSON.stringify([session]));return;}
-  if(path==='/session/ses_diagnostic/revert'){reverts++;res.end('true');return;}
+  if(path==='/session/ses_diagnostic/revert'){
+    reverts++;let raw='';for await(const chunk of req)raw+=chunk;
+    session.revert={messageID:JSON.parse(raw).messageID};res.end('true');return;
+  }
+  if(path==='/session/ses_diagnostic/message'){
+    res.end(JSON.stringify([{info:{id:'msg_before',sessionID:session.id,role:'user'},parts:[{type:'text',text:'Before revert'}]},
+      {info:{id:'msg_diagnostic',sessionID:session.id,role:'user'},parts:[{type:'text',text:'Reverted message'}]}]));return;
+  }
   if(path==='/session/ses_diagnostic'){res.end(JSON.stringify(session));return;}
   res.end('{}');
  });
@@ -112,4 +119,12 @@ test('a disconnected page cannot cancel an accepted reply; its retry receives th
  for(let attempts=0;attempts<100 && f.replies()<1;attempts++)await new Promise(done=>setTimeout(done,5));
  controller.abort();await first;release();
  assert.equal((await f.request('/question/question_live/reply',init)).status,200);assert.equal(f.replies(),1);
+});
+
+test('reopened history honors the native revert marker instead of restoring reverted messages',async t=>{
+ const f=await fixture(t);
+ assert.equal((await f.request('/session/ses_diagnostic/revert',{method:'POST',body:JSON.stringify({messageID:'msg_diagnostic'})})).status,200);
+ f.rotate();
+ const response=await f.request('/session/ses_diagnostic/message');assert.equal(response.status,200);
+ assert.deepEqual((await response.json()).map(message=>message.info.id),['msg_before']);
 });

@@ -80,7 +80,7 @@ test.skipIf(!process.env.OSD_INTERACTION_BROWSER)('Web answers retain drafts acr
         '/provider':{all:[],connected:['fixture']},'/config':{model:'fixture/model'},'/global/config':{model:'fixture/model'},
         '/experimental/session':sessions,'/session':sessions,'/session/status':{...(active?{ses_live:{type:'busy'}}:{}),...Object.fromEntries([...generated].filter(([,record])=>record.active).map(([id])=>[id,{type:'busy'}]))},
         '/session/ses_live':{...sessions[0],...(revert?{revert}:{})},'/session/ses_other':sessions[1],
-        '/session/ses_live/message':history(),'/session/ses_other/message':[],
+        '/session/ses_live/message':revert?[]:history(),'/session/ses_other/message':[],
         '/question':pending?[question]:[], '/permission':permissions, '/skill':[], '/agent':[{name:'build',mode:'primary'}],'/command':[], '/v1/projects':[], '/v1/fs/list':[],
       };
       json(data[path]??(path.startsWith('/api/research/')?{task:null}:{}));
@@ -149,6 +149,8 @@ test.skipIf(!process.env.OSD_INTERACTION_BROWSER)('Web answers retain drafts acr
           await expect.poll(()=>restored.locator('button[aria-label="Revert"]').count()).toBe(0);
           await expect.poll(()=>restored.locator('textarea').first().inputValue()).toBe('Inspect the interaction fixture');
           expect(aborts).toBe(abortBefore+1);
+          await restored.reload();await restored.locator('textarea').first().waitFor();
+          expect(await restored.locator('button[aria-label="Revert"]').count()).toBe(0);
         } finally {await reopened.close();}
         expect(errors).toEqual([]);
       } finally {await context.close();}

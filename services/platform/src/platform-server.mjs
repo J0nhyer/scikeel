@@ -1389,6 +1389,12 @@ export class PlatformServer {
             for (const pending of value) { await this.sessionAuthority.ensure(context,pending.sessionID); this.tenantPolicy.registerRequest(context, pending); }
           if(operation.operation === "sessionMessage" && operation.method === "GET" && Array.isArray(value)) {
             const owner=await this.#researchOwner(user,sessionId,access,worker);
+            // Native storage retains reverted messages until the next prompt.
+            // Its marker, rather than their continued presence, defines visibility.
+            if(owner.revertMessageID) {
+              const boundary=value.findIndex(message=>message.info?.id===owner.revertMessageID);
+              if(boundary>=0)value=value.slice(0,boundary);
+            }
             value=await this.attachmentTurns.decorate(user,owner,value);
             const outcomes = await this.toolOutcomes.list({ userId: user.id, sessionId });
             value = await Promise.all(value.map(async message => ({ ...message, parts: await Promise.all((message.parts ?? []).map(part => this.decorateToolPart(user.id, sessionId, part, outcomes))) })));
