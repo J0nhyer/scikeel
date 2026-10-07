@@ -909,7 +909,7 @@ for(const mode of ["collaborative","guided","delegated"]) test(`managed ${mode} 
  assert.equal((await post('/session/owned/prompt_async',prompt)).status,202);
  const history=await json(await c.request('/session/owned/message'));
  const bashRule=history[0].fixturePermission.filter(rule=>rule.permission==="bash"||rule.permission==="*").at(-1);
- assert.equal(bashRule.action,mode==="delegated"?"allow":"ask");
+ assert.equal(bashRule.action,"allow");
  assert.ok(history[0].fixtureSystem.includes('Retain this context'));assert.ok(history[0].fixtureSystem.includes('mode: '+mode));assert.ok(history.some(message=>message.fixtureSystem?.includes('Method B')));
  assert.equal((await c.request('/api/collaboration/owned',{method:'POST',headers:{'content-type':'application/json','sec-fetch-site':'cross-site'},body:'{"action":"pause"}'})).status,403);
 });
@@ -971,7 +971,7 @@ test("completed managed synchronous replies allow the next turn without settling
   assert.equal((await json(await c.request("/api/collaboration/owned"))).state.phase, "running");
 });
 
-test('managed network binds a running owned call, current execution and real permission reply', async t => {
+test('automatic network access stays bound to a running owned call and current execution', async t => {
   const policy = new TenantPolicy(); const f = await makeFixture({ tenantPolicy: policy });
   const c = makeClient(f.base); const { user } = await login(c, 'admin', 'admin-password');
   const instanceId = `user-${user.id}`; const w = await f.manager.ensureWorker({ instanceId, userId: user.id });
@@ -981,13 +981,11 @@ test('managed network binds a running owned call, current execution and real per
   const grants = [], revoked = [];
   f.server.configureNetwork({ grant(value) { grants.push(value); return { id: String(grants.length).padStart(64, '0'), expiresAt: value.expiresAt }; }, revokeGrant(_context, id) { revoked.push(id); return true; } });
   const access = f.manager.getWorkerAccess(instanceId), nativeFetch = globalThis.fetch;
-  let permissionReply, terminal = false;
+  let terminal = false;
   globalThis.fetch = async (input, options) => {
     const url = new URL(String(input));
     if (url.origin === new URL(access.url).origin) {
       if (url.pathname === '/session/owned/message') return new Response(JSON.stringify([{ info: { id: 'msg_a', sessionID: 'owned', role: 'assistant' }, parts: [{ type: 'tool', callID: 'call_fetch', tool: 'webfetch', state: { status: terminal ? 'completed' : 'running', input: { url: 'https://science.example/data', timeout: 10 } } }] }]));
-      if (url.pathname === '/permission') return new Response(JSON.stringify([{ id: 'req_a', sessionID: 'owned', permission: 'webfetch', patterns: ['https://science.example/data'], tool: { messageID: 'msg_a', callID: 'call_fetch' } }]));
-      if (url.pathname === '/permission/req_a/reply') { await new Promise(resolve => { permissionReply = resolve; }); return new Response('{}'); }
     }
     return nativeFetch(input, options);
   };
@@ -997,14 +995,10 @@ test('managed network binds a running owned call, current execution and real per
   await f.server.collaboration.setMode(owner, 'guided', 0);
   const state = await f.server.collaboration.begin(owner, 1);
   const proposal = { version: 1, action: 'authorize', sessionId: 'owned', callId: 'call_fetch', tool: 'webfetch', execution: state.execution, origins: ['https://science.example'] };
-  await assert.rejects(f.server.runtimeNetwork(context, proposal), { code: 'tool_permission_denied' }); assert.equal(grants.length, 0);
-  await c.request('/permission');
-  const forwarded = c.request('/permission/req_a/reply', { method: 'POST', headers: { 'content-type': 'application/json', origin: f.base }, body: JSON.stringify({ reply: 'once' }) });
-  for (let i = 0; !permissionReply && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
-  assert.ok(permissionReply);
-  const authorized = f.server.runtimeNetwork(context, proposal);
-  permissionReply(); assert.equal((await forwarded).status, 200);
-  const operation = await authorized; assert.equal(grants.length, 1); assert.ok(operation.expiresAt <= Date.now() + 10000);
+  const operation = await f.server.runtimeNetwork(context, proposal);
+  assert.equal(grants.length, 1); assert.ok(operation.expiresAt <= Date.now() + 10000);
+  await assert.rejects(f.server.runtimeNetwork(context, { ...proposal, execution: state.execution + 1 }));
+  await assert.rejects(f.server.runtimeNetwork(context, { ...proposal, callId: 'foreign_call' }));
   await assert.rejects(f.server.runtimeNetwork({ ...context, generation: 2 }, proposal));
   await assert.rejects(f.server.runtimeNetwork(context, { ...proposal, origins: ['https://foreign.example'] }));
   assert.equal(grants.length, 1);
@@ -1084,7 +1078,7 @@ test('Stop records intent before forwarding and only a successful response confi
   assert.equal((await f.server.decorateToolPart(user.id, 'owned', aborted)).state.metadata.scikeelOutcome.code, 'execution_cancelled');
 });
 
-test('an authenticated always decision covers only its origin and active owned execution', async t => {
+test('automatic grants cover only the active call destination and owned execution', async t => {
   const policy = new TenantPolicy(), f = await makeFixture({ tenantPolicy: policy });
   const c = makeClient(f.base), { user } = await login(c, 'admin', 'admin-password');
   const instanceId = `user-${user.id}`, worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
@@ -1101,24 +1095,29 @@ test('an authenticated always decision covers only its origin and active owned e
     const url = new URL(String(input));
     if (url.origin === new URL(access.url).origin) {
       if (url.pathname === '/session/owned/message') return new Response(JSON.stringify([{ parts: [{ type: 'tool', tool: 'webfetch', callID: callId, state: { status: 'running', input: { url: origin + '/data' } } }] }]));
-      if (url.pathname === '/permission') return new Response(JSON.stringify([{ id: 'req_always', sessionID: 'owned', permission: 'webfetch', patterns: [origin + '/data'], tool: { callID: callId } }]));
-      if (url.pathname === '/permission/req_always/reply') return new Response('{}');
     }
     return original(input, options);
   };
   t.after(async () => { globalThis.fetch = original; await f.server.network.revokeContext(context); });
-  await c.request('/permission');
-  assert.equal((await c.request('/permission/req_always/reply', { method: 'POST', headers: { origin: f.base, 'content-type': 'application/json' }, body: JSON.stringify({ reply: 'always' }) })).status, 200);
   callId = 'call_later';
   const proposal = () => ({ version: 1, action: 'authorize', sessionId: 'owned', callId, tool: 'webfetch', execution: state.execution, origins: [origin] });
   const result = await f.server.runtimeNetwork(context, proposal()); assert.equal(grants.length, 1);
   await f.server.runtimeNetwork(context, { version: 1, action: 'complete', operationId: result.operationId });
-  callId = 'call_foreign'; origin = 'https://foreign.example';
-  await assert.rejects(f.server.runtimeNetwork(context, proposal()), { code: 'tool_permission_denied' }); assert.equal(grants.length, 1);
+  callId = 'call_foreign';
+  await assert.rejects(f.server.runtimeNetwork(context, { ...proposal(), origins: ['https://foreign.example'] }));
+  assert.equal(grants.length, 1);
+  origin = 'https://foreign.example';
+  const next = await f.server.runtimeNetwork(context, proposal());
+  assert.equal(grants.length, 2);
+  assert.deepEqual(grants[1].destinations, [origin]);
+  await f.server.runtimeNetwork(context, { version: 1, action: 'complete', operationId: next.operationId });
+  await f.server.collaboration.pause(owner);
+  await assert.rejects(f.server.runtimeNetwork(context, proposal()));
+  assert.equal(grants.length, 2);
 });
 
 
-test('managed search requires selected backend, owned running query and forwarded manual permission', async t => {
+test('automatic search requires the selected backend and an owned running query', async t => {
   const policy = new TenantPolicy(), f = await makeFixture({ tenantPolicy: policy });
   const c = makeClient(f.base), { user } = await login(c, 'admin', 'admin-password');
   const instanceId = `user-${user.id}`, worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
@@ -1135,8 +1134,6 @@ test('managed search requires selected backend, owned running query and forwarde
     const url = new URL(String(input));
     if (url.origin === new URL(access.url).origin) {
       if (url.pathname === '/session/owned/message') return new Response(JSON.stringify([{ parts: [{ type: 'tool', tool: 'websearch', callID: 'call_search', state: { status: 'running', input: { query } } }] }]));
-      if (url.pathname === '/permission') return new Response(JSON.stringify([{ id: 'req_search', sessionID: 'owned', permission: 'websearch', patterns: [query], tool: { messageID: 'msg_search', callID: 'call_search' } }]));
-      if (url.pathname === '/permission/req_search/reply') return new Response('{}');
     }
     return original(input, options);
   };
@@ -1144,10 +1141,6 @@ test('managed search requires selected backend, owned running query and forwarde
   const proposal = { version: 1, action: 'authorize', sessionId: 'owned', callId: 'call_search', tool: 'websearch', execution: state.execution, origins: ['https://search.parallel.ai'] };
   await assert.rejects(f.server.runtimeNetwork(context, proposal), { code: 'search_unavailable' });
   f.server.searchProvider = 'parallel';
-  await assert.rejects(f.server.runtimeNetwork(context, proposal), { code: 'tool_permission_denied' });
-  assert.equal(grants.length, 0);
-  await c.request('/permission');
-  assert.equal((await c.request('/permission/req_search/reply', { method: 'POST', headers: { origin: f.base, 'content-type': 'application/json' }, body: '{"reply":"once"}' })).status, 200);
   await assert.rejects(f.server.runtimeNetwork(context, { ...proposal, origins: ['https://peer.example'] }));
   query = ''; await assert.rejects(f.server.runtimeNetwork(context, proposal)); query = 'Python pathlib official documentation';
   const operation = await f.server.runtimeNetwork(context, proposal);
