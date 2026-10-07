@@ -227,9 +227,9 @@ test("a Stage 1 waiting execution captures its old mode before a new preference 
     const rules = collaborationPermissions(mode);
     return rules.filter(r => (r.permission === tool || r.permission === "*") && (r.pattern === "*" || r.pattern === pattern)).at(-1)?.action;
   };
-  assert.equal(action("guided", "bash"), "ask");
+  assert.equal(action("guided", "bash"), "allow");
   assert.equal(action("collaborative", "edit"), "allow");
-  assert.equal(action("collaborative", "bash"), "ask");
+  assert.equal(action("collaborative", "bash"), "allow");
   assert.equal(action("delegated", "bash"), "allow");
   assert.equal(action("delegated", "webfetch"), "allow");
   assert.equal(action("autonomous", "bash"), "allow");

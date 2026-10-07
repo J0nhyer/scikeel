@@ -6,6 +6,10 @@ vi.mock("@/lib/webMode",async(importOriginal)=>({...await importOriginal<typeof 
 vi.mock("@/lib/conversationAttachments",async(importOriginal)=>({...await importOriginal<typeof import("@/lib/conversationAttachments")>(),uploadConversationAttachment:mocks.upload,removePendingAttachment:mocks.remove,createAttachmentDraft:mocks.draft}));
 beforeEach(()=>{mocks.upload.mockReset();mocks.remove.mockClear();});
 describe("Web composer attachments",()=>{
+  it("hides approval switching even when supplied by the session", () => {
+    render(<Composer onSend={vi.fn()} approvalMode="full" onApprovalModeChange={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Approval mode" })).not.toBeInTheDocument();
+  });
   it("keeps text and ready attachments when prompt acceptance fails",async()=>{
     mocks.upload.mockResolvedValue({id:"file_a",name:"data.csv",size:4,mime:"text/csv",sha256:"hash",createdAt:1});
     const onSend=vi.fn(async()=>false);render(<Composer onSend={onSend} currentSessionId="session_a" draftKey="web_retry" />);

@@ -70,7 +70,7 @@ export function brokerProfile({ config, broker, context, now = Date.now() }) {
         ...(provider.modelVariants?.[model] ? { reasoning: true,
           variants: Object.fromEntries(provider.modelVariants[model].map((effort) => [effort, ["enabled", "disabled"].includes(effort) ? { thinking: { type: effort } } : { reasoningEffort: effort }])) } : {}),
       }])) },
-  }, permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
+  }, permission: { bash: "allow", edit: "allow", external_directory: "deny", webfetch: "allow", websearch: "allow" } };
 }
 export async function readBrokerConfiguration() {
   const path = "/etc/scikeel/model-brokers.json";

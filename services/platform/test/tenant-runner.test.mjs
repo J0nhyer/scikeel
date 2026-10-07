@@ -41,14 +41,14 @@ test("runner enforces one operation and exposes no helper error contents", async
   const first = post(); await pending; assert.equal((await post()).status, 429);
   finish(); const result = await first; assert.equal(result.status, 403); assert.ok(!(await result.text()).includes("secret-canary"));
 });
-test("profile updates accept only platform broker credentials and manual permissions", async (t) => {
+test("profile updates accept only platform broker credentials and automatic workspace permissions", async (t) => {
   const profiles = [];
   const runner = new TenantRunner({ manifest, token, configureProfile: async (profile) => profiles.push(profile) });
   await runner.listen({ host: "127.0.0.1", port: 0 }); t.after(() => runner.close());
   const profile = { model: "fixture/approved", enabled_providers: ["fixture"], provider: { fixture: {
     npm: "@ai-sdk/openai-compatible", name: "fixture", whitelist: ["approved"], models: { approved: { name: "approved" } },
     options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: "b".repeat(64) } } },
-    permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
+    permission: { bash: "allow", edit: "allow", external_directory: "deny", webfetch: "allow", websearch: "allow" } };
   const post = (value) => fetch(`http://127.0.0.1:${runner.server.address().port}/profile`, { method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ instanceId: "user-a", generation: 1, profile: value }) });
   assert.equal((await post({ ...profile, permission: { bash: "allow" } })).status, 403);
@@ -61,6 +61,7 @@ test("profile updates accept only platform broker credentials and manual permiss
     else invalid.provider.fixture.whitelist = whitelist;
     assert.equal((await post(invalid)).status, 403);
   }
+  assert.equal((await post({ ...profile, permission: { ...profile.permission, external_directory: "allow" } })).status, 403);
   assert.equal((await post(profile)).status, 200); assert.deepEqual(profiles, [profile]);
   assert.equal((await post({ ...profile, searchProvider: 'parallel' })).status, 200);
   assert.equal(profiles.at(-1).searchProvider, 'parallel');
@@ -107,17 +108,17 @@ test("gateway configuration is published before startup and restart preserves pr
   assert.equal(childEnvironments[0].SCIKEEL_MANAGED_NETWORK_TOKEN, undefined);
   assert.equal(childEnvironments[0].OPENCODE_WEBSEARCH_PROVIDER, undefined);
   const bootstrap = JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8"));
-  assert.equal(bootstrap.permission.webfetch, "ask");
-  assert.equal(bootstrap.permission.websearch, "ask");
-  const profile = { model: "fixture/one", permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
+  assert.equal(bootstrap.permission.webfetch, "allow");
+  assert.equal(bootstrap.permission.websearch, "allow");
+  const profile = { model: "fixture/one", permission: { bash: "allow", edit: "allow", external_directory: "deny", webfetch: "allow", websearch: "allow" } };
   await gateway.start(profile);
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/one");
   const published = JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8"));
   const skills = "/opt/scikeel/tools/resources/skills-core";
   assert.deepEqual(published.skills, { paths: [skills] });
   assert.deepEqual(published.permission.external_directory, { "*": "deny", [skills]: "allow", [`${skills}/*`]: "allow" });
-  assert.equal(published.permission.bash, "ask");
-  assert.equal(published.permission.edit, "ask");
+  assert.equal(published.permission.bash, "allow");
+  assert.equal(published.permission.edit, "allow");
   assert.equal(Object.keys(published.permission.external_directory)[0], "*");
 
   const brokerToken = "b".repeat(64);

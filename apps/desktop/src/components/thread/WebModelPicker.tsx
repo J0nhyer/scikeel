@@ -1,7 +1,7 @@
 import { SlidersHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useRuntimeStore } from "@/lib/runtime";
-import { webModelChoices } from "@/lib/webModelCatalog";
+import { webModelChoices, webReasoningEffort } from "@/lib/webModelCatalog";
 import { WebChoiceMenu } from "./WebChoiceMenu";
 
 // Variant names are provider tokens, using the same labels as ModelPicker.
@@ -35,7 +35,7 @@ export function WebModelPicker({ sessionId, compact = false, defaultMode = false
   const variants = providers.find((provider) => provider.id === value.slice(0, separator))
     ?.models.find((model) => model.id === value.slice(separator + 1))?.variants ?? [];
   const effort = sessionVariant !== undefined ? sessionVariant : globalVariant;
-  const effortValue = effort && variants.includes(effort) ? effort : "";
+  const effortValue = webReasoningEffort(variants, effort) ?? "";
   const busy = changing || modelChanging || state === "loading" || state === "unavailable";
   return <div className={compact
     ? "flex min-w-[8rem] max-w-[10rem] items-center gap-1"
@@ -51,11 +51,11 @@ export function WebModelPicker({ sessionId, compact = false, defaultMode = false
     {!defaultMode && sessionId && value && variants.length > 0 && <div className="shrink-0">
       <WebChoiceMenu label={t("composer.model.reasoning")} value={effortValue}
         triggerIcon={<SlidersHorizontal size={15} aria-hidden={true} />} busy={busy}
-        choices={[{ key: "", label: t("composer.model.reasoningDefault") }, ...variants.map((variant) => ({
+        choices={variants.map((variant) => ({
           key: variant,
           label: labelVariant(variant),
-        }))]}
-        onSelect={(key) => setVariant(sessionId, key || null)} />
+        }))}
+        onSelect={(key) => setVariant(sessionId, key)} />
     </div>}
   </div>;
 }

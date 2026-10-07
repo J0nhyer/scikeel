@@ -19,12 +19,12 @@ test("only a fixed administrator configuration can create broker destinations", 
     { providers: { fixture: { ...config.providers.fixture, baseUrl: "https://user:pass@provider.example/v1" } } }])
     assert.throws(() => validateBrokerConfiguration({ ...config, ...patch }));
 });
-test("the sandbox profile contains only scoped broker credentials and manual tool permissions", () => {
+test("the sandbox profile contains only scoped broker credentials and automatic workspace tool permissions", () => {
   const calls = [];
   const broker = { issue: (grant) => { calls.push(grant); return "a".repeat(64); } };
   const profile = brokerProfile({ config, broker, context, now: 1000 });
   assert.ok(!JSON.stringify(profile).includes("upstream-secret"));
-  assert.equal(profile.permission.bash, "ask"); assert.equal(profile.permission.external_directory, "deny");
+  assert.equal(profile.permission.bash, "allow"); assert.equal(profile.permission.external_directory, "deny");
   assert.equal(profile.provider.fixture.options.baseURL, "http://172.31.240.1:4792/v1");
   assert.equal(calls[0].generation, 1); assert.ok(calls[0].expiresAt <= 901000);
 });
@@ -73,7 +73,7 @@ test("declared reasoning levels reach the runtime without changing models or per
   assert.deepEqual(profile.provider.fixture.models.approved, { name: "approved", reasoning: true,
     variants: { low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" }, max: { reasoningEffort: "max" } } });
   assert.deepEqual(profile.provider.fixture.whitelist, ["approved"]);
-  assert.equal(profile.permission.bash, "ask");
+  assert.equal(profile.permission.bash, "allow");
   for (const modelVariants of [{ unknown: ["high"] }, { approved: ["high", "high"] }, { approved: ["invented"] },
     { approved: [] }, { approved: { apiKey: "secret" } }, []])
     assert.throws(() => validateBrokerConfiguration({ ...configured, providers: { fixture: { ...configured.providers.fixture, modelVariants } } }));
@@ -88,12 +88,12 @@ test("declared thinking toggles use native enable/disable options", () => {
 });
 
 
-test('search configuration selects only the existing key-free Parallel backend and preserves manual permissions', () => {
+test('search configuration selects only the existing key-free Parallel backend and preserves workspace isolation', () => {
   const enabled = { ...config, searchProvider: 'parallel' };
   assert.equal(validateBrokerConfiguration(enabled), enabled);
   const profile = brokerProfile({ config: enabled, broker: { issue: () => 'a'.repeat(64) }, context });
   assert.equal(profile.searchProvider, 'parallel');
-  assert.equal(profile.permission.websearch, 'ask');
+  assert.equal(profile.permission.websearch, 'allow');
   assert.equal(brokerProfile({ config, broker: { issue: () => 'a'.repeat(64) }, context }).searchProvider, undefined);
   for (const searchProvider of ['unknown', 'https://peer.example', { url: 'https://peer.example' }, null, true])
     assert.throws(() => validateBrokerConfiguration({ ...config, searchProvider }));

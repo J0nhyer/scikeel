@@ -790,15 +790,15 @@ describe("gateway runtime selection", () => {
     it("sends the effort chosen in the Web picker only for that session", async () => {
       render(createElement(WebModelPicker, { sessionId: "ses_a" }));
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Reasoning effort: Model default" }));
+      await user.click(screen.getByRole("button", { name: "Reasoning effort: Low" }));
       await user.click(screen.getByRole("menuitem", { name: "High" }));
       await act(() => useRuntimeStore.getState().sendPrompt("research", "ses_a"));
       expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, "codex/gpt-deep", "high");
       await act(() => useRuntimeStore.getState().sendPrompt("other", "ses_b"));
-      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_b", "other", undefined, "codex/gpt-deep", undefined);
+      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_b", "other", undefined, "codex/gpt-deep", "low");
     });
 
-    it.each(["codex", "claude", "opencode"] as const)("keeps explicit default over global effort for %s", async (runtime) => {
+    it.each(["codex", "claude", "opencode"] as const)("replaces explicit default with the lowest supported effort for %s", async (runtime) => {
       useRuntimeStore.setState({ gatewayRuntime: runtime,
         gatewayRuntimes: [{ runtime, kind: runtime === "opencode" ? "opencode" : "server", managed: runtime !== "opencode",
           label: runtime, enabled: true, models: ["reasoner"], defaultModel: "reasoner", selectedModel: "reasoner" }],
@@ -806,7 +806,7 @@ describe("gateway runtime selection", () => {
         defaultModel: `${runtime}/reasoner`, reasoningVariant: "high" });
       useRuntimeStore.getState().setSessionVariant("ses_a", null);
       await useRuntimeStore.getState().sendPrompt("research", "ses_a");
-      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, `${runtime}/reasoner`, undefined);
+      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, `${runtime}/reasoner`, "high");
     });
 
     it("sends no effort for managed Claude when its actual catalog has no variants", async () => {
@@ -828,7 +828,7 @@ describe("gateway runtime selection", () => {
       expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, "codex/big-pickle", undefined);
       useRuntimeStore.getState().setSessionModel("ses_a", "codex/gpt-deep");
       await useRuntimeStore.getState().sendPrompt("again", "ses_a");
-      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "again", undefined, "codex/gpt-deep", undefined);
+      expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "again", undefined, "codex/gpt-deep", "low");
     });
 
     it("preserves a compatible effort on model switch", () => {

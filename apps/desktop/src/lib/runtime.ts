@@ -104,7 +104,7 @@ import {
   type StallVerdict,
 } from "./stallGuard";
 import { fallbackDefaultModel } from "@/components/settings/modelCatalog";
-import { webModelChoices } from "./webModelCatalog";
+import { webModelChoices, webModelEffort } from "./webModelCatalog";
 import { listProvidersWithAvailability, ZEN_PROVIDER_ID } from "./zenModels";
 import { toast } from "@/lib/toast";
 import i18n from "@/i18n";
@@ -2502,7 +2502,7 @@ export function agentForTurn(
 function modelForSession(state: RuntimeState, key: string): { model: string | null; variant: string | undefined } {
   if (isGatewayWeb && state.gatewayRuntime) {
     const model = state.sessionModels[key] ?? state.defaultModel;
-    return { model, variant: variantExposed(state.providers, model,
+    return { model, variant: webModelEffort(state.providers, model,
       state.sessionVariants[key] !== undefined ? state.sessionVariants[key] : state.reasoningVariant) };
   }
   // An agent carrying its own configured model OWNS the turn: sending an
@@ -2696,6 +2696,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       set({
         serverUrl: baseUrl,
         workspace: directory,
+        approvalMode: "full",
         webReadOnly: readOnly,
         gatewayRuntime,
         gatewayRuntimes,
@@ -3711,7 +3712,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   },
   modelSwitchError: null,
   modelSwitching: false,
-  approvalMode: "approve",
+  approvalMode: isGatewayWeb ? "full" : "approve",
   tools: [],
   hiddenExamples: initialHidden(),
   error: null,
@@ -3728,9 +3729,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       saveRecord(SESSION_MODELS_KEY, sessionModels);
       if (isGatewayWeb) {
         const effort = s.sessionVariants[sessionId] !== undefined ? s.sessionVariants[sessionId] : s.reasoningVariant;
-        if (effort && !variantExposed(s.providers, model, effort)) {
-          // Keep an explicit default so an old global effort cannot return.
-          const sessionVariants = { ...s.sessionVariants, [sessionId]: null };
+        const resolved = webModelEffort(s.providers, model, effort) ?? null;
+        if (resolved !== s.sessionVariants[sessionId]) {
+          const sessionVariants = { ...s.sessionVariants, [sessionId]: resolved };
           saveRecord(SESSION_VARIANTS_KEY, sessionVariants);
           return { sessionModels, sessionVariants };
         }

@@ -35,7 +35,7 @@ describe("WebModelPicker", () => {
     viewport.mobile = mobile;
     const user = userEvent.setup();
     render(<WebModelPicker sessionId="draft:leaf-a" compact />);
-    await user.click(screen.getByRole("button", { name: "Reasoning effort: Model default" }));
+    await user.click(screen.getByRole("button", { name: "Reasoning effort: Low" }));
     const role = mobile ? "button" : "menuitem";
     expect(screen.queryByRole(role, { name: "Medium" })).not.toBeInTheDocument();
     await user.click(screen.getByRole(role, { name: "X-High" }));
@@ -47,15 +47,18 @@ describe("WebModelPicker", () => {
     expect(effortButton.querySelector("svg")).not.toBeNull();
   });
 
-  it("keeps explicit model default after selecting it over a stale global effort", async () => {
+  it("replaces a saved model default with the lowest supported effort", async () => {
     withReasoning();
-    act(() => useRuntimeStore.setState({ reasoningVariant: "high" }));
+    act(() => useRuntimeStore.setState({ reasoningVariant: "high", sessionVariants: { ses_a: null },
+      providers: [{ id: "codex", name: "Codex", models: [
+        { id: "gpt-deep", name: "GPT Deep", variants: ["xhigh", "high", "low"] },
+      ] }] }));
     const user = userEvent.setup();
     render(<WebModelPicker sessionId="ses_a" />);
-    await user.click(screen.getByRole("button", { name: "Reasoning effort: High" }));
-    await user.click(screen.getByRole("menuitem", { name: "Model default" }));
-    expect(useRuntimeStore.getState().sessionVariants.ses_a).toBeNull();
-    expect(screen.getByRole("button", { name: "Reasoning effort: Model default" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reasoning effort: Low" }));
+    expect(screen.queryByRole("menuitem", { name: "Model default" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "High" }));
+    expect(useRuntimeStore.getState().sessionVariants.ses_a).toBe("high");
   });
 
   it("hides effort for an unsupported model and clears it when switching", async () => {

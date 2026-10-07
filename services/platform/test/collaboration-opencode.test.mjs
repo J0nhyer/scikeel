@@ -335,19 +335,6 @@ for (const mode of ["collaborative", "guided", "delegated", "autonomous"]) test(
         await store.answer(owner, { id: next.pending.id, execution: next.execution, revision: next.revision, answer: "Write the verified artifact" });
       }
       }
-      if (mode === "guided") {
-      step = "permission";
-      const permission = await waitFor(async () => {
-        const r = await nativeFetch(`${native}/permission`);
-        const p = await r.json();
-        return p[0];
-      });
-      await nativeFetch(`${native}/permission/${permission.id}/reply`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reply: "once" }),
-      });
-      }
       await waitFor(() =>
         access(join(workspace, "result.txt")).then(() => true),
       );

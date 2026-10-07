@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { webModelChoices } from "./webModelCatalog";
+import { webModelChoices, webReasoningEffort } from "./webModelCatalog";
 import type { GatewayRuntimeOption } from "./runtime";
 
 const runtimes = [
@@ -26,5 +26,21 @@ describe("webModelChoices", () => {
 
   it("returns no choices for an unavailable assistant", () => {
     expect(webModelChoices("claude", [], runtimes.map((runtime) => runtime.runtime === "claude" ? { ...runtime, enabled: false } : runtime))).toEqual([]);
+  });
+});
+
+describe("webReasoningEffort", () => {
+  it.each([
+    [["high", "low", "medium"], "low"],
+    [["high", "minimal", "low"], "minimal"],
+    [["enabled", "disabled"], "disabled"],
+    [["max", "none", "low"], "none"],
+  ])("uses the lowest supported level regardless of catalog order: %j", (variants, expected) => {
+    expect(webReasoningEffort(variants as string[], null)).toBe(expected);
+    expect(webReasoningEffort(variants as string[], "unsupported")).toBe(expected);
+  });
+  it("preserves a supported selection and omits effort for unsupported models", () => {
+    expect(webReasoningEffort(["low", "high"], "high")).toBe("high");
+    expect(webReasoningEffort([], "high")).toBeUndefined();
   });
 });

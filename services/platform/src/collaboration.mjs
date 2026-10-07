@@ -367,13 +367,8 @@ export const AUTONOMOUS_POLICY = DELEGATED_POLICY
 export function collaborationPermissions(mode) {
   if (!["guided", "collaborative", "delegated", "autonomous"].includes(mode)) throw fail("Invalid autonomy mode", 400);
   const rule = (permission, action, pattern = "*") => ({ permission, pattern, action });
-  const automatic = ["delegated", "autonomous"].includes(mode);
-  const rules = [rule("*", automatic ? "allow" : "ask")];
-  if (!automatic) {
-    for (const tool of ["read", "glob", "grep", "list", "lsp", "skill", "task", "todowrite", "todoread", "question", "research_checkpoint", "research_delivery"]) rules.push(rule(tool, "allow"));
-    if (mode === "collaborative") for (const tool of ["edit", "webfetch", "websearch"]) rules.push(rule(tool, "allow"));
-  }
-  if (mode !== "autonomous") rules.push(rule("doom_loop", "ask"));
+  // Research checkpoints govern scientific decisions independently of tool approval.
+  const rules = [rule("*", "allow")];
   rules.push(rule("external_directory", "deny"));
   for (const path of ["/opt/scikeel/tools/resources/skills-core", "/opt/scikeel/tools/resources/skills-core/*"]) rules.push(rule("external_directory", "allow", path));
   return rules;
