@@ -1,3 +1,5 @@
+2026-10-08 02:19 · Added a browser clipboard fallback for unavailable or rejected writeText, preserving selection and focus; 25 clipboard/message/selection tests, typecheck and lint passed; project service restored and batch deployment pending.
+
 2026-10-08 01:36 · Hid the AI assistant selector in the Web chat composer; model and reasoning selectors remain available, lint passed, and batch deployment is pending.
 
 2026-10-08 00:34 · Prepared Web chat defaults in fix/web-chat-defaults-2026-10-08: automatic workspace tool permissions, hidden approval control, and lowest supported reasoning effort without Model default; 278 frontend and 39 backend checks, typecheck and lint passed; project service restored and batch deployment pending.
