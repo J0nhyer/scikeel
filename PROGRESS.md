@@ -1,3 +1,5 @@
+2026-10-08 01:36 · Hid the AI assistant selector in the Web chat composer; model and reasoning selectors remain available, lint passed, and batch deployment is pending.
+
 2026-10-08 00:34 · Prepared Web chat defaults in fix/web-chat-defaults-2026-10-08: automatic workspace tool permissions, hidden approval control, and lowest supported reasoning effort without Model default; 278 frontend and 39 backend checks, typecheck and lint passed; project service restored and batch deployment pending.
 
 2026-10-07 20:01 · Enabled administrator-selected key-free Parallel search in the isolated Web candidate, repaired query-only approval metadata, and verified real native search/fetch through scoped EgressBroker grants plus 366 platform tests and native title/network regression; production is unchanged and CI authentication/attested-image publication remain pending.
