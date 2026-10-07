@@ -11,9 +11,11 @@ test("the installed question tool survives a fresh reader, records an exact answ
   skip: !process.env.SCIKEEL_QUESTION_NATIVE, timeout: 90000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "scikeel-question-"));
+  const advertisedTools=new Set();
   const relay = createServer(async (request, response) => {
     let raw = ""; for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw);
+    for(const tool of body.tools ?? [])if(typeof tool.function?.name==="string")advertisedTools.add(tool.function.name);
     const called = body.messages.some((message) => message.role === "tool");
     const delta = called ? { role: "assistant", content: "Answer was handled." } : {
       role: "assistant", tool_calls: [{ index: 0, id: "call_question", type: "function", function: {
@@ -81,7 +83,7 @@ test("the installed question tool survives a fresh reader, records an exact answ
     const userMessage=history.find(message=>message.info.role==="user");
     const reverted=await request(`/session/${session.id}/revert`,post({messageID:userMessage.info.id}));assert.equal(reverted.ok,true);
     assert.equal((await (await request(`/session/${session.id}`)).json()).revert.messageID,userMessage.info.id);
-    console.log(JSON.stringify({nativeQuestion:true,freshReaderRecovery:true,exactAnswerReceipt:true,staleQuestionStatus:404,revertAfterExpiredQuestion:true}));
+    console.log(JSON.stringify({advertisedTools:[...advertisedTools].sort(),nativeQuestion:true,freshReaderRecovery:true,exactAnswerReceipt:true,staleQuestionStatus:404,revertAfterExpiredQuestion:true}));
 
   } finally {
     if (child && child.exitCode === null) await new Promise((done) => { child.once("exit", done); child.kill("SIGTERM"); setTimeout(() => child.kill("SIGKILL"), 3000).unref(); });
