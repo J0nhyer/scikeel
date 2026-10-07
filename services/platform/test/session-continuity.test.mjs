@@ -54,7 +54,7 @@ async function fixture(t){
  const address=await server.listen();const origin=`http://127.0.0.1:${address.port}`;
  t.after(async()=>{await server.close();for(const s of sockets)s.destroy();await new Promise(resolve=>upstream.close(resolve));await rm(root,{recursive:true,force:true});});
  const request=(path,init={})=>fetch(origin+path,{...init,headers:{cookie:'osd_session=fixture',origin,'content-type':'application/json',...init.headers},signal:init.signal ?? AbortSignal.timeout(35000)});
- return {request,policy,context,rotate:()=>{generation++;policy.registerAccount(context());},reverts:()=>reverts,frames:()=>frames,replies:()=>replies,logs,replyDirectories,expire:()=>{missing=true;},holdReply:()=>{let release;replyGate=new Promise(done=>{release=()=>{replyGate=undefined;done();};});return release;}};
+ return {server,request,policy,context,rotate:()=>{generation++;policy.registerAccount(context());},reverts:()=>reverts,frames:()=>frames,replies:()=>replies,logs,replyDirectories,expire:()=>{missing=true;},holdReply:()=>{let release;replyGate=new Promise(done=>{release=()=>{replyGate=undefined;done();};});return release;}};
 }
 test('persisted owned session rebinds current-generation authority before a revert mutation',async t=>{
  const f=await fixture(t);const init={method:'POST',body:JSON.stringify({messageID:'msg_diagnostic'})};
@@ -127,4 +127,13 @@ test('reopened history honors the native revert marker instead of restoring reve
  f.rotate();
  const response=await f.request('/session/ses_diagnostic/message');assert.equal(response.status,200);
  assert.deepEqual((await response.json()).map(message=>message.info.id),['msg_before']);
+});
+
+test('the research bridge recovers an owned root after generation changes instead of requiring a registered ancestor',async t=>{
+ const f=await fixture(t);f.rotate();
+ const owner={userId:'diagnostic',sessionId:'ses_diagnostic',runtime:'opencode',directory:'/owned/science',workspaceDir:'/owned/science'};
+ await f.server.collaboration.begin(owner,0);
+ const result=await f.server.runtimeCollaboration(f.context(),{action:'checkpoint',sessionId:'ses_diagnostic',kind:'method',question:'Use A?',suggestedAnswer:'A'});
+ assert.equal(result.state.phase,'waiting_input');assert.equal(result.state.pending.question,'Use A?');
+ assert.equal(f.policy.session(f.context(),'ses_diagnostic').directory,'/owned/science');
 });
