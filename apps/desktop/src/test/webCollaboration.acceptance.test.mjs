@@ -76,7 +76,7 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
                     : path === "/agent"
                       ? [{ name: "build", mode: "primary" }]
                       : path === "/v1/whoami"
-                        ? { directory: workspace }
+                        ? { directory: workspace, mode: "full" }
                         : [];
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify(body));
@@ -184,7 +184,11 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
             const mode = page.getByRole("button", {
               name: selectedMode === "guided" ? (chinese ? "托管程度: 低" : "Autonomy: Low") : selectedMode === "delegated" ? (chinese ? "托管程度: 高" : "Autonomy: High") : (chinese ? "托管程度: 中" : "Autonomy: Medium"),
             });
-            await mode.click();
+            await mode.click({timeout:3000}).catch(async error => {
+              const diagnostic = resolve("../../.deploy/collaboration-control-failure.png");
+              await page.screenshot({path:diagnostic,fullPage:true});
+              throw new Error(`${error.message}; width=${width}; locale=${chinese ? "zh-Hans" : "en"}; mode=${selectedMode}; screenshot=${diagnostic}`);
+            });
             if (width < 768) {
               expect(
                 await page
@@ -229,9 +233,9 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
               .toBe("Use method B");
             expect(prompts).toEqual([]);
             if (selectedMode === "guided") {
-              // Reload releases the old page lease, so explicitly start a new execution for the next isolated checkpoint.
+              // Recovery preserves the existing execution; start again only if it actually settled.
               const current = await platform.collaboration.get(owner);
-              if (current.phase === "paused") await platform.collaboration.begin(owner, current.revision);
+              if (["paused", "completed"].includes(current.phase)) await platform.collaboration.begin(owner, current.revision);
               await platform.collaboration.checkpoint(owner, { kind: "step", question: "Inspection completed: two missing values. Confirm the next analysis outcome?", suggestedAnswer: "Analyze all observations" });
               await card.getByText("Inspection completed: two missing values. Confirm the next analysis outcome?").waitFor();
               expect((await platform.collaboration.get(owner)).decisions).toHaveLength(1);

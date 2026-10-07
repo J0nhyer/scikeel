@@ -175,6 +175,7 @@ async function prepareCandidate(candidate, path) {
     'frontend-tests': () => runProcess(process.execPath, [join(desktop, 'node_modules/vitest/vitest.mjs'), 'run', '--no-file-parallelism', ...(s.frontendFull ? [] : s.frontendFiles)], desktop),
     'platform-tests': () => runProcess(process.execPath, ['--test', '--test-concurrency=1', ...(s.platformFull ? [] : s.platformFiles)], join(root, 'services/platform'), candidate.artifacts.image?.imageDigest ? {
       SCIKEEL_WEBFETCH_NATIVE:'1', SCIKEEL_WEBFETCH_NATIVE_BIN:join('/var/lib/scikeel/images',candidate.artifacts.image.imageDigest.replace(/^sha256:/,''),'rootfs/opt/scikeel/tools/bin/opencode'),
+      OSD_COLLABORATION_BINARY:join('/var/lib/scikeel/images',candidate.artifacts.image.imageDigest.replace(/^sha256:/,''),'rootfs/opt/scikeel/tools/bin/opencode'),
       SCIKEEL_QUESTION_NATIVE:'1', SCIKEEL_QUESTION_NATIVE_BIN:join('/var/lib/scikeel/images',candidate.artifacts.image.imageDigest.replace(/^sha256:/,''),'rootfs/opt/scikeel/tools/bin/opencode'),
     } : {}),
     'rust-checks': () => { for (const name of s.rustPackages) runProcess('cargo', ['check', '--locked', '--jobs', '1', '--package', name], root); },

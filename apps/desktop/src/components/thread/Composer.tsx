@@ -985,13 +985,14 @@ export function Composer({
         aria-label={t("composer.placeholder.default")}
       />
       {/* Codex-style action row: mode controls bottom-left, send bottom-right.
-          ONE line, always. A wrapping row looks broken — the send button ends
+          Desktop stays on one line. Web controls can wrap as a group so neither
+          model/effort nor research controls cover one another on phones. A wrapping desktop row looks broken — the send button ends
           up on its own line under the other controls, with a gap between them
           — and flexbox wraps on an item's natural width rather than shrinking
           it first, so the long model name alone was enough to trigger it.
           Everything here is fixed-width except the model chip, which truncates;
           below `TOOLBAR_LABEL_MIN_PX` the buttons drop their labels too. */}
-      <div className="flex min-w-0 items-center gap-1.5 pt-1">
+      <div className={cn("flex min-w-0 items-center gap-1.5 pt-1", isGatewayWeb && "flex-wrap")}>
         {command ? (
           <span
             className="flex h-7 shrink-0 items-center gap-1 rounded-input bg-accent/15 pl-2 pr-1 font-mono text-xs text-accent"
@@ -1030,7 +1031,7 @@ export function Composer({
         {/* Folder picker for a fresh draft — renders nothing once the session
             exists (its folder then shows in the header's Files toggle). */}
         {showWorkspaceChip && <WorkspaceChip draftKey={draftKey} />}
-        {collaborationControl}
+        {collaborationControl && <div className="max-w-full shrink-0">{collaborationControl}</div>}
         {agentMode && onAgentModeChange && !collaborationControl && (
           <div className="relative shrink-0" ref={agentRef}>
             {agentOpen && (

@@ -10,7 +10,7 @@ const { CollaborationStore }=await import('../src/collaboration.mjs');
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'scikeel-continuity-probe-'));
  const user={id:'diagnostic',role:'user'};
- let generation=1,reverts=0,frames=0,replies=0,missing=false,replyGate;
+ let generation=1,reverts=0,frames=0,replies=0,missing=false,replyGate,promptGate,prompts=0,closedPrompts=0;
  const logs=[];const replyDirectories=[];
  const context=()=>({userId:user.id,instanceId:'user-diagnostic',generation,workspaceDir:'/owned/science'});
  const session={id:'ses_diagnostic',directory:'/owned/science'};
@@ -25,6 +25,13 @@ async function fixture(t){
    send();const timer=setInterval(send,250);res.once('close',()=>clearInterval(timer));return;
   }
   res.setHeader('content-type','application/json');
+  if(path==='/session/ses_diagnostic/prompt_async'){
+    for await(const chunk of req){};
+    prompts++;
+    res.once('close',()=>{if(!res.writableEnded)closedPrompts++;});
+    if(promptGate)await promptGate;
+    res.statusCode=202;res.end('{}');return;
+  }
   if(path==='/question'){res.end(JSON.stringify(missing?[]:[{id:'question_live',sessionID:session.id,questions:[]} ]));return;}
   if(path==='/question/question_live/reply'){
     replies++;if(replyGate)await replyGate;replyDirectories.push(new URL(req.url,'http://fixture.invalid').searchParams.get('directory'));
@@ -54,7 +61,7 @@ async function fixture(t){
  const address=await server.listen();const origin=`http://127.0.0.1:${address.port}`;
  t.after(async()=>{await server.close();for(const s of sockets)s.destroy();await new Promise(resolve=>upstream.close(resolve));await rm(root,{recursive:true,force:true});});
  const request=(path,init={})=>fetch(origin+path,{...init,headers:{cookie:'osd_session=fixture',origin,'content-type':'application/json',...init.headers},signal:init.signal ?? AbortSignal.timeout(35000)});
- return {server,request,policy,context,rotate:()=>{generation++;policy.registerAccount(context());},reverts:()=>reverts,frames:()=>frames,replies:()=>replies,logs,replyDirectories,expire:()=>{missing=true;},holdReply:()=>{let release;replyGate=new Promise(done=>{release=()=>{replyGate=undefined;done();};});return release;}};
+ return {server,request,policy,context,prompts:()=>prompts,closedPrompts:()=>closedPrompts,holdPrompt:()=>{let release;promptGate=new Promise(done=>{release=()=>{promptGate=undefined;done();};});return release;},rotate:()=>{generation++;policy.registerAccount(context());},reverts:()=>reverts,frames:()=>frames,replies:()=>replies,logs,replyDirectories,expire:()=>{missing=true;},holdReply:()=>{let release;replyGate=new Promise(done=>{release=()=>{replyGate=undefined;done();};});return release;}};
 }
 test('persisted owned session rebinds current-generation authority before a revert mutation',async t=>{
  const f=await fixture(t);const init={method:'POST',body:JSON.stringify({messageID:'msg_diagnostic'})};
@@ -136,4 +143,22 @@ test('the research bridge recovers an owned root after generation changes instea
  const result=await f.server.runtimeCollaboration(f.context(),{action:'checkpoint',sessionId:'ses_diagnostic',kind:'method',question:'Use A?',suggestedAnswer:'A'});
  assert.equal(result.state.phase,'waiting_input');assert.equal(result.state.pending.question,'Use A?');
  assert.equal(f.policy.session(f.context(),'ses_diagnostic').directory,'/owned/science');
+});
+
+
+test('a refreshed page cannot cut off a validated asynchronous first prompt before acknowledgement',async t=>{
+ const f=await fixture(t);const release=f.holdPrompt();
+ const controller=new AbortController();
+ const first=f.request('/session/ses_diagnostic/prompt_async',{method:'POST',body:JSON.stringify({parts:[{type:'text',text:'First message'}]}),signal:controller.signal}).catch(()=>{});
+ for(let i=0;i<100 && !f.prompts();i++)await new Promise(done=>setTimeout(done,10));
+ assert.equal(f.prompts(),1);controller.abort();await first;
+ await new Promise(done=>setTimeout(done,100));
+ const closed=f.closedPrompts();release();
+ assert.equal(closed,0,'the browser must not cancel the accepted upstream HTTP delivery');
+ for(let i=0;i<100 && !f.logs.some(event=>event.type==='runtime.delivery_completed');i++)await new Promise(done=>setTimeout(done,10));
+ const delivered=f.logs.find(event=>event.type==='runtime.delivery_completed');
+ assert.equal(delivered?.operation,'sessionPrompt_async');assert.equal(delivered?.status,202);assert.equal(delivered?.receiverClosed,true);
+ assert.equal(f.logs.some(event=>event.type==='runtime.transport_closed' && event.correlationId===delivered.correlationId),true);
+ assert.equal(JSON.stringify(f.logs).includes('First message'),false);
+ assert.equal(f.prompts(),1);
 });

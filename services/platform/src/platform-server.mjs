@@ -1300,9 +1300,10 @@ export class PlatformServer {
       }
       const target = new URL(`${operation.path}${parsed.search}`, access.url);
       const controller = new AbortController();
-      // Finish accepted interaction delivery even if the browser disconnects.
-      // The request body was validated; explicit Stop is a separate operation.
-      if(!interaction) {
+      // Finish validated asynchronous prompts and interaction replies even if
+      // the browser disconnects before acknowledgement. Explicit Stop remains
+      // a separate operation; the upstream deadline still bounds delivery.
+      if(!interaction && operation.operation !== "sessionPrompt_async") {
         request.on("aborted", () => controller.abort());
         response.on("close", () => { if (!response.writableEnded) controller.abort(); });
       }
@@ -1414,6 +1415,9 @@ export class PlatformServer {
         const code=safe?.code ?? safe?.name ?? safe?._tag;
         if(typeof code==="string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(code))trace.code=code;
         if(interaction)interaction.record.complete({status:upstream.status,body:upstream.ok ? true : JSON.stringify(safe).length<=8192 ? safe : {error:"Interaction failed",...(trace.code?{code:trace.code}:{})}});
+        if(interaction || operation.operation === "sessionPrompt_async")this.logger({type:"runtime.delivery_completed",operation:operation.operation,
+          status:upstream.status,sessionId,requestId:operation.identifiers.requestId,generation:context.generation,
+          correlationId:trace.correlationId,elapsedMs:Date.now()-startedAt,receiverClosed:response.destroyed,code:trace.code});
         sendJson(response, upstream.status, safe);
       } finally { clearTimeout(timeout); permissionDecision?.release(); }
     } catch (error) {

@@ -351,6 +351,9 @@ for (const mode of ["collaborative", "guided", "delegated", "autonomous"]) test(
           ),
         ),
       );
+      const advertisedTools = [...new Set(captured.flatMap(body =>
+        (body.tools ?? []).map(tool => tool.function?.name).filter(Boolean)))].sort();
+      console.log(JSON.stringify({ nativeCollaboration: true, mode, binary, advertisedTools, verifiedArtifact: true }));
     } catch (e) {
       throw new Error(
         `${e.message}; step=${step} health=${lastHealth}; runtime diagnostic: ${stdout.slice(-1000)} ${diagnostic.slice(-2000)}; model requests: ${captured.length}`,
