@@ -2,7 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking. Agent delegation is not authorized by the present request.
 
-**Implementation status (2026-10-08, Asia/Shanghai):** Development authorized by the user. Work is isolated in `fix/web-session-continuity` at `.worktrees/web-session-continuity`, reconstructed and hash-verified against release `2026-10-07T19-01-38-837Z-4b8c2d9c`. Native acceptance verified `_tag: QuestionNotFoundError` and exact answer receipts. Browser fault injection additionally reproduced transport-level POST retransmission; bounded current-generation gateway reply receipts now coalesce those deliveries. Final checks and unpublished candidate preparation are in progress; production publication remains a separate approval.
+**Implementation status (2026-10-08, Asia/Shanghai):** Authorized development and required pre-publication verification are complete in `fix/web-session-continuity` at `.worktrees/web-session-continuity`, based on hash-verified release `2026-10-07T19-01-38-837Z-4b8c2d9c`. Candidate `2026-10-07T21-32-04-409Z-81c03ee0` is prepared from commit `e3cde067095472111c0748da3c1c2cfcad34d61c`. Lint/typecheck/build, 42 workflow tests, 1,906 frontend tests, 392 platform tests and eight required browser checks passed. Frontend/platform retain 28/5 opt-in skips; required browser checks and current native question/fetch/four-mode research acceptance did not skip. Spec section 7 records full evidence and tool limitations. Production publication and real supported non-Claude model lifecycle acceptance remain pending.
+
+| Planned tasks | Delivered result | Remaining gate |
+| --- | --- | --- |
+| 1–3 | Isolated production-compatible baseline, safe operation/cancellation/delivery diagnostics, bounded current-worker authority recovery. Healthy SSE preserved. | Historical 400/502 initiating trace is still unavailable. |
+| 4–5 | Collaboration/legacy execution survives page absence; durable pending execution blocks idle eviction; explicit Stop remains authoritative. | Required live acceptance after publication approval. |
+| 6–8 | SDK native error/correlation preservation, bounded account-scoped question drafts, acknowledged replies and retransmission coalescing, generation/event-safe recovery. | Individually unexercised external-model tools remain unverified as listed in the spec. |
+| 9 | Confirmed Stop, owning-client revert, native marker readback, authoritative visible history on refresh, failure preserves local thread/draft. | Actual native deletion still correctly returns 404. |
+| 10 | Current native catalog captured; question/fetch/four research modes and typed delivery/broker/permission paths checked. No native image change. | External-model invocation of every advertised tool is not complete or claimed. |
+| 11 | Required staged lifecycle acceptance passed, including five starters/typed input, phone recovery, real presence store beyond 45 seconds and truthful expired interactions. | Supported real-model lifecycle and installed production acceptance follow publication approval; Claude remains excluded. |
+| 12 | Coherent immutable candidate prepared with validated source/dependencies/image/artifacts; production and rollback pointer unchanged. | User publication approval, deployed live acceptance and final publication result. |
 
 **Goal:** Keep accepted Web conversations running when their browser disappears, recover owned sessions safely, and make question, permission, and revert operations truthful and recoverable.
 
@@ -14,7 +24,7 @@
 
 ## Authorization and execution boundaries
 
-Approved spec: `docs/superpowers/specs/2026-10-07-web-session-continuity-interactions-design.md`. The user selected policy A and approved the written spec on October 8, 2026, Asia/Shanghai. This turn authorizes writing this plan only. No task checkbox below has been completed merely by authoring the plan. Implementation, live fault injection, image building, and publication await subsequent authorization.
+Approved spec: `docs/superpowers/specs/2026-10-07-web-session-continuity-interactions-design.md`. The user selected policy A and approved the written spec on October 8, 2026, Asia/Shanghai. The subsequent user request authorizes development and isolated acceptance. Production publication remains a separate final approval. Original task checkboxes below retain the written plan; concrete completion and remaining live acceptance are recorded in the implementation status/evidence, rather than marking mixed staged/live requirements complete.
 
 Execute inline. Do not create agents unless the user subsequently requests delegation. At execution time read `superpowers:using-git-worktrees`, `superpowers:systematic-debugging`, `superpowers:test-driven-development`, and `superpowers:verification-before-completion`; retain the user's scope and approval boundaries over skill defaults.
 
