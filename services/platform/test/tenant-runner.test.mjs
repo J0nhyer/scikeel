@@ -62,6 +62,10 @@ test("profile updates accept only platform broker credentials and manual permiss
     assert.equal((await post(invalid)).status, 403);
   }
   assert.equal((await post(profile)).status, 200); assert.deepEqual(profiles, [profile]);
+  assert.equal((await post({ ...profile, searchProvider: 'parallel' })).status, 200);
+  assert.equal(profiles.at(-1).searchProvider, 'parallel');
+  profiles.pop();
+  for (const searchProvider of ['unknown', 'https://peer', null, true]) assert.equal((await post({ ...profile, searchProvider })).status, 403);
   const reasoning = structuredClone(profile);
   reasoning.provider.fixture.models.approved = { name: "approved", reasoning: true,
     variants: { low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" }, max: { reasoningEffort: "max" } } };
@@ -92,7 +96,9 @@ test("gateway configuration is published before startup and restart preserves pr
   for (const key of ["workspaceDir", "stateDir", "home", "scratchDir"]) await mkdir(config[key]);
   const socket = createServer(); await new Promise((done) => socket.listen(0, "127.0.0.1", done)); const port = socket.address().port;
   await new Promise((done) => socket.close(done));
+  const childEnvironments = [];
   const gateway = new TenantGateway({ manifest: config, token, address: "127.0.0.1", port, spawnImpl: (_command, _args, options) => {
+    childEnvironments.push(options.env);
     assert.equal(options.env.SCIKEEL_SESSION_TITLE_POLICY, "conversation-v1");
     return spawn(process.execPath, [fileURLToPath(new URL("../fixtures/sandbox-gateway.mjs", import.meta.url))], { ...options, env: { ...options.env, FIXTURE_PORT: String(port) } }); } });
   t.after(() => gateway.stop());
@@ -109,12 +115,16 @@ test("gateway configuration is published before startup and restart preserves pr
 
   const brokerToken = "b".repeat(64);
   const imageDigest = "sha256:" + "c".repeat(64);
-  await gateway.start({ ...profile, model: "fixture/two", enabled_providers: ["fixture"], provider: { fixture: {
+  await gateway.start({ ...profile, searchProvider: "parallel", model: "fixture/two", enabled_providers: ["fixture"], provider: { fixture: {
     npm: "@ai-sdk/openai-compatible", name: "fixture", models: { two: { name: "two" } },
     options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: brokerToken },
   } } }, { imageDigest });
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/two");
   const restarted = JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8"));
+  assert.equal(restarted.searchProvider, undefined);
+  assert.equal(childEnvironments[0].OPENCODE_WEBSEARCH_PROVIDER, undefined);
+  assert.equal(childEnvironments[1].OPENCODE_WEBSEARCH_PROVIDER, "parallel");
+  assert.equal(childEnvironments[1].OPENCODE_ENABLE_PARALLEL, "1");
   assert.deepEqual(restarted.skills, { paths: [skills] });
   assert.deepEqual(restarted.plugin, [["file:///opt/scikeel/tools/science-environment.mjs", { imageDigest, collaborationToken: brokerToken }]]);
   assert.deepEqual(restarted.permission, published.permission);

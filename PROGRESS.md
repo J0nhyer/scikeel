@@ -1,3 +1,5 @@
+2026-10-07 20:01 · Enabled administrator-selected key-free Parallel search in the isolated Web candidate, repaired query-only approval metadata, and verified real native search/fetch through scoped EgressBroker grants plus 366 platform tests and native title/network regression; production is unchanged and CI authentication/attested-image publication remain pending.
+
 2026-10-07 17:32 · The isolated Web tool-reliability implementation passes 1,883 frontend tests, 363 platform tests, 41 release checks, pinned native title/network acceptance, bounded build/typecheck/lint and repeated 1280px/360px browser acceptance; publication remains gated on the CI-attested image and installed-stack acceptance.
 
 2026-10-07 16:39 · The isolated Web tool-reliability candidate passes native permission/proxy/TLS/retry acceptance, bounded Web build, and 1280px/360px live-history/Stop browser checks; production remains unchanged and the combined CI-attested runtime image is still required.

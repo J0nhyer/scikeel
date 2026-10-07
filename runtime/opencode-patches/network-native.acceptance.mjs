@@ -1,3 +1,4 @@
+import { EgressBroker } from "../../services/platform/src/egress-broker.mjs";
 import { createServer as createHttpsServer } from 'node:https';
 import { connect } from 'node:net';
 import { createHash } from 'node:crypto';
@@ -14,7 +15,7 @@ async function until(fn, milliseconds = 30000) {
   while (Date.now() < deadline) { const value = await fn().catch(() => null); if (value) return value; await new Promise(r => setTimeout(r, 40)); }
   throw new Error('Native network acceptance timed out');
 }
-test('native webfetch asks before authorizing, denial performs no transport and allowance uses its grant', { timeout: 90000 }, async t => {
+test('native fetch and search authorize only after permission and preserve scoped transport and bounded recovery', { timeout: 90000 }, async t => {
   const source = process.env.OSD_SESSION_TITLE_SOURCE, binary = process.env.OSD_SESSION_TITLE_BINARY, bun = process.env.SCIKEEL_RUNTIME_BUN;
   assert.ok(binary || source && bun, 'A pinned runtime source or image binary is required');
   const titleLock = JSON.parse(await readFile(new URL('./session-title.lock.json', import.meta.url)));
@@ -38,14 +39,27 @@ test('native webfetch asks before authorizing, denial performs no transport and 
   await writeFile(join(config, 'package.json'), JSON.stringify({ private: true, dependencies: { '@opencode-ai/plugin': '1.18.32' } }));
   await writeFile(join(config, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { '@opencode-ai/plugin': '1.18.32' } } } }));
   const trace = [], authorizations = [], outbound = [], completions = [];
-  let targetUrl = 'http://science.example/data', fault = 'okay', attempts = 0;
+  let targetUrl = 'http://science.example/data', fault = 'okay', attempts = 0, toolName = 'webfetch';
+  const liveSearch = process.env.OSD_NETWORK_SEARCH_LIVE === '1';
+  const searchContext = { userId: 'fixture', instanceId: 'user-fixture', generation: 1 };
+  const liveFailures = [];
+  const liveEgress = liveSearch ? new EgressBroker({ identify: () => searchContext, onFailure: value => liveFailures.push(value.code) }) : null;
+  let liveGrant;
+  const advertisedSearch = [];
   const grant = 'b'.repeat(64), token = 'a'.repeat(64);
   const broker = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk; const body = JSON.parse(raw);
     assert.equal(req.headers.authorization, `Bearer ${token}`);
     res.setHeader('content-type', 'application/json');
     if (req.url === '/collaboration') { res.end(JSON.stringify({ state: { execution: 1, phase: 'running' } })); return; }
-    if (body.action === 'authorize') { trace.push('network:authorize'); authorizations.push(body); res.end(JSON.stringify({ operationId: 'op_native', grant, expiresAt: Date.now() + (fault === 'slow' ? 250 : 10000) })); return; }
+    if (body.action === 'authorize') {
+      trace.push('network:authorize'); authorizations.push(body);
+      if (body.tool === 'websearch') assert.deepEqual(body.origins, ['https://search.parallel.ai']);
+      const expiresAt = Date.now() + (fault === 'slow' ? 250 : body.tool === 'websearch' ? 25000 : 10000);
+      if (liveEgress && body.origins.some(origin => ['https://search.parallel.ai', 'https://docs.python.org'].includes(origin))) liveGrant = liveEgress.grant({ context: searchContext, destinations: body.origins, expiresAt }).id;
+      res.end(JSON.stringify({ operationId: 'op_native', grant: liveGrant ?? grant, expiresAt })); return;
+    }
+    if (liveGrant) { liveEgress.revokeGrant(searchContext, liveGrant); liveGrant = undefined; }
     completions.push(body); res.end('{}');
   });
   const proxy = createServer((req, res) => {
@@ -60,20 +74,37 @@ test('native webfetch asks before authorizing, denial performs no transport and 
   });
   const model = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk; const body = JSON.parse(raw);
+    if (Array.isArray(body.tools)) advertisedSearch.push(body.tools.some(tool => tool.function?.name === 'websearch'));
     const complete = body.messages.some(m => m.role === 'tool');
     const title = body.messages.some(m => typeof m.content === 'string' && m.content.includes('Generate a title for this conversation:'));
-    const delta = title || complete ? { content: 'Fixture completed.' } : { tool_calls: [{ index: 0, id: 'call_fetch', type: 'function', function: { name: 'webfetch', arguments: JSON.stringify({ url: targetUrl, format: 'text', timeout: 10 }) } }] };
+    const delta = title || complete ? { content: 'Fixture completed.' } : { tool_calls: [{ index: 0, id: 'call_fetch', type: 'function', function: { name: toolName, arguments: JSON.stringify(toolName === 'websearch' ? { query: 'Python pathlib official documentation' } : { url: targetUrl, format: 'text', timeout: 10 }) } }] };
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     for (const item of [{ choices: [{ index: 0, delta, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: title || complete ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }]) res.write(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', ...item })}\n\n`);
     res.end('data: [DONE]\n\n');
   });
   const cert = join(root, 'fixture.crt'), key = join(root, 'fixture.key');
-  assert.equal(spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=science.example', '-addext', 'subjectAltName=DNS:science.example'], { stdio: 'ignore' }).status, 0);
+  assert.equal(spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=science.example', '-addext', 'subjectAltName=DNS:science.example,DNS:search.parallel.ai'], { stdio: 'ignore' }).status, 0);
   const tlsRequests = [];
-  const tls = createHttpsServer({ key: await readFile(key), cert: await readFile(cert) }, (req, res) => { tlsRequests.push(req.headers); res.setHeader('content-type', 'text/plain'); res.end('Verified TLS fixture result.'); });
+  const tls = createHttpsServer({ key: await readFile(key), cert: await readFile(cert) }, async (req, res) => {
+    tlsRequests.push(req.headers);
+    if (req.headers.host === 'search.parallel.ai') {
+      let raw = ''; for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw); assert.equal(body.params.name, 'web_search');
+      assert.equal(body.params.arguments.objective, 'Python pathlib official documentation');
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'Python pathlib reference: https://docs.python.org/3/library/pathlib.html' }] } })); return;
+    }
+    res.setHeader('content-type', 'text/plain'); res.end('Verified TLS fixture result.');
+  });
   const tunnels = new Set();
   proxy.on('connect', (req, socket, head) => {
-    assert.equal(head.length, 0); assert.equal(req.url, 'science.example:443');
+    assert.equal(head.length, 0);
+    assert.ok(['science.example:443', 'search.parallel.ai:443', ...(liveSearch ? ['docs.python.org:443'] : [])].includes(req.url));
+    if (liveEgress && ['search.parallel.ai:443', 'docs.python.org:443'].includes(req.url)) {
+      assert.equal(req.headers['proxy-authorization'], `Bearer ${liveGrant}`);
+      trace.push('network:request'); outbound.push({ url: req.url });
+      liveEgress.server.emit('connect', req, socket, head); return;
+    }
     assert.equal(req.headers['proxy-authorization'], `Bearer ${grant}`);
     trace.push('network:request'); outbound.push({ url: req.url, authorization: req.headers['proxy-authorization'] });
     const upstream = connect({ host: '127.0.0.1', port: tls.address().port });
@@ -85,19 +116,21 @@ test('native webfetch asks before authorizing, denial performs no transport and 
   t.after(async () => {
     if (child && child.exitCode === null) { const exit = new Promise(r => child.once('exit', r)); child.kill('SIGTERM'); const timer = setTimeout(() => child.kill('SIGKILL'), 3000); await exit; clearTimeout(timer); }
     for (const socket of tunnels) socket.destroy();
+    await liveEgress?.close();
     for (const server of [broker, proxy, model, tls]) { server.closeAllConnections(); if (server.listening) await new Promise(r => server.close(r)); }
     await rm(root, { recursive: true, force: true });
   });
+  await liveEgress?.listen({ host: '127.0.0.1', port: 0 });
   await new Promise(r => broker.listen(4792, '172.31.240.1', r));
   await new Promise(r => proxy.listen(4794, '172.31.240.1', r));
   await new Promise(r => model.listen(0, '127.0.0.1', r));
   await new Promise(r => tls.listen(0, '127.0.0.1', r));
-  await writeFile(join(config, 'opencode.json'), JSON.stringify({ model: 'fixture/model', enabled_providers: ['fixture'], plugin: [], permission: { webfetch: 'ask' },
+  await writeFile(join(config, 'opencode.json'), JSON.stringify({ model: 'fixture/model', enabled_providers: ['fixture'], plugin: [], permission: { webfetch: 'ask', websearch: 'ask' },
     provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { baseURL: `http://127.0.0.1:${model.address().port}/v1`, apiKey: 'fixture' }, models: { model: { name: 'Fixture', limit: { context: 32000, output: 1000 } } } } } }));
   const reserve = createServer(); await new Promise(r => reserve.listen(0, '127.0.0.1', r)); const port = reserve.address().port; await new Promise(r => reserve.close(r));
   child = spawn(binary ?? bun, [...(binary ? [] : ['run', '--conditions=browser', join(source, 'packages/opencode/src/index.ts')]), 'serve', '--hostname', '127.0.0.1', '--port', String(port)], { cwd: workspace,
     env: { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'),
-      NODE_EXTRA_CA_CERTS: cert, SCIKEEL_MANAGED_NETWORK_TOKEN: token, SCIKEEL_SESSION_TITLE_POLICY: 'conversation-v1', OPENCODE_SERVER_PASSWORD: 'fixture', OPENCODE_DISABLE_MODELS_FETCH: 'true', OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true', OPENCODE_DISABLE_PROJECT_CONFIG: 'true', OPENCODE_MODELS_PATH: source ? join(source, 'packages/opencode/test/tool/fixtures/models-api.json') : undefined,
+      PARALLEL_API_KEY: undefined, EXA_API_KEY: undefined, NODE_EXTRA_CA_CERTS: cert, OPENCODE_WEBSEARCH_PROVIDER: 'parallel', OPENCODE_ENABLE_PARALLEL: '1', SCIKEEL_MANAGED_NETWORK_TOKEN: token, SCIKEEL_SESSION_TITLE_POLICY: 'conversation-v1', OPENCODE_SERVER_PASSWORD: 'fixture', OPENCODE_DISABLE_MODELS_FETCH: 'true', OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true', OPENCODE_DISABLE_PROJECT_CONFIG: 'true', OPENCODE_MODELS_PATH: source ? join(source, 'packages/opencode/test/tool/fixtures/models-api.json') : undefined,
       HTTP_PROXY: 'http://172.31.240.1:4794', HTTPS_PROXY: 'http://172.31.240.1:4794', NO_PROXY: '127.0.0.1,172.31.240.1' }, stdio: ['ignore', 'ignore', 'pipe'] });
   let diagnostics = ''; child.stderr.on('data', data => { diagnostics = (diagnostics + data).slice(-2000); });
   const request = async (path, method = 'GET', body) => {
@@ -155,4 +188,30 @@ test('native webfetch asks before authorizing, denial performs no transport and 
   assert.equal((await finishCall(redirected)).state.status, 'error');
   assert.equal(authorizations.length, before + 1); assert.equal(attempts, 1);
   assert.equal(completions.at(-1).outcome.code, 'tool_permission_denied');
+  toolName = 'websearch'; fault = 'okay';
+  const beforeSearch = authorizations.length, beforeOutbound = outbound.length;
+  const deniedSearch = await request('/session', 'POST', {});
+  await request(`/session/${deniedSearch.id}/prompt_async`, 'POST', { parts: [{ type: 'text', text: 'Search for Python pathlib documentation.' }] });
+  const searchPermission = await until(async () => (await request('/permission')).find(p => p.sessionID === deniedSearch.id));
+  assert.equal(searchPermission.permission, 'websearch');
+  assert.equal(authorizations.length, beforeSearch); assert.equal(outbound.length, beforeOutbound);
+  await request(`/permission/${searchPermission.id}/reply`, 'POST', { reply: 'reject' });
+  assert.equal((await finishCall(deniedSearch)).state.status, 'error');
+  assert.equal(authorizations.length, beforeSearch); assert.equal(outbound.length, beforeOutbound);
+  const result = await invoke();
+  assert.equal(result.state.status, 'completed'); assert.match(result.state.output, /docs\.python\.org/);
+  assert.equal(result.state.metadata.provider, 'parallel');
+  assert.ok(advertisedSearch.length && advertisedSearch.every(Boolean));
+  assert.equal(authorizations.length, beforeSearch + 1);
+  assert.equal(outbound.length, beforeOutbound + 1);
+  assert.equal(result.state.output.includes(token), false); assert.equal(result.state.output.includes(grant), false);
+  if (liveSearch) {
+    t.diagnostic('The real key-free Parallel backend returned official Python sources through the pinned tool and scoped EgressBroker CONNECT.');
+    toolName = 'webfetch'; targetUrl = 'https://docs.python.org/3/library/pathlib.html';
+    const fetched = await invoke();
+    assert.equal(fetched.state.status, 'completed', JSON.stringify({ outcome: completions.at(-1)?.outcome, failures: liveFailures })); assert.match(fetched.state.output, /PurePath/);
+    assert.deepEqual(authorizations.at(-1).origins, ['https://docs.python.org']);
+    t.diagnostic('The real public Python documentation page was fetched by the pinned native tool through a separate scoped EgressBroker grant.');
+  }
+
 });

@@ -31,8 +31,9 @@ export async function waitManagedRuntime(access, {directory,fetchImpl=fetch,time
   throw new Error("managed OpenCode runtime unavailable");
 }
 export function validateBrokerConfiguration(config) {
-  if (!config || config.schema !== 1 || Object.keys(config).some((key) => !["schema", "providers", "defaultProvider", "defaultModel", "mirrorUrl"].includes(key)) ||
+  if (!config || config.schema !== 1 || Object.keys(config).some((key) => !["schema", "providers", "defaultProvider", "defaultModel", "mirrorUrl", "searchProvider"].includes(key)) ||
       config.mirrorUrl !== "http://127.0.0.1:3141" || !config.providers || Array.isArray(config.providers)) throw new Error("invalid managed broker configuration");
+  if (config.searchProvider !== undefined && config.searchProvider !== 'parallel') throw new Error('invalid managed search provider');
   for (const [name, provider] of Object.entries(config.providers)) {
     let url;
     try { url = new URL(provider.baseUrl); } catch { throw new Error("invalid managed provider configuration"); }
@@ -61,7 +62,7 @@ export function brokerProfile({ config, broker, context, now = Date.now() }) {
   validateBrokerConfiguration(config);
   const name = config.defaultProvider; const provider = config.providers[name];
   const token = broker.issue({ ...context, provider: name, models: provider.enabledModels, routes: provider.routes, expiresAt: now + 900000 });
-  return { model: `${name}/${config.defaultModel}`, enabled_providers: [name], provider: {
+  return { ...(config.searchProvider ? { searchProvider: config.searchProvider } : {}), model: `${name}/${config.defaultModel}`, enabled_providers: [name], provider: {
     [name]: { npm: provider.authMode === "x-api-key" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible", name,
       options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: token },
       whitelist: [...provider.enabledModels],
@@ -143,7 +144,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       models:enabled?provider.enabledModels.map(id=>({id,name:id,variants:{},inputModalities:["text","image"]})):[],
       defaultModel:enabled?config.defaultModel:null,status:enabled?"ready":"unavailable",enabledByProfile:enabled,files:{}};
   }};
-  plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, nativeJobs, nativeProfileResolver,
+  plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, searchProvider: config.searchProvider, nativeJobs, nativeProfileResolver,
     runtimeCatalog: (context, { access }) => readManagedModelCatalog({ config, context, access }),
     async close() {
       try { await manager.close(); }

@@ -86,6 +86,7 @@ const platform = new PlatformServer({
   cliRuntime,
   tenantPolicy: controlPlane?.tenantPolicy,
   networkEgress: controlPlane?.egress,
+  searchProvider: controlPlane?.searchProvider,
   runtimeCatalog: controlPlane?.runtimeCatalog,
   environments: controlPlane?.environments,
   workspaceFiles: controlPlane?.files,

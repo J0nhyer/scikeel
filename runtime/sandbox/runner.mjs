@@ -105,8 +105,9 @@ function validModelProfile(model, entry) {
         Object.keys(options).join(",") === "reasoningEffort" && options.reasoningEffort === effort));
 }
 function validateProfile(value) {
-  if (!value || Object.keys(value).sort().join(",") !== ["model", "enabled_providers", "provider", "permission"].sort().join(",") ||
+  if (!value || Object.keys(value).filter(key => key !== "searchProvider").sort().join(",") !== ["model", "enabled_providers", "provider", "permission"].sort().join(",") ||
       !Array.isArray(value.enabled_providers) || value.enabled_providers.length !== 1) throw new Error("invalid managed profile");
+  if (value.searchProvider !== undefined && value.searchProvider !== "parallel") throw new Error("invalid managed search provider");
   const name = value.enabled_providers[0]; const provider = value.provider?.[name];
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || Object.keys(value.provider).join(",") !== name || !provider ||
       Object.keys(provider).sort().join(",") !== ["npm", "name", "options", "models", "whitelist"].sort().join(",") || provider.name !== name ||
@@ -159,8 +160,9 @@ export class TenantGateway {
     // Skill resources live outside the workspace. Put the deny first because
     // OpenCode evaluates the last matching rule; retain manual writes/commands.
     const skills = "/opt/scikeel/tools/resources/skills-core";
+    const { searchProvider, ...openCodeProfile } = profile ?? {};
     const configured = {
-      ...profile,
+      ...openCodeProfile,
       skills: { paths: [skills] },
       permission: { bash: "ask", edit: "ask", webfetch: "ask", websearch: "ask", ...profile?.permission,
         external_directory: { "*": "deny", [skills]: "allow", [`${skills}/*`]: "allow" } },
@@ -171,7 +173,7 @@ export class TenantGateway {
     const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", this.address,
       "--port", String(this.port), "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,
       "--resources", "/opt/scikeel/tools/resources", "--token", this.token], {
-      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir, SCIKEEL_SESSION_TITLE_POLICY: "conversation-v1", SCIKEEL_MANAGED_NETWORK_TOKEN: profile.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey }, detached: true,
+      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir, SCIKEEL_SESSION_TITLE_POLICY: "conversation-v1", OPENCODE_WEBSEARCH_PROVIDER: searchProvider, OPENCODE_ENABLE_PARALLEL: searchProvider === "parallel" ? "1" : undefined, SCIKEEL_MANAGED_NETWORK_TOKEN: profile.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey }, detached: true,
       stdio: ["ignore", "ignore", process.env.SCIKEEL_CI_DIAGNOSTICS === "1" ? "inherit" : "ignore"],
     });
     this.#child = child; let failed = false; child.once("error", () => failed = true);

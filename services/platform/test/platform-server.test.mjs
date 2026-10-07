@@ -1116,3 +1116,53 @@ test('an authenticated always decision covers only its origin and active owned e
   callId = 'call_foreign'; origin = 'https://foreign.example';
   await assert.rejects(f.server.runtimeNetwork(context, proposal()), { code: 'tool_permission_denied' }); assert.equal(grants.length, 1);
 });
+
+
+test('managed search requires selected backend, owned running query and forwarded manual permission', async t => {
+  const policy = new TenantPolicy(), f = await makeFixture({ tenantPolicy: policy });
+  const c = makeClient(f.base), { user } = await login(c, 'admin', 'admin-password');
+  const instanceId = `user-${user.id}`, worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => id => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: 'running' }))(f.manager.getWorker);
+  const context = { userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir };
+  policy.registerAccount(context); policy.registerSession(context, { id: 'owned', directory: worker.workspaceDir + '/project' });
+  const grants = []; f.server.configureNetwork({ grant(value) { grants.push(value); return { id: String(grants.length).padStart(64, '0'), expiresAt: value.expiresAt }; }, revokeGrant() { return true; } });
+  const owner = { userId: user.id, sessionId: 'owned', directory: worker.workspaceDir + '/project' };
+  await f.server.collaboration.heartbeat(owner, 'page'); await f.server.collaboration.setMode(owner, 'guided', 0);
+  const state = await f.server.collaboration.begin(owner, 1);
+  const access = f.manager.getWorkerAccess(instanceId), original = globalThis.fetch;
+  let query = 'Python pathlib official documentation';
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    if (url.origin === new URL(access.url).origin) {
+      if (url.pathname === '/session/owned/message') return new Response(JSON.stringify([{ parts: [{ type: 'tool', tool: 'websearch', callID: 'call_search', state: { status: 'running', input: { query } } }] }]));
+      if (url.pathname === '/permission') return new Response(JSON.stringify([{ id: 'req_search', sessionID: 'owned', permission: 'websearch', patterns: [query], tool: { messageID: 'msg_search', callID: 'call_search' } }]));
+      if (url.pathname === '/permission/req_search/reply') return new Response('{}');
+    }
+    return original(input, options);
+  };
+  t.after(async () => { globalThis.fetch = original; await f.server.network.revokeContext(context); });
+  const proposal = { version: 1, action: 'authorize', sessionId: 'owned', callId: 'call_search', tool: 'websearch', execution: state.execution, origins: ['https://search.parallel.ai'] };
+  await assert.rejects(f.server.runtimeNetwork(context, proposal), { code: 'search_unavailable' });
+  f.server.searchProvider = 'parallel';
+  await assert.rejects(f.server.runtimeNetwork(context, proposal), { code: 'tool_permission_denied' });
+  assert.equal(grants.length, 0);
+  await c.request('/permission');
+  assert.equal((await c.request('/permission/req_search/reply', { method: 'POST', headers: { origin: f.base, 'content-type': 'application/json' }, body: '{"reply":"once"}' })).status, 200);
+  await assert.rejects(f.server.runtimeNetwork(context, { ...proposal, origins: ['https://peer.example'] }));
+  query = ''; await assert.rejects(f.server.runtimeNetwork(context, proposal)); query = 'Python pathlib official documentation';
+  const operation = await f.server.runtimeNetwork(context, proposal);
+  assert.deepEqual(grants[0].destinations, ['https://search.parallel.ai']);
+  assert.ok(operation.expiresAt <= Date.now() + 25000);
+  await f.server.runtimeNetwork(context, { version: 1, action: 'complete', operationId: operation.operationId });
+});
+
+
+test('automatic search authorization cannot redirect to a different backend', async () => {
+  const server = Object.create(PlatformServer.prototype);
+  server.searchProvider = 'parallel'; server.permissionDecisions = new Map();
+  server.runtimeCollaboration = async () => ({ state: { phase: 'running', execution: 1, executionMode: 'autonomous' } });
+  const context = { userId: 'fixture', instanceId: 'user-fixture', generation: 1 };
+  const call = { sessionId: 'owned', tool: 'websearch', execution: 1, origins: ['https://other.example'] };
+  assert.equal((await server.authorizeNetworkCall(context, call)).allowed, false);
+  assert.equal((await server.authorizeNetworkCall(context, { ...call, origins: ['https://search.parallel.ai'] })).allowed, true);
+});

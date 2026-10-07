@@ -295,12 +295,15 @@ export class PlatformServer {
     tenantPolicy = null,
     approvalGate = null,
     networkEgress = null,
+    searchProvider = undefined,
     runtimeCatalog = null,
     environments = null,
     workspaceFiles = null,
   } = {}) {
     if (!authStore) throw new Error("authStore is required");
     if (!workerManager) throw new Error("workerManager is required");
+    if (searchProvider !== undefined && searchProvider !== "parallel") throw new Error("Invalid managed search provider");
+    this.searchProvider = searchProvider;
     this.host = host;
     this.port = port;
     this.authStore = authStore;
@@ -965,12 +968,14 @@ export class PlatformServer {
     const session = this.tenantPolicy.session(context, proposal.sessionId);
     const part = await this.runningToolPart(context, proposal.sessionId, proposal.callId);
     if (!["webfetch", "websearch"].includes(part.tool) || part.tool !== proposal.tool) throw new Error("Network tool denied");
-    // Search is unavailable until an administrator selects and enables its managed backend.
-    if (part.tool === "websearch") throw new ToolOutcomeError(makeToolOutcome("search_unavailable", { source: "gateway", status: 503, correlationId: proposal.callId }));
-    const url = new URL(part.state.input?.url);
+    // Search targets come from administrator configuration, never model-supplied URLs.
+    const search = part.tool === "websearch";
+    if (search && this.searchProvider !== "parallel") throw new ToolOutcomeError(makeToolOutcome("search_unavailable", { source: "gateway", status: 503, correlationId: proposal.callId }));
+    if (search && (typeof part.state.input?.query !== "string" || !part.state.input.query.trim() || part.state.input.query.length > 4096)) throw new Error("Search query denied");
+    const url = new URL(search ? "https://search.parallel.ai/mcp" : part.state.input?.url);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port || url.hash ||
         !Array.isArray(proposal.origins) || proposal.origins.length !== 1 || proposal.origins[0] !== url.origin) throw new Error("Network destination denied");
-    const seconds = part.state.input.timeout ?? 30;
+    const seconds = search ? 25 : part.state.input.timeout ?? 30;
     if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("Network timeout denied");
     return { sessionId: proposal.sessionId, ownerSessionId: state.sessionId, execution: state.execution, callId: proposal.callId,
       tool: part.tool, origins: [url.origin], budgetMs: Math.min(120000, Math.floor(seconds * 1000)), directory: session.directory };
@@ -988,6 +993,7 @@ export class PlatformServer {
   async authorizeNetworkCall(context, call) {
     const { state } = await this.runtimeCollaboration(context, { action: "state", sessionId: call.sessionId });
     if (state.phase !== "running" || state.execution !== call.execution) return { allowed: false };
+    if (call.tool === "websearch" && (this.searchProvider !== "parallel" || call.origins.length !== 1 || call.origins[0] !== "https://search.parallel.ai")) return { allowed: false };
     const action = collaborationPermissions(state.executionMode ?? state.mode).filter(rule => ["*", call.tool].includes(rule.permission)).at(-1)?.action;
     if (action === "deny") return { allowed: false };
     if (action === "allow") return { allowed: true, kind: "automatic", expiresAt: Date.now() + 120000 };
@@ -1227,7 +1233,7 @@ export class PlatformServer {
           let release;
           permissionDecision = { requestId: pending.id, execution: state.execution, reusable: body.reply === "always",
             ownerKey: JSON.stringify([context.userId, context.instanceId, context.generation]), sessionId: pending.sessionID, tool: pending.permission, allowed: false, expiresAt: Date.now() + 120000,
-            origins: (pending.patterns ?? []).flatMap(value => { try { return [new URL(value).origin]; } catch { return []; } }),
+            origins: pending.permission === "websearch" ? (this.searchProvider === "parallel" ? ["https://search.parallel.ai"] : []) : (pending.patterns ?? []).flatMap(value => { try { return [new URL(value).origin]; } catch { return []; } }),
             ready: new Promise(resolve => { release = resolve; }) };
           permissionDecision.release = release; this.permissionDecisions.set(key, permissionDecision);
         }

@@ -86,3 +86,15 @@ test("declared thinking toggles use native enable/disable options", () => {
     enabled: { thinking: { type: "enabled" } }, disabled: { thinking: { type: "disabled" } },
   });
 });
+
+
+test('search configuration selects only the existing key-free Parallel backend and preserves manual permissions', () => {
+  const enabled = { ...config, searchProvider: 'parallel' };
+  assert.equal(validateBrokerConfiguration(enabled), enabled);
+  const profile = brokerProfile({ config: enabled, broker: { issue: () => 'a'.repeat(64) }, context });
+  assert.equal(profile.searchProvider, 'parallel');
+  assert.equal(profile.permission.websearch, 'ask');
+  assert.equal(brokerProfile({ config, broker: { issue: () => 'a'.repeat(64) }, context }).searchProvider, undefined);
+  for (const searchProvider of ['unknown', 'https://peer.example', { url: 'https://peer.example' }, null, true])
+    assert.throws(() => validateBrokerConfiguration({ ...config, searchProvider }));
+});
