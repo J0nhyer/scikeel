@@ -47,6 +47,6 @@ describe("student research tasks", () => {
     expect(screen.getByText("Checks reported by the Agent; file existence verified by SciKeel.")).toBeInTheDocument();
     window.dispatchEvent(new Event("pagehide"));
     expect(fetchMock.mock.calls.some(([, init]) => init?.keepalive && String(init.body).includes('"action":"release"'))).toBe(true);
-    expect(onStop).toHaveBeenCalled();
+    expect(onStop).not.toHaveBeenCalled();
   });
 });

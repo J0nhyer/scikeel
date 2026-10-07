@@ -65,12 +65,15 @@ export class ManagedWorkerManager {
     void starting.finally(() => this.#starting.delete(instanceId)).catch(() => {});
     return starting;
   }
+  setExecutionProbe(probe) { this.executionProbe = probe; }
   async #idle(record) {
     try {
       const response = await this.fetchImpl(`${record.url}/session/status`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${record.token}`).toString("base64")}` }, signal: AbortSignal.timeout(3000) });
       if (!response.ok) return false;
       const body = await response.json();
-      return body && typeof body === "object" && !Array.isArray(body) && Object.values(body).every((value) => value?.type === "idle");
+      const idle = body && typeof body === "object" && !Array.isArray(body) && Object.values(body).every((value) => value?.type === "idle");
+      if (!idle) return false;
+      return !(await this.executionProbe?.({userId:record.userId,instanceId:record.id,generation:record.generation}));
     } catch { return false; }
   }
   isIdle(context) {

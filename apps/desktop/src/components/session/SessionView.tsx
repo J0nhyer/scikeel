@@ -1,3 +1,4 @@
+import { interactionDraftIdentity } from "@/lib/interactionState";
 import { ProjectEnvironmentPanel } from "./ProjectEnvironmentPanel";
 import type { AttachmentPromptContext } from "@ai4s/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -208,6 +209,8 @@ export function SessionView({
   const draftWorkspaces = useRuntimeStore((s) => s.draftWorkspaces);
   const error = useRuntimeStore((s) => s.error);
   const questions = useRuntimeStore((s) => s.questions);
+  const interactions = useRuntimeStore((s) => s.interactions);
+  const interactionAccount = useRuntimeStore((s) => s.gatewayUser?.id);
   const permissions = useRuntimeStore((s) => s.permissions);
   const sessionParents = useRuntimeStore((s) => s.sessionParents);
   const workspace = useRuntimeStore((s) => s.workspace);
@@ -434,6 +437,7 @@ export function SessionView({
   const activeQuestion = questions.find((q) => belongsHere(q.sessionId));
   const activePermission = permissions.find((p) => belongsHere(p.sessionId));
   const activeRequest = activeQuestion ?? activePermission;
+  const interactionStatus = activeRequest ? interactions[activeRequest.requestId]?.status ?? "pending" : "pending";
   const requestOrigin =
     activeRequest && activeRequest.sessionId !== eid
       ? (sessions.find((s) => s.id === activeRequest.sessionId)?.title ?? t("live.subagentFallback"))
@@ -1210,6 +1214,9 @@ export function SessionView({
                 question={activeQuestion}
                 permission={activeQuestion ? undefined : activePermission}
                 origin={requestOrigin}
+                status={interactionStatus}
+                draftIdentity={interactionAccount ? interactionDraftIdentity(interactionAccount,activeRequest.sessionId,activeRequest.requestId) : undefined}
+                onCheck={() => void useRuntimeStore.getState().reconcileRunning()}
                 onAnswer={(id, answers) => void answerQuestion(id, answers)}
                 onReject={(id) => void rejectQuestion(id)}
                 onPermission={(id, reply) => void replyPermission(id, reply)}

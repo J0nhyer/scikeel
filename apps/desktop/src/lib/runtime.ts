@@ -1,3 +1,4 @@
+import { interactionDraftIdentity, loadInteractionDraft, saveInteractionDraft, savedQuestionDrafts, questionReceipt, interactionFailure, transitionInteraction, type InteractionEntry } from "./interactionState";
 import { normalizeToolResult, makeToolOutcome } from "@ai4s/sdk/tool-outcome";
 import { prepareCollaborationSend, type CollaborationMode } from "./collaboration";
 import type { AttachmentPromptContext } from "@ai4s/shared";
@@ -6,7 +7,6 @@ import { create } from "zustand";
 import {
   OpenCodeClient,
   DEFAULT_OPENCODE_URL,
-  isApiStatus,
   type AgentInfo,
   type AgentRuntime,
   type CommandInfo,
@@ -416,6 +416,8 @@ interface RuntimeState {
   setShowFiles: (show: boolean, sessionId?: string) => void;
   setShowRuns: (show: boolean, sessionId?: string) => void;
   setShowAgents: (show: boolean, sessionId?: string) => void;
+  interactions: Record<string, InteractionEntry>;
+  gatewayContext: { instanceId: string; generation: number } | null;
   answerQuestion: (requestId: string, answers: string[][]) => Promise<void>;
   rejectQuestion: (requestId: string) => Promise<void>;
   replyPermission: (requestId: string, reply: PermissionReply) => Promise<void>;
@@ -561,7 +563,7 @@ interface RuntimeState {
   runCommand: (name: string, args?: string, sessionId?: string, draftKey?: string) => Promise<string | null>;
   /** Interrupt a session's running turn (Stop button / Esc); the focused
    *  session when `sessionId` is omitted. */
-  interrupt: (sessionId?: string) => Promise<void>;
+  interrupt: (sessionId?: string) => Promise<boolean>;
   /** Manually compact a session's context (composer button). Older turns are
    *  summarized by the model into a "Context compacted" seam so subsequent
    *  turns run on a bounded context. No-op on a draft. */
@@ -909,11 +911,22 @@ function recoverInteractions(set: StoreSet, get: StoreGet, runtime: AgentRuntime
   if (state.pending) return state.pending;
   interactionRecovery.set(runtime, state);
   const mark = sseSeq;
+  const observed = runtime.getContextGeneration?.();
+  if (observed && get().gatewayContext && observed !== get().gatewayContext?.generation) {
+    set(s=>({gatewayContext:{...s.gatewayContext!,generation:observed},interactions:Object.fromEntries(Object.entries(s.interactions).map(([id,entry])=>[id,transitionInteraction(entry,"expired","runtime_context_changed")]))}));
+  }
+  const context = get().gatewayContext;
+  const account = get().gatewayUser?.id;
   const current = () => runtime === client || [...streamClients.values()].includes(runtime as OpenCodeClient);
   const unchanged = (sid: string) => (sseLast.get(sid) ?? 0) <= mark;
   const pending = (async () => {
     const [qs, ps] = await Promise.allSettled([runtime.listQuestions(), runtime.listPermissions()]);
-    if (!current()) return;
+    const generation = runtime.getContextGeneration?.();
+    if (generation && context && generation !== context.generation && current()) {
+      set(s=>({gatewayContext:{...context,generation},interactions:Object.fromEntries(Object.entries(s.interactions).map(([id,entry])=>[id,transitionInteraction(entry,"expired","runtime_context_changed")]))}));
+      return;
+    }
+    if (!current() || account !== get().gatewayUser?.id || context?.generation !== get().gatewayContext?.generation) return;
     const merge = <T extends { sessionId: string }>(existing: T[], recovered: T[]) => [
       ...existing.filter((item) => clientForSession(get, item.sessionId) !== runtime || !unchanged(item.sessionId)),
       ...recovered.filter((item) => unchanged(item.sessionId) && !interruptedSessions.has(item.sessionId)),
@@ -922,14 +935,71 @@ function recoverInteractions(set: StoreSet, get: StoreGet, runtime: AgentRuntime
     const error = failures.length ? failures.map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason)).join("; ") : undefined;
     const previousError = state.error;
     state.error = error;
-    set((s) => ({
-      ...(qs.status === "fulfilled" ? { questions: merge(s.questions, qs.value) } : {}),
-      ...(ps.status === "fulfilled" ? { permissions: merge(s.permissions, ps.value) } : {}),
+    set((s) => {
+      const interactions = {...s.interactions};
+      const saved = account && qs.status === "fulfilled" ? savedQuestionDrafts(account).filter(q=>s.sessions.some(session=>session.id===q.sessionId) && clientForSession(get,q.sessionId)===runtime && !qs.value.some(live=>live.requestId===q.requestId) && !s.questions.some(existing=>existing.requestId===q.requestId)) : [];
+      for(const q of saved)interactions[q.requestId]={requestId:q.requestId,sessionId:q.sessionId,kind:"question",status:"expired",errorCode:"interaction_expired"};
+      for (const [kind, result, existing] of [["question", qs, s.questions], ["permission", ps, s.permissions]] as const) {
+        if (result.status !== "fulfilled") continue;
+        for (const item of existing) {
+          if (clientForSession(get,item.sessionId)!==runtime || !unchanged(item.sessionId)) continue;
+          const present=result.value.some(x=>x.requestId===item.requestId);
+          const prior=interactions[item.requestId] ?? {requestId:item.requestId,sessionId:item.sessionId,kind,status:"pending",generation:context?.generation};
+          if (prior.status === "submitting") continue;
+          if (prior.errorCode === "runtime_context_changed") continue;
+          interactions[item.requestId]=transitionInteraction(prior,present ? prior.status === "unknown" ? "unknown" : "pending" : "expired",present ? prior.errorCode : "interaction_expired");
+        }
+      }
+      const retain = <T extends {requestId:string;sessionId:string}>(items:T[]) => items.filter(x=>interactions[x.requestId]?.errorCode === "interaction_expired" && unchanged(x.sessionId) && clientForSession(get,x.sessionId)===runtime);
+      return {
+      interactions,
+      ...(qs.status === "fulfilled" ? { questions: [...merge(s.questions, qs.value),...saved,...retain(s.questions).filter(q=>!qs.value.some(x=>x.requestId===q.requestId))] } : {}),
+      ...(ps.status === "fulfilled" ? { permissions: [...merge(s.permissions, ps.value),...retain(s.permissions).filter(p=>!ps.value.some(x=>x.requestId===p.requestId))] } : {}),
       ...(error ? { error } : previousError && s.error === previousError ? { error: null } : {}),
-    }));
+    }; });
   })().finally(() => { if (state.pending === pending) state.pending = undefined; });
   state.pending = pending;
   return pending;
+}
+
+async function submitInteraction(set: StoreSet, get: StoreGet, requestId: string, kind: "question" | "permission", submit: (runtime: AgentRuntime) => Promise<void>, answers?: string[][]): Promise<void> {
+  const request = (kind === "question" ? get().questions : get().permissions).find(x=>x.requestId===requestId);
+  const previous = get().interactions[requestId];
+  if (!request || ["submitting", "expired", "unknown"].includes(previous?.status ?? "")) return;
+  const runtime = clientForSession(get, request.sessionId);
+  if (!runtime) return;
+  const context = get().gatewayContext;
+  const account = get().gatewayUser?.id;
+  const entry: InteractionEntry = previous ?? { requestId, sessionId:request.sessionId, kind, status:"pending", generation:context?.generation };
+  set(s => ({ interactions:{...s.interactions,[requestId]:transitionInteraction(entry,"submitting")} }));
+  const current = () => get().gatewayUser?.id === account && get().gatewayContext?.generation === context?.generation && runtime === clientForSession(get,request.sessionId);
+  try {
+    await submit(runtime);
+    if (!current()) return;
+    if (account) saveInteractionDraft(interactionDraftIdentity(account,request.sessionId,requestId));
+    set(s => ({
+      interactions:{...s.interactions,[requestId]:transitionInteraction(entry,"expired")},
+      ...(kind === "question" ? {questions:s.questions.filter(x=>x.requestId!==requestId)} : {permissions:s.permissions.filter(x=>x.requestId!==requestId)}),
+    }));
+  } catch(error) {
+    if (!current()) return;
+    if (!(kind === "question" ? get().questions : get().permissions).some(item=>item.requestId===requestId)) return;
+    const failure = interactionFailure(error);
+    if (failure.status === "unknown" && kind === "question" && answers && "questions" in request && request.tool) {
+      try {
+        const messages=await runtime.getMessages(request.sessionId);
+        if(current() && questionReceipt(messages,request,answers)) {
+          if(account)saveInteractionDraft(interactionDraftIdentity(account,request.sessionId,requestId));
+          set(s=>({questions:s.questions.filter(q=>q.requestId!==requestId),interactions:{...s.interactions,[requestId]:transitionInteraction(entry,"expired")}}));
+          return;
+        }
+      } catch { /* No receipt: retain the draft and reconcile with reads only. */ }
+    }
+    if(!current())return;
+    set(s => ({ interactions:{...s.interactions,[requestId]:transitionInteraction(entry,failure.status,failure.code)}, ...(get().currentId === rootSessionOf(get().sessionParents,request.sessionId) ? {error:error instanceof Error ? error.message : String(error)} : {}) }));
+    // Reads only: an ambiguous mutation is never replayed automatically.
+    void recoverInteractions(set,get,runtime);
+  }
 }
 
 const emptyThread = (): Thread => ({ blocks: [], index: {}, loaded: false });
@@ -1974,11 +2044,11 @@ async function performTurn(
     const msg = err instanceof Error ? err.message : String(err);
     void logDebug(`turn FAILED: ${msg}`);
     // The failure belongs next to the message that caused it.
-    const key = target ?? draftKey ?? get().currentId ?? DRAFT_KEY;
+    const key = lockKey;
     set((s) => {
       const cur = s.threads[key] ?? emptyThread();
       return {
-        error: msg,
+        ...(s.currentId === key || s.currentId === null || key === DRAFT_KEY ? {error:msg} : {}),
         threads: {
           ...s.threads,
           [key]: {
@@ -2375,36 +2445,50 @@ function scheduleConversationSync(get: StoreGet): void {
  *  local thread. Returns whether the revert succeeded. OpenCode rejects a
  *  revert on a busy session, so the abort's trailing session.idle is given a
  *  few short retries to land first. */
-async function revertToMessage(
-  set: StoreSet,
-  get: StoreGet,
-  messageID: string,
-  sessionId?: string,
-): Promise<boolean> {
+async function revertToMessage(set: StoreSet, get: StoreGet, messageID: string, sessionId?: string): Promise<boolean> {
   const sid = sessionId ?? get().currentId;
-  if (!sid || !client) return false;
-  const c = client;
-  if (get().runningSessions[sid]) await get().interrupt(sid);
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      await c.revert(sid, messageID);
-      break;
-    } catch (e) {
-      if (attempt === 4) {
-        set({ error: e instanceof Error ? e.message : "Failed to revert the message." });
-        return false;
-      }
-      await sleep(200);
+  const runtime = sid ? clientForSession(get, sid) : null;
+  if (!sid || !runtime) return false;
+  const account = get().gatewayUser?.id;
+  const generation = get().gatewayContext?.generation;
+  const current = () => runtime === clientForSession(get,sid) && account === get().gatewayUser?.id && generation === get().gatewayContext?.generation;
+  const knownMessage = get().threads[sid]?.blocks.some(b=>b.kind==="user" && b.messageID===messageID);
+  if (!knownMessage) { set({error:"The message does not belong to this conversation."}); return false; }
+  try {
+    const running = await sessionRunning(get,sid);
+    if (running === null && !get().runningSessions[sid]) throw new Error("Conversation state is unavailable. Reconnect before reverting.");
+    if ((running || get().runningSessions[sid]) && !(await get().interrupt(sid))) return false;
+    if (!current()) throw new Error("Runtime context changed. Reopen this conversation.");
+    const before = await runtime.readSession?.(sid);
+    let acknowledged = false;
+    try { await runtime.revert(sid,messageID); acknowledged = true; }
+    catch(error) {
+      const e = error as {code?:string};
+      if (e.code === "SessionBusyError" && await sessionRunning(get,sid) === false) {
+        await runtime.revert(sid,messageID); acknowledged = true;
+      } else if (!(error instanceof Error && "status" in error)) {
+        const after = await runtime.readSession?.(sid);
+        if (after?.revert?.messageID !== messageID || before?.revert?.messageID === messageID) throw error;
+        acknowledged = true;
+      } else throw error;
     }
+    if (!acknowledged || !current()) throw new Error("Revert could not be confirmed.");
+    const metadata = await runtime.readSession?.(sid);
+    if (metadata && metadata.revert?.messageID !== messageID) throw new Error("Revert could not be confirmed.");
+    const messages = await runtime.getMessages(sid);
+    if (!current()) throw new Error("Runtime context changed. Reopen this conversation.");
+    const index = messages.findIndex(m=>m.id===messageID);
+    // OpenCode keeps reverted messages until the next prompt; its marker defines visibility.
+    const visible = index >= 0 ? messages.slice(0,index) : messages;
+    set(s=>({threads:{...s.threads,[sid]:{...historyToThread(visible,s.commands,true),loaded:true}}}));
+    return true;
+  } catch(error) {
+    if (current()) {
+      const message=error instanceof Error?error.message:"Failed to revert the message.";
+      if(get().currentId===sid)set({error:message});
+    }
+    return false;
   }
-  set((s) => {
-    const cur = s.threads[sid];
-    if (!cur) return {};
-    const idx = cur.blocks.findIndex((b) => b.kind === "user" && b.messageID === messageID);
-    if (idx < 0) return {};
-    return { threads: { ...s.threads, [sid]: { ...cur, blocks: cur.blocks.slice(0, idx) } } };
-  });
-  return true;
 }
 
 /** The repair offer for a history the model refused (#114): the earliest part
@@ -2635,7 +2719,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           return response.json() as Promise<T>;
         })(), signal);
       };
-      const metadata = readContext<{ runtime?: GatewayRuntimeId; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[] }>("/api/runtime", 15000).then(value => ({ value, error: null }), error => ({ value: null, error }));
+      const metadata = readContext<{ runtime?: GatewayRuntimeId; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[]; context?: {instanceId:string;generation:number} | null }>("/api/runtime", 15000).then(value => ({ value, error: null }), error => ({ value: null, error }));
       account = readContext<{ user?: GatewayUser }>("/api/me", 15000).catch(() => null);
       try {
         const who = await readContext("/v1/whoami", 60000, password ? { Authorization: `Bearer ${password}` } : undefined) as { directory?: string; mode?: string };
@@ -2658,6 +2742,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           throw new Error("Assistant identity is unavailable");
         }
         if (managed) {
+          if (managed.context && typeof managed.context.instanceId === "string" && Number.isSafeInteger(managed.context.generation)) {
+            const context=managed.context;
+            set(s=>({gatewayContext:context,...(s.gatewayContext && (s.gatewayContext.generation!==context.generation || s.gatewayContext.instanceId!==context.instanceId)?{interactions:Object.fromEntries(Object.entries(s.interactions).map(([id,entry])=>[id,transitionInteraction(entry,"expired","runtime_context_changed")]))}:{})}));
+          }
           if (["opencode", "claude", "codex"].includes(managed.runtime ?? "")) {
             gatewayRuntime = managed.runtime as GatewayRuntimeId;
           }
@@ -2820,7 +2908,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       if (!active() || c !== client) return;
       const user = me?.user;
       if (user && (user.role === "admin" || user.role === "user") && typeof user.id === "string" && typeof user.username === "string") {
-        set({ gatewayUserRole: user.role, gatewayUser: { id: user.id, username: user.username, role: user.role } });
+        set(s=>({ gatewayUserRole:user.role,gatewayUser:{id:user.id,username:user.username,role:user.role},...(s.gatewayUser && s.gatewayUser.id!==user.id ? {questions:[],permissions:[],interactions:{}} : {}) }));
       }
     });
     if (!sharedEventHandler)
@@ -2963,6 +3051,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             return {
               runningSessions,
               retryNotices,
+              questions:s.questions.filter(q=>!stoppedAsk(s.sessionParents,sid,q.sessionId)),
+              permissions:s.permissions.filter(p=>!stoppedAsk(s.sessionParents,sid,p.sessionId)),
+              interactions:Object.fromEntries(Object.entries(s.interactions).map(([id,entry])=>[id,stoppedAsk(s.sessionParents,sid,entry.sessionId)?transitionInteraction(entry,"expired","execution_ended"):entry])),
               threads: {
                 ...s.threads,
                 [sid]: {
@@ -2988,9 +3079,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         case "question.asked":
           set((s) => ({
             questions: [...s.questions.filter((q) => q.requestId !== event.requestId), event],
+            interactions:{...s.interactions,[event.requestId]:{requestId:event.requestId,sessionId:event.sessionId,kind:"question",generation:s.gatewayContext?.generation,status:"pending"}},
           }));
           return;
         case "question.resolved":
+          if(get().gatewayUser?.id)saveInteractionDraft(interactionDraftIdentity(get().gatewayUser!.id,event.sessionId,event.requestId));
           set((s) => ({ questions: s.questions.filter((q) => q.requestId !== event.requestId) }));
           return;
         case "permission.asked":
@@ -3010,16 +3103,17 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             // active one. The next tool.updated restores its real status.
             const sid = event.sessionId;
             const cur = sid ? s.threads[sid] : undefined;
-            if (!cur) return { permissions };
+            const interactions={...s.interactions,[event.requestId]:{requestId:event.requestId,sessionId:event.sessionId,kind:"permission" as const,generation:s.gatewayContext?.generation,status:"pending" as const}};
+            if (!cur) return { permissions, interactions };
             const blocks = [...cur.blocks];
             for (let i = blocks.length - 1; i >= 0; i--) {
               const b = blocks[i];
               if (b.kind === "tool-call" && (b.status === "running" || b.status === "pending")) {
                 blocks[i] = { ...b, status: "waiting-approval" };
-                return { permissions, threads: { ...s.threads, [sid]: { ...cur, blocks } } };
+                return { permissions, interactions, threads: { ...s.threads, [sid]: { ...cur, blocks } } };
               }
             }
-            return { permissions };
+            return { permissions, interactions };
           });
           return;
         case "permission.resolved":
@@ -3822,58 +3916,29 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   setShowRuns: (show, sessionId) => set((s) => showOnly(s, sessionId, "showRuns", show)),
   setShowAgents: (show, sessionId) => set((s) => showOnly(s, sessionId, "showAgents", show)),
 
+  interactions: {},
+  gatewayContext: null,
   answerQuestion: async (requestId, answers) => {
-    const q = get().questions.find((x) => x.requestId === requestId);
-    if (!q) return;
-    // Route to the client whose folder owns the asking session (a split pane in
-    // another project has its own directory-scoped instance).
-    const c = clientForSession(get, q.sessionId);
-    if (!c) return;
-    set((s) => ({ questions: s.questions.filter((x) => x.requestId !== requestId) }));
-    try {
-      await c.answerQuestion(requestId, answers);
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-    }
+    await submitInteraction(set, get, requestId, "question", c => c.answerQuestion(requestId, answers), answers);
   },
   rejectQuestion: async (requestId) => {
-    const q = get().questions.find((x) => x.requestId === requestId);
-    if (!q) return;
-    const c = clientForSession(get, q.sessionId);
-    if (!c) return;
-    set((s) => ({ questions: s.questions.filter((x) => x.requestId !== requestId) }));
-    try {
-      await c.rejectQuestion(requestId);
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
+    if (get().interactions[requestId]?.status === "expired") {
+      const q=get().questions.find(q=>q.requestId===requestId);const account=get().gatewayUser?.id;
+      if(q && account){const identity=interactionDraftIdentity(account,q.sessionId,requestId);saveInteractionDraft(identity,loadInteractionDraft(identity));}
+      set(s => ({ questions:s.questions.filter(q=>q.requestId!==requestId) }));
+      return;
     }
+    await submitInteraction(set, get, requestId, "question", c => c.rejectQuestion(requestId));
   },
   replyPermission: async (requestId, reply) => {
-    const p = get().permissions.find((x) => x.requestId === requestId);
+    const p = get().permissions.find(x => x.requestId === requestId);
     if (!p) return;
-    const c = clientForSession(get, p.sessionId);
-    if (!c) return;
-    // Identical pending asks (same session, action and resources — e.g. three
-    // parallel reads into one folder) are ONE question to the user: answer
-    // them all with one click instead of re-asking for each tool call.
-    const sig = (x: PermissionAskedEvent) =>
-      `${x.sessionId}|${x.action}|${x.resources.join("|")}`;
-    const batch = get().permissions.filter((x) => sig(x) === sig(p));
-    set((s) => ({ permissions: s.permissions.filter((x) => sig(x) !== sig(p)) }));
-    const results = await Promise.allSettled(
-      batch.map((x) => c.replyPermission(x.requestId, reply)),
-    );
-    // A 404 means that request is already resolved — the turn moved on, or a
-    // duplicate in this batch was answered by the same click. The user's answer
-    // landed; reporting it as a failure just alarms them about nothing. Only a
-    // real failure, and only if it is not merely a stale sibling, surfaces.
-    const failed = results.find(
-      (r) => r.status === "rejected" && !isApiStatus(r.reason, 404),
-    ) as PromiseRejectedResult | undefined;
-    if (failed) {
-      const err = failed.reason;
-      set({ error: err instanceof Error ? err.message : String(err) });
+    if(reply === "reject" && get().interactions[requestId]?.status === "expired") {
+      set(s=>({permissions:s.permissions.filter(p=>p.requestId!==requestId)}));return;
     }
+    const sig = (x: PermissionAskedEvent) => `${x.sessionId}|${x.action}|${x.resources.join("|")}`;
+    const batch = get().permissions.filter(x => sig(x) === sig(p));
+    await Promise.all(batch.map(x => submitInteraction(set, get, x.requestId, "permission", c => c.replyPermission(x.requestId, reply))));
   },
 
   setServerUrl: (serverUrl) => {
@@ -4919,7 +4984,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     // the one the user is trying to stop (#59). Aborting an idle session is a
     // no-op server-side: the handler cancels whatever it finds (nothing) and
     // answers true, so there is nothing to protect against here.
-    if (!sid || !client) return;
+    const runtime = sid ? clientForSession(get,sid) : null;
+    if (!sid || !runtime) return false;
+    const ownerAccount=get().gatewayUser?.id;
+    const ownerGeneration=get().gatewayContext?.generation;
+    const root=rootSessionOf(get().sessionParents,sid);
+    const directory=get().sessions.find(session=>session.id===root)?.directory;
+    const current=()=>clientForSession(get,sid)===runtime && get().gatewayUser?.id===ownerAccount && get().gatewayContext?.generation===ownerGeneration;
+    const idleStatus=async(id:string)=>{try{return await runtime.isSessionRunning?.(id,directory) ?? null;}catch{return null;}};
     // Arm the guard BEFORE the abort POST: the server answers an abort with its
     // own SSE burst (an "aborted" error and one or more session.idle events)
     // that streams back WHILE this POST is still awaited. If we armed it after
@@ -4934,7 +5006,17 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     );
     for (const id of descendants) remember(interruptedSessions, id);
     try {
-      await client.abortSession(sid);
+      await runtime.abortSession(sid);
+      if(!current())throw new Error("Runtime context changed. Reopen this conversation.");
+      let idle = false;
+      for (let attempt=0; attempt<10; attempt++) {
+        const statuses=await Promise.all([sid,...descendants].map(id=>idleStatus(id)));
+        if(statuses.every(value=>value===false)){idle=true;break;}
+        if(statuses.some(value=>value===null))break;
+        await sleep(200);
+      }
+      if(!current())throw new Error("Runtime context changed. Reopen this conversation.");
+      if (!idle) throw new Error("Stop is not yet confirmed. Reconnect to check this conversation.");
     } catch (err) {
       // The abort did NOT land. Saying "Interrupted" here would be a lie that
       // also hides the Stop button (the lock is what renders it), leaving a
@@ -4942,8 +5024,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // the session's events fold normally again, and surface the failure.
       interruptedSessions.delete(sid);
       for (const id of descendants) interruptedSessions.delete(id);
-      set({ error: err instanceof Error ? err.message : String(err) });
-      return;
+      if(current() && get().currentId===sid)set({ error: err instanceof Error ? err.message : String(err) });
+      return false;
     }
     set((s) => {
       const runningSessions = { ...s.runningSessions };
@@ -4996,6 +5078,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         },
       };
     });
+    return true;
   },
 
   editMessage: async (messageID, newText, sessionId) => {

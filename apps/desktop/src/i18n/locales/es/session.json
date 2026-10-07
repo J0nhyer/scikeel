@@ -514,7 +514,20 @@
     "submit": "Enviar",
     "reject": "Rechazar",
     "alwaysAllow": "Permitir siempre",
-    "allowOnce": "Permitir una vez"
+    "allowOnce": "Permitir una vez",
+    "state": {
+      "submitting": "Enviando respuesta…",
+      "retryable": "La solicitud falló. Tu respuesta está guardada.",
+      "expired": "Esta solicitud caducó. Tu respuesta está guardada.",
+      "unknown": "Entrega sin confirmar. Consultar el estado no reenvía tu respuesta.",
+      "check": "Consultar estado",
+      "permission": {
+        "submitting": "Enviando decisión…",
+        "retryable": "La solicitud falló. Revísala antes de intentarlo de nuevo.",
+        "expired": "Esta solicitud caducó. No se concede permiso.",
+        "unknown": "Entrega sin confirmar. Consultar el estado no concede permiso."
+      }
+    }
   },
   "turn": {
     "worked": "Trabajó",

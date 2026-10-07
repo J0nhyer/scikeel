@@ -227,7 +227,7 @@ export type StallGuardEvent = {
   type: string;
   sessionId?: string;
   text?: string;
-  tool?: string;
+  tool?: string | { messageID: string; callID: string };
   input?: unknown;
   output?: string;
   status?: string;
@@ -275,7 +275,7 @@ export function applyStallEvent(
     if (!event.status || !SETTLED_TOOL_STATUS.has(event.status)) {
       return s;
     }
-    const fp = toolFingerprint(event.tool ?? "", event.input);
+    const fp = toolFingerprint(typeof event.tool === "string" ? event.tool : "", event.input);
     const outHash = fnv1a(typeof event.output === "string" ? event.output : "");
 
     if (s.runFingerprint === fp) {

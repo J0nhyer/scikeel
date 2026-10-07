@@ -127,7 +127,7 @@ test("localized login keeps credentials private and preserves the destination on
   assert.match(success.headers.get("set-cookie"), /osd_session=/);
 });
 
-test("research tasks validate ownership, bind context to a confirmed brief, and stop on page release", async () => {
+test("research tasks validate ownership, preserve page-independent execution, and honor explicit stop", async () => {
   const root = await mkdtemp(join(tmpdir(), "scikeel-research-platform-"));
   const home = join(root, "admin-codex");
   await mkdir(home, { recursive: true });
@@ -159,12 +159,13 @@ test("research tasks validate ownership, bind context to a confirmed brief, and 
   const history = await json(await admin.request(`/session/${session.id}/message`));
   assert.equal(history[0].parts[0].text, "Begin");
   assert.equal((await post(path, { action: "release", pageId: "page-test" })).status, 200);
-  assert.equal((await post(`/session/${session.id}/prompt_async`, { parts: [{ type: "text", text: "Continue" }] })).status, 409);
+  assert.equal((await post(`/session/${session.id}/prompt_async`, { parts: [{ type: "text", text: "Continue" }] })).status, 202);
+  assert.equal((await post(path, { action: "stop" })).status, 200);
   const reopened = await post(path, { action: "heartbeat", pageId: "page-new" });
   assert.equal(reopened.status, 200);
   const stopped = (await json(await admin.request(path))).task;
   assert.notEqual(stopped.status, "running");
-  assert.equal(stopped.execution, 1);
+  assert.equal(stopped.execution, 2);
   const fork = await json(await post(`/session/${session.id}/fork`, {}));
   await post(path, { action: "release", pageId: "page-new" });
   f.server.researchTasks.records.clear();

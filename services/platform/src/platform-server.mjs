@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NetworkOperations } from "./network-operations.mjs";
 import { ToolOutcomes } from "./tool-outcomes.mjs";
 import { makeToolOutcome, readToolError, ToolOutcomeError } from "../../../packages/sdk/src/tool-outcome.mjs";
@@ -6,6 +7,8 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { URL } from "node:url";
 import { relativeInput } from "./tenant-policy.mjs";
+import { InteractionReplies } from "./interaction-replies.mjs";
+import { SessionAuthority } from "./session-authority.mjs";
 import { classifyRuntimeRoute, classifyGatewayRoute, validateRuntimeInput, scrubRuntimeSecrets } from "./runtime-route-policy.mjs";
 import { loginPage, loginAssetPreloads, withLoginPreparation } from "./login-page.mjs";
 import { CollaborationStore, collaborationPolicy, collaborationPermissions } from "./collaboration.mjs";
@@ -341,10 +344,31 @@ export class PlatformServer {
     this.maxBodyBytes = maxBodyBytes;
     this.logger = logger;
     this.tenantPolicy = tenantPolicy;
+    this.sessionAuthority = tenantPolicy ? new SessionAuthority({ policy:tenantPolicy,
+      getContext:async(context)=>resolveContext(context.userId),
+      readSession:async(context,id,signal)=>{
+        const access=workerManager.getWorkerAccess(context.instanceId);
+        if(!access)throw new Error("managed worker unavailable");
+        const result=await fetch(new URL(`/session/${encodeURIComponent(id)}`,access.url),{
+          headers:{authorization:`Basic ${workerBasicToken(access.token)}`},signal});
+        if(!result.ok)throw Object.assign(new Error("session lookup failed"),{status:result.status});
+        return result.json();
+      } }) : null;
     this.approvalGate = approvalGate ?? ((_context,request)=>request.manual===true);
     this.toolOutcomes = new ToolOutcomes({ rootDir: resolve(workerManager.rootDir, "../tool-outcomes") });
     this.permissionDecisions = new Map();
+    this.interactionReplies = new InteractionReplies();
     if (networkEgress) this.configureNetwork(networkEgress);
+    workerManager.setExecutionProbe?.(async(context)=>{
+      for(const state of this.collaboration.records.values()) {
+        if(state.userId!==context.userId || !["running","waiting_input"].includes(state.phase))continue;
+        if(state.pending || await this.#researchRunning(state))return true;
+      }
+      for(const task of this.researchTasks.records.values()) {
+        if(task.userId===context.userId && task.executionActive && await this.#researchRunning(task))return true;
+      }
+      return false;
+    });
     this.runtimeCatalog = runtimeCatalog;
     this.environments = environments;
     this.server = null;
@@ -644,7 +668,7 @@ export class PlatformServer {
       }
       const task = await this.researchTasks.get(user.id, sessionId);
       if (!task) {
-        // A forked review inherits the page lifetime and research boundary.
+        // A forked review inherits the explicit research decision boundary.
         let parentId;
         if (this.cliRuntime?.isManaged(user.id)) {
           const state = await this.cliRuntime.ensureUser(user.id);
@@ -652,8 +676,7 @@ export class PlatformServer {
         } else {
           if(this.tenantPolicy) {
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
-      try { this.tenantPolicy.session(context,sessionId); }
-      catch { throw Object.assign(new Error("research session not found"),{status:404}); }
+      await this.sessionAuthority.ensure(context,sessionId);
     }
     const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}`, access.url), {
             headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(5000),
@@ -663,8 +686,8 @@ export class PlatformServer {
         for (let depth = 0; parentId && depth < 20; depth++) {
           const parent = await this.researchTasks.get(user.id, parentId);
           if (parent) {
-            if (!this.researchTasks.alive(user.id, parentId) || ["paused", "waiting_input", "cancelled"].includes(parent.status)) {
-              sendJson(response, 409, { error: "the owning research page is stopped or waiting for a decision" });
+            if (["paused", "waiting_input", "cancelled"].includes(parent.status)) {
+              sendJson(response, 409, { error: "the owning research execution is stopped or waiting for a decision" });
               return;
             }
             break;
@@ -849,13 +872,12 @@ export class PlatformServer {
     }
     if(this.tenantPolicy) {
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
-      try { this.tenantPolicy.session(context,sessionId); }
-      catch { throw Object.assign(new Error("research session not found"),{status:404}); }
+      await this.sessionAuthority.ensure(context,sessionId);
     }
     const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}`, access.url), {
       headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(5000),
     });
-    if (!result.ok) throw Object.assign(new Error("research session not found"), { status: 404 });
+    if (!result.ok) throw Object.assign(new Error(result.status===404 ? "research session not found" : "research session is temporarily unavailable"), { status: result.status===404 ? 404 : 503, statusCode:result.status===404 ? 404 : 503 });
     const session = await result.json();
     if (session.id !== sessionId || typeof session.directory !== "string") throw Object.assign(new Error("research session not found"), { status: 404 });
     if(this.tenantPolicy) {
@@ -883,6 +905,8 @@ export class PlatformServer {
     return visit(task.sessionId);
   }
   async #cancelResearch(task) {
+    const workerContext=this.workerManager.getWorker(workerIdForUser(task.userId));
+    this.logger({type:"runtime.cancel",sessionId:task.sessionId,generation:workerContext?.generation,reason:task.cancelReason ?? "explicit_or_server_stop"});
     if (this.network && task.runtime === "opencode") {
       const worker = this.workerManager.getWorker(workerIdForUser(task.userId));
       if (!worker) return;
@@ -1035,19 +1059,8 @@ export class PlatformServer {
     if(body.action==="capability"&&["starting","running"].includes(worker.status)){this.collaborationCapabilities.set(context.userId,context.generation);return {ready:true};}
     if(worker.status!=="running")throw new Error("Collaboration worker unavailable");
     const access=this.workerManager.getWorkerAccess(context.instanceId);
-    // Runtime-created descendants must prove an already owned ancestor.
-    const register=async(sessionId,depth=0)=>{
-      if(!this.tenantPolicy)return;
-      try { this.tenantPolicy.session(context,sessionId);return; }catch{}
-      if(depth>=20)throw new Error("Collaboration ancestry unavailable");
-      const info=await this.#workerResearchRequest({userId:context.userId,directory:worker.workspaceDir},`/session/${encodeURIComponent(sessionId)}`);
-      if(info.id!==sessionId||!info.parentID)throw new Error("Collaboration descendant denied");
-      await register(info.parentID,depth+1);
-      const parent=this.tenantPolicy.session(context,info.parentID);
-      if(this.tenantPolicy.directory(context,info.directory)!==parent.directory)throw new Error("Collaboration descendant denied");
-      this.tenantPolicy.registerSession(context,{id:info.id,parentID:info.parentID,directory:info.directory});
-    };
-    await register(body.sessionId);
+    // Recover roots and descendants through the same current-worker authority.
+    if(this.tenantPolicy)await this.sessionAuthority.ensure(context,body.sessionId);
     const owner=await this.#collaborationOwner({id:context.userId},body.sessionId,access,worker);
     if(body.action==="checkpoint")return {state:await this.collaboration.checkpoint(owner,body)};
     if(body.action==="state")return {state:await this.collaboration.get(owner)};
@@ -1118,10 +1131,37 @@ export class PlatformServer {
     } catch (error) { sendJson(response, error.status ?? 400, { error: error.message }); }
   }
 
+  async #pendingRequest(context,id,operation,access,directory) {
+    try { return this.tenantPolicy.request(context,id); } catch(error) { if(error.statusCode!==404)throw error; }
+    const kind=operation.startsWith("question")?"question":"permission";
+    const url=new URL(`/${kind}`,access.url);url.searchParams.set("directory",directory);
+    const result=await fetch(url,{headers:{authorization:`Basic ${workerBasicToken(access.token)}`},signal:AbortSignal.timeout(10000)});
+    if(!result.ok)throw Object.assign(new Error("Pending interactions are temporarily unavailable"),{statusCode:503,code:"interaction_context_unavailable"});
+    const records=await result.json();
+    const pending=Array.isArray(records)?records.find(record=>record.id===id):null;
+    if(!pending)throw Object.assign(new Error("Interaction is no longer pending"),{statusCode:404,code:kind==="question"?"QuestionNotFoundError":"PermissionNotFoundError"});
+    await this.sessionAuthority.ensure(context,pending.sessionID);
+    this.tenantPolicy.registerRequest(context,pending);
+    return this.tenantPolicy.request(context,id);
+  }
+
   async #managedRuntimeProxy(request, response, access, user, worker) {
+    let interaction;
+    const trace={correlationId:randomUUID()};
     try {
       const context = { userId: user.id, instanceId: workerIdForUser(user.id), generation: worker.generation };
       this.tenantPolicy.account(context);
+      response.setHeader("x-scikeel-runtime-generation",String(context.generation));
+      const startedAt=Date.now();
+      response.setHeader("x-scikeel-operation-id",trace.correlationId);
+      response.once("finish",()=>{
+        const route=classifyRuntimeRoute(request.method,(request.url??"/").split("?")[0]);
+        this.logger({type:"runtime.operation",operation:route?.operation ?? "unknown",status:response.statusCode,
+          sessionId:trace.sessionId ?? route?.identifiers.sessionId,requestId:route?.identifiers.requestId,generation:context.generation,elapsedMs:Date.now()-startedAt,code:trace.code,correlationId:trace.correlationId,replay:interaction?.replay ?? false});
+      });
+      response.once("close",()=>{
+        if(!response.writableFinished)this.logger({type:"runtime.transport_closed",generation:context.generation,sessionId:trace.sessionId,correlationId:trace.correlationId,elapsedMs:Date.now()-startedAt});
+      });
       const rawPath = (request.url ?? "/").split("?")[0];
       const operation = classifyRuntimeRoute(request.method, rawPath);
       if (!operation) { sendJson(response, 404, { error: "not found" }); return; }
@@ -1143,14 +1183,34 @@ export class PlatformServer {
       if(operation.operation==="sessionPrompt_async"){delete checkedBody.attachmentTurn;delete checkedBody.collaborationRevision;}
       const input = validateRuntimeInput(operation, { query: parsed.searchParams, body:checkedBody, headers: request.headers });
       let directory = this.tenantPolicy.directory(context, input.directory);
-      const sessionId = operation.identifiers.sessionId ?? body.sessionID;
+      let sessionId = operation.identifiers.sessionId ?? body.sessionID;
+      if (["questionReply","questionReject","permissionReply"].includes(operation.operation)) {
+        interaction=this.interactionReplies.begin(context,operation.operation,operation.identifiers.requestId,body);
+        if(interaction.replay) {
+          trace.sessionId=interaction.record.sessionId;
+          const receipt=await interaction.record.done;
+          await this.sessionAuthority.current(context);
+          const code=receipt.body?.code ?? receipt.body?.name ?? receipt.body?._tag;
+          if(typeof code==="string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(code))trace.code=code;
+          if(input.directory!==undefined && interaction.record.directory && input.directory!==interaction.record.directory)
+            throw Object.assign(new Error("directory does not match session"),{statusCode:403});
+          sendJson(response,receipt.status,receipt.body);return;
+        }
+      }
+      if (operation.identifiers.requestId) {
+        const pending=await this.#pendingRequest(context,operation.identifiers.requestId,operation.operation,access,directory);
+        if(sessionId && sessionId!==pending.sessionID)throw Object.assign(new Error("request does not match session"),{statusCode:403});
+        sessionId=pending.sessionID;
+      }
       if (sessionId) {
-        const session = this.tenantPolicy.session(context, sessionId);
+        const session = await this.sessionAuthority.ensure(context, sessionId);
         if (input.directory !== undefined && operation.operation !== "sessionMove" && input.directory !== session.directory)
           throw Object.assign(new Error("directory does not match session"), { statusCode: 403 });
         if (operation.operation !== "sessionMove") directory = session.directory;
       }
-      if (body.parentID) this.tenantPolicy.session(context, body.parentID);
+      trace.sessionId=sessionId;
+      if(interaction){interaction.record.directory=directory;interaction.record.sessionId=sessionId;}
+      if (body.parentID) await this.sessionAuthority.ensure(context, body.parentID);
       if (operation.identifiers.requestId) this.tenantPolicy.request(context, operation.identifiers.requestId);
       if (operation.approval && operation.approval !== "reply" &&
           !(await this.approvalGate?.(context, { operation: operation.operation, sessionId, body, manual:request.headers["x-scikeel-manual-approval"]==="1" }))) {
@@ -1240,8 +1300,12 @@ export class PlatformServer {
       }
       const target = new URL(`${operation.path}${parsed.search}`, access.url);
       const controller = new AbortController();
-      request.on("aborted", () => controller.abort());
-      response.on("close", () => { if (!response.writableEnded) controller.abort(); });
+      // Finish accepted interaction delivery even if the browser disconnects.
+      // The request body was validated; explicit Stop is a separate operation.
+      if(!interaction) {
+        request.on("aborted", () => controller.abort());
+        response.on("close", () => { if (!response.writableEnded) controller.abort(); });
+      }
       const timeout = setTimeout(() => controller.abort(), 30000);
       try {
         const upstream = await fetch(target, { method: operation.method, redirect: "error", signal: controller.signal,
@@ -1322,7 +1386,7 @@ export class PlatformServer {
           if (["sessionList", "sessionChildren"].includes(operation.operation) && Array.isArray(value))
             this.tenantPolicy.registerSessionList(context, value);
           if (["permissionList", "questionList"].includes(operation.operation) && Array.isArray(value))
-            for (const pending of value) this.tenantPolicy.registerRequest(context, pending);
+            for (const pending of value) { await this.sessionAuthority.ensure(context,pending.sessionID); this.tenantPolicy.registerRequest(context, pending); }
           if(operation.operation === "sessionMessage" && operation.method === "GET" && Array.isArray(value)) {
             const owner=await this.#researchOwner(user,sessionId,access,worker);
             value=await this.attachmentTurns.decorate(user,owner,value);
@@ -1340,12 +1404,19 @@ export class PlatformServer {
           if (operation.operation === "sessionDelete") this.tenantPolicy.removeSession(context, sessionId);
           if (operation.operation === "sessionMove") this.tenantPolicy.registerSession(context, { id: sessionId, directory });
         }
-        sendJson(response, upstream.status, scrubRuntimeSecrets(value ?? null));
+        const safe=scrubRuntimeSecrets(value ?? null);
+        const code=safe?.code ?? safe?.name ?? safe?._tag;
+        if(typeof code==="string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(code))trace.code=code;
+        if(interaction)interaction.record.complete({status:upstream.status,body:upstream.ok ? true : JSON.stringify(safe).length<=8192 ? safe : {error:"Interaction failed",...(trace.code?{code:trace.code}:{})}});
+        sendJson(response, upstream.status, safe);
       } finally { clearTimeout(timeout); permissionDecision?.release(); }
     } catch (error) {
-      if (response.headersSent) { response.destroy(); return; }
       const status = error.statusCode ?? error.status ?? (error.code === "body_too_large" ? 413 : 502);
-      sendJson(response, status, { error: status < 500 ? error.message : "managed runtime unavailable" });
+      if(typeof error.code==="string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(error.code))trace.code=error.code;
+      const body={error:status<500?error.message:"managed runtime unavailable",...(error.code?{code:error.code,source:"gateway"}:{})};
+      if(interaction && !interaction.replay)interaction.record.complete({status:status>=500?503:status,body:status>=500?{error:"Interaction delivery is not confirmed",code:"interaction_delivery_unknown",source:"gateway"}:body});
+      if (response.headersSent) { response.destroy(); return; }
+      sendJson(response, status, body);
     }
   }
 
@@ -1527,13 +1598,17 @@ export class PlatformServer {
         }
         if (path === "/api/runtime") {
           if (request.method === "GET") {
-            sendJson(response, 200, this.cliRuntime ? await this.cliRuntime.freshDescribe(user.id) : {
+            const description = this.cliRuntime ? await this.cliRuntime.freshDescribe(user.id) : {
               runtime: "opencode",
               kind: "opencode",
               managed: false,
               label: "OpenCode",
               available: [{ runtime: "opencode", kind: "opencode", managed: false, label: "OpenCode" }],
-            });
+            };
+            const worker=this.workerManager.getWorker(workerIdForUser(user.id));
+            const context=worker && worker.userId===user.id && worker.status==="running" && Number.isSafeInteger(worker.generation)
+              ? {instanceId:worker.id,generation:worker.generation} : null;
+            sendJson(response,200,{...description,context});
             return;
           }
           if (request.method !== "POST") {

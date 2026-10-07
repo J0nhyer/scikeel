@@ -77,10 +77,16 @@ export interface CustomProviderModel {
  */
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  readonly code?: string;
+  readonly source?: string;
+  readonly contextGeneration?: number;
+  constructor(message: string, status: number, options: { code?: string; source?: string; contextGeneration?: number } = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = options.code;
+    this.source = options.source;
+    this.contextGeneration = options.contextGeneration;
   }
 }
 
@@ -308,11 +314,19 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     return h;
   }
 
+  private contextGeneration: number | undefined;
+  getContextGeneration(): number | undefined { return this.contextGeneration; }
+  private captureContext(response: Response): Response {
+    const generation=Number(response.headers.get("x-scikeel-runtime-generation"));
+    if (Number.isSafeInteger(generation) && generation > 0) this.contextGeneration=generation;
+    return response;
+  }
+
   private async fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs = this.requestTimeoutMs): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await this.fetchImpl(input, { ...init, signal: controller.signal });
+      return this.captureContext(await this.fetchImpl(input, { ...init, signal: controller.signal }));
     } catch (err) {
       if (controller.signal.aborted) throw new Error("Timed out waiting for OpenCode");
       throw err;
@@ -451,6 +465,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         signal: abort.signal,
       })
         .then(async (res) => {
+          this.captureContext(res);
           clearTimeout(timer);
           if (!res.ok || !res.body) {
             this.setStatus("error");
@@ -853,9 +868,17 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  then send the corrected text. The session must be idle (abort first);
    *  reverting a busy session is rejected by OpenCode. `partID` reverts to a
    *  specific part within the message; omit to revert the whole message. */
+  async readSession(sessionId: string): Promise<{ id: string; revert?: { messageID: string; partID?: string } }> {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}${this.dirQuery()}`, { headers: this.headers() });
+    if (!res.ok) throw await this.apiError(res, "Failed to read the session");
+    const value = await res.json() as { id: string; revert?: { messageID: string; partID?: string } };
+    if (value.id !== sessionId) throw new Error("Session metadata does not match");
+    return { id: value.id, revert: value.revert };
+  }
+
   async revert(sessionId: string, messageID: string, partID?: string): Promise<void> {
-    const res = await this.fetchImpl(
-      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/revert`,
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/revert${this.dirQuery()}`,
       {
         method: "POST",
         headers: this.headers(true),
@@ -867,8 +890,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
 
   /** Undo the last revert — restores the reverted messages and files. */
   async unrevert(sessionId: string): Promise<void> {
-    const res = await this.fetchImpl(
-      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/unrevert`,
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/unrevert${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: "{}" },
     );
     if (!res.ok) throw await this.apiError(res, "Failed to restore the reverted messages");
@@ -877,8 +900,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   /** Interrupt the session's current turn (POST /session/:id/abort). A no-op
    *  on an idle session — the server just answers false. */
   async abortSession(sessionId: string): Promise<void> {
-    const res = await this.fetchImpl(
-      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/abort`,
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/abort${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: "{}" },
     );
     if (!res.ok) throw await this.apiError(res, "Failed to interrupt the session");
@@ -1316,17 +1339,21 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  dropping it turns an explained refusal into a bare status code (#119). */
   private async apiError(res: Response, what: string): Promise<Error> {
     let detail = "";
+    let code: string | undefined;
+    let source: string | undefined;
     try {
-      const body = (await res.json()) as {
-        data?: { message?: string };
-        message?: string;
-        error?: string;
-      };
-      detail = body.data?.message ?? body.message ?? body.error ?? "";
-    } catch {
-      /* not JSON — keep the status alone */
-    }
-    return new ApiError(`${what} (${res.status}${detail ? `: ${detail}` : ""})`, res.status);
+      const body = await res.json() as { data?: { message?: string }; message?: string; error?: string; code?: string; name?: string; _tag?: string; source?: string };
+      const message = body.data?.message ?? body.message ?? body.error;
+      if (typeof message === "string") detail = message.slice(0, 2048);
+      const candidate = body.code ?? body.name ?? body._tag;
+      if (typeof candidate === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(candidate)) code = candidate;
+      if (["gateway", "runtime"].includes(body.source ?? "")) source = body.source;
+      else if (code) source = "runtime";
+    } catch { /* Keep the HTTP status on malformed/non-JSON responses. */ }
+    const generation = Number(res.headers.get("x-scikeel-runtime-generation"));
+    return new ApiError(`${what} (${res.status}${detail ? `: ${detail}` : ""})`, res.status, {
+      code, source, contextGeneration: Number.isSafeInteger(generation) && generation > 0 ? generation : undefined,
+    });
   }
 
   /** Real agents configured in OpenCode. */
@@ -1476,18 +1503,20 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       id: string;
       sessionID: string;
       questions?: QuestionAskedEvent["questions"];
+      tool?: QuestionAskedEvent["tool"];
     }>;
     return arr.map((q) => ({
       type: "question.asked" as const,
       sessionId: q.sessionID,
       requestId: q.id,
       questions: q.questions ?? [],
+      tool: q.tool,
     }));
   }
 
   /** Answer a question: one array of selected option labels per question, in order. */
   async answerQuestion(requestId: string, answers: string[][]): Promise<void> {
-    const res = await this.fetchImpl(
+    const res = await this.fetchWithTimeout(
       `${this.baseUrl}/question/${encodeURIComponent(requestId)}/reply${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: JSON.stringify({ answers }) },
     );
@@ -1496,7 +1525,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
 
   /** Reject/dismiss a question (the agent proceeds without an answer). */
   async rejectQuestion(requestId: string): Promise<void> {
-    const res = await this.fetchImpl(
+    const res = await this.fetchWithTimeout(
       `${this.baseUrl}/question/${encodeURIComponent(requestId)}/reject${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: "{}" },
     );
@@ -1519,6 +1548,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       patterns?: string[];
       action?: string;
       resources?: string[];
+      tool?: PermissionAskedEvent["tool"];
     }>;
     return arr.map((p) => ({
       type: "permission.asked" as const,
@@ -1526,12 +1556,13 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       requestId: p.id,
       action: p.permission ?? p.action ?? "action",
       resources: p.patterns ?? p.resources ?? [],
+      tool: p.tool,
     }));
   }
 
   /** Reply to a permission request: allow once, allow always, or reject. */
   async replyPermission(requestId: string, reply: PermissionReply): Promise<void> {
-    const res = await this.fetchImpl(
+    const res = await this.fetchWithTimeout(
       `${this.baseUrl}/permission/${encodeURIComponent(requestId)}/reply${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: JSON.stringify({ reply }) },
     );
@@ -1771,6 +1802,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         const q = props as {
           id?: string;
           sessionID?: string;
+          tool?: QuestionAskedEvent["tool"];
           questions?: Array<{
             question: string;
             header: string;
@@ -1783,6 +1815,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           type: "question.asked",
           sessionId: String(q.sessionID ?? ""),
           requestId: String(q.id ?? ""),
+          tool: q.tool,
           questions: (q.questions ?? []).map((it) => ({
             question: it.question,
             header: it.header,
@@ -1816,6 +1849,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           patterns?: string[];
           action?: string;
           resources?: string[];
+      tool?: PermissionAskedEvent["tool"];
         };
         this.emit({
           type: "permission.asked",
@@ -1823,6 +1857,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           requestId: String(p.id ?? ""),
           action: String(p.permission ?? p.action ?? "action"),
           resources: p.patterns ?? p.resources ?? [],
+      tool: p.tool,
         });
         break;
       }

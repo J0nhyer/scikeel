@@ -44,7 +44,7 @@ test("persists the confirmed brief and keeps accounts and workspace paths separa
   await restored.close();
 });
 
-test("requires a live page, includes the actual mode, and leaves ordinary conversations alone", async () => {
+test("includes the actual mode, rejects overlapping execution, and leaves ordinary conversations alone", async () => {
   const f = await fixture();
   assert.equal(await f.store.prepare("student", "ses_plain", { parts: [{ type: "text", text: "hello" }] }), null);
   await f.store.create(f.owner, { ...brief, mode: "guided" });
@@ -55,7 +55,7 @@ test("requires a live page, includes the actual mode, and leaves ordinary conver
   assert.equal(prepared.parts[0].text, "Start");
   assert.equal((await f.store.get("student", "ses_research")).execution, 1);
   await f.store.release("student", "ses_research", "page-student");
-  await assert.rejects(f.store.prepare("student", "ses_research", {}), /page/);
+  await assert.rejects(f.store.prepare("student", "ses_research", {}), /already running/);
 });
 
 test("rejects stale progress, does not let agent suggestions change confirmed decisions, and gates the next turn", async () => {
@@ -111,17 +111,17 @@ test("rejects output symlinks and reports outside the owning workspace", async (
   assert.equal((await f.store.refresh("student", "ses_research")).report, null);
 });
 
-test("expires abandoned execution, preserves files, and does not restart on heartbeat or reload", async () => {
+test("preserves accepted execution and files beyond page heartbeat expiry", async () => {
   const f = await fixture();
   await f.store.create(f.owner, brief);
   await f.store.prepare("student", "ses_research", {});
   await writeFile(join(f.directory, "report.md"), "Preserved work");
   f.advance(45_001);
   await f.store.tick();
-  assert.deepEqual(f.cancelled, ["ses_research"]);
-  assert.equal((await f.store.get("student", "ses_research")).status, "paused");
+  assert.deepEqual(f.cancelled, []);
+  assert.equal((await f.store.get("student", "ses_research")).status, "running");
   await f.store.heartbeat("student", "ses_research", "page-reopened");
-  assert.equal((await f.store.get("student", "ses_research")).status, "paused");
+  assert.equal((await f.store.get("student", "ses_research")).status, "running");
   assert.equal(await readFile(join(f.directory, "report.md"), "utf8"), "Preserved work");
 });
 
@@ -170,7 +170,7 @@ test("records a newly supplied missing input on the next confirmed execution", a
   assert.equal((await f.store.get("student", "ses_research")).inputVersions[0].exists, true);
 });
 
-test("closing an idle completed task preserves completion and active completed reports still expire", async () => {
+test("closing an idle completed task and heartbeat expiry preserve completion", async () => {
   const f = await fixture();
   await f.store.create(f.owner, brief);
   await f.store.prepare("student", "ses_research", {});
@@ -180,7 +180,7 @@ test("closing an idle completed task preserves completion and active completed r
   await assert.rejects(f.store.action("student", "ses_research", { action: "mode", mode: "guided" }), /running/);
   f.advance(45_001);
   await f.store.tick();
-  assert.deepEqual(f.cancelled, ["ses_research"]);
+  assert.deepEqual(f.cancelled, []);
   await f.store.heartbeat("student", "ses_research", "new-page");
   await f.store.settled("student", "ses_research");
   await f.store.prepare("student", "ses_research", {});
@@ -190,13 +190,13 @@ test("closing an idle completed task preserves completion and active completed r
   assert.equal((await f.store.get("student", "ses_research")).status, "completed");
 });
 
-test("page release cancels associated execution even after the main turn settled", async () => {
+test("page release does not cancel associated execution after the main turn settled", async () => {
   const f = await fixture();
   await f.store.create(f.owner, brief);
   await f.store.prepare("student", "ses_research", {});
   await f.store.settled("student", "ses_research");
   await f.store.release("student", "ses_research", "page-student");
-  assert.deepEqual(f.cancelled, ["ses_research"]);
+  assert.deepEqual(f.cancelled, []);
   assert.equal((await f.store.get("student", "ses_research")).status, "failed");
 });
 
@@ -221,19 +221,19 @@ test("a completed task loses completed status when its progress report becomes i
   assert.equal((await f.store.refresh("student", "ses_research")).status, "failed");
 });
 
-test("one unavailable runtime cannot prevent another expired task from stopping", async () => {
+test("one unavailable runtime does not cancel another background task", async () => {
   const f = await fixture();
   await f.store.create(f.owner, brief);
   await f.store.prepare("student", "ses_research", {});
   await f.store.create({ ...f.owner, sessionId: "ses_second" }, brief);
   await f.store.prepare("student", "ses_second", {});
-  f.store.cancel = async (task) => {
+  f.store.running = async (task) => {
     if (task.sessionId === "ses_research") throw new Error("runtime unavailable");
-    f.cancelled.push(task.sessionId);
+    return true;
   };
   f.advance(45_001);
   await f.store.tick();
-  assert.deepEqual(f.cancelled, ["ses_second"]);
-  assert.equal((await f.store.get("student", "ses_second")).status, "paused");
+  assert.deepEqual(f.cancelled, []);
+  assert.equal((await f.store.get("student", "ses_second")).status, "running");
   f.store.cancel = async () => {};
 });

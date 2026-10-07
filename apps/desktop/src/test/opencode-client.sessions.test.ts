@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { OpenCodeClient } from "@ai4s/sdk";
+import { ApiError, isApiStatus, OpenCodeClient } from "@ai4s/sdk";
 
 const BASE = "http://127.0.0.1:9999";
 
@@ -378,4 +378,24 @@ it("normalizes committed title updates without exposing job metadata", async () 
     controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "session.updated", properties: { info: { id: "ses_a", title: "Research topic", metadata: { scikeelSessionTitle: { model: "private" } } } } })}\n\n`));
     await vi.waitFor(() => expect(events).toEqual([{ type: "session.updated", sessionId: "ses_a", title: "Research topic" }]));
   } finally { controller.close(); client.close(); }
+});
+
+describe("typed operation errors",()=>{
+  it.each([400,404])("retains native missing-question identity (%s)",async status=>{
+    const client=new OpenCodeClient({baseUrl:BASE,fetchImpl:async()=>new Response(JSON.stringify({name:"QuestionNotFoundError",data:{message:"Question is no longer pending"}}),{status,headers:{"x-scikeel-runtime-generation":"2"}})});
+    await expect(client.answerQuestion("question",[["A"]])).rejects.toMatchObject({status,code:"QuestionNotFoundError",source:"runtime",contextGeneration:2});
+  });
+  it("reads the installed runtime's Effect error tag",async()=>{
+    const client=new OpenCodeClient({baseUrl:BASE,fetchImpl:async()=>new Response(JSON.stringify({_tag:"QuestionNotFoundError",requestID:"question",message:"Question request not found: question"}),{status:404})});
+    await expect(client.answerQuestion("question",[["A"]])).rejects.toMatchObject({status:404,code:"QuestionNotFoundError",source:"runtime"});
+  });
+  it("keeps the legacy ApiError constructor compatible",()=>{
+    expect(isApiStatus(new ApiError("legacy",400),400)).toBe(true);
+    expect(new ApiError("gone",404,{code:"QuestionNotFoundError",source:"runtime",contextGeneration:2})).toMatchObject({code:"QuestionNotFoundError",contextGeneration:2});
+  });
+  it("keeps pending tool correlation for readback",async()=>{
+    const tool={messageID:"message",callID:"call"};
+    const client=new OpenCodeClient({baseUrl:BASE,fetchImpl:async()=>new Response(JSON.stringify([{id:"question",sessionID:"session",questions:[],tool}]))});
+    expect((await client.listQuestions())[0].tool).toEqual(tool);
+  });
 });

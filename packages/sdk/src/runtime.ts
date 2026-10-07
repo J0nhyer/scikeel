@@ -100,6 +100,8 @@ export interface AgentRuntime {
    *  message after it (and rolling back any files they changed). Used to edit a
    *  past user message: revert to it, then `sendPrompt` the corrected text.
    *  The session must be idle first (abort a running turn before calling). */
+  getContextGeneration?(): number | undefined;
+  readSession?(sessionId: string): Promise<{ id: string; revert?: { messageID: string; partID?: string } }>;
   revert(sessionId: string, messageID: string, partID?: string): Promise<void>;
   /** Undo the last revert (restore the dropped messages and files). */
   unrevert(sessionId: string): Promise<void>;

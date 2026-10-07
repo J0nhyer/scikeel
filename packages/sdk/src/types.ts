@@ -149,6 +149,7 @@ export interface QuestionAskedEvent {
   sessionId: string;
   requestId: string;
   questions: QuestionItem[];
+  tool?: { messageID: string; callID: string };
 }
 /** A question was answered or rejected elsewhere — clear it from the UI. */
 export interface QuestionResolvedEvent {
@@ -165,6 +166,7 @@ export interface PermissionAskedEvent {
   action: string;
   /** The concrete targets (a command line, file paths). */
   resources: string[];
+  tool?: { messageID: string; callID: string };
 }
 export interface PermissionResolvedEvent {
   type: "permission.resolved";
@@ -361,6 +363,8 @@ export interface HistoryPart {
      *  `interrupted` marks a tool the user stopped: its `output` (not
      *  `state.error`) is what the model is shown. */
     metadata?: {
+      /** Native question tool receipt; only exact call/answer matching confirms delivery. */
+      answers?: string[][];
       output?: string;
       diff?: string;
       sessionId?: string;

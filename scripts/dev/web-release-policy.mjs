@@ -4,7 +4,8 @@ const leafGroups = new Map([
 const docs = (path) => /^(?:docs\/|(?:README|PROGRESS|AGENTS|CLAUDE)\.md$|scripts\/README\.md$)/.test(path);
 const broad = (path) => /(?:pnpm-lock|package\.json|vite\.config|tsconfig|eslint|tailwind|postcss|scripts\/|\.github\/|Cargo\.(?:toml|lock))/.test(path);
 const workflow = (path) => /^(?:scripts\/dev\/(?:web-release|web-build|web-vendor|build-web-vendor|safe-desktop-task)|package\.json$|apps\/desktop\/(?:package\.json|vite\.config|web-vendor)|pnpm-lock\.yaml$)/.test(path);
-export const imageInputPath = (path) => /^(?:runtime\/(?:sandbox|skills\/core|opencode-patches)\/|crates\/|scripts\/dev\/(?:prepare-science-image|stage-sandbox-image|fetch-sandbox-codex|fetch-opencode|fetch-uv|build-opencode-title-runtime|web-release-policy)|\.github\/workflows\/sandbox-image|(?:packages\/sdk\/src\/tool-outcome\.(?:mjs|d\.mts)|Cargo\.(?:toml|lock)|OPENCODE_VERSION)$)/.test(path);
+export const imageInputPath = (path) => /^(?:runtime\/(?:sandbox|skills\/core|opencode-patches)\/|crates\/|scripts\/dev\/(?:prepare-science-image|stage-sandbox-image|fetch-sandbox-codex|fetch-opencode|fetch-uv|build-opencode-title-runtime)|\.github\/workflows\/sandbox-image|(?:packages\/sdk\/src\/tool-outcome\.(?:mjs|d\.mts)|Cargo\.(?:toml|lock)|OPENCODE_VERSION)$)/.test(path);
+const interactions = (path) => /^(?:services\/platform\/src\/(?:session-authority|interaction-replies|tenant-policy|platform-server|collaboration|research-tasks|managed-worker-manager)|apps\/desktop\/src\/(?:lib\/(?:runtime|interactionState)|components\/(?:thread\/(?:InteractionPrompt|ResearchTaskPanel)|session\/SessionView))|packages\/sdk\/src\/(?:OpenCodeClient|runtime|types))/.test(path);
 const toolReliability = (path) => /^(?:apps\/desktop\/src\/components\/thread\/Tool(?:CallRow|Group)|runtime\/(?:opencode-patches\/(?:managed-network|network)|sandbox\/(?:runner|collaboration|tool-outcome))|services\/platform\/src\/(?:network-operations|tool-outcomes|collaboration|egress-broker|model-broker|tenant-policy|platform-server)|packages\/sdk\/src\/(?:tool-outcome|OpenCodeClient)|packages\/shared\/src\/toolOutcome)/.test(path);
 const live = (path) => /^(?:runtime\/|crates\/)|^services\/platform\/src\/(?:model-broker|tenant-policy|sandbox-|managed-worker|cli-runtime|cli-profile|attachment-turns)/.test(path);
 export function selectVerification(paths, baseline, { full = false } = {}) {
@@ -16,6 +17,7 @@ export function selectVerification(paths, baseline, { full = false } = {}) {
   if (!source.length) { result.reasons.push('No source changes: no build or deployment'); return result; }
   const frontend = new Set(); const browser = new Set(['app']);
   for (const path of source) {
+    if (interactions(path)) { result.buildWeb = result.typecheck = result.lint = true; browser.add('session'); browser.add('interactions'); }
     if (toolReliability(path)) { result.buildWeb = result.typecheck = result.lint = true; browser.add('session'); }
     if (path.startsWith('apps/desktop/')) {
       result.buildWeb = result.typecheck = result.lint = true;

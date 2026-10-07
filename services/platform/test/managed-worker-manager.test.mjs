@@ -95,3 +95,13 @@ test("passive event subscriptions do not prevent idle tenant switching, while mu
   assert.equal(manager.getWorker("user-a").status,"stopped");stream.release();stream.release();
   assert.throws(()=>manager.retainWorker("user-b",{passive:true}),/read.only/i);
 });
+
+test("a durable pending execution blocks eviction even when native status is idle",async t=>{
+ const {manager,calls}=fixture();t.after(()=>manager.close());
+ await manager.ensureWorker({instanceId:"user-a",userId:"a"});
+ let pending=true;manager.setExecutionProbe(async context=>{assert.equal(context.userId,"a");return pending;});
+ await assert.rejects(manager.ensureWorker({instanceId:"user-b",userId:"b"}),/capacity/);
+ assert.equal(calls.filter(([operation])=>operation==="stop").length,0);
+ pending=false;await manager.ensureWorker({instanceId:"user-b",userId:"b"});
+ assert.equal(manager.getWorker("user-a").status,"stopped");
+});

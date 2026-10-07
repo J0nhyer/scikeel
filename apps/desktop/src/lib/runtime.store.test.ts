@@ -61,6 +61,8 @@ const mocks = vi.hoisted(() => ({
   collaborationRevisionSpy: vi.fn(),
   runCommand: vi.fn(),
   replyPermission: vi.fn(),
+  answerQuestion: vi.fn(),
+  rejectQuestion: vi.fn(),
   abortSession: vi.fn(),
   revertSpy: vi.fn(),
   unrevertSpy: vi.fn(),
@@ -310,10 +312,13 @@ vi.mock("@ai4s/sdk", () => {
       mocks.fireEvent({ type: "session.idle", sessionId: sid });
     }
     async replyPermission(requestId: string, reply: string) {
-      mocks.replyPermission(requestId, reply);
+      await mocks.replyPermission(requestId, reply);
     }
+    async answerQuestion(requestId:string,answers:string[][]) { await mocks.answerQuestion(requestId,answers); }
+    async rejectQuestion(requestId:string) { await mocks.rejectQuestion(requestId); }
     async abortSession(sid: string) {
       mocks.abortSession(sid);
+      mocks.sessionRunning = false;
       // The real server answers an abort with its own SSE burst that streams
       // back while this POST is still being awaited — reproduce that timing so
       // the guard must already be set before the await, not after it.
@@ -341,7 +346,7 @@ vi.mock("@ai4s/sdk", () => {
       mocks.revertSpy(sid, messageID, partID);
       if (mocks.failReverts > 0) {
         mocks.failReverts--;
-        throw new Error("session is busy");
+        throw Object.assign(new Error("session is busy"), {status:409,code:"SessionBusyError"});
       }
     }
     async unrevert(sid: string) {
@@ -389,6 +394,8 @@ beforeEach(async () => {
   mocks.failCommand = false;
   mocks.dropCommandPost = false;
   mocks.abortTrailing = [];
+  mocks.answerQuestion.mockReset();
+  mocks.rejectQuestion.mockReset();
   mocks.listQuestions.mockReset().mockResolvedValue([]);
   mocks.listPermissions.mockReset().mockResolvedValue([]);
   mocks.messages = [];
@@ -436,6 +443,9 @@ beforeEach(async () => {
     sendingSessions: {},
     runningSessions: {},
     permissions: [],
+    questions: [],
+    interactions: {},
+    gatewayContext: null,
     sessionParents: {},
     panes: {},
     sessionAgents: {},
@@ -727,7 +737,7 @@ describe("gateway runtime selection", () => {
     const brief = { objective: "Invalid fixture", mode: "collaborative" as const, goal: "thesis" as const, inputs: [], deliverables: ["report.md"], pageId: "page-rejected" };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "reject fixture" }), { status: 400 })));
     expect(await useRuntimeStore.getState().sendPrompt("Keep my text", "ses_rejected", undefined, undefined, brief)).toBeNull();
-    expect(useRuntimeStore.getState().error).toMatch(/reject fixture/);
+    expect(useRuntimeStore.getState().threads.ses_rejected.blocks.slice(-1)[0]).toMatchObject({kind:"status-line",tone:"error",text:expect.stringMatching(/reject fixture/)});
   });
 
   it("creates a confirmed research record before posting its first prompt and refuses a failed record", async () => {
@@ -747,7 +757,7 @@ describe("gateway runtime selection", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "invalid scope" }), { status: 400 })));
     await useRuntimeStore.getState().sendPrompt("Start again", "ses_b", undefined, undefined, brief);
     expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
-    expect(useRuntimeStore.getState().error).toContain("invalid scope");
+    expect(useRuntimeStore.getState().threads.ses_b.blocks.slice(-1)[0]).toMatchObject({text:expect.stringContaining("invalid scope")});
   });
   it("uses the persisted collaboration revision and preserves text when its service is unavailable",async()=>{
     mocks.isGatewayWeb=true;mocks.isPlatformWeb=true;useRuntimeStore.setState({gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }],sessionAgents:{ses_a:"plan"},agents:[{name:"plan",mode:"primary",description:"Plan fixture"}]});
@@ -2069,7 +2079,7 @@ describe("subagent permission asks and long sync turns", () => {
   // runtime has already resolved. A 404 there means "already answered", not a
   // failure the user can act on — surfacing it put a scary banner over a click
   // that actually worked.
-  it("treats an already-resolved permission (404) as answered, not as an error", async () => {
+  it("does not misreport a generic permission 404 as an accepted answer", async () => {
     await useRuntimeStore.getState().sendPrompt("go");
     const ask = (requestId: string) =>
       mocks.fireEvent({
@@ -2090,8 +2100,8 @@ describe("subagent permission asks and long sync turns", () => {
 
     await useRuntimeStore.getState().replyPermission("per_stale", "always");
 
-    expect(useRuntimeStore.getState().permissions).toHaveLength(0);
-    expect(useRuntimeStore.getState().error).toBeNull();
+    expect(useRuntimeStore.getState().interactions.per_stale.status).not.toBe("submitting");
+    expect(useRuntimeStore.getState().interactions.per_stale.status).toBe("expired");
   });
 
   it("still reports a permission reply that failed for a real reason", async () => {
@@ -2110,7 +2120,7 @@ describe("subagent permission asks and long sync turns", () => {
     });
 
     await useRuntimeStore.getState().replyPermission("per_x", "always");
-    expect(useRuntimeStore.getState().error).toContain("500");
+    expect(useRuntimeStore.getState().interactions.per_x.status).toBe("unknown");
   });
 
   // A step still in flight when Stop lands never finished. Reloading the session
@@ -2560,6 +2570,7 @@ describe("edit a past user message", () => {
     mocks.fireEvent({ type: "message.agent", sessionId: "ses_new", messageID, agent: "build" });
     mocks.fireEvent({ type: "text.updated", sessionId: "ses_new", partId: "t1", text: "wrong answer" });
     mocks.fireEvent({ type: "session.idle", sessionId: "ses_new" });
+    mocks.sessionRunning = false;
   }
 
   it("tags the live user block with its message id from message.agent", async () => {
@@ -2597,10 +2608,10 @@ describe("edit a past user message", () => {
   });
 
   it("retries revert while the just-aborted session is still settling", async () => {
-    mocks.failReverts = 2; // busy twice, then succeeds
+    mocks.failReverts = 1; // one recognized busy response, then succeeds
     await sendAndFinish("msg_1");
     await useRuntimeStore.getState().editMessage("msg_1", "hi fixed");
-    expect(mocks.revertSpy).toHaveBeenCalledTimes(3);
+    expect(mocks.revertSpy).toHaveBeenCalledTimes(2);
     expect(mocks.sendPromptSpy).toHaveBeenLastCalledWith("ses_new", "hi fixed", undefined);
   });
 
@@ -2609,7 +2620,7 @@ describe("edit a past user message", () => {
     await sendAndFinish("msg_1");
     mocks.sendPromptSpy.mockClear();
     await useRuntimeStore.getState().editMessage("msg_1", "hi fixed");
-    expect(mocks.revertSpy).toHaveBeenCalledTimes(5);
+    expect(mocks.revertSpy).toHaveBeenCalledTimes(2);
     expect(useRuntimeStore.getState().error).toBeTruthy();
     expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
   });
@@ -4535,13 +4546,13 @@ describe("pending interaction recovery after lost SSE events", () => {
     expect(useRuntimeStore.getState().error).toBeNull();
   });
 
-  it("removes prompts resolved in another browser without requiring an SSE reply", async () => {
+  it("marks missing prompts expired without claiming their answers were accepted", async () => {
     await useRuntimeStore.getState().sendPrompt("hi");
     useRuntimeStore.setState({ permissions: [permission] as never, questions: [question] as never });
     mocks.messages = [{ role: "assistant", parts: [] }];
     await useRuntimeStore.getState().reconcileRunning();
-    expect(useRuntimeStore.getState().permissions).toEqual([]);
-    expect(useRuntimeStore.getState().questions).toEqual([]);
+    expect(useRuntimeStore.getState().interactions[permission.requestId].status).toBe("expired");
+    expect(useRuntimeStore.getState().interactions[question.requestId].status).toBe("expired");
   });
 
   it("does not restore a request resolved while the recovery response was in flight", async () => {
@@ -4606,5 +4617,40 @@ describe("committed session title events", () => {
     expect(useRuntimeStore.getState().runningSessions).toEqual({});
     mocks.fireEvent({ type: "session.updated", sessionId: "unknown", title: "Foreign title" });
     expect(useRuntimeStore.getState().sessions).toHaveLength(2);
+  });
+});
+
+describe("confirmed interaction delivery",()=>{
+  const question={type:"question.asked" as const,sessionId:"ses_new",requestId:"question_delivery",questions:[{question:"Choose?",header:"Choose",options:[{label:"A"}]}]};
+  it("keeps the question while submitting and ignores duplicate clicks",async()=>{
+    await useRuntimeStore.getState().sendPrompt("hi");mocks.fireEvent(question);
+    let release!:()=>void;mocks.answerQuestion.mockImplementation(()=>new Promise<void>(resolve=>{release=resolve;}));
+    const pending=useRuntimeStore.getState().answerQuestion(question.requestId,[["A"]]);
+    expect(useRuntimeStore.getState().questions).toEqual([question]);
+    expect(useRuntimeStore.getState().interactions[question.requestId].status).toBe("submitting");
+    await useRuntimeStore.getState().answerQuestion(question.requestId,[["A"]]);expect(mocks.answerQuestion).toHaveBeenCalledTimes(1);
+    release();await pending;expect(useRuntimeStore.getState().questions).toEqual([]);
+  });
+  it("retains an ambiguous answer and does not replay it",async()=>{
+    await useRuntimeStore.getState().sendPrompt("hi");mocks.fireEvent(question);
+    mocks.listQuestions.mockRejectedValue(new Error("temporarily unreachable"));
+    mocks.answerQuestion.mockRejectedValue(new Error("response lost"));
+    await useRuntimeStore.getState().answerQuestion(question.requestId,[["A"]]);
+    expect(useRuntimeStore.getState().questions).toEqual([question]);expect(useRuntimeStore.getState().interactions[question.requestId].status).toBe("unknown");
+    await useRuntimeStore.getState().answerQuestion(question.requestId,[["A"]]);expect(mocks.answerQuestion).toHaveBeenCalledTimes(1);
+  });
+  it("expires typed missing requests instead of discarding their answerable context",async()=>{
+    await useRuntimeStore.getState().sendPrompt("hi");mocks.fireEvent(question);
+    mocks.answerQuestion.mockRejectedValue(Object.assign(new Error("question gone"),{status:400,code:"QuestionNotFoundError"}));
+    await useRuntimeStore.getState().answerQuestion(question.requestId,[["A"]]);
+    expect(useRuntimeStore.getState().interactions[question.requestId].status).toBe("expired");
+    expect(mocks.answerQuestion).toHaveBeenCalledTimes(1);
+  });
+  it("does not revert after an unconfirmed stop",async()=>{
+    await useRuntimeStore.getState().sendPrompt("hi");mocks.fireEvent({type:"message.agent",sessionId:"ses_new",messageID:"msg_user"});
+    mocks.abortSession.mockImplementation(()=>{throw new Error("stop failed");});mocks.sessionRunning=true;
+    const before=useRuntimeStore.getState().threads.ses_new.blocks;
+    expect(await useRuntimeStore.getState().revertMessage("msg_user","ses_new")).toBe(false);
+    expect(mocks.revertSpy).not.toHaveBeenCalled();expect(useRuntimeStore.getState().threads.ses_new.blocks).toEqual(before);
   });
 });

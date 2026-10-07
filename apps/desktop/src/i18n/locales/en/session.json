@@ -514,7 +514,20 @@
     "submit": "Submit",
     "reject": "Reject",
     "alwaysAllow": "Always allow",
-    "allowOnce": "Allow once"
+    "allowOnce": "Allow once",
+    "state": {
+      "submitting": "Submitting your answer…",
+      "retryable": "The request failed. Your answer is saved.",
+      "expired": "This request has expired. Your answer is saved.",
+      "unknown": "Delivery is not confirmed. Checking does not resend your answer.",
+      "check": "Check status",
+      "permission": {
+        "submitting": "Submitting your decision…",
+        "retryable": "The request failed. Review it before trying again.",
+        "expired": "This request has expired. No permission is granted.",
+        "unknown": "Delivery is not confirmed. Checking does not grant permission."
+      }
+    }
   },
   "turn": {
     "worked": "Worked",

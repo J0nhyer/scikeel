@@ -514,7 +514,20 @@
     "submit": "Absenden",
     "reject": "Ablehnen",
     "alwaysAllow": "Immer erlauben",
-    "allowOnce": "Einmal erlauben"
+    "allowOnce": "Einmal erlauben",
+    "state": {
+      "submitting": "Antwort wird gesendet…",
+      "retryable": "Anfrage fehlgeschlagen. Ihre Antwort ist gespeichert.",
+      "expired": "Diese Anfrage ist abgelaufen. Ihre Antwort ist gespeichert.",
+      "unknown": "Zustellung nicht bestätigt. Die Statusprüfung sendet Ihre Antwort nicht erneut.",
+      "check": "Status prüfen",
+      "permission": {
+        "submitting": "Entscheidung wird gesendet…",
+        "retryable": "Anfrage fehlgeschlagen. Prüfen Sie sie vor einem erneuten Versuch.",
+        "expired": "Diese Anfrage ist abgelaufen. Es wird keine Erlaubnis erteilt.",
+        "unknown": "Zustellung nicht bestätigt. Die Statusprüfung erteilt keine Erlaubnis."
+      }
+    }
   },
   "turn": {
     "worked": "Gearbeitet",

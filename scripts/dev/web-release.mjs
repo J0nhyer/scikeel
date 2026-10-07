@@ -134,6 +134,10 @@ export async function browserStage(candidate, run = runProcess) {
     const hasToolScenario = await lstat(join(desktop, toolScenario)).catch(() => null);
     if (!hasToolScenario && await lstat(join(candidate.source.root, 'runtime/opencode-patches/network.lock.json')).catch(() => null)) throw new Error('Required Web tool reliability scenario is unavailable');
     if (hasToolScenario) { tests.push(toolScenario); environment.OSD_TOOL_BROWSER = '1'; }
+    for (const [scenario,flag] of [['src/test/webInteractionRecovery.acceptance.test.mjs','OSD_INTERACTION_BROWSER'],['src/test/webCollaboration.acceptance.test.mjs','OSD_COLLABORATION_BROWSER']]) {
+      if (!await lstat(join(desktop,scenario)).catch(()=>null)) throw new Error('Required interaction browser scenario is unavailable');
+      tests.push(scenario); environment[flag]='1';
+    }
     const titleScenario = 'src/test/webSessionTitle.acceptance.test.mjs';
     if (await lstat(join(desktop, titleScenario)).catch(() => null)) { tests.push(titleScenario); environment.OSD_TITLE_BROWSER = '1'; }
   }
@@ -169,7 +173,9 @@ async function prepareCandidate(candidate, path) {
     typecheck: () => runProcess(process.execPath, [join(desktop, 'node_modules/typescript/bin/tsc'), '--noEmit'], desktop),
     'workflow-tests': () => runProcess(process.execPath, ['--test', '--test-concurrency=1', join(root, 'scripts/dev/web-release.test.mjs'), join(root, 'scripts/dev/web-vendor-cache.test.mjs')], root),
     'frontend-tests': () => runProcess(process.execPath, [join(desktop, 'node_modules/vitest/vitest.mjs'), 'run', '--no-file-parallelism', ...(s.frontendFull ? [] : s.frontendFiles)], desktop),
-    'platform-tests': () => runProcess(process.execPath, ['--test', '--test-concurrency=1', ...(s.platformFull ? [] : s.platformFiles)], join(root, 'services/platform')),
+    'platform-tests': () => runProcess(process.execPath, ['--test', '--test-concurrency=1', ...(s.platformFull ? [] : s.platformFiles)], join(root, 'services/platform'), candidate.artifacts.image?.imageDigest ? {
+      SCIKEEL_QUESTION_NATIVE:'1', SCIKEEL_QUESTION_NATIVE_BIN:join('/var/lib/scikeel/images',candidate.artifacts.image.imageDigest.replace(/^sha256:/,''),'rootfs/opt/scikeel/tools/bin/opencode'),
+    } : {}),
     'rust-checks': () => { for (const name of s.rustPackages) runProcess('cargo', ['check', '--locked', '--jobs', '1', '--package', name], root); },
     'image-validation': () => validateInstalledImage(candidate, candidate.requestedImage ?? candidate.production.imageDigest),
     vendor: async () => {

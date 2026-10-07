@@ -93,7 +93,7 @@ export class ResearchTasks {
     if (task.userId !== userId || task.sessionId !== sessionId || task.version !== 1) throw error("invalid saved research task", 500);
     this.records.set(key, task);
     if (task.executionActive || task.status === "running") {
-      await this.cancel(task);
+      await this.cancel({...task,cancelReason:"server_restarted"});
       task.executionActive = false;
       task.status = "paused";
       task.stopReason = "server-restarted";
@@ -169,7 +169,7 @@ export class ResearchTasks {
     if (task.report && !["paused", "cancelled"].includes(task.status)) {
       if (this.pending(task).length) {
         if (task.executionActive) {
-          await this.cancel(task);
+          await this.cancel({...task,cancelReason:"research_decision"});
           task.executionActive = false;
         }
         task.status = "waiting_input";
@@ -211,7 +211,7 @@ export class ResearchTasks {
     });
   }
   async stop(task, reason = "user-stopped") {
-    await this.cancel(task);
+    await this.cancel({...task,cancelReason:reason});
     task.executionActive = false;
     task.status = "paused";
     task.stopReason = reason;
@@ -222,8 +222,6 @@ export class ResearchTasks {
     return this.locked(userId, sessionId, async () => {
       const task = await this.load(userId, sessionId);
       this.leases.get(this.key(userId, sessionId))?.delete(id(pageId));
-      if (task?.executionActive && !this.alive(userId, sessionId)) return this.stop(task, "page-closed");
-      if (task && !this.alive(userId, sessionId)) await this.cancel(task);
       return structuredClone(task);
     });
   }
@@ -250,7 +248,6 @@ export class ResearchTasks {
     return this.locked(userId, sessionId, async () => {
       const task = await this.load(userId, sessionId);
       if (!task) return null;
-      if (!this.alive(userId, sessionId)) throw error("open the research page before starting a task", 409);
       if (task.executionActive) {
         if (this.running && !await this.running(task)) task.executionActive = false;
         else throw error("research task is already running", 409);
@@ -291,11 +288,8 @@ export class ResearchTasks {
         await this.locked(task.userId, task.sessionId, async () => {
           if (!task.executionActive && this.running && await this.running(task)) task.executionActive = true;
           if (!task.executionActive) return;
-          if (!this.alive(task.userId, task.sessionId)) await this.stop(task, "page-timeout");
-          else {
-            if (this.running && !await this.running(task)) task.executionActive = false;
-            await this.refreshUnlocked(task);
-          }
+          if (this.running && !await this.running(task)) task.executionActive = false;
+          await this.refreshUnlocked(task);
         });
       } catch (error) {
         this.logger({ type: "research.monitor_error", error: error.message });

@@ -345,6 +345,8 @@ test('session verification includes recovery even when continuity already exists
   await writeFile(join(desktop, 'webSessionContinuity.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webRuntimeRecovery.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webToolReliability.acceptance.test.mjs'), 'fixture');
+  await writeFile(join(desktop, 'webInteractionRecovery.acceptance.test.mjs'), 'fixture');
+  await writeFile(join(desktop, 'webCollaboration.acceptance.test.mjs'), 'fixture');
   await mkdir(join(root, 'runtime/opencode-patches'), { recursive: true });
   await writeFile(join(root, 'runtime/opencode-patches/network.lock.json'), '{}');
   const saved = [process.env.OSD_PLAYWRIGHT_PATH, process.env.OSD_CHROMIUM_PATH];
@@ -361,9 +363,14 @@ test('session verification includes recovery even when continuity already exists
     assert.equal(environment.OSD_RECOVERY_ACCEPTANCE, '1');
     assert(args.includes('src/test/webToolReliability.acceptance.test.mjs'));
     assert.equal(environment.OSD_TOOL_BROWSER, '1');
-    await writeFile(join(root, 'browser-results.json'), JSON.stringify({ success: true, numPassedTests: 4, numPendingTests: 0 }));
+    assert.equal(environment.OSD_INTERACTION_BROWSER, '1');
+    assert.equal(environment.OSD_COLLABORATION_BROWSER, '1');
+    await writeFile(join(root, 'browser-results.json'), JSON.stringify({ success: true, numPassedTests: 6, numPendingTests: 0 }));
   });
-  assert.equal(result.passedTests, 4);
+  assert.equal(result.passedTests, 6);
+  await rm(join(desktop, 'webInteractionRecovery.acceptance.test.mjs'));
+  await assert.rejects(browserStage({ directory: root, source: { root }, artifacts: { web: { directory: root } }, selection: { browserGroups: ['session'] } }), /interaction browser scenario/);
+  await writeFile(join(desktop, 'webInteractionRecovery.acceptance.test.mjs'), 'fixture');
   await rm(join(desktop, 'webToolReliability.acceptance.test.mjs'));
   await assert.rejects(browserStage({ directory: root, source: { root }, artifacts: { web: { directory: root } }, selection: { browserGroups: ['session'] } }), /tool reliability scenario/);
   await writeFile(join(desktop, 'webToolReliability.acceptance.test.mjs'), 'fixture');
@@ -378,4 +385,12 @@ test('every tool-reliability path selects the staged session browser gate', () =
     assert.equal(selection.buildWeb, true, path);
     assert.ok(selection.browserGroups.includes('session'), path);
   }
+});
+
+test('interaction changes select required session and interaction browser acceptance without an image rebuild',()=>{
+ for(const path of ['services/platform/src/session-authority.mjs','apps/desktop/src/lib/interactionState.ts','apps/desktop/src/components/thread/InteractionPrompt.tsx']){
+  const selection=selectVerification([path],{known:true});
+  assert(selection.browserGroups.includes('session'));assert(selection.browserGroups.includes('interactions'));
+  assert.equal(selection.imageRequired,false);
+ }
 });

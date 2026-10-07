@@ -506,7 +506,20 @@
     "submit": "提交",
     "reject": "拒绝",
     "alwaysAllow": "始终允许",
-    "allowOnce": "仅允许一次"
+    "allowOnce": "仅允许一次",
+    "state": {
+      "submitting": "正在提交回答…",
+      "retryable": "提交失败，回答已保留。",
+      "expired": "请求已失效，回答已保留。",
+      "unknown": "尚未确认送达。检查状态不会重新提交回答。",
+      "check": "检查状态",
+      "permission": {
+        "submitting": "正在提交决定…",
+        "retryable": "提交失败，请核对请求后再试。",
+        "expired": "请求已失效，未授予权限。",
+        "unknown": "尚未确认送达。检查状态不会授予权限。"
+      }
+    }
   },
   "turn": {
     "worked": "工作过程",

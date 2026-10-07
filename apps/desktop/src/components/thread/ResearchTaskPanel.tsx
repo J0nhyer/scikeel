@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FlaskConical, ChevronDown } from "lucide-react";
 import { researchPageId, researchRequest, type ResearchBrief, type ResearchMode, type ResearchTask } from "@/lib/research";
@@ -32,8 +32,6 @@ export function ResearchTaskPanel({ sessionId, visible, disabled, onStart, onCon
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
-  const callbacks = useRef({ onStop });
-  callbacks.current = { onStop };
 
   useEffect(() => {
     setTask(null);
@@ -47,7 +45,6 @@ export function ResearchTaskPanel({ sessionId, visible, disabled, onStart, onCon
     const release = () => {
       if (!ownsLease || released) return;
       released = true;
-      callbacks.current.onStop();
       void researchRequest(sessionId, { action: "release", pageId: researchPageId }, true).catch(() => {});
     };
     const poll = async () => {

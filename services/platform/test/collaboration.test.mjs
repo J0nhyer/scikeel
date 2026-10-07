@@ -105,7 +105,7 @@ test("restart and stop preserve unanswered decisions without resuming", async (t
   assert.equal(answered.phase, "paused");
   assert.equal((await restored.guard(owner)).blocked, true);
 });
-test("last page release cancels, other tabs and expired leases are handled", async (t) => {
+test("last page release and lease expiry preserve accepted execution", async (t) => {
   const f = await fixture(t);
   await f.store.heartbeat(owner, "a");
   await f.store.heartbeat(owner, "b");
@@ -114,8 +114,8 @@ test("last page release cancels, other tabs and expired leases are handled", asy
   assert.equal((await f.store.get(owner)).phase, "running");
   f.advance(46000);
   await f.store.tick();
-  assert.equal((await f.store.get(owner)).phase, "paused");
-  assert.deepEqual(f.stopped, ["ses_test"]);
+  assert.equal((await f.store.get(owner)).phase, "running");
+  assert.deepEqual(f.stopped, []);
 });
 test("settling a normal turn allows the next one and keeps confirmed context", async (t) => {
   const f = await fixture(t);
@@ -253,8 +253,8 @@ test("last page navigation keeps its existing lease for reload without extending
   assert.equal((await f.store.get(owner)).phase, "running");
   f.advance(6000);
   await f.store.tick();
-  assert.equal((await f.store.get(owner)).phase, "paused");
-  assert.deepEqual(f.stopped, ["ses_test"]);
+  assert.equal((await f.store.get(owner)).phase, "running");
+  assert.deepEqual(f.stopped, []);
 });
 
 test("new page renews execution after release and explicit pause still cancels immediately", async (t) => {
@@ -327,4 +327,15 @@ test("a heartbeat arriving before an expiry cancellation retains its execution",
   await heartbeat;
   assert.equal((await f.store.get(owner)).phase, "running");
   assert.deepEqual(f.stopped, []);
+});
+
+test("checkpoint remains answerable without any page heartbeat", async t => {
+  const f=await fixture(t);
+  await f.store.begin(owner,0);
+  const wait=await f.store.checkpoint(owner,{kind:"method",question:"Use A?",suggestedAnswer:"A"});
+  f.advance(46000);await f.store.tick();
+  assert.equal((await f.store.get(owner)).pending.id,wait.pending.id);
+  assert.equal((await f.store.guard(owner)).blocked,true);
+  const answered=await f.store.answer(owner,{id:wait.pending.id,execution:wait.execution,revision:wait.revision,answer:"A"});
+  assert.equal(answered.phase,"running");assert.deepEqual(f.stopped,[]);
 });

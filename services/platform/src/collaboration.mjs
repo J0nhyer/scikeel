@@ -164,8 +164,6 @@ export class CollaborationStore {
       if (s.pending) throw fail("Research decision requires an answer");
       if (s.phase === "running")
         throw fail("Research execution is already running");
-      if (!this.alive(o))
-        throw fail("Open this conversation before continuing");
       // Apply only when beginning a new execution; waiting runs retain their mode.
       await this.applyPermissions(o, s.mode);
       Object.assign(s, o);
@@ -181,7 +179,7 @@ export class CollaborationStore {
   checkpoint(o, value) {
     return this.locked(o, async () => {
       const s = await this.load(o);
-      if (!this.alive(o) || s.phase !== "running" || s.execution < 1)
+      if (s.phase !== "running" || s.execution < 1)
         throw fail("Research execution is paused");
       if (s.pending) throw fail("Research decision requires an answer");
       if (value.execution !== undefined && value.execution !== s.execution)
@@ -207,7 +205,7 @@ export class CollaborationStore {
     return this.locked(o, async () => {
       const s = await this.load(o);
       if (s.pending) throw fail("Research decision requires an answer");
-      if (!this.alive(o) || s.phase !== "running")
+      if (s.phase !== "running")
         throw businessFailure("delivery_execution_paused", "Research execution is paused");
       if (value.execution !== s.execution) throw fail("Research execution changed");
       if (!["delegated", "autonomous"].includes(s.executionMode ?? s.mode))
@@ -270,7 +268,7 @@ export class CollaborationStore {
       s.decisions.push({ ...s.pending, answer, answeredAt: this.now() });
       s.pending = null;
       s.phase =
-        s.phase === "waiting_input" && this.alive(o) ? "running" : "paused";
+        s.phase === "waiting_input" ? "running" : "paused";
       s.revision++;
       return this.save(s);
     });
@@ -281,27 +279,26 @@ export class CollaborationStore {
       return {
         blocked:
           Boolean(s.pending) ||
-          s.phase === "paused" ||
-          (s.execution > 0 && !this.alive(o)),
+          s.phase === "paused",
         repairExhausted: Boolean(s.delivery?.status === "failed" && s.delivery.attempts >= 3),
         state: structuredClone(s),
       };
     });
   }
   pause(o, execution, abandoned = false) {
+    // Presence expiry is never authority to cancel an accepted execution.
+    if(abandoned)return this.get(o);
     return this.locked(o, async () => {
       const s = await this.load(o);
-      // Automatic expiry must recheck after waiting for the session lock.
-      if ((execution !== undefined && s.execution !== execution) ||
-          (abandoned && this.alive(o))) return structuredClone(s);
+      if (execution !== undefined && s.execution !== execution) return structuredClone(s);
       if (s.phase === "paused") {
-        await this.cancel(o);
+        await this.cancel({...o,cancelReason:o.cancelReason ?? "explicit_pause"});
         return structuredClone(s);
       }
       s.phase = "paused";
       s.revision++;
       await this.save(s);
-      await this.cancel(o);
+      await this.cancel({...o,cancelReason:o.cancelReason ?? "explicit_pause"});
       return structuredClone(s);
     });
   }
@@ -320,12 +317,8 @@ export class CollaborationStore {
     id(page);
     return this.locked(o, async () => {
       const s = await this.load(o);
-      // Navigation may release the visible pane before the background heartbeat
-      // arrives. Keep its existing expiry for reloads; never extend it here.
-      // Explicit pause still cancels immediately, and tick pauses an abandoned
-      // browser when its last 45-second heartbeat expires.
-      if (!["running", "waiting_input"].includes(s.phase))
-        this.leases.get(this.key(o))?.delete(page);
+      // Browser presence does not own an accepted execution.
+      this.leases.get(this.key(o))?.delete(page);
       return structuredClone(s);
     });
   }
@@ -335,8 +328,8 @@ export class CollaborationStore {
       const s = structuredClone(record);
       try {
         if (!["running", "waiting_input"].includes(s.phase)) continue;
-        if (!this.alive(s)) await this.pause(s, s.execution, true);
-        else if (
+        this.alive(s); // Prune presence records without cancelling work.
+        if (
           this.running &&
           this.now() - (s.startedAt ?? 0) > 5000 &&
           !(await this.running(s))
@@ -351,7 +344,7 @@ export class CollaborationStore {
     await Promise.allSettled(
       [...this.records.values()]
         .filter((s) => ["running", "waiting_input"].includes(s.phase))
-        .map((s) => this.pause(s)),
+        .map((s) => this.pause({...s,cancelReason:"server_stopped"})),
     );
   }
 }

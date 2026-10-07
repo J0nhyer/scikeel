@@ -514,7 +514,20 @@
     "submit": "Envoyer",
     "reject": "Rejeter",
     "alwaysAllow": "Toujours autoriser",
-    "allowOnce": "Autoriser une fois"
+    "allowOnce": "Autoriser une fois",
+    "state": {
+      "submitting": "Envoi de votre réponse…",
+      "retryable": "La demande a échoué. Votre réponse est conservée.",
+      "expired": "Cette demande a expiré. Votre réponse est conservée.",
+      "unknown": "Envoi non confirmé. Vérifier ne renvoie pas votre réponse.",
+      "check": "Vérifier le statut",
+      "permission": {
+        "submitting": "Envoi de votre décision…",
+        "retryable": "La demande a échoué. Vérifiez-la avant de réessayer.",
+        "expired": "Cette demande a expiré. Aucune autorisation accordée.",
+        "unknown": "Envoi non confirmé. Vérifier ne donne aucune autorisation."
+      }
+    }
   },
   "turn": {
     "worked": "Travail",
