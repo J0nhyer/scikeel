@@ -102,7 +102,7 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
       acquireOperation: () => () => {},
       listWorkers: () => [worker],
     };
-    const webRoot = (
+    const webRoot = process.env.OSD_WEB_CANDIDATE || (
       await readFile(resolve("../../.deploy/attachments-build-path"), "utf8")
     ).trim();
     const platform = new PlatformServer({
