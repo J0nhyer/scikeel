@@ -82,7 +82,8 @@ export class CollaborationStore {
       s = {
         ...o,
         version: 1,
-        mode: "collaborative",
+        mode: "autonomous",
+        autonomyDefaultVersion: 1,
         revision: 0,
         execution: 0,
         phase: "idle",
@@ -91,6 +92,15 @@ export class CollaborationStore {
       };
     if (s.userId !== o.userId || s.sessionId !== o.sessionId || s.version !== 1)
       throw fail("Invalid saved collaboration state", 500);
+    // Migrate the old visible autonomy preference once; never resume execution
+    // or discard an unanswered decision while changing the next-turn default.
+    if (s.autonomyDefaultVersion !== 1) {
+      if (s.execution > 0 && !s.executionMode) s.executionMode = s.mode;
+      s.mode = "autonomous";
+      s.autonomyDefaultVersion = 1;
+      s.revision++;
+      await this.save(s);
+    }
     this.records.set(key, s);
     if (["running", "waiting_input"].includes(s.phase)) {
       s.phase = "paused";
@@ -102,19 +112,6 @@ export class CollaborationStore {
   get(o) {
     return this.locked(o, async () => {
       const s = await this.load(o);
-      if (
-        this.readLegacy &&
-        !s.legacyModeCaptured &&
-        s.execution === 0 &&
-        s.revision === 0
-      ) {
-        const legacy = await this.readLegacy(o);
-        if (legacy && !legacy.executionActive) {
-          s.mode = legacy.mode;
-          s.legacyModeCaptured = true;
-          return this.save(s);
-        }
-      }
       return structuredClone(s);
     });
   }

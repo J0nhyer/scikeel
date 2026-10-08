@@ -279,7 +279,7 @@ for (const mode of ["collaborative", "guided", "delegated", "autonomous"]) test(
       step = "prompt";
       owner.sessionId = session.id;
       await store.heartbeat(owner, "page");
-      const selection = mode !== "collaborative" ? await store.setMode(owner, mode, 0) : await store.get(owner);
+      const selection = await store.setMode(owner, mode, 0);
       store.applyPermissions = async (o, level) => {
         const updated = await nativeFetch(`${native}/session/${o.sessionId}`, {
           method: "PATCH", headers: {"content-type":"application/json"},

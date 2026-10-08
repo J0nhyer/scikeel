@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CollaborationStore, collaborationPolicy } from "../src/collaboration.mjs";
@@ -30,7 +30,7 @@ const owner = {
 test("mode defaults, identity isolation and release availability", async (t) => {
   const f = await fixture(t);
   const s = await f.store.get(owner);
-  assert.equal(s.mode, "collaborative");
+  assert.equal(s.mode, "autonomous");
   assert.equal(s.phase, "idle");
   await assert.rejects(f.store.setMode(owner, "unknown", 0), /not available/);
   await assert.rejects(f.store.setMode(owner, "collaborative", 7), /changed/);
@@ -128,23 +128,32 @@ test("settling a normal turn allows the next one and keeps confirmed context", a
   assert.equal(next.execution, 2);
 });
 
-test("legacy active mode remains captured until idle and released Delegated is usable", async (t) => {
+test("Full is the default even when an older research record selects another mode", async (t) => {
   const f = await fixture(t);
-  let active = true;
-  const store = new CollaborationStore({
-    rootDir: f.root,
-    readLegacy: async () => ({ mode: "delegated", executionActive: active }),
-  });
-  assert.equal((await store.get(owner)).mode, "collaborative");
-  active = false;
-  assert.equal((await store.get(owner)).mode, "delegated");
+  const store = new CollaborationStore({ rootDir: f.root, readLegacy: async () => ({ mode: "delegated", executionActive: false }) });
+  const state = await store.get(owner);
+  assert.equal(state.mode, "autonomous");
   await store.heartbeat(owner, "page");
-  const started = await store.begin(owner, 0);
-  assert.equal(started.executionMode, "delegated");
-  const settled = await store.settled(owner);
-  const changed = await store.setMode(owner, "collaborative", settled.revision);
-  assert.equal((await store.get(owner)).mode, "collaborative");
-  await store.begin(owner, changed.revision);
+  assert.equal((await store.begin(owner, state.revision)).executionMode, "autonomous");
+});
+
+test("saved Medium migrates to Full once without losing pending decisions or starting work", async (t) => {
+  const f = await fixture(t);
+  await mkdir(join(f.root, owner.userId), { recursive: true });
+  const pending = { id: "decision_a", kind: "method", question: "Use A?" };
+  await writeFile(join(f.root, owner.userId, `${owner.sessionId}.json`), JSON.stringify({ ...owner,
+    version: 1, mode: "collaborative", revision: 4, execution: 2, phase: "waiting_input", pending, decisions: [] }));
+  const state = await f.store.get(owner);
+  assert.equal(state.mode, "autonomous");
+  assert.equal(state.executionMode, "collaborative");
+  assert.equal(state.phase, "paused");
+  assert.equal(state.execution, 2);
+  assert.deepEqual(state.pending, pending);
+  assert.equal((await f.store.get(owner)).revision, state.revision);
+  await f.store.setMode(owner, "guided", state.revision);
+  const restored = await new CollaborationStore({ rootDir: f.root }).get(owner);
+  assert.equal(restored.mode, "guided");
+  assert.equal(restored.executionMode, "collaborative");
 });
 
 
@@ -200,8 +209,8 @@ test("a Stage 1 waiting execution captures its old mode before a new preference 
   delete waiting.executionMode;
   await f.store.save(waiting);
   const changed = await f.store.setMode(owner, "guided", waiting.revision);
-  assert.equal(changed.executionMode, "collaborative");
-  assert.match(collaborationPolicy(changed), /mode: collaborative/);
+  assert.equal(changed.executionMode, "autonomous");
+  assert.match(collaborationPolicy(changed), /mode: autonomous/);
   assert.equal(changed.pending.id, waiting.pending.id);
 });
 

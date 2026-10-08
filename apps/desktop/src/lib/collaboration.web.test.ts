@@ -145,3 +145,7 @@ it("an existing conversation send preserves Guided without resaving its mode", a
   expect(await prepareCollaborationSend("existing")).toBe(4);
   expect(requests).toEqual(["read", "heartbeat"]);
 });
+
+it("defaults new Web drafts to Full autonomy", () => {
+  expect(defaultCollaboration.mode).toBe("autonomous");
+});

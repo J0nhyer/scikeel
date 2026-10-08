@@ -866,7 +866,7 @@ test("login preloads public client assets without starting a workspace, and the 
 test('conversation collaboration defaults are owned, unavailable without runtime, and proposals cannot approve',async()=>{
   const f=await makeFixture();const c=makeClient(f.base);await login(c,'admin','admin-password');
   await c.request('/v1/health');const session={id:'owned'};
-  const r=await c.request(`/api/collaboration/${session.id}`);assert.equal(r.status,200);const body=await r.json();assert.equal(body.state.mode,'collaborative');assert.equal(body.available,false);
+  const r=await c.request(`/api/collaboration/${session.id}`);assert.equal(r.status,200);const body=await r.json();assert.equal(body.state.mode,'autonomous');assert.equal(body.available,false);
   const missing=await c.request('/api/collaboration/ses_missing');assert.equal(missing.status,404);
   const invalid=await c.request(`/api/collaboration/${session.id}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'mode',mode:'unknown',revision:0})});assert.equal(invalid.status,400);
 });
@@ -884,7 +884,7 @@ for(const mode of ["collaborative","guided","delegated"]) test(`managed ${mode} 
  reportedStatus="running";
  const loaded=await c.request('/api/collaboration/owned');assert.equal(loaded.status,200,await loaded.clone().text());assert.equal((await json(loaded)).available,true);
  await post('/api/collaboration/owned',{action:'heartbeat',pageId:'page'});
- if(mode!=='collaborative')assert.equal((await post('/api/collaboration/owned',{action:'mode',mode,revision:0})).status,200);
+ assert.equal((await post('/api/collaboration/owned',{action:'mode',mode,revision:0})).status,200);
  const prompt={parts:[{type:'text',text:'Research'}],system:'Retain this context'};
  assert.equal((await post('/session/owned/prompt_async',prompt)).status,202);
  const guarded=await f.server.runtimeCollaboration(account,{action:'guard',sessionId:'owned'});assert.ok(guarded.policy.includes('mode: '+mode));

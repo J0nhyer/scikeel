@@ -143,7 +143,7 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
               workspaceDir: workspace,
             };
             await platform.collaboration.heartbeat(owner, "fixture-page");
-            const selected = selectedMode !== "collaborative" ? await platform.collaboration.setMode(owner, selectedMode, 0) : await platform.collaboration.get(owner);
+            const selected = await platform.collaboration.setMode(owner, selectedMode, 0);
             await platform.collaboration.begin(owner, selected.revision);
             await platform.collaboration.checkpoint(owner, {
               kind: selectedMode === "guided" ? "step" : "method",
@@ -181,40 +181,7 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
                 () => document.documentElement.scrollWidth <= innerWidth,
               ),
             ).toBe(true);
-            const mode = page.getByRole("button", {
-              name: selectedMode === "guided" ? (chinese ? "托管程度: 低" : "Autonomy: Low") : selectedMode === "delegated" ? (chinese ? "托管程度: 高" : "Autonomy: High") : (chinese ? "托管程度: 中" : "Autonomy: Medium"),
-            });
-            await mode.click({timeout:3000}).catch(async error => {
-              const diagnostic = resolve("../../.deploy/collaboration-control-failure.png");
-              await page.screenshot({path:diagnostic,fullPage:true});
-              throw new Error(`${error.message}; width=${width}; locale=${chinese ? "zh-Hans" : "en"}; mode=${selectedMode}; screenshot=${diagnostic}`);
-            });
-            if (width < 768) {
-              expect(
-                await page
-                  .getByRole("button", {
-                    name: chinese ? /^低$/ : /^Low$/,
-                  })
-                  .isDisabled(),
-              ).toBe(false);
-              expect(await page.getByRole("button", { name: chinese ? /^高$/ : /^High$/ }).isDisabled()).toBe(false);
-              await page
-                .getByRole("button", {
-                  name: chinese ? "关闭" : "Close",
-                })
-                .click();
-            } else {
-              expect(
-                await page
-                  .getByRole("menuitem", {
-                    name: chinese ? "低" : "Low",
-                    exact: false,
-                  })
-                  .getAttribute("data-disabled"),
-              ).toBe(null);
-              expect(await page.getByRole("menuitem", { name: chinese ? /^高$/ : /^High$/ }).getAttribute("data-disabled")).toBe(null);
-              await page.keyboard.press("Escape");
-            }
+            expect(await page.getByRole("button", { name: chinese ? /^托管程度:/ : /^Autonomy:/ }).count()).toBe(0);
             await page.reload();
             await card.waitFor({ state: "visible" });
             expect(prompts).toEqual([]);

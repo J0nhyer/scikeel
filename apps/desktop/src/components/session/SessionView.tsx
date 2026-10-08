@@ -50,7 +50,6 @@ import { GOAL_RESUME_NUDGE } from "@/lib/goalPrompts";
 import { baseName } from "@/components/thread/WorkspaceChip";
 import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
 import { useCollaboration } from "@/lib/collaboration";
-import { CollaborationPicker } from "../thread/CollaborationPicker";
 import { ResearchDecisionCard } from "../thread/ResearchDecisionCard";
 import { ResearchDeliveryStatus } from "../thread/ResearchDeliveryStatus";
 import { researchRequest } from "@/lib/research";
@@ -1223,7 +1222,6 @@ export function SessionView({
               />
             )}
             <Composer
-              collaborationControl={isGatewayWeb && isPlatformWeb && gatewayRuntime === "opencode" ? <CollaborationPicker mode={collaboration.state.mode} disabled={(!collaboration.available && !!sid) || collaboration.saving || (working && !collaboration.state.pending)} onSelect={collaboration.setMode}/> : undefined}
               onSend={onSend}
               onRunShell={(c) => void onRunShell(c)}
               onRunCommand={(n, a) => void onRunCommand(n, a)}
@@ -1252,7 +1250,7 @@ export function SessionView({
               onApprovalModeChange={
                 acp || managedServer ? undefined : (mode) => void setApprovalMode(mode)
               }
-              agentMode={planAvailable ? agentMode : undefined}
+              agentMode={planAvailable && !(isGatewayWeb && isPlatformWeb && gatewayRuntime === "opencode") ? agentMode : undefined}
               onAgentModeChange={planAvailable ? (mode) => setAgentMode(mode, key) : undefined}
               showModelPicker={connected && !webReadOnly && !acp}
               // The ACP agent's own selectors stand in for the model picker: the

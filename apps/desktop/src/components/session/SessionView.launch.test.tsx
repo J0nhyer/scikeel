@@ -104,3 +104,16 @@ describe("Web workspace loading messages", () => {
     expect(screen.queryByText(/macOS may ask/)).not.toBeInTheDocument();
   });
 });
+
+describe("Web Full autonomy defaults", () => {
+  it("hides autonomy and agent selectors for managed OpenCode conversations", async () => {
+    webMode.enabled = true;
+    useRuntimeStore.setState({ status: "ready", gatewayRuntime: "opencode", webReadOnly: false,
+      bootstrap: vi.fn(async () => {}), agents: [{ name: "build", description: "Build" }, { name: "plan", description: "Plan" }], providers: [],
+      sessionListReady: true });
+    renderAt("/live");
+    expect(await screen.findByRole("textbox")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Autonomy:/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Agent mode" })).not.toBeInTheDocument();
+  });
+});

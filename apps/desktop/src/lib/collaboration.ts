@@ -34,7 +34,7 @@ export interface CollaborationResult {
 }
 export const defaultCollaboration: CollaborationState = {
   version: 1,
-  mode: "collaborative",
+  mode: "autonomous",
   revision: 0,
   execution: 0,
   phase: "idle",
