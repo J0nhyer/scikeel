@@ -73,14 +73,14 @@ for (const mode of ["collaborative", "guided", "delegated", "autonomous"]) test(
       const finish = body.messages.some(
         (m) =>
           m.role === "tool" &&
-          (m.tool_call_id === "call_write" ||
+          (m.tool_call_id === "functions.write:0" ||
             String(m.content).includes("successfully")),
       );
       const checkpointAnswered = body.messages.some(
         (m) => m.role === "tool" && String(m.content).includes("userAnswer"),
       );
       const nextStepAnswered = body.messages.some(
-        (m) => m.role === "tool" && m.tool_call_id === "call_next_step" && String(m.content).includes("userAnswer"),
+        (m) => m.role === "tool" && m.tool_call_id === "functions.research_checkpoint:1" && String(m.content).includes("userAnswer"),
       );
       let delta,
         reason = "stop";
@@ -91,7 +91,7 @@ for (const mode of ["collaborative", "guided", "delegated", "autonomous"]) test(
             tool_calls: [
               {
                 index: 0,
-                id: "call_decision",
+                id: "functions.research_checkpoint:0",
                 type: "function",
                 function: {
                   name: "research_checkpoint",
@@ -104,7 +104,7 @@ for (const mode of ["collaborative", "guided", "delegated", "autonomous"]) test(
               },
               {
                 index: 1,
-                id: "call_early_write",
+                id: "functions.write:1",
                 type: "function",
                 function: {
                   name: "write",
@@ -118,11 +118,11 @@ for (const mode of ["collaborative", "guided", "delegated", "autonomous"]) test(
           };
         else if (mode === "guided" && !nextStepAnswered)
           delta = {
-            tool_calls: [{ index: 0, id: "call_next_step", type: "function", function: {
+            tool_calls: [{ index: 0, id: "functions.research_checkpoint:1", type: "function", function: {
               name: "research_checkpoint", arguments: JSON.stringify({ kind: "step",
                 question: "Inspection completed. Write and verify the actual artifact next?",
                 suggestedAnswer: "Write the verified artifact" }),
-            } }, { index: 1, id: "call_second_early_write", type: "function", function: {
+            } }, { index: 1, id: "functions.write:2", type: "function", function: {
               name: "write", arguments: JSON.stringify({ filePath: join(workspace, "result.txt"), content: "second unapproved artifact" }),
             } }],
           };
@@ -131,7 +131,7 @@ for (const mode of ["collaborative", "guided", "delegated", "autonomous"]) test(
             tool_calls: [
               {
                 index: 0,
-                id: "call_write",
+                id: "functions.write:0",
                 type: "function",
                 function: {
                   name: ["delegated", "autonomous"].includes(mode) ? "bash" : "write",

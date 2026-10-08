@@ -1,9 +1,13 @@
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
-import { readToolError } from '../../../packages/sdk/src/tool-outcome.mjs';
+import { isToolCallId, readToolError } from '../../../packages/sdk/src/tool-outcome.mjs';
 const identifier = value => {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new TypeError('Invalid outcome owner');
+  return value;
+};
+const toolCallId = value => {
+  if (!isToolCallId(value)) throw new TypeError('Invalid tool call identifier');
   return value;
 };
 export class ToolOutcomes {
@@ -21,11 +25,11 @@ export class ToolOutcomes {
       const value = JSON.parse(await fs.readFile(path, 'utf8'));
       if (value.version !== 1 || !Array.isArray(value.records) || value.records.length > 256) throw new Error('Invalid saved tool outcomes');
       for (const record of value.records) {
-        identifier(record.callId);
+        toolCallId(record.callId);
         if (!Number.isSafeInteger(record.execution) || record.execution < 0 || !readToolError(JSON.stringify({ error: record.outcome }))) throw new Error('Invalid saved tool outcome');
       }
       if (value.stops && (!Number.isSafeInteger(value.stops.execution) || value.stops.execution < 0 || !Array.isArray(value.stops.callIds) || value.stops.callIds.length > 256)) throw new Error('Invalid saved stop');
-      value.stops?.callIds.forEach(identifier);
+      value.stops?.callIds.forEach(toolCallId);
       return value;
     } catch (error) {
       if (error.code === 'ENOENT') return { version: 1, records: [], stops: null };
@@ -46,7 +50,7 @@ export class ToolOutcomes {
   }
   record(owner, callId, outcome) {
     return this.locked(owner, async () => {
-      identifier(callId);
+      toolCallId(callId);
       if (!Number.isSafeInteger(owner.execution) || owner.execution < 0) throw new TypeError('Invalid outcome execution');
       const safe = readToolError(JSON.stringify({ error: outcome }));
       if (!safe || safe.correlationId !== callId) throw new TypeError('Invalid tool outcome');
@@ -61,7 +65,7 @@ export class ToolOutcomes {
       if (!Number.isSafeInteger(owner.execution) || owner.execution < 0 || !Array.isArray(callIds) || callIds.length > 256) throw new TypeError('Invalid stop record');
       const snapshot = await this.load(owner);
       const stopId = randomUUID();
-      snapshot.stops = { execution: owner.execution, stopId, confirmed, at: this.now(), callIds: [...new Set(callIds.map(identifier))] };
+      snapshot.stops = { execution: owner.execution, stopId, confirmed, at: this.now(), callIds: [...new Set(callIds.map(toolCallId))] };
       await this.save(owner, snapshot);
       return stopId;
     });

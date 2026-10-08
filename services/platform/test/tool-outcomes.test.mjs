@@ -22,3 +22,16 @@ test('outcomes survive restart, serialize writes and retain only bounded safe re
   await assert.rejects(restored.list({ ...owner, userId: '../b' }));
   await assert.rejects(store.record(owner, 'call_bad', { code: 'network_timeout', token: 'secret' }));
 });
+
+
+test('namespaced call records and confirmed Stop survive reload without becoming file authority', async t => {
+ const root=await mkdtemp(join(tmpdir(),'scikeel-namespaced-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const owner={userId:'a',sessionId:'ses_a',execution:1};const store=new ToolOutcomes({rootDir:root});
+ const callId='functions.research_delivery:0';
+ await store.record(owner,callId,makeToolOutcome('delivery_missing_input',{source:'collaboration',correlationId:callId,details:{path:'data/input.csv'}}));
+ const stopId=await store.recordStop(owner,['functions.bash:0'],false);await store.confirmStop(owner,stopId);
+ const restored=new ToolOutcomes({rootDir:root});const snapshot=await restored.list(owner);
+ assert.equal(snapshot.records[0].callId,callId);assert.deepEqual(snapshot.stops.callIds,['functions.bash:0']);assert.equal(snapshot.stops.confirmed,true);
+ await assert.rejects(restored.list({...owner,userId:'functions.user:0'}));
+ await assert.rejects(restored.list({...owner,sessionId:'../foreign'}));
+});

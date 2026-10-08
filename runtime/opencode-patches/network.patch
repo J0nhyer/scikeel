@@ -137,18 +137,20 @@ index 0000000..d541226
 +}
 diff --git a/packages/core/src/tool/scikeel-outcome.d.mts b/packages/core/src/tool/scikeel-outcome.d.mts
 new file mode 100644
-index 0000000..42b2c74
+index 0000000..973e0d5
 --- /dev/null
 +++ b/packages/core/src/tool/scikeel-outcome.d.mts
-@@ -0,0 +1,2 @@
+@@ -0,0 +1,4 @@
 +export function makeToolOutcome(code: string, options: {source: string; correlationId: string; status?: number; details?: Record<string, unknown>}): {code: string; message: string; source: string; status?: number; correlationId: string};
 +export function readToolError(text: unknown): ReturnType<typeof makeToolOutcome> | null;
++
++export function isToolCallId(value: unknown): value is string;
 diff --git a/packages/core/src/tool/scikeel-outcome.mjs b/packages/core/src/tool/scikeel-outcome.mjs
 new file mode 100644
-index 0000000..0f7687a
+index 0000000..232b702
 --- /dev/null
 +++ b/packages/core/src/tool/scikeel-outcome.mjs
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,96 @@
 +const rows = [
 +  ["tool_permission_denied", "permission", "Execution was not allowed.", "Review the current tool permission.", "never"],
 +  ["network_admission_denied", "configuration", "Network authorization could not be established.", "Check the managed network connection.", "never"],
@@ -172,11 +174,15 @@ index 0000000..0f7687a
 +export const OUTCOME_DESCRIPTORS = Object.freeze(Object.fromEntries(rows.map(
 +  ([code, category, message, nextAction, retry]) => [code, Object.freeze({category,message,nextAction,retry})]
 +)));
++// Tool-call IDs are provider correlation values, never route or file authority.
++export function isToolCallId(value) {
++  return typeof value === "string" && value.length > 0 && value.length <= 512 &&
++    !/[\u0000-\u001f\u007f]/.test(value);
++}
 +const sources = new Set(["gateway", "egress", "collaboration", "runtime", "upstream"]);
 +export function makeToolOutcome(code, {source, status, correlationId, details} = {}) {
 +  const descriptor = Object.hasOwn(OUTCOME_DESCRIPTORS, code) ? OUTCOME_DESCRIPTORS[code] : null;
-+  if (!descriptor || !sources.has(source) || typeof correlationId !== "string" ||
-+      !/^[A-Za-z0-9_-]{1,128}$/.test(correlationId) ||
++  if (!descriptor || !sources.has(source) || !isToolCallId(correlationId) ||
 +      (status !== undefined && (!Number.isInteger(status) || status < 100 || status > 599)))
 +    throw new TypeError("Invalid tool outcome");
 +  const safe = {};
@@ -229,7 +235,7 @@ index 0000000..0f7687a
 +    const reported = readToolError(error);
 +    if (reported && ['runtime', 'upstream'].includes(reported.source) && reported.correlationId === callId) outcome = reported;
 +  }
-+  if (!outcome && /^[A-Za-z0-9_-]{1,128}$/.test(callId)) {
++  if (!outcome && isToolCallId(callId)) {
 +    let code;
 +    if (tool === 'invalid') code = 'tool_unavailable';
 +    else if (error === 'The user rejected permission to use this specific tool call.') code = 'tool_permission_denied';

@@ -1,4 +1,4 @@
-import { makeToolOutcome, readToolError, serializeToolError } from "../../../packages/sdk/src/tool-outcome.mjs";
+import { isToolCallId, makeToolOutcome, readToolError, serializeToolError } from "../../../packages/sdk/src/tool-outcome.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -171,7 +171,8 @@ export class ModelBroker {
       if (req.url === "/network") {
         if (bytes > 8192 || body.version !== 1 || !["authorize", "complete", "cancel"].includes(body.action) ||
             Object.keys(body).some(key => !["version", "action", "sessionId", "callId", "execution", "tool", "origins", "operationId", "outcome"].includes(key))) throw failure("model_request_denied");
-        if (body.action === "authorize" && (!validName(body.sessionId) || !validName(body.callId) || !Number.isSafeInteger(body.execution) || body.execution < 1 ||
+        if (body.callId !== undefined && !isToolCallId(body.callId)) throw failure("model_request_denied");
+        if (body.action === "authorize" && (!validName(body.sessionId) || !isToolCallId(body.callId) || !Number.isSafeInteger(body.execution) || body.execution < 1 ||
             !["webfetch", "websearch"].includes(body.tool) || !Array.isArray(body.origins) || body.origins.length !== 1 || typeof body.origins[0] !== "string" || body.origins[0].length > 2048)) throw failure("model_request_denied");
         if ((body.action !== "authorize" || body.operationId !== undefined) && !validName(body.operationId)) throw failure("model_request_denied");
         networkCorrelation = body.callId ?? `network_${randomBytes(16).toString("hex")}`;
@@ -181,7 +182,7 @@ export class ModelBroker {
       }
       if (req.url === "/collaboration") {
         if (bytes > 16384 || !["guard", "state", "checkpoint", "capability", "delivery"].includes(body.action) ||
-            !validName(body.sessionId) || (body.callId !== undefined && !validName(body.callId)) || Object.keys(body).some(key => !["action", "sessionId", "kind", "question", "suggestedAnswer", "execution", "operation", "inputs", "deliverables", "callId"].includes(key)))
+            !validName(body.sessionId) || (body.callId !== undefined && !isToolCallId(body.callId)) || Object.keys(body).some(key => !["action", "sessionId", "kind", "question", "suggestedAnswer", "execution", "operation", "inputs", "deliverables", "callId"].includes(key)))
           throw failure("model_request_denied");
         collaborationCorrelation = body.callId ?? `collab_${randomBytes(16).toString("hex")}`;
         const result = await wait(() => this.collaborationHandler(context, body), controller.signal);

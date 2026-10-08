@@ -5,7 +5,7 @@ function fixture() {
   let clock = 1000, allowed = false;
   const grants = [], revoked = [], records = [];
   const context = { userId: 'a', instanceId: 'user-a', generation: 1 };
-  const call = { sessionId: 'ses_a', callId: 'call_a', execution: 1, tool: 'webfetch', origins: ['https://science.example'] };
+  const call = { sessionId: 'ses_a', callId: 'functions.webfetch:0', execution: 1, tool: 'webfetch', origins: ['https://science.example'] };
   const operations = new NetworkOperations({ now: () => clock, randomId: () => `op_${grants.length + 1}`,
     egress: { grant(value) { grants.push(value); return { id: String(grants.length).padStart(64, '0'), expiresAt: value.expiresAt }; }, revokeGrant(_context, id) { revoked.push(id); return true; } },
     resolveCall: async () => ({ ...call, ownerSessionId: call.sessionId, budgetMs: 120000 }),

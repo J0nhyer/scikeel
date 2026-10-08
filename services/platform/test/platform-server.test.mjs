@@ -986,7 +986,7 @@ test('automatic network access stays bound to a running owned call and current e
   globalThis.fetch = async (input, options) => {
     const url = new URL(String(input));
     if (url.origin === new URL(access.url).origin) {
-      if (url.pathname === '/session/owned/message') return new Response(JSON.stringify([{ info: { id: 'msg_a', sessionID: 'owned', role: 'assistant' }, parts: [{ type: 'tool', callID: 'call_fetch', tool: 'webfetch', state: { status: terminal ? 'completed' : 'running', input: { url: 'https://science.example/data', timeout: 10 } } }] }]));
+      if (url.pathname === '/session/owned/message') return new Response(JSON.stringify([{ info: { id: 'msg_a', sessionID: 'owned', role: 'assistant' }, parts: [{ type: 'tool', callID: 'functions.webfetch:0', tool: 'webfetch', state: { status: terminal ? 'completed' : 'running', input: { url: 'https://science.example/data', timeout: 10 } } }] }]));
     }
     return nativeFetch(input, options);
   };
@@ -995,7 +995,7 @@ test('automatic network access stays bound to a running owned call and current e
   await f.server.collaboration.heartbeat(owner, 'page');
   await f.server.collaboration.setMode(owner, 'guided', 0);
   const state = await f.server.collaboration.begin(owner, 1);
-  const proposal = { version: 1, action: 'authorize', sessionId: 'owned', callId: 'call_fetch', tool: 'webfetch', execution: state.execution, origins: ['https://science.example'] };
+  const proposal = { version: 1, action: 'authorize', sessionId: 'owned', callId: 'functions.webfetch:0', tool: 'webfetch', execution: state.execution, origins: ['https://science.example'] };
   const operation = await f.server.runtimeNetwork(context, proposal);
   assert.equal(grants.length, 1); assert.ok(operation.expiresAt <= Date.now() + 10000);
   await assert.rejects(f.server.runtimeNetwork(context, { ...proposal, execution: state.execution + 1 }));
@@ -1037,13 +1037,13 @@ test('an identical edit is unchanged only after an owned read; stopped and forei
   await f.server.collaboration.heartbeat(owner, 'page'); const state = await f.server.collaboration.begin(owner, 0);
   let reads = 0;
   f.server.researchTasks.workspace = { readReport: async (_owner, path) => { reads++; assert.equal(path, 'input.txt'); return 'requested text already present'; } };
-  const part = { type: 'tool', tool: 'edit', callID: 'call_edit', state: { status: 'error', error: 'No changes to apply: oldString and newString are identical.', input: { filePath: 'input.txt', oldString: 'requested text', newString: 'requested text' } } };
+  const part = { type: 'tool', tool: 'edit', callID: 'functions.edit:0', state: { status: 'error', error: 'No changes to apply: oldString and newString are identical.', input: { filePath: 'input.txt', oldString: 'requested text', newString: 'requested text' } } };
   const verified = await f.server.decorateToolPart(user.id, 'owned', part);
   assert.equal(verified.state.metadata.scikeelOutcome.details.verifiedNoChange, true); assert.equal(reads, 1);
   const foreign = { ...part, callID: 'call_foreign', state: { ...part.state, input: { ...part.state.input, filePath: '/etc/passwd' } } };
   assert.equal((await f.server.decorateToolPart(user.id, 'owned', foreign)).state.metadata.scikeelOutcome, undefined); assert.equal(reads, 1);
-  await f.server.toolOutcomes.recordStop({ ...owner, execution: state.execution }, ['call_stopped']);
-  assert.equal((await f.server.decorateToolPart(user.id, 'owned', { ...part, callID: 'call_stopped' })).state.metadata.scikeelOutcome, undefined); assert.equal(reads, 1);
+  await f.server.toolOutcomes.recordStop({ ...owner, execution: state.execution }, ['functions.bash:0ped']);
+  assert.equal((await f.server.decorateToolPart(user.id, 'owned', { ...part, callID: 'functions.bash:0ped' })).state.metadata.scikeelOutcome, undefined); assert.equal(reads, 1);
 });
 
 test('Stop records intent before forwarding and only a successful response confirms cancellation', async t => {
@@ -1056,7 +1056,7 @@ test('Stop records intent before forwarding and only a successful response confi
   const owner = { userId: user.id, sessionId: 'owned', directory: worker.workspaceDir + '/project' };
   await f.server.collaboration.heartbeat(owner, 'page'); const state = await f.server.collaboration.begin(owner, 0);
   const access = f.manager.getWorkerAccess(instanceId), original = globalThis.fetch; let status = 502;
-  const part = { type: 'tool', tool: 'bash', callID: 'call_stop', state: { status: 'running', input: { command: 'fixture' } } };
+  const part = { type: 'tool', tool: 'bash', callID: 'functions.bash:0', state: { status: 'running', input: { command: 'fixture' } } };
   globalThis.fetch = async (input, options) => {
     const url = new URL(String(input));
     if (url.origin === new URL(access.url).origin) {
@@ -1064,7 +1064,7 @@ test('Stop records intent before forwarding and only a successful response confi
       if (url.pathname === '/session/owned/children') return new Response('[]');
       if (url.pathname === '/session/owned/abort') {
         const saved = await f.server.toolOutcomes.list({ ...owner, execution: state.execution });
-        assert.equal(saved.stops.confirmed, false); assert.deepEqual(saved.stops.callIds, ['call_stop']);
+        assert.equal(saved.stops.confirmed, false); assert.deepEqual(saved.stops.callIds, ['functions.bash:0']);
         return new Response('{}', { status });
       }
     }

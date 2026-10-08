@@ -21,11 +21,15 @@ const rows = [
 export const OUTCOME_DESCRIPTORS = Object.freeze(Object.fromEntries(rows.map(
   ([code, category, message, nextAction, retry]) => [code, Object.freeze({category,message,nextAction,retry})]
 )));
+// Tool-call IDs are provider correlation values, never route or file authority.
+export function isToolCallId(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 512 &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
 const sources = new Set(["gateway", "egress", "collaboration", "runtime", "upstream"]);
 export function makeToolOutcome(code, {source, status, correlationId, details} = {}) {
   const descriptor = Object.hasOwn(OUTCOME_DESCRIPTORS, code) ? OUTCOME_DESCRIPTORS[code] : null;
-  if (!descriptor || !sources.has(source) || typeof correlationId !== "string" ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(correlationId) ||
+  if (!descriptor || !sources.has(source) || !isToolCallId(correlationId) ||
       (status !== undefined && (!Number.isInteger(status) || status < 100 || status > 599)))
     throw new TypeError("Invalid tool outcome");
   const safe = {};
@@ -78,7 +82,7 @@ export function normalizeToolResult(tool, state = {}, callId = 'unknown') {
     const reported = readToolError(error);
     if (reported && ['runtime', 'upstream'].includes(reported.source) && reported.correlationId === callId) outcome = reported;
   }
-  if (!outcome && /^[A-Za-z0-9_-]{1,128}$/.test(callId)) {
+  if (!outcome && isToolCallId(callId)) {
     let code;
     if (tool === 'invalid') code = 'tool_unavailable';
     else if (error === 'The user rejected permission to use this specific tool call.') code = 'tool_permission_denied';

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NetworkOperations } from "./network-operations.mjs";
 import { ToolOutcomes } from "./tool-outcomes.mjs";
-import { makeToolOutcome, readToolError, ToolOutcomeError } from "../../../packages/sdk/src/tool-outcome.mjs";
+import { isToolCallId, makeToolOutcome, readToolError, ToolOutcomeError } from "../../../packages/sdk/src/tool-outcome.mjs";
 import { request as httpRequest, createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -1267,7 +1267,7 @@ export class PlatformServer {
           if (depth > 20 || sessions.length >= 256) throw new Error("Stop descendant limit exceeded");
           const info = this.tenantPolicy.session(context, id);
           const history = await this.#workerResearchRequest({ userId: user.id, directory: info.directory }, `/session/${id}/message`);
-          const callIds = (Array.isArray(history) ? history : []).flatMap(message => message.parts ?? []).filter(part => part.type === "tool" && ["running", "pending"].includes(part.state?.status)).map(part => part.callID).filter(id => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id)).slice(-256);
+          const callIds = (Array.isArray(history) ? history : []).flatMap(message => message.parts ?? []).filter(part => part.type === "tool" && ["running", "pending"].includes(part.state?.status)).map(part => part.callID).filter(isToolCallId).slice(-256);
           sessions.push({ owner: { userId: user.id, sessionId: id, execution: state.execution }, callIds });
           const children = await this.#workerResearchRequest({ userId: user.id, directory: info.directory }, `/session/${id}/children`);
           for (const child of Array.isArray(children) ? children : []) {

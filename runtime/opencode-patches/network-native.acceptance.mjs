@@ -77,7 +77,7 @@ test('native fetch and search authorize only after permission and preserve scope
     if (Array.isArray(body.tools)) advertisedSearch.push(body.tools.some(tool => tool.function?.name === 'websearch'));
     const complete = body.messages.some(m => m.role === 'tool');
     const title = body.messages.some(m => typeof m.content === 'string' && m.content.includes('Generate a title for this conversation:'));
-    const delta = title || complete ? { content: 'Fixture completed.' } : { tool_calls: [{ index: 0, id: 'call_fetch', type: 'function', function: { name: toolName, arguments: JSON.stringify(toolName === 'websearch' ? { query: 'Python pathlib official documentation' } : { url: targetUrl, format: 'text', timeout: 10 }) } }] };
+    const delta = title || complete ? { content: 'Fixture completed.' } : { tool_calls: [{ index: 0, id: `functions.${toolName}:0`, type: 'function', function: { name: toolName, arguments: JSON.stringify(toolName === 'websearch' ? { query: 'Python pathlib official documentation' } : { url: targetUrl, format: 'text', timeout: 10 }) } }] };
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     for (const item of [{ choices: [{ index: 0, delta, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: title || complete ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }]) res.write(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', ...item })}\n\n`);
     res.end('data: [DONE]\n\n');
@@ -162,7 +162,7 @@ test('native fetch and search authorize only after permission and preserve scope
   const finishCall = session => until(async () => (await request(`/session/${session.id}/message`)).flatMap(m => m.parts ?? []).find(p => p.type === 'tool' && ['error', 'completed'].includes(p.state?.status)));
   const invoke = async () => finishCall(await startCall());
   targetUrl = 'https://science.example/data';
-  const tlsResult = await invoke(); assert.equal(tlsResult.state.status, 'completed');
+  const tlsResult = await invoke(); assert.equal(tlsResult.state.status, 'completed'); assert.equal(tlsResult.callID, 'functions.webfetch:0');
   assert.equal(tlsRequests.length, 1); assert.equal(tlsRequests[0]['proxy-authorization'], undefined);
   targetUrl = 'http://science.example/data'; fault = 'transient'; attempts = 0;
   assert.equal((await invoke()).state.status, 'completed'); assert.equal(attempts, 3);
@@ -199,7 +199,7 @@ test('native fetch and search authorize only after permission and preserve scope
   assert.equal((await finishCall(deniedSearch)).state.status, 'error');
   assert.equal(authorizations.length, beforeSearch); assert.equal(outbound.length, beforeOutbound);
   const result = await invoke();
-  assert.equal(result.state.status, 'completed'); assert.match(result.state.output, /docs\.python\.org/);
+  assert.equal(result.state.status, 'completed'); assert.equal(result.callID,'functions.websearch:0'); assert.match(result.state.output, /docs\.python\.org/);
   assert.equal(result.state.metadata.provider, 'parallel');
   assert.ok(advertisedSearch.length && advertisedSearch.every(Boolean));
   assert.equal(authorizations.length, beforeSearch + 1);

@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import { isToolCallId } from "../../../packages/sdk/src/tool-outcome.mjs";
 
 function denied(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
@@ -18,7 +19,7 @@ function identifier(value) {
 // Provider-owned tool correlation values are not route or filesystem IDs.
 // Preserve them exactly; only bound their size and reject control characters.
 function toolCallIdentifier(value) {
-  if (typeof value !== "string" || !value || value.length > 512 || /[\u0000-\u001f\u007f]/.test(value))
+  if (!isToolCallId(value))
     throw denied(400, "invalid tool call identifier");
   return value;
 }
@@ -110,7 +111,7 @@ export class TenantPolicy {
     const safe = Object.freeze({ id: identifier(record.id), sessionID: record.sessionID,
       ...(typeof record.permission === "string" ? { permission: record.permission } : {}),
       ...(Array.isArray(record.patterns) && record.patterns.length <= 20 && record.patterns.every(v => typeof v === "string" && v.length <= 4096) ? { patterns: Object.freeze([...record.patterns]) } : {}),
-      ...(record.tool?.callID ? { callId: toolCallIdentifier(record.tool.callID) } : {}),
+      ...(record.tool?.callID !== undefined ? { callId: toolCallIdentifier(record.tool.callID) } : {}),
     });
     this.#requests.set(this.#key(context, record.id), safe);
     return safe;

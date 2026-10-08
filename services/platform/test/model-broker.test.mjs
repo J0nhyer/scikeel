@@ -429,12 +429,12 @@ test("collaboration preserves known business errors while sanitizing unknown exc
   const f=await fixture(t,(_req,res)=>res.end("unused"));
   const post=()=>fetch(`http://127.0.0.1:${f.broker.server.address().port}/collaboration`,{
     method:"POST",headers:{authorization:`Bearer ${f.token}`,"content-type":"application/json"},
-    body:JSON.stringify({sessionId:"ses_test",action:"delivery",callId:"call_test"})});
+    body:JSON.stringify({sessionId:"ses_test",action:"delivery",callId:"functions.research_delivery:0"})});
   f.broker.collaborationHandler=()=>{throw Object.assign(new Error("private upstream secret"),{
     code:"delivery_missing_input",status:400,details:{path:"data/input.csv"}});};
   const response=await post();assert.equal(response.status,400);
   const body=await response.json();assert.equal(body.error.code,"delivery_missing_input");
-  assert.equal(body.error.correlationId,"call_test");assert.equal(body.error.details.path,"data/input.csv");
+  assert.equal(body.error.correlationId,"functions.research_delivery:0");assert.equal(body.error.details.path,"data/input.csv");
   assert.equal(JSON.stringify(body).includes("private upstream secret"),false);
   f.broker.collaborationHandler=()=>{throw new Error("private upstream secret");};
   const unknown=await post();assert.equal(unknown.status,502);
@@ -450,4 +450,24 @@ test('network route requires an owned broker context and a bounded closed reques
   assert.equal((await post({ ...proposal, proxy: 'http://foreign' })).status, 403);
   assert.equal((await post(proposal, 'f'.repeat(64))).status, 403);
   assert.equal(calls, 1);
+});
+
+
+test('network and collaboration bridges preserve namespaced tool IDs with unchanged context checks', async t => {
+ const f=await fixture(t,(_req,res)=>res.end('unused'));let calls=0;
+ f.broker.networkHandler=(owned,body)=>{assert.deepEqual(owned,context);calls++;return{callId:body.callId};};
+ f.broker.collaborationHandler=(owned,body)=>{assert.deepEqual(owned,context);calls++;return{callId:body.callId};};
+ const post=(path,body)=>fetch(`http://127.0.0.1:${f.broker.server.address().port}${path}`,{method:'POST',headers:{authorization:`Bearer ${f.token}`,'content-type':'application/json'},body:JSON.stringify(body)});
+ for(const tool of ['webfetch','websearch']) {
+  const body={version:1,action:'authorize',sessionId:'ses_a',callId:`functions.${tool}:0`,execution:1,tool,origins:['https://science.example']};
+  const r=await post('/network',body);assert.equal(r.status,200);assert.equal((await r.json()).callId,body.callId);
+  assert.equal((await post('/network',{...body,sessionId:'ses:a'})).status,403);
+  assert.equal((await post('/network',{...body,callId:'x\nheader'})).status,403);
+ }
+ for(const [action,tool] of [['checkpoint','research_checkpoint'],['delivery','research_delivery']]) {
+  const body={action,sessionId:'ses_a',callId:`functions.${tool}:0`};const r=await post('/collaboration',body);
+  assert.equal(r.status,200);assert.equal((await r.json()).callId,body.callId);
+  assert.equal((await post('/collaboration',{...body,callId:'x'.repeat(513)})).status,403);
+ }
+ assert.equal(calls,4);
 });

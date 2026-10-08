@@ -441,3 +441,8 @@ Self-review: helper/type/signature names above are defined before use; the new s
 ## Namespaced provider identifier follow-up (2026-10-08)
 
 The reported second-starter question-list 400 was traced to strict route-ID validation of native Fledge tool correlation `functions.question:0`. A separate current-production-based branch `fix/question-tool-call-identifiers` preserves bounded exact provider correlation metadata while retaining strict ownership IDs. Published release `2026-10-08T08-22-59-264Z-9c21cfda` passed all selected preparation gates and two zero-skip installed live checks; Fledge emitted that exact namespaced ID at both desktop and phone widths. See the spec follow-up for evidence, restart limitations and separate network/research correlation compatibility risks, which are not claimed fixed by this release.
+
+
+## Remaining call-correlation repair execution
+
+User-authorized scope includes webfetch, websearch, research_checkpoint, research_delivery, edit outcome normalization and confirmed Stop records. Preserve raw bounded correlation values using the SDK canonical predicate; retain strict ownership IDs. Synchronize the sandbox parser and pinned native patch, regenerate immutable hashes, run namespaced bridge/persistence/error/Stop regressions, build and validate the compiled runtime in dedicated CI, then publish through the existing guarded image/Web pipeline and run installed acceptance. Do not report completion based on passing platform-only tests or silently reuse the incompatible old runtime image.

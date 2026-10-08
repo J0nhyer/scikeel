@@ -37,3 +37,19 @@ test('completed invalid tools fail; raw aborts never assert user cancellation; e
   assert.equal(normalizeToolResult('edit', { status: 'error', error, metadata: { scikeelOutcome: verified } }, 'call_edit').status, 'warning');
   assert.equal(normalizeToolResult('bash', { status: 'error', error: 'Unknown legacy failure' }, 'call_old').error, 'Unknown legacy failure');
 });
+
+
+test('namespaced provider correlations round-trip and normalize edit/abort outcomes', async () => {
+  const { normalizeToolResult } = await import('../../../packages/sdk/src/tool-outcome.mjs');
+  for (const callId of ['functions.webfetch:0', 'functions.websearch:1', 'functions.research_delivery:2', 'functions.research_checkpoint:3']) {
+    const outcome = makeToolOutcome('network_timeout', { source: 'gateway', correlationId: callId, status: 504 });
+    assert.deepEqual(readToolError(JSON.stringify({ error: outcome })), outcome);
+  }
+  const edit = normalizeToolResult('edit', {status:'error', error:'No changes to apply: oldString and newString are identical.'}, 'functions.edit:0');
+  assert.equal(edit.outcome.code,'edit_no_change');
+  assert.equal(edit.outcome.correlationId,'functions.edit:0');
+  assert.equal(normalizeToolResult('bash',{status:'error',error:'Tool execution aborted'},'functions.bash:0').outcome.code,'execution_interrupted');
+  for(const correlationId of ['', 'x\nheader', 'x\0y', 'x'.repeat(513), null, 12]) {
+    assert.throws(()=>makeToolOutcome('network_timeout',{source:'gateway',correlationId}));
+  }
+});
