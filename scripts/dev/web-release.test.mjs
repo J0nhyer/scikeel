@@ -394,3 +394,17 @@ test('interaction changes select required session and interaction browser accept
   assert.equal(selection.imageRequired,false);
  }
 });
+
+
+import {verifyAsyncModelReply} from './web-release-deploy.mjs';
+test('live gate uses asynchronous Web transport and requires completed history after a slow model reply',async()=>{
+ let clock=0;const writes=[];
+ const json=async(path,options)=>{
+  if(options){writes.push({path,body:JSON.parse(options.body)});return {};}
+  return [{info:{role:'assistant',time:clock>30000?{completed:1}:{}},parts:[{type:'text',text:'SCIKEEL_WEB_RELEASE_OK'}]}];
+ };
+ const result=await verifyAsyncModelReply(json,'ses_fixture',{providerID:'fixture',modelID:'slow'},'SCIKEEL_WEB_RELEASE_OK',{now:()=>clock,wait:async(ms)=>{clock+=ms;}});
+ assert.equal(writes.length,1);assert.equal(writes[0].path,'/session/ses_fixture/prompt_async');assert(clock>30000);assert.equal(result.completed,true);
+ await assert.rejects(verifyAsyncModelReply(async(_path,options)=>options?{}:[{info:{role:'assistant',error:{name:'MessageAbortedError'}},parts:[]}],'ses_fixture',{},'OK'),/reply failed/);
+ await assert.rejects(verifyAsyncModelReply(async(_path,options)=>options?{}:[],'ses_fixture',{},'OK',{now:()=>clock,wait:async(ms)=>{clock+=ms;},timeoutMs:1000}),/deadline exceeded/);
+});

@@ -92,6 +92,22 @@ async function verifyDelivery(production, directory, files) {
     }
   } finally { await client.close(); }
 }
+export async function verifyAsyncModelReply(json, sessionId, model, expected, {now=Date.now, wait=delay, timeoutMs=150000}={}) {
+  await json(`/session/${sessionId}/prompt_async`, {method:'POST',body:JSON.stringify({model,
+    parts:[{type:'text',text:`Transport verification only. Reply with exactly ${expected}. Do not use tools or change files.`}]})});
+  const deadline=now()+timeoutMs;
+  while(now()<deadline) {
+    const history=await json(`/session/${sessionId}/message`);
+    const answer=[...history].reverse().find(message=>message.info?.role==='assistant');
+    if(answer?.info?.error)throw new Error('Required live OpenCode reply failed');
+    if(answer?.info?.time?.completed) {
+      if(!(answer.parts ?? []).some(part=>part.type==='text' && part.text.includes(expected)))throw new Error('Required live OpenCode reply failed');
+      return {transport:'prompt_async',completed:true};
+    }
+    await wait(500);
+  }
+  throw new Error('Required live OpenCode reply deadline exceeded');
+}
 async function liveOpenCode(production) {
   const client = await sessionClient(production); let sessionId;
   async function json(path, options = {}) {
@@ -113,10 +129,8 @@ async function liveOpenCode(production) {
       body: JSON.stringify({ action: 'heartbeat', pageId: 'web-release-verification' }), signal: AbortSignal.timeout(10000) });
     if (!heartbeat.ok && heartbeat.status !== 404) throw new Error('Verification heartbeat failed');
     const expected = 'SCIKEEL_WEB_RELEASE_OK';
-    const answer = await json('/session/' + sessionId + '/message', { method: 'POST', body: JSON.stringify({ model: { providerID: 'opencode', modelID: model },
-      parts: [{ type: 'text', text: `Transport verification only. Reply with exactly ${expected}. Do not use tools or change files.` }] }) });
-    if (answer.info?.error || !(answer.parts ?? []).some((part) => part.type === 'text' && part.text.includes(expected))) throw new Error('Required live OpenCode reply failed');
-    return { runtime: 'opencode', provider: 'opencode', model, sessionId, status: 'passed' };
+    const evidence=await verifyAsyncModelReply(json,sessionId,{providerID:'opencode',modelID:model},expected);
+    return { runtime: 'opencode', provider: 'opencode', model, sessionId, ...evidence, status: 'passed' };
   } finally {
     // Keep verification conversations reviewable, including after a failed gate.
     await client.close();

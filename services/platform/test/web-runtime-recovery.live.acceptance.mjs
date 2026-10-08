@@ -97,3 +97,107 @@ test('production restores five warm reloads and preserves an OpenCode turn until
     await fetch(origin + '/auth/logout', { method: 'POST', headers, signal: AbortSignal.timeout(10000) }).catch(() => {});
   }
 });
+
+test('production question drafts, last-page absence and confirmed revert work for an isolated acceptance account', {
+  skip: process.env.SCIKEEL_RECOVERY_LIVE_ACCEPTANCE !== '1', timeout: 420000,
+}, async () => {
+  const {randomBytes}=await import('node:crypto');
+  const store=commonStore(resolve(fileURLToPath(new URL('../../../',import.meta.url))));
+  const pointer=JSON.parse(await readFile(store+'/web-releases/current.json','utf8'));
+  const manifest=JSON.parse(await readFile(store+'/web-releases/'+pointer.id+'/manifest.json','utf8'));
+  const model=manifest.deployment?.liveOpenCode;
+  assert.equal(model?.status,'passed');
+  const pid=execFileSync('systemctl',['show','osd-platform.service','-p','MainPID','--value'],{encoding:'utf8'}).trim();
+  const raw=execFileSync('sudo',['-n','cat',`/proc/${pid}/environ`],{encoding:'utf8'});
+  const env=Object.fromEntries(raw.split('\0').map(item=>{const i=item.indexOf('=');return[item.slice(0,i),item.slice(i+1)];}));
+  const origin=`http://127.0.0.1:${manifest.deployment.production.port}`;
+  const login=async(username,password)=>{
+    const response=await fetch(origin+'/auth/login',{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify({username,password}),signal:AbortSignal.timeout(10000)});
+    assert(response.ok,'Acceptance login failed');
+    return response.headers.getSetCookie().map(value=>value.split(';')[0]).join('; ');
+  };
+  const adminCookie=await login(env.PLATFORM_ADMIN_USERNAME||'admin',env.PLATFORM_ADMIN_PASSWORD);
+  const username='continuity-'+randomBytes(6).toString('hex'), password=randomBytes(24).toString('hex');
+  const created=await fetch(origin+'/api/admin/users',{method:'POST',headers:{origin,cookie:adminCookie,'content-type':'application/json'},body:JSON.stringify({username,password,role:'user'})});
+  assert.equal(created.status,201);const account=(await created.json()).user;
+  await fetch(origin+'/auth/logout',{method:'POST',headers:{origin,cookie:adminCookie}});
+  const cookie=await login(username,password), headers={origin,cookie,'content-type':'application/json'};
+  const json=async(path,options={})=>{
+    const response=await fetch(origin+path,{headers,signal:AbortSignal.timeout(90000),...options});
+    assert(response.ok,`Acceptance request failed: ${path} HTTP ${response.status}`);
+    return response.status===204?null:response.json();
+  };
+  const post=(value)=>({method:'POST',body:JSON.stringify(value)});
+  const wait=ms=>new Promise(done=>setTimeout(done,ms));
+  const until=async(fn,timeout=120000)=>{const deadline=Date.now()+timeout;while(Date.now()<deadline){const value=await fn();if(value)return value;await wait(500);}throw new Error('Live interaction acceptance deadline exceeded');};
+  const settings=JSON.parse(await readFile(store+'/web-release-settings.json','utf8'));
+  const {chromium}=createRequire(import.meta.url)(settings.OSD_PLAYWRIGHT_PATH);
+  let browser;const sessions=[],evidence=[];
+  try {
+    await json('/v1/whoami');
+    browser=await chromium.launch({executablePath:settings.OSD_CHROMIUM_PATH,headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
+    const other=await json('/session',post({title:'Continuity acceptance navigation target'}));
+    for(const width of [1280,360]) {
+      const session=await json('/session',post({title:`Continuity acceptance question ${width}px`}));sessions.push(session.id);
+      const preference=await json(`/api/collaboration/${session.id}`);
+      await json(`/api/collaboration/${session.id}`,post({action:'mode',mode:'autonomous',revision:preference.state.revision}));
+      const context=await browser.newContext({viewport:{width,height:900}});
+      await context.addCookies(cookie.split('; ').map(pair=>{const i=pair.indexOf('=');return{name:pair.slice(0,i),value:pair.slice(i+1),url:origin,httpOnly:true};}));
+      await context.addInitScript(()=>localStorage.setItem('ai4s.locale','en'));
+      let page=await context.newPage();const errors=[],requests=[],bad=[];
+      const observe=p=>{
+        p.on('pageerror',error=>errors.push(error.message));
+        p.on('request',request=>requests.push({path:new URL(request.url()).pathname,method:request.method()}));
+        p.on('response',response=>{if([400,502].includes(response.status()))bad.push({path:new URL(response.url()).pathname,status:response.status()});});
+      };observe(page);
+      await page.goto(`${origin}/live/${session.id}`);await page.getByRole('button',{name:/^Model:/}).first().waitFor({timeout:30000});
+      const prompt=`Interaction transport acceptance only, not a research task. You MUST invoke the native question tool exactly once now, with one question whose text is "SCIKEEL_METHOD_${width}", one header "Method", two options A and B, and custom text enabled. Wait for my answer. After the answer, reply exactly SCIKEEL_ANSWER_ACCEPTED and stop. Do not invoke other tools or edit files. Do not substitute a plain text question.`;
+      await json(`/session/${session.id}/prompt_async`,post({model:{providerID:model.provider,modelID:model.model},parts:[{type:'text',text:prompt}]}));
+      const question=await until(async()=>{const list=await json('/question');return list.find(q=>q.sessionID===session.id);});
+      assert.equal(question.questions.length,1);assert.equal(question.questions[0].question,`SCIKEEL_METHOD_${width}`);
+      const draft=`Keep method B at ${width}px`;
+      const answer=()=>page.getByPlaceholder('Or type your own answer…');
+      await answer().waitFor({timeout:20000});await answer().fill(draft);
+      await page.reload();await answer().waitFor({timeout:20000});assert.equal(await answer().inputValue(),draft);
+      await page.goto(`${origin}/live/${other.id}`);await page.getByRole('button',{name:/^Model:/}).first().waitFor();
+      await page.goto(`${origin}/live/${session.id}`);await answer().waitFor();assert.equal(await answer().inputValue(),draft);
+      if(width===360){
+        await page.close();await wait(46000);
+        assert((await json('/question')).some(q=>q.id===question.id),'Question survives last-page absence');
+        page=await context.newPage();observe(page);await page.goto(`${origin}/live/${session.id}`);await answer().waitFor({timeout:20000});assert.equal(await answer().inputValue(),draft);
+      }
+      const response=page.waitForResponse(r=>new URL(r.url()).pathname===`/question/${question.id}/reply`&&r.request().method()==='POST');
+      await page.getByRole('button',{name:'Submit',exact:true}).click();assert((await response).ok(),'Question reply is acknowledged');
+      const history=await until(async()=>{
+        const list=await json(`/session/${session.id}/message`);
+        const part=list.flatMap(m=>m.parts??[]).find(p=>p.type==='tool'&&p.tool==='question'&&p.callID===question.tool?.callID);
+        const final=list.find(m=>m.info?.role==='assistant'&&m.info?.time?.completed&&(m.parts??[]).some(p=>p.type==='text'&&p.text?.includes('SCIKEEL_ANSWER_ACCEPTED')));
+        return part?.state?.status==='completed'&&final?list:false;
+      });
+      const receipt=history.flatMap(m=>m.parts??[]).find(p=>p.type==='tool'&&p.callID===question.tool.callID);
+      assert.deepEqual(receipt.state.metadata.answers,[[draft]]);
+      assert.equal(requests.filter(r=>r.path===`/question/${question.id}/reply`&&r.method==='POST').length,1);
+      assert.equal(requests.filter(r=>r.path.endsWith('/abort')).length,0);
+      const messageID=history.find(m=>m.info?.role==='user').info.id;
+      const reverted=page.waitForResponse(r=>new URL(r.url()).pathname===`/session/${session.id}/revert`&&r.request().method()==='POST');
+      await page.getByRole('button',{name:'Revert to this message',exact:true}).first().click();assert((await reverted).ok(),'Revert acknowledged');
+      await until(async()=>((await json(`/session/${session.id}`)).revert?.messageID===messageID));
+      await page.reload();await page.getByRole('button',{name:/^Model:/}).first().waitFor();
+      assert.equal((await json(`/session/${session.id}/message`)).length,0,'Reverted history remains hidden after refresh');
+      assert.equal(await page.getByRole('button',{name:'Revert to this message',exact:true}).count(),0);
+      assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'No phone overflow');
+      assert.deepEqual(errors,[]);assert.deepEqual(bad,[]);
+      evidence.push({width,sessionId:session.id,question:true,draftRecovery:true,navigation:true,replyReceipt:true,replies:1,revertRefresh:true,lastPageAbsenceMs:width===360?46000:0});
+      await context.close();
+    }
+    console.log(JSON.stringify({phase:'production interaction continuity',release:pointer.id,accountId:account.id,provider:model.provider,model:model.model,evidence,status:'passed'}));
+  } finally {
+    for(const id of sessions)await fetch(origin+`/session/${id}/abort`,{method:'POST',headers,signal:AbortSignal.timeout(10000)}).catch(()=>{});
+    await browser?.close();
+    await fetch(origin+'/auth/logout',{method:'POST',headers}).catch(()=>{});
+    // Only the disposable acceptance account is disabled; its evidence is retained.
+    const cleanupCookie=await login(env.PLATFORM_ADMIN_USERNAME||'admin',env.PLATFORM_ADMIN_PASSWORD);
+    await fetch(origin+`/api/admin/users/${account.id}/disable`,{method:'POST',headers:{origin,cookie:cleanupCookie,'content-type':'application/json'},body:JSON.stringify({disabled:true}),signal:AbortSignal.timeout(10000)}).catch(()=>{});
+    await fetch(origin+'/auth/logout',{method:'POST',headers:{origin,cookie:cleanupCookie}}).catch(()=>{});
+  }
+});
