@@ -41,11 +41,11 @@ The main checkout lacks deployed sandbox modules, including `services/platform/s
 
 | Approach | Benefit | Drawback | Decision |
 | --- | --- | --- | --- |
-| Increase the existing absolute timeout to 20 minutes | Small patch; allows longer generations | A silent or dead upstream can occupy a slot for the entire period | Reject as the complete solution |
+| Increase the existing absolute timeout to one hour | Small patch; allows longer generations | A silent or dead upstream can occupy a slot for the entire period | Reject as the complete solution |
 | Use only a renewable inactivity timeout | Healthy streams can run for as long as needed | Heartbeats or very slow data can hold a connection indefinitely | Reject |
 | Separate initial wait, inactivity, and total deadlines | Allows active long responses while bounding silence and total resource use | Requires explicit lifecycle handling and end-to-end error tests | Recommend |
 
-Defaults are 120 seconds for initial response data, 120 seconds for subsequent inactivity, and 20 minutes for total elapsed time per model HTTP request. These are server-owned operational limits, not a user allowance or an entire research-turn deadline.
+Defaults are 120 seconds for initial response data, 120 seconds for subsequent inactivity, and one hour for total elapsed time per model HTTP request. These are server-owned operational limits, not a user allowance or an entire research-turn deadline.
 
 This spec supersedes only the model-request timeout row in Section 4 of `2026-10-05-opencode-runtime-usage-policy-design.md`. Its removal of cumulative account limits and its other protections remain applicable.
 
@@ -57,11 +57,11 @@ Apply the new policy to the existing model POST routes: `/v1/responses`, `/v1/ch
 | --- | --- | --- | --- | --- |
 | Initial response data | 120000 ms | When the validated request is dispatched upstream | Never; ends when the first nonempty upstream body chunk arrives | `model_first_byte_timeout` |
 | Response inactivity | 120000 ms | On the first nonempty upstream body chunk | On each later nonempty upstream body chunk | `model_idle_timeout` |
-| Total model request | 1200000 ms | When the model request is admitted by the broker | Never | `model_total_timeout` |
+| Total model request | 3600000 ms | When the model request is admitted by the broker | Never | `model_total_timeout` |
 
 DNS, connection, TLS, and time to first response body all consume the initial wait. Receiving only headers does not satisfy it. Existing HTTP header/body admission deadlines and body-size validation remain in force; a slowly uploaded body cannot obtain a longer deadline through this change. Dispatch may occur only after authorization and body validation, as today.
 
-Measure elapsed time with a monotonic clock. Deadline options must be positive finite safe integers, initial and inactivity values must not exceed the total, and the total must not exceed the existing constructor ceiling of 1200000 ms. Tests may use shorter values. Expose no tenant-controlled timeout parameter or unbounded/off value. Reconcile existing constructor callers explicitly rather than silently changing the meaning of `timeoutMs`.
+Measure elapsed time with a monotonic clock. Deadline options must be positive finite safe integers, initial and inactivity values must not exceed the total, and the total must not exceed the constructor ceiling of 3600000 ms. Tests may use shorter values. Expose no tenant-controlled timeout parameter or unbounded/off value. Reconcile existing constructor callers explicitly rather than silently changing the meaning of `timeoutMs`.
 
 Upstream body bytes establish transport liveness, not semantic completion. SSE comments, ping events, and reasoning data renew inactivity just like text or tool data. Broker-generated diagnostics and downstream/browser activity do not renew it. Heartbeat-only responses must still stop at the total deadline. Do not parse model text or require visible answer tokens to declare activity.
 
@@ -95,13 +95,13 @@ The Web client continues to receive runtime events through `packages/sdk`. It mu
 | --- | --- |
 | `model_first_byte_timeout` | The model did not start responding within 2 minutes. Try again or choose another model. |
 | `model_idle_timeout` | The model response was interrupted after 2 minutes without data. Your existing work is preserved. |
-| `model_total_timeout` | This model request reached the 20-minute limit. Your existing work is preserved; continue in another turn. |
+| `model_total_timeout` | This model request reached the one-hour limit. Your existing work is preserved; continue in another turn. |
 
 Copy must reflect effective limits when tests or a trusted server configuration use different values. Unknown remote resets remain connection interruptions; never relabel them as proven local timeouts. Cancellation, permission denial, upstream refusal, size limits, and service interruption retain their distinct existing handling.
 
 A retry notice is transient, not a final failure. If a permitted retry succeeds, remove the notice and do not leave a failed-turn banner. If retries exhaust, persist the final error so refresh or reopening the session shows the same cause and preserved partial output.
 
-The broker introduces no retries. Initial-wait and inactivity timeouts may follow the pinned runtime's existing bounded retry policy; do not increase attempt limits or add a second retry loop. Total-deadline errors must not automatically restart the same 20-minute request. Verify this behavior in the real adapter path rather than relying solely on a JSON `isRetryable` field that an adapter might discard.
+The broker introduces no retries. Initial-wait and inactivity timeouts may follow the pinned runtime's existing bounded retry policy; do not increase attempt limits or add a second retry loop. Total-deadline errors must not automatically restart the same one-hour request. Verify this behavior in the real adapter path rather than relying solely on a JSON `isRetryable` field that an adapter might discard.
 
 Timeout recovery retries only a model continuation. It must not replay already executed tools, rerun the entire research workflow, overwrite completed files, or automatically append a user message to the affected conversation. Continuing after terminal failure is an explicit user action through the existing composer.
 
@@ -122,7 +122,7 @@ Never record credentials, authorization headers, model request/response text, re
 Run deterministic verification through repository package scripts with the shared host lock and verified cgroup limits. If the lock is occupied, report the check as not run; do not bypass the guard. Use short injected deadlines and controlled upstream fixtures for most cases, with a default-duration test where specified.
 
 1. Reproduce the existing absolute-deadline defect against the release-matching class: a continuously active stream is cut at its configured total timeout and the client observes a reset. Record this baseline before changing behavior.
-2. A stream delivering data at intervals below the inactivity deadline completes after more than 120 seconds with production defaults. A scaled deterministic version also crosses the former deadline. The hard limit is separately asserted as 20 minutes; no routine test needs to wait 20 minutes.
+2. A stream delivering data at intervals below the inactivity deadline completes after more than 120 seconds with production defaults. A scaled deterministic version also crosses the former deadline. The hard limit is separately asserted as one hour; no routine test needs to wait 20 minutes.
 3. No headers/body, and headers without body, both terminate at the initial-data deadline with `model_first_byte_timeout`. A delayed first body chunk before the deadline succeeds.
 4. A stream that starts and then stops sending bytes terminates at the inactivity deadline with `model_idle_timeout`. Repeated chunks renew that deadline but never the total deadline.
 5. Ping/comment-only SSE and streams with continuous reasoning hit `model_total_timeout` if they do not complete before the total deadline. Fragmented frames and UTF-8 boundaries do not corrupt forwarding or terminal errors.
