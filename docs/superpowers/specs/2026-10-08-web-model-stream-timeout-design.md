@@ -1,7 +1,7 @@
 # Web Model Stream Timeout Design
 
 Date: 2026-10-08
-Status: Draft for user review. Only specification work is authorized; implementation and publication are separate steps.
+Status: Implemented and published as `2026-10-08T20-06-36-502Z-bca68870` with the approved one-hour total ceiling.
 Scope: Public multi-user gateway Web using managed OpenCode, including phone-width viewports.
 
 ## 1. Problem and intended outcome
@@ -73,7 +73,7 @@ Use a single terminal outcome for each operation. At a boundary race, compare th
 
 Each request owns its timers, upstream request/body, downstream transfer, and active-capacity entry. Success, timeout, upstream failure, client cancellation, grant expiry/revocation, and broker shutdown must settle once and clean up all of them. Late events cannot write to a closed response or release a slot twice.
 
-User Stop, grant revocation, and shutdown must abort upstream work immediately through the existing authorization and cancellation paths. Increasing stream duration must not extend capability expiry, bypass generation checks, or retain access after revocation.
+User Stop, grant revocation, and shutdown must abort upstream work immediately through the existing authorization and cancellation paths. Increasing stream duration must not extend capability expiry, bypass generation checks, or retain access after revocation. An existing authorized renewal must re-arm active request expiry against the newly approved grant expiry; it must not move the model total deadline. Otherwise a healthy one-hour stream would incorrectly retain the original 15-minute timer despite the existing five-minute renewal loop.
 
 Keep incremental forwarding and backpressure. Do not buffer an entire model response. An error-reporting path may hold only bounded parser state and a bounded terminal error frame. Individual body, response, output-token, and active-operation limits retain their current values. No additional lifetime request/token/byte counters may be introduced.
 
@@ -101,7 +101,7 @@ Copy must reflect effective limits when tests or a trusted server configuration 
 
 A retry notice is transient, not a final failure. If a permitted retry succeeds, remove the notice and do not leave a failed-turn banner. If retries exhaust, persist the final error so refresh or reopening the session shows the same cause and preserved partial output.
 
-The broker introduces no retries. Initial-wait and inactivity timeouts may follow the pinned runtime's existing bounded retry policy; do not increase attempt limits or add a second retry loop. Total-deadline errors must not automatically restart the same one-hour request. Verify this behavior in the real adapter path rather than relying solely on a JSON `isRetryable` field that an adapter might discard.
+The broker introduces no retries. The installed OpenCode 1.18.32 parser can still classify a Responses terminal failure as retryable; block retransmission of a total-expired continuation before upstream contact. Store only a bounded hash of the grant, route, available session/request continuity headers, and validated request body for one hour, capped by the existing grant ceiling. This transient identity guard is not a request/token/account budget. It must distinguish new sessions and new user turns, and cannot grant authority based on a client header. An identical exhausted continuation receives HTTP 400 with the stable total-timeout code because the pinned runtime retries 5xx even when a body declares the error terminal. The original timeout retains its supported protocol failure representation; correlation IDs stay in the response header and structured log, not the public text or error body, because the pinned retry classifier scans error text/body for bare status-like numbers. Initial-wait and inactivity timeouts may follow the pinned runtime's existing bounded retry policy; do not increase attempt limits or add a second retry loop. Total-deadline errors must not automatically restart the same one-hour request. Verify this behavior in the real adapter path rather than relying solely on a JSON `isRetryable` field that an adapter might discard.
 
 Timeout recovery retries only a model continuation. It must not replay already executed tools, rerun the entire research workflow, overwrite completed files, or automatically append a user message to the affected conversation. Continuing after terminal failure is an explicit user action through the existing composer.
 
@@ -138,7 +138,7 @@ Live acceptance uses an available non-Claude provider and a separate controlled 
 
 ## 9. Delivery and review boundary
 
-This artifact is a specification for review. It does not authorize implementation, an implementation-plan document, service restart, deployment, or mutation of the original conversation.
+The user approved the design and requested implementation followed by publication. Mutation of the original conversation is outside this repair; use isolated fixtures and controlled acceptance conversations.
 
 After approval, the implementation plan must identify the complete source baseline, pinned parser compatibility, focused changes, guarded regression commands, Web acceptance at desktop/phone widths, and the existing release/rollback procedure. Publish only a validated candidate through the repository release workflow. Failed builds leave the deployed Web bundle untouched; rollback must preserve conversations, credentials, and workspace state.
 
