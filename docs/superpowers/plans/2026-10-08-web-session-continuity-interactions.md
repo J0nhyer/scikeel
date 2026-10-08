@@ -436,3 +436,8 @@ Expected: a verified candidate manifest and staged acceptance evidence; producti
 | No auto-resume, replay, or inferred successful permission/revert | 6, 7, 8, 9, 11 |
 
 Self-review: helper/type/signature names above are defined before use; the new source modules have disjoint responsibilities; all implementation steps have reproducible red/green checks; historical causal uncertainty is not rewritten as a fact; the disproved SSE hypothesis is a passing regression, not a proposed fix. No tool delegation or implementation/deployment approval is inferred from spec approval. Branch/manifest/image/runtime identities must be rechecked at execution rather than assumed stable.
+
+
+## Namespaced provider identifier follow-up (2026-10-08)
+
+The reported second-starter question-list 400 was traced to strict route-ID validation of native Fledge tool correlation `functions.question:0`. A separate current-production-based branch `fix/question-tool-call-identifiers` preserves bounded exact provider correlation metadata while retaining strict ownership IDs. Published release `2026-10-08T08-22-59-264Z-9c21cfda` passed all selected preparation gates and two zero-skip installed live checks; Fledge emitted that exact namespaced ID at both desktop and phone widths. See the spec follow-up for evidence, restart limitations and separate network/research correlation compatibility risks, which are not claimed fixed by this release.

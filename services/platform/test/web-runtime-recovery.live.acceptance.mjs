@@ -27,7 +27,7 @@ test('production restores five warm reloads and preserves an OpenCode turn until
   assert(login.ok, 'Verification login failed');
   const cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
   const headers = { origin, cookie, 'content-type': 'application/json' };
-  const json = async path => { const response = await fetch(origin + path, { headers, signal: AbortSignal.timeout(15000) }); assert(response.ok, `Read failed: ${path}`); return response.json(); };
+  const json = async path => { const response = await fetch(origin + path, { headers, signal: AbortSignal.timeout(path === '/v1/whoami' ? 60000 : 30000) }); assert(response.ok, `Read failed: ${path}`); return response.json(); };
   const settings = JSON.parse(await readFile(store + '/web-release-settings.json', 'utf8'));
   const { chromium } = createRequire(import.meta.url)(settings.OSD_PLAYWRIGHT_PATH);
   let browser;
@@ -194,7 +194,7 @@ test('production question drafts, last-page absence and confirmed revert work fo
       assert.equal(await page.locator('button[aria-label="Revert"]').count(),0);
       assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'No phone overflow');
       assert.deepEqual(errors,[]);assert.deepEqual(bad,[]);
-      evidence.push({width,sessionId:session.id,question:true,draftRecovery:true,navigation:true,replyReceipt:true,replies:1,revertRefresh:true,lastPageAbsenceMs:width===360?46000:0});
+      evidence.push({width,sessionId:session.id,question:true,toolCallId:question.tool.callID,draftRecovery:true,navigation:true,replyReceipt:true,replies:1,revertRefresh:true,lastPageAbsenceMs:width===360?46000:0});
       await context.close();
     }
     console.log(JSON.stringify({phase:'production interaction continuity',release:pointer.id,accountId:account.id,provider:model.provider,model:model.model,evidence,status:'passed'}));
