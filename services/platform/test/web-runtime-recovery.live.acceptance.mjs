@@ -105,8 +105,9 @@ test('production question drafts, last-page absence and confirmed revert work fo
   const store=commonStore(resolve(fileURLToPath(new URL('../../../',import.meta.url))));
   const pointer=JSON.parse(await readFile(store+'/web-releases/current.json','utf8'));
   const manifest=JSON.parse(await readFile(store+'/web-releases/'+pointer.id+'/manifest.json','utf8'));
-  const model=manifest.deployment?.liveOpenCode;
+  const model={...manifest.deployment?.liveOpenCode,model:process.env.SCIKEEL_CONTINUITY_MODEL||manifest.deployment?.liveOpenCode?.model};
   assert.equal(model?.status,'passed');
+  assert(!model.model.toLowerCase().includes('claude'));
   const pid=execFileSync('systemctl',['show','osd-platform.service','-p','MainPID','--value'],{encoding:'utf8'}).trim();
   const raw=execFileSync('sudo',['-n','cat',`/proc/${pid}/environ`],{encoding:'utf8'});
   const env=Object.fromEntries(raw.split('\0').map(item=>{const i=item.indexOf('=');return[item.slice(0,i),item.slice(i+1)];}));
@@ -157,7 +158,9 @@ test('production question drafts, last-page absence and confirmed revert work fo
       assert.equal(question.questions.length,1);assert.equal(question.questions[0].question,`SCIKEEL_METHOD_${width}`);
       const draft=`Keep method B at ${width}px`;
       const answer=()=>page.getByPlaceholder('Or type your own answer…');
-      await answer().waitFor({timeout:20000});await answer().fill(draft);
+      await page.getByText(question.questions[0].question,{exact:true}).waitFor({timeout:20000});
+      if(!question.questions[0].custom)await page.getByRole('button',{name:'Something else…',exact:true}).click();
+      await answer().waitFor({timeout:20000}).catch(async error=>{throw new Error(`Question field unavailable; custom=${question.questions[0].custom}; page=${(await page.locator('body').innerText()).slice(-4000)}`,{cause:error});});await answer().fill(draft);
       await page.reload();await answer().waitFor({timeout:20000});assert.equal(await answer().inputValue(),draft);
       await page.goto(`${origin}/live/${other.id}`);await page.getByRole('button',{name:/^Model:/}).first().waitFor();
       await page.goto(`${origin}/live/${session.id}`);await answer().waitFor();assert.equal(await answer().inputValue(),draft);
@@ -179,12 +182,16 @@ test('production question drafts, last-page absence and confirmed revert work fo
       assert.equal(requests.filter(r=>r.path===`/question/${question.id}/reply`&&r.method==='POST').length,1);
       assert.equal(requests.filter(r=>r.path.endsWith('/abort')).length,0);
       const messageID=history.find(m=>m.info?.role==='user').info.id;
+      // User-message controls are revealed by tracked hover (not CSS :hover).
+      await page.getByText(prompt,{exact:true}).hover();
+      await page.locator('button[aria-label="Revert"]').first().click();
+      await page.getByRole('alertdialog').waitFor();
       const reverted=page.waitForResponse(r=>new URL(r.url()).pathname===`/session/${session.id}/revert`&&r.request().method()==='POST');
-      await page.getByRole('button',{name:'Revert to this message',exact:true}).first().click();assert((await reverted).ok(),'Revert acknowledged');
+      await page.getByRole('button',{name:'Revert here',exact:true}).click();assert((await reverted).ok(),'Revert acknowledged');
       await until(async()=>((await json(`/session/${session.id}`)).revert?.messageID===messageID));
       await page.reload();await page.getByRole('button',{name:/^Model:/}).first().waitFor();
       assert.equal((await json(`/session/${session.id}/message`)).length,0,'Reverted history remains hidden after refresh');
-      assert.equal(await page.getByRole('button',{name:'Revert to this message',exact:true}).count(),0);
+      assert.equal(await page.locator('button[aria-label="Revert"]').count(),0);
       assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'No phone overflow');
       assert.deepEqual(errors,[]);assert.deepEqual(bad,[]);
       evidence.push({width,sessionId:session.id,question:true,draftRecovery:true,navigation:true,replyReceipt:true,replies:1,revertRefresh:true,lastPageAbsenceMs:width===360?46000:0});

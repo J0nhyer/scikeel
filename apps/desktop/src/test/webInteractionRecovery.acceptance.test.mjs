@@ -15,7 +15,7 @@ test.skipIf(!process.env.OSD_INTERACTION_BROWSER)('Web answers retain drafts acr
   let active=true, pending=true, generation=1, replyMode='hold', held, replies=0, aborts=0, revert,permissionReplies=0,permissions=[];
   const sessions=[{id:'ses_live',title:'Interaction recovery fixture',directory:'/tenant/workspace',time:{created:Date.now(),updated:Date.now()}},
     {id:'ses_other',title:'Other conversation',directory:'/tenant/workspace',time:{created:Date.now()-1,updated:Date.now()-1}}];
-  const question={id:'question_live',sessionID:'ses_live',tool:{messageID:'msg_assistant',callID:'call_question'},questions:[{question:'Which method should we use?',header:'Method',options:[{label:'A',description:'Method A'}],custom:true}]};
+  const question={id:'question_live',sessionID:'ses_live',tool:{messageID:'msg_assistant',callID:'functions.question:0'},questions:[{question:'Which method should we use?',header:'Method',options:[{label:'A',description:'Method A'}],custom:true}]};
   const generated=new Map(), sends=[];
   const owner={userId:'usr_fixture',sessionId:'ses_live',runtime:'opencode',directory:'/tenant/workspace',workspaceDir:'/tenant/workspace'};
   const store=new CollaborationStore({rootDir:root,running:async(o)=>o.sessionId==='ses_live'?active:!!generated.get(o.sessionId)?.active,cancel:async()=>{active=false;aborts++;}});
@@ -23,7 +23,7 @@ test.skipIf(!process.env.OSD_INTERACTION_BROWSER)('Web answers retain drafts acr
   let toolState={status:'running',input:{questions:question.questions}};
   const history=()=>[
     {info:{id:'msg_user',sessionID:'ses_live',role:'user',time:{created:1}},parts:[{id:'part_user',type:'text',text:'Inspect the interaction fixture'}]},
-    {info:{id:'msg_assistant',sessionID:'ses_live',role:'assistant',time:{created:2,...(!active?{completed:3}:{})}},parts:[{id:'part_question',type:'tool',tool:'question',callID:'call_question',state:toolState}]},
+    {info:{id:'msg_assistant',sessionID:'ses_live',role:'assistant',time:{created:2,...(!active?{completed:3}:{})}},parts:[{id:'part_question',type:'tool',tool:'question',callID:'functions.question:0',state:toolState}]},
   ];
   const streams=new Set();
   const server=createServer(async(req,res)=>{
@@ -121,7 +121,7 @@ test.skipIf(!process.env.OSD_INTERACTION_BROWSER)('Web answers retain drafts acr
         await expect.poll(()=>page.getByText(question.questions[0].question,{exact:true}).count()).toBe(0);
         expect(replies).toBe(lostBefore+1);
         // Permission decisions are never persisted or replayed as new grants.
-        permissions=[{id:'permission_live',sessionID:'ses_live',permission:'bash',patterns:['printf verified'],tool:{messageID:'msg_assistant',callID:'call_permission'}}];
+        permissions=[{id:'permission_live',sessionID:'ses_live',permission:'bash',patterns:['printf verified'],tool:{messageID:'msg_assistant',callID:'functions.bash:1'}}];
         replyMode='hold';await page.reload();
         await page.getByRole('button',{name:'Allow once',exact:true}).waitFor();
         const permissionBefore=permissionReplies;

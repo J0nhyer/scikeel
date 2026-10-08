@@ -10,7 +10,7 @@ const { CollaborationStore }=await import('../src/collaboration.mjs');
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'scikeel-continuity-probe-'));
  const user={id:'diagnostic',role:'user'};
- let generation=1,reverts=0,frames=0,replies=0,missing=false,replyGate,promptGate,prompts=0,closedPrompts=0;
+ let callID, generation=1,reverts=0,frames=0,replies=0,missing=false,replyGate,promptGate,prompts=0,closedPrompts=0;
  const logs=[];const replyDirectories=[];
  const context=()=>({userId:user.id,instanceId:'user-diagnostic',generation,workspaceDir:'/owned/science'});
  const session={id:'ses_diagnostic',directory:'/owned/science'};
@@ -32,8 +32,8 @@ async function fixture(t){
     if(promptGate)await promptGate;
     res.statusCode=202;res.end('{}');return;
   }
-  if(path==='/question'){res.end(JSON.stringify(missing?[]:[{id:'question_live',sessionID:session.id,questions:[]} ]));return;}
-  if(path==='/question/question_live/reply'){
+  if(path==='/question' || path==='/permission'){res.end(JSON.stringify(missing?[]:[{id:'question_live',sessionID:session.id,questions:[],...(path==='/permission'?{permission:'bash',patterns:['printf fixture']}:{}),...(callID?{tool:{messageID:'msg_question',callID}}:{})} ]));return;}
+  if(path==='/question/question_live/reply' || path==='/permission/question_live/reply'){
     replies++;if(replyGate)await replyGate;replyDirectories.push(new URL(req.url,'http://fixture.invalid').searchParams.get('directory'));
     if(missing){res.statusCode=400;res.end(JSON.stringify({name:'QuestionNotFoundError',data:{message:'Question is no longer pending'}}));return;}
     res.end('true');return;
@@ -61,7 +61,7 @@ async function fixture(t){
  const address=await server.listen();const origin=`http://127.0.0.1:${address.port}`;
  t.after(async()=>{await server.close();for(const s of sockets)s.destroy();await new Promise(resolve=>upstream.close(resolve));await rm(root,{recursive:true,force:true});});
  const request=(path,init={})=>fetch(origin+path,{...init,headers:{cookie:'osd_session=fixture',origin,'content-type':'application/json',...init.headers},signal:init.signal ?? AbortSignal.timeout(35000)});
- return {server,request,policy,context,prompts:()=>prompts,closedPrompts:()=>closedPrompts,holdPrompt:()=>{let release;promptGate=new Promise(done=>{release=()=>{promptGate=undefined;done();};});return release;},rotate:()=>{generation++;policy.registerAccount(context());},reverts:()=>reverts,frames:()=>frames,replies:()=>replies,logs,replyDirectories,expire:()=>{missing=true;},holdReply:()=>{let release;replyGate=new Promise(done=>{release=()=>{replyGate=undefined;done();};});return release;}};
+ return {server,request,policy,context,setCallID:value=>{callID=value;},prompts:()=>prompts,closedPrompts:()=>closedPrompts,holdPrompt:()=>{let release;promptGate=new Promise(done=>{release=()=>{promptGate=undefined;done();};});return release;},rotate:()=>{generation++;policy.registerAccount(context());},reverts:()=>reverts,frames:()=>frames,replies:()=>replies,logs,replyDirectories,expire:()=>{missing=true;},holdReply:()=>{let release;replyGate=new Promise(done=>{release=()=>{replyGate=undefined;done();};});return release;}};
 }
 test('persisted owned session rebinds current-generation authority before a revert mutation',async t=>{
  const f=await fixture(t);const init={method:'POST',body:JSON.stringify({messageID:'msg_diagnostic'})};
@@ -161,4 +161,25 @@ test('a refreshed page cannot cut off a validated asynchronous first prompt befo
  assert.equal(f.logs.some(event=>event.type==='runtime.transport_closed' && event.correlationId===delivered.correlationId),true);
  assert.equal(JSON.stringify(f.logs).includes('First message'),false);
  assert.equal(f.prompts(),1);
+});
+
+
+test('provider namespaced question call IDs survive list recovery and one reply',async t=>{
+ const f=await fixture(t);f.setCallID('functions.question:0');
+ const response=await f.request('/question');
+ assert.equal(response.status,200);
+ const questions=await response.json();
+ assert.equal(questions[0].tool.callID,'functions.question:0');
+ assert.equal(f.policy.request(f.context(),'question_live').callId,'functions.question:0');
+ f.rotate();
+ const reply=await f.request('/question/question_live/reply',{method:'POST',body:JSON.stringify({answers:[['A']]})});
+ assert.equal(reply.status,200);assert.equal(f.replies(),1);
+});
+
+test('provider namespaced permission call IDs survive list recovery and rejection',async t=>{
+ const f=await fixture(t);f.setCallID('functions.bash:1');
+ const response=await f.request('/permission');assert.equal(response.status,200);
+ assert.equal((await response.json())[0].tool.callID,'functions.bash:1');f.rotate();
+ const reply=await f.request('/permission/question_live/reply',{method:'POST',body:JSON.stringify({reply:'reject'})});
+ assert.equal(reply.status,200);assert.equal(f.replies(),1);
 });

@@ -15,6 +15,13 @@ function identifier(value) {
     throw denied(400, "invalid identifier");
   return value;
 }
+// Provider-owned tool correlation values are not route or filesystem IDs.
+// Preserve them exactly; only bound their size and reject control characters.
+function toolCallIdentifier(value) {
+  if (typeof value !== "string" || !value || value.length > 512 || /[\u0000-\u001f\u007f]/.test(value))
+    throw denied(400, "invalid tool call identifier");
+  return value;
+}
 function absoluteDirectory(value) {
   if (typeof value !== "string" || !value.startsWith("/") || value.includes("\0") ||
       value.includes("\\") || posix.normalize(value) !== value ||
@@ -103,7 +110,7 @@ export class TenantPolicy {
     const safe = Object.freeze({ id: identifier(record.id), sessionID: record.sessionID,
       ...(typeof record.permission === "string" ? { permission: record.permission } : {}),
       ...(Array.isArray(record.patterns) && record.patterns.length <= 20 && record.patterns.every(v => typeof v === "string" && v.length <= 4096) ? { patterns: Object.freeze([...record.patterns]) } : {}),
-      ...(record.tool?.callID ? { callId: identifier(record.tool.callID) } : {}),
+      ...(record.tool?.callID ? { callId: toolCallIdentifier(record.tool.callID) } : {}),
     });
     this.#requests.set(this.#key(context, record.id), safe);
     return safe;

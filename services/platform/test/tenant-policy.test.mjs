@@ -49,3 +49,25 @@ test("session lists may return children before parents but foreign parents never
     { statusCode: 404 });
   assert.throws(() => p.session(a, "orphan"), { statusCode: 404 });
 });
+
+
+test("provider tool-call IDs are correlation metadata, not session identifiers", () => {
+  const p = policy();
+  p.registerSession(a, { id: "ses_a", directory: "/owned/a" });
+  for (const callID of ["functions.question:0", "functions.webfetch:3", "call_normal"]) {
+    p.registerRequest(a, { id: "req_a", sessionID: "ses_a", tool: { callID } });
+    assert.equal(p.request(a, "req_a").callId, callID);
+  }
+  assert.throws(() => p.request(b, "req_a"), { statusCode: 404 });
+  assert.throws(() => p.registerRequest(a, { id: "req:invalid", sessionID: "ses_a" }), { statusCode: 400 });
+  assert.throws(() => p.registerSession(a, { id: "ses:invalid", directory: "/owned/a" }), { statusCode: 400 });
+});
+
+test("tool-call correlation metadata rejects oversized values and control characters", () => {
+  const p = policy();
+  p.registerSession(a, { id: "ses_a", directory: "/owned/a" });
+  for (const callID of ["x\nheader", "x\0y", "x".repeat(513), 12, {}]) {
+    assert.throws(() => p.registerRequest(a, { id: "req_a", sessionID: "ses_a", tool: { callID } }), { statusCode: 400 });
+    assert.throws(() => p.request(a, "req_a"), { statusCode: 404 });
+  }
+});
