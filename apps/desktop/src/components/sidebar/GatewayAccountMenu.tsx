@@ -1,3 +1,4 @@
+import { useToastStore } from "@/lib/toast";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useEffect } from "react";
 import { ChevronUp, LogOut, Settings } from "lucide-react";
@@ -42,7 +43,7 @@ export function GatewayAccountMenu({ user }: {
         <Settings size={15} /> {t("sidebar.settings")}
       </DropdownMenu.Item>
       {/* Keep the form mounted until the browser submits it and navigates away. */}
-      <form method="post" action="/auth/logout"><DropdownMenu.Item asChild onSelect={(event) => event.preventDefault()}>
+      <form method="post" action="/auth/logout" onSubmit={() => useToastStore.getState().reset()}><DropdownMenu.Item asChild onSelect={(event) => event.preventDefault()}>
         <button type="submit" className="flex min-h-10 w-full cursor-pointer items-center gap-2 rounded px-3 text-left text-sm text-text outline-none data-[highlighted]:bg-surface-2">
           <LogOut size={15} /> {t("sidebar.signOut")}
         </button>

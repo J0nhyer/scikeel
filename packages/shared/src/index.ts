@@ -308,6 +308,8 @@ export interface HistoryRepairBlock {
 }
 
 export interface StatusLineBlock {
+  /** App-owned presentation only; unknown legacy records retain their original UI. */
+  presentation?: { kind: "completion" | "failure" | "interruption" | "information"; eventId: string };
   kind: "status-line";
   text: string; // e.g. "8 running · 16m 2s"
   tone?: "running" | "done" | "review" | "error";

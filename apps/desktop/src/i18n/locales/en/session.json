@@ -758,5 +758,10 @@
       "missing_outputs": "A requested output is missing.",
       "failed_checks": "A required check failed or its evidence is missing."
     }
+  },
+  "modelTimeout": {
+    "first_byte": "The model did not start responding within 2 minutes. Try again or choose another model.",
+    "idle": "The model response was interrupted after 2 minutes without data. Your existing work is preserved.",
+    "total": "This model request reached the 1-hour limit. Your existing work is preserved; continue in another turn."
   }
 }

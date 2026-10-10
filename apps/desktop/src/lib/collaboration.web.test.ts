@@ -149,3 +149,25 @@ it("an existing conversation send preserves Guided without resaving its mode", a
 it("defaults new Web drafts to Full autonomy", () => {
   expect(defaultCollaboration.mode).toBe("autonomous");
 });
+
+it("notifies a live verified execution once but never replays restored completion", async () => {
+  const { toast, useToastStore } = await import("./toast");
+  useToastStore.getState().reset();
+  const success = vi.spyOn(toast, "success");
+  let state = { ...defaultCollaboration, revision: 1, execution: 1, delivery: { status: "completed", attempts: 1, report: null } };
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ available: true, state })));
+  const view = renderHook(() => useCollaboration("delivery-case", true));
+  await waitFor(() => expect(view.result.current.state.delivery?.status).toBe("completed"));
+  expect(success).not.toHaveBeenCalled();
+  state = { ...state, revision: 2, execution: 2, delivery: { ...state.delivery, status: "pending" } };
+  await act(async () => { await view.result.current.refresh(); });
+  // The actual poll path must observe execution 2 before verification settles.
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  state = { ...state, revision: 3, delivery: { ...state.delivery, status: "completed" } };
+  await waitFor(() => expect(success).toHaveBeenCalledOnce(), { timeout: 4000 });
+  expect(useToastStore.getState().toasts[0]).toMatchObject({ eventId: "delivery:2:completed", sessionId: "delivery-case" });
+  view.unmount();
+  const restored = renderHook(() => useCollaboration("delivery-case", true));
+  await waitFor(() => expect(restored.result.current.state.delivery?.status).toBe("completed"));
+  expect(success).toHaveBeenCalledOnce(); restored.unmount(); useToastStore.getState().reset();
+});

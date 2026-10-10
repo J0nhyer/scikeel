@@ -10,5 +10,14 @@
       "error": "Impossible de compresser le contexte.",
       "done": "Contexte compressé. La prochaine réponse utilisera la conversation compressée."
     }
+  },
+  "notification": {
+    "close": "Fermer la notification",
+    "region": "Notifications",
+    "details": "Détails",
+    "closeDetails": "Fermer les détails",
+    "retry": "Réessayer",
+    "actionFailed": "Échec de l’action",
+    "problem": "Action requise"
   }
 }

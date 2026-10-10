@@ -758,5 +758,10 @@
       "missing_outputs": "Un fichier demandé manque.",
       "failed_checks": "Une vérification requise a échoué ou sa preuve manque."
     }
+  },
+  "modelTimeout": {
+    "first_byte": "Le modèle n’a pas commencé à répondre dans les 2 minutes. Réessayez ou choisissez un autre modèle.",
+    "idle": "La réponse du modèle a été interrompue après 2 minutes sans données. Votre travail existant est conservé.",
+    "total": "Cette requête au modèle a atteint la limite d’une heure. Votre travail existant est conservé ; poursuivez dans un nouveau tour."
   }
 }

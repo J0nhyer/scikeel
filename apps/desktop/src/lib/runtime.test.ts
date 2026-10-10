@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import i18n from "@/i18n";
 import type { OpenCodeEvent, HistoryMessage } from "@ai4s/sdk";
 import { AUTO_REVIEW_PROMPT } from "./autoReview";
 import { GOAL_RESUME_NUDGE } from "./goalPrompts";
@@ -606,7 +607,7 @@ describe("historyToThread", () => {
     const t = historyToThread(msgs);
     expect(t.blocks).toEqual([
       { kind: "user", text: "hi" },
-      { kind: "status-line", text: "no channel available for this model", tone: "error" },
+      { kind: "status-line", text: "no channel available for this model", tone: "error", presentation: { kind: "failure", eventId: "history:1" } },
     ]);
   });
 
@@ -1040,4 +1041,31 @@ describe('tool failure evidence', () => {
     const result = historyToThread([{ role: 'assistant', parts: [{ type: 'tool', callID: 'call_invalid', tool: 'invalid', state: { status: 'completed', output: 'Unknown tool recovery' } }] }]);
     expect(result.blocks[0]).toMatchObject({ status: 'failed', outcome: { code: 'tool_unavailable' } });
   });
+});
+
+
+describe("local model timeout messages", () => {
+  it("explains only stable broker timeout markers", () => {
+    expect(explainRuntimeError("[model_first_byte_timeout] details")).toContain("2 minutes");
+    expect(explainRuntimeError("[model_idle_timeout] details")).toContain("existing work is preserved");
+    expect(explainRuntimeError("[model_total_timeout] details")).toContain("1-hour limit");
+    expect(explainRuntimeError("Connection reset by server")).toBe("Connection reset by server");
+  });
+  it("recovers timeout explanations from persisted adapter envelopes", () => {
+    const payload = JSON.stringify({type: "response.failed", response: {error: {code: "model_total_timeout", message: "[model_total_timeout] details"}}});
+    const live = explainRuntimeError("[model_total_timeout] details");
+    expect(explainRuntimeError(payload)).toBe(live);
+    expect(live).not.toContain("response.failed");
+  });
+});
+
+it("persists a localized timeout status while retaining partial work", async () => {
+  const previous = i18n.language;
+  try {
+    await i18n.changeLanguage("zh-Hans");
+    const blocks = historyToThread([{role: "assistant", completed: 2, error: "[model_total_timeout] details", parts: [{type: "text", text: "Partial research result."}]}]).blocks;
+    expect(blocks.some(block => block.kind === "status-line" && block.text.includes("1 小时"))).toBe(true);
+    expect(JSON.stringify(blocks)).toContain("Partial research result.");
+    expect(explainRuntimeError("Connection reset by server")).toBe("Connection reset by server");
+  } finally { await i18n.changeLanguage(previous); }
 });

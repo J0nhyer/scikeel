@@ -1,3 +1,4 @@
+import { useToastStore } from "@/lib/toast";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +14,7 @@ const initialState = useRuntimeStore.getState();
 describe("ManagedAgentsCard", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
+    useToastStore.getState().reset();
     refresh.mockClear();
     useRuntimeStore.setState({ refreshGatewayRuntimes: refresh });
   });
@@ -49,7 +51,8 @@ describe("ManagedAgentsCard", () => {
     await waitFor(() => expect(toggle).toBeEnabled());
     expect(toggle).toHaveAttribute("aria-checked", "true");
     expect(refresh).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("Codex saved.")).toBeInTheDocument();
+    expect(screen.queryByText("Codex saved.")).not.toBeInTheDocument();
+    expect(useToastStore.getState().toasts[useToastStore.getState().toasts.length - 1]?.message).toBe("Codex saved.");
   });
 
   it.each(["http", "network"])("restores authorization when a %s save fails", async (failure) => {
@@ -91,7 +94,7 @@ describe("ManagedAgentsCard", () => {
     const toggle = screen.getByRole("switch", { name: "Allow Codex" });
     await waitFor(() => expect(toggle).toBeEnabled());
     await user.click(toggle);
-    await screen.findByText("Codex saved.");
+    await waitFor(() => expect(useToastStore.getState().toasts[useToastStore.getState().toasts.length - 1]?.message).toBe("Codex saved."));
     expect(toggle).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });

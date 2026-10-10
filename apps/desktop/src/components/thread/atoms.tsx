@@ -376,6 +376,13 @@ export const StatusLine = memo(function StatusLine({
   onRetry?: () => void;
 }) {
   const { t } = useTranslation(["session", "common"]);
+  if (block.presentation?.kind === "completion") return null;
+  if (block.presentation && !block.stall && !block.retry) return (
+    <details className="text-xs text-muted">
+      <summary className="min-h-11 cursor-pointer py-3">{t("common:notification.details")}</summary>
+      <p className="whitespace-pre-wrap break-words">{block.text}</p>
+    </details>
+  );
   return (
     <div className={cn(block.divider && "border-t border-border pt-4")}>
       <div className={cn("flex items-center gap-2 text-sm", TONE[block.tone ?? "review"])}>

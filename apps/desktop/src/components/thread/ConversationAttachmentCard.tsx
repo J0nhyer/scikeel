@@ -1,3 +1,4 @@
+import { StateNotice } from "../ui/StateNotice";
 import { PdfPreview } from "@/components/inspector/PdfPreview";
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
@@ -10,7 +11,7 @@ function bytes(size: number) { return size < 1024 ? `${size} B` : size < 1024 **
 export function ConversationAttachmentCard({ attachment, owner, pending, onRemove, onRetry }: {
   attachment?: ConversationAttachment; owner: AttachmentOwner; pending?: PendingAttachment; onRemove?: () => void; onRetry?: () => void;
 }) {
-  const { t } = useTranslation("session");
+  const { t } = useTranslation(["session", "common"]);
   const name = attachment?.name ?? pending?.file.name ?? "Attachment";
   const mime = attachment?.mime ?? pending?.file.type ?? "";
   const [thumbnail, setThumbnail] = useState<string | null>(null);
@@ -47,9 +48,9 @@ export function ConversationAttachmentCard({ attachment, owner, pending, onRemov
       {!pending && attachment && <button type="button" onClick={() => void open(true)} disabled={opening} aria-label={t("composer.attachments.download", { name })} className="shrink-0 p-1 text-muted hover:text-text"><Download size={14} /></button>}
       {onRemove && <button type="button" onClick={onRemove} aria-label={t("composer.attachments.remove", { name })} className="shrink-0 p-1 text-muted hover:text-text"><X size={14} /></button>}
     </div>
-    {pending?.error && <p role="alert" className="w-full break-words text-xs text-warn">{pending.error}</p>}
-    {attachment?.imageDelivery === "resized" && <p className="text-xs text-muted">{t("composer.attachments.imageResized")}</p>}
-    {attachment?.imageDelivery === "still" && <p className="text-xs text-muted">{t("composer.attachments.imageStill")}</p>}
+    {pending?.error && <StateNotice issueId={`attachment:${pending.file.name}:${pending.error}`} summary={t("common:notification.problem")} detail={pending.error} />}
+    {attachment?.imageDelivery === "resized" && <details className="text-xs text-muted"><summary className="min-h-11 cursor-pointer py-3">{t("common:notification.details")}</summary>{t("composer.attachments.imageResized")}</details>}
+    {attachment?.imageDelivery === "still" && <details className="text-xs text-muted"><summary className="min-h-11 cursor-pointer py-3">{t("common:notification.details")}</summary>{t("composer.attachments.imageStill")}</details>}
     {preview && <div role="dialog" aria-modal="true" aria-label={t("composer.attachments.preview", { name })} className="fixed inset-0 z-50 flex flex-col bg-black/60 p-3 sm:p-8" onKeyDown={(e) => { if (e.key === "Escape") setPreview(null); }}>
       <div className="flex min-w-0 items-center justify-between gap-2 rounded-t-card bg-surface p-3"><span className="min-w-0 break-all text-sm text-text">{name}</span><div className="flex shrink-0 gap-2"><button type="button" onClick={() => void open(true)} aria-label={t("composer.attachments.download", { name })} className="p-2 text-muted"><Download size={18} /></button><button type="button" autoFocus onClick={() => setPreview(null)} aria-label={t("composer.attachments.close")} className="p-2 text-muted"><X size={18} /></button></div></div>
       {mime.startsWith("image/") ? <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-b-card bg-surface"><img src={preview} alt={name} className="max-h-full max-w-full object-contain" /></div> : mime === "application/pdf" ? <div className="min-h-0 flex-1 overflow-auto rounded-b-card bg-surface"><PdfPreview url={preview} /></div> : mime.startsWith("text/") || mime === "application/json" ? <iframe title={name} src={preview} sandbox="" className="min-h-0 flex-1 rounded-b-card bg-white" /> : <div className="rounded-b-card bg-surface p-6 text-sm text-text">{t("composer.attachments.unavailable")}</div>}

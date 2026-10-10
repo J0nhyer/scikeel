@@ -758,5 +758,10 @@
       "missing_outputs": "Eine angeforderte Ergebnisdatei fehlt.",
       "failed_checks": "Eine erforderliche Prüfung ist fehlgeschlagen oder ihr Nachweis fehlt."
     }
+  },
+  "modelTimeout": {
+    "first_byte": "Das Modell hat innerhalb von 2 Minuten nicht geantwortet. Versuchen Sie es erneut oder wählen Sie ein anderes Modell.",
+    "idle": "Die Modellantwort wurde nach 2 Minuten ohne Daten unterbrochen. Ihre bisherige Arbeit bleibt erhalten.",
+    "total": "Diese Modellanfrage hat das Limit von 1 Stunde erreicht. Ihre bisherige Arbeit bleibt erhalten; fahren Sie in einer neuen Runde fort."
   }
 }

@@ -35,13 +35,13 @@ async function fixture(t, handler, options = {}) {
   const upstream = createServer(handler);
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   t.after(() => { upstream.closeAllConnections(); return new Promise((resolve) => upstream.close(resolve)); });
-  const broker = new ModelBroker({ identify: () => context, providers: { [providerId]: {
+  const broker = new ModelBroker({ identify: () => context, logger: () => {}, providers: { [providerId]: {
     baseUrl: `http://127.0.0.1:${upstream.address().port}${basePath}`, credential: "administrator-secret-canary", authMode,
     enabledModels, routes: ["/v1/responses", "/v1/chat/completions", "/v1/messages"],
   } }, ...limits });
   t.after(() => broker.close());
   await broker.listen({ host: "127.0.0.1", port: 0 });
-  const token = broker.issue({ ...context, provider: providerId, models: enabledModels, routes: ["/v1/responses"], expiresAt: Date.now() + 60000 });
+  const token = broker.issue({ ...context, provider: providerId, models: enabledModels, routes: ["/v1/responses", "/v1/chat/completions", "/v1/messages"], expiresAt: Date.now() + 60000 });
   const fetch = (body = { model: "approved", input: "synthetic", max_output_tokens: 16 }, { grant = token, path = "/v1/responses", apiKeyHeader = false, headers: extraHeaders = {} } = {}) => new Promise((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port: broker.server.address().port, method: "POST", path, agent: false,
       headers: { ...(apiKeyHeader ? { "x-api-key": grant } : { authorization: `Bearer ${grant}` }), "content-type": "application/json", cookie: "private", "x-forwarded-for": "peer", ...extraHeaders } }, (res) => {
@@ -85,7 +85,7 @@ test("timeouts release capacity across renewed and new grants", async (t) => {
     if (++contacts > 1) { res.setHeader("content-type", "application/json"); res.end("{}"); }
   }, { timeoutMs: 100, maxConnections: 1 });
   assert.equal((await fetch()).status, 504);
-  const token = broker.issue({ ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 });
+  const token = broker.issue({ ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses", "/v1/chat/completions", "/v1/messages"], expiresAt: Date.now() + 60000 });
   broker.renew(token, context);
   assert.equal((await fetch(undefined, { grant: token })).status, 200);
 });
@@ -224,7 +224,7 @@ test("finished users leave no lifetime account entries that block later users", 
   for (let i = 0; i < 5; i++) {
     owner = { userId: `user${i}`, instanceId: `instance${i}`, generation: 1 };
     const grant = broker.issue({ ...owner, provider: "fixture", models: ["approved"],
-      routes: ["/v1/responses"], expiresAt: Date.now() + 60000 });
+      routes: ["/v1/responses", "/v1/chat/completions", "/v1/messages"], expiresAt: Date.now() + 60000 });
     const result = await fetch(undefined, { grant });
     assert.equal(result.status, 200, result.body);
     broker.revoke(grant);
@@ -249,7 +249,9 @@ test("individual response overflow closes the stream and releases its capacity",
     res.setHeader("content-type", "application/json");
     res.end(++contacts === 1 ? "x".repeat(1024) : "{}");
   }, { maxResponseBytes: 128, maxConnections: 1 });
-  await assert.rejects(fetch(), /aborted|reset|hang up/i);
+  const rejected = await fetch();
+  assert.equal(rejected.status, 413);
+  assert.equal(JSON.parse(rejected.body).error, "model_byte_limit");
   assert.equal((await fetch()).status, 200);
 });
 
@@ -470,4 +472,126 @@ test('network and collaboration bridges preserve namespaced tool IDs with unchan
   assert.equal((await post('/collaboration',{...body,callId:'x'.repeat(513)})).status,403);
  }
  assert.equal(calls,4);
+});
+
+test('active streams renew inactivity without hitting the one-hour total deadline', async t => {
+  const { fetch } = await fixture(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: start\n\n');
+    let ticks = 0;
+    const timer = setInterval(() => {
+      res.write(`data: tick-${++ticks}\n\n`);
+      if (ticks === 12) { clearInterval(timer); res.end(); }
+    }, 20);
+    res.on('close', () => clearInterval(timer));
+  }, { timeoutMs: 60, firstByteTimeoutMs: 60, idleTimeoutMs: 60, totalTimeoutMs: 500 });
+  const result = await fetch({ model: 'approved', stream: true, max_output_tokens: 16 });
+  assert.equal(result.status, 200);
+  assert.match(result.body, /tick-12/);
+});
+
+test('model broker rejects timeout configurations that exceed the one-hour ceiling', async t => {
+  const { broker } = await fixture(t, () => {}, { firstByteTimeoutMs: 60, idleTimeoutMs: 60, totalTimeoutMs: 500 });
+  assert.throws(() => new ModelBroker({
+    identify: () => context,
+    providers: { fixture: {
+      baseUrl: 'https://provider.example/v1', credential: 'synthetic',
+      enabledModels: ['approved'], routes: ['/v1/responses'],
+    } },
+    totalTimeoutMs: 3_600_001,
+  }), /limits exceed host budget/);
+  assert.equal(broker.totalTimeoutMs, 500);
+});
+
+for (const path of ['/v1/responses', '/v1/chat/completions', '/v1/messages']) {
+  test(`${path} reports first-body timeout before committing response headers`, async t => {
+    const logs = [];
+    const f = await fixture(t, (_req, res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.flushHeaders(); },
+      { firstByteTimeoutMs: 70, idleTimeoutMs: 70, totalTimeoutMs: 500, logger: entry => logs.push(entry) });
+    const body = { model: 'approved', stream: true, ...(path === '/v1/responses' ? { max_output_tokens: 16 } : { max_tokens: 16 }) };
+    const r = await f.fetch(body, { path });
+    assert.equal(r.status, 504); assert.equal(JSON.parse(r.body).error.code, 'model_first_byte_timeout');
+    assert.match(JSON.parse(r.body).error.message, /model_first_byte_timeout/);
+    assert.equal(logs.length, 1); assert.equal(logs[0].outcome, 'model_first_byte_timeout');
+    assert.doesNotMatch(JSON.stringify(logs), /secret-canary|synthetic/);
+  });
+  test(`${path} sends a terminal idle error and releases the slot`, async t => {
+    const logs = []; let contacts = 0;
+    const f = await fixture(t, (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(': ping\n\n');
+      if (++contacts > 1) res.end();
+    }, { firstByteTimeoutMs: 70, idleTimeoutMs: 70, totalTimeoutMs: 500, maxConnections: 1, logger: entry => logs.push(entry) });
+    const body = { model: 'approved', stream: true, ...(path === '/v1/responses' ? { max_output_tokens: 16 } : { max_tokens: 16 }) };
+    const r = await f.fetch(body, { path });
+    assert.equal(r.status, 200); assert.match(r.body, /model_idle_timeout/);
+    assert.doesNotMatch(r.body, /\[DONE\]/);
+    assert.equal(logs[0].outcome, 'model_idle_timeout'); assert.equal(logs[0].terminalErrorDelivered, true);
+    assert.equal((await f.fetch(body, { path })).status, 200);
+  });
+}
+test('heartbeats cannot extend the total model deadline', async t => {
+  const logs = [];
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(': ping\n\n');
+    const clock = setInterval(() => res.write(': ping\n\n'), 20);
+    res.once('close', () => clearInterval(clock));
+  }, { firstByteTimeoutMs: 80, idleTimeoutMs: 80, totalTimeoutMs: 220, logger: e => logs.push(e) });
+  const r = await f.fetch({ model: 'approved', stream: true, max_output_tokens: 16 });
+  assert.match(r.body, /model_total_timeout/); assert.equal(logs[0].outcome, 'model_total_timeout');
+  assert.ok(logs[0].elapsedMs >= 210 && logs[0].elapsedMs < 1500);
+});
+test('timeout cannot append an error inside a partially forwarded SSE event', async t => {
+  const logs = [];
+  const f = await fixture(t, (_req, res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('data: {"unfinished":'); },
+    { firstByteTimeoutMs: 70, idleTimeoutMs: 70, totalTimeoutMs: 500, logger: e => logs.push(e) });
+  await assert.rejects(f.fetch({ model: 'approved', stream: true, max_output_tokens: 16 }), /aborted|reset|hang up/i);
+  assert.equal(logs[0].outcome, 'model_idle_timeout'); assert.equal(logs[0].terminalErrorDelivered, false);
+});
+test('fragmented CRLF events preserve UTF-8 data and timeout boundary framing', async t => {
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const chunks = [Buffer.from('data: "'), Buffer.from('你好'), Buffer.from('"\r\n'), Buffer.from('\r'), Buffer.from('\n')];
+    for (const chunk of chunks) res.write(chunk);
+  }, { firstByteTimeoutMs: 80, idleTimeoutMs: 80, totalTimeoutMs: 500 });
+  const r = await f.fetch({ model: 'approved', stream: true, max_output_tokens: 16 });
+  assert.match(r.body, /你好/); assert.match(r.body, /model_idle_timeout/);
+});
+test('non-streaming bodies may remain active beyond the initial deadline', async t => {
+  const f = await fixture(t, (_req, res) => {
+    res.setHeader('content-type', 'application/json'); res.write('{"value":"');
+    let n = 0; const timer = setInterval(() => { res.write('x'); if (++n === 10) { clearInterval(timer); res.end('"}'); } }, 20);
+    res.once('close', () => clearInterval(timer));
+  }, { firstByteTimeoutMs: 70, idleTimeoutMs: 70, totalTimeoutMs: 500 });
+  const r = await f.fetch(); assert.equal(r.status, 200); assert.equal(JSON.parse(r.body).value, 'x'.repeat(10));
+});
+test('network and collaboration deadlines retain their original request scope', async t => {
+  const f = await fixture(t, () => {}, { firstByteTimeoutMs: 80, idleTimeoutMs: 80, totalTimeoutMs: 500 });
+  f.broker.collaborationHandler = () => new Promise(() => {});
+  const r = await f.fetch({ action: 'state', sessionId: 'ses_a' }, { path: '/collaboration' });
+  assert.equal(r.status, 504); assert.equal(JSON.parse(r.body).error, 'model_timeout');
+});
+
+test('an identical total-expired continuation cannot launch another upstream request', async t => {
+  let contacts = 0;
+  const f = await fixture(t, (_req, res) => {
+    contacts++; res.writeHead(200, {'content-type': 'text/event-stream'}); res.write(': live\n\n');
+    const timer = setInterval(() => res.write(': live\n\n'), 20); res.once('close', () => clearInterval(timer));
+  }, {firstByteTimeoutMs: 80, idleTimeoutMs: 80, totalTimeoutMs: 180});
+  const body = {model: 'approved', stream: true, max_output_tokens: 16, input: 'original turn'};
+  assert.match((await f.fetch(body)).body, /model_total_timeout/);
+  const repeated = await f.fetch(body); assert.equal(repeated.status, 400); assert.equal(JSON.parse(repeated.body).error.code, 'model_total_timeout');
+  assert.equal(contacts, 1);
+  assert.match((await f.fetch({...body, input: 'new user turn'})).body, /model_total_timeout/); assert.equal(contacts, 2);
+});
+test('authorized renewal extends an active grant expiry without changing the total deadline', async t => {
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, {'content-type': 'text/event-stream'}); res.write(': start\n\n');
+    let n = 0; const timer = setInterval(() => { res.write(': ping\n\n'); if (++n === 12) {clearInterval(timer); res.end();} }, 20);
+    res.once('close', () => clearInterval(timer));
+  }, {firstByteTimeoutMs: 70, idleTimeoutMs: 70, totalTimeoutMs: 500});
+  const shortGrant = f.broker.issue({...context, provider: 'fixture', models: ['approved'], routes: ['/v1/responses'], expiresAt: Date.now() + 100});
+  const active = f.fetch({model: 'approved', stream: true, max_output_tokens: 16}, {grant: shortGrant});
+  const renewal = setTimeout(() => f.broker.renew(shortGrant, context), 30); t.after(() => clearTimeout(renewal));
+  assert.equal((await active).status, 200);
+  assert.throws(() => f.broker.renew(shortGrant, {...context, generation: 2}), /denied/);
 });

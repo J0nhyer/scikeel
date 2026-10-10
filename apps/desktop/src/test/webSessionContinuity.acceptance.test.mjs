@@ -91,5 +91,40 @@ test.skipIf(!process.env.OSD_CONTINUITY_BROWSER)("running Web turns survive conv
     await page.getByText("Inspect the fixture", { exact: true }).waitFor();
     expect(await page.getByText(/Interrupted — this turn did not finish/).count()).toBe(1);
     expect(errors).toEqual([]);
+    // Broker timeout causes survive the SDK and cold history reload without
+    // losing completed tools or partial research output, including at 360 px.
+    history[1].info.time.completed = now + 2;
+    history[1].parts[0].state.status = "completed";
+    history[1].parts[0].state.output = "Existing data retained.";
+    history[1].parts.unshift({id: "part_partial", type: "text", text: "Preserved partial research output."});
+    const copies = {
+      en: ["The model did not start responding within 2 minutes.", "The model response was interrupted after 2 minutes without data.", "This model request reached the 1-hour limit."],
+      "zh-Hans": ["模型在 2 分钟内未开始响应。", "模型连续 2 分钟没有返回数据，响应已中断。", "本次模型请求达到 1 小时上限。"],
+    };
+    for (const width of [1280, 360]) for (const language of ["en", "zh-Hans"]) {
+      const timeoutContext = await browser.newContext({viewport: {width, height: 900}});
+      try {
+        await timeoutContext.addInitScript(value => localStorage.setItem("ai4s.locale", value), language);
+        const timeoutPage = await timeoutContext.newPage();
+        const timeoutErrors = []; timeoutPage.on("pageerror", error => timeoutErrors.push(error.message));
+        for (const [index, code] of ["model_first_byte_timeout", "model_idle_timeout", "model_total_timeout"].entries()) {
+          history[1].info.error = {name: "APIError", data: {message: `[${code}] fixture deadline`, isRetryable: false}};
+          for (let reload = 0; reload < 2; reload++) {
+            if (reload) await timeoutPage.reload(); else await timeoutPage.goto(`${origin}/live/ses_live`);
+            const diagnostic = timeoutPage.getByText(copies[language][index], {exact: false});
+            await diagnostic.waitFor({state: "attached", timeout: 12000});
+            const details = diagnostic.locator('xpath=ancestor::details[1]');
+            expect(await details.getAttribute("open")).toBe(null);
+            await details.locator("summary").focus();
+            await timeoutPage.keyboard.press("Enter");
+            await diagnostic.waitFor({timeout: 12000});
+            await timeoutPage.getByText("Preserved partial research output.", {exact: true}).waitFor();
+            expect(await timeoutPage.getByText(/Interrupted — this turn did not finish/).count()).toBe(0);
+            expect(await timeoutPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          }
+        }
+        expect(timeoutErrors).toEqual([]);
+      } finally {await timeoutContext.close();}
+    }
   } finally { await context.close(); await browser.close(); for (const res of streams) res.destroy(); await new Promise(done => server.close(done)); }
-}, 60000);
+}, 120000);

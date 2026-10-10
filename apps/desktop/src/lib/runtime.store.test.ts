@@ -1727,6 +1727,7 @@ describe("per-session workspace folders", () => {
       kind: "status-line",
       text: "model unavailable",
       tone: "error",
+      presentation: { kind: "failure", eventId: expect.any(String) },
     });
   });
 
@@ -1888,6 +1889,7 @@ describe("per-session workspace folders", () => {
         kind: "status-line",
         text: "Chat context cleared. Files stay in the same folder.",
         tone: "review",
+        presentation: { kind: "information", eventId: "local-clear" },
         divider: true,
       },
     ]);
@@ -2380,6 +2382,7 @@ describe("stale running locks and interrupt", () => {
       kind: "status-line",
       text: "Interrupted",
       tone: "error",
+      presentation: { kind: "interruption", eventId: "stop" },
     });
   });
 
@@ -2407,7 +2410,7 @@ describe("stale running locks and interrupt", () => {
     const statusLines = useRuntimeStore
       .getState()
       .threads["ses_new"].blocks.filter((b) => b.kind === "status-line");
-    expect(statusLines).toEqual([{ kind: "status-line", text: "Interrupted", tone: "error" }]);
+    expect(statusLines).toEqual([{ kind: "status-line", text: "Interrupted", tone: "error", presentation: { kind: "interruption", eventId: "stop" } }]);
   });
 
   it("a new turn after an interrupt folds its events normally again", async () => {

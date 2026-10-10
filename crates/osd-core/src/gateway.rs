@@ -690,8 +690,8 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str) {
         // client can safely put in an <iframe>/<img> src. A GET (not a POST) so
         // a read-only token can still preview files.
         ("GET", ["fs", "ticket"]) => match fs_resolve(ctx, req) {
-            Ok(full) => {
-                let payload = serde_json::json!({ "ticket": issue_ticket(ctx, full) });
+            Ok((full, path)) => {
+                let payload = serde_json::json!({ "ticket": issue_ticket(ctx, full), "path": path });
                 respond_json(stream, 200, &payload.to_string());
             }
             Err(e) => respond_json(stream, 404, &err_json(&e)),
@@ -1050,7 +1050,7 @@ fn fs_list(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
 
 /// The workspace file a `path` (+ `root`/`dir` scope) query names, sandboxed by
 /// `fs_base` + `resolve_under`.
-fn fs_resolve(ctx: &Ctx, req: &Request) -> Result<FileTarget, String> {
+fn fs_resolve(ctx: &Ctx, req: &Request) -> Result<(FileTarget, String), String> {
     let rel = req.query_get("path").unwrap_or_default();
     let base = fs_base(ctx, req)?;
     #[cfg(target_os = "linux")]
@@ -1058,17 +1058,24 @@ fn fs_resolve(ctx: &Ctx, req: &Request) -> Result<FileTarget, String> {
         let (root, name) = policy.locate(&base, &rel).map_err(|_| "managed file unavailable")?
             .ok_or("managed file not found")?;
         let ticket = policy.ticket(&root, &name, TICKET_TTL).map_err(|_| "managed file unavailable")?;
-        return Ok(FileTarget::Managed { ticket, name });
+        let scope = policy.scoped_path(&base, "probe").map_err(|_| "managed file unavailable")?.1;
+        let prefix = scope.strip_suffix("probe").ok_or("managed file unavailable")?;
+        let path = name.strip_prefix(prefix).ok_or("managed file unavailable")?.to_string();
+        return Ok((FileTarget::Managed { ticket, name }, path));
     }
     // Resolve by basename like the desktop preview server: agent prose often
     // names a file without its directory ("figure1.png" for "figures/figure1.png").
     let located = locate_under(&base, &rel).unwrap_or(rel);
-    resolve_under(&base, &located).map(FileTarget::Desktop)
+    let full = resolve_under(&base, &located)?;
+    let base = base.canonicalize().map_err(|e| e.to_string())?;
+    let path = full.strip_prefix(&base).map_err(|e| e.to_string())?
+        .to_string_lossy().replace('\\', "/");
+    Ok((FileTarget::Desktop(full), path))
 }
 
 fn fs_read(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     match fs_resolve(ctx, req) {
-        Ok(full) => send_target(stream, ctx, &full),
+        Ok((full, _)) => send_target(stream, ctx, &full),
         Err(e) => respond_json(stream, 404, &err_json(&e)),
     }
 }
@@ -1907,6 +1914,41 @@ mod tests {
         assert_eq!(normalize_mode("full"), "full");
         assert_eq!(normalize_mode("garbage"), "full");
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_gateway_tickets_identify_file_aliases_and_distinct_files() {
+        let base = std::env::temp_dir().join(format!("managed-gw-alias-{}", random_hex(12)));
+        let owned = base.join("owned");
+        std::fs::create_dir_all(owned.join("demo_analysis")).unwrap();
+        std::fs::write(owned.join("demo_analysis/report.md"), b"report").unwrap();
+        let env = Env::new(base.join("state"), base.join("res"), None, "test".into())
+            .with_managed_files(crate::file_policy::ManagedFilePolicy::new("a".into(), 1,
+                vec![(WORKSPACE_ROOT.into(), owned.clone())]).unwrap());
+        let state = GatewayState::default();
+        let p = Persisted { token: "test-token".into(), ..Persisted::default() };
+        let port = start_at(&env, &state, &p, Some(0)).unwrap();
+        let client = reqwest::blocking::Client::new();
+        let url = format!("http://127.0.0.1:{port}");
+        let ticket = |path: &str, dir: Option<&Path>| -> serde_json::Value {
+            let scope = dir.map(|dir| format!("&dir={}", enc(&dir.to_string_lossy()))).unwrap_or_default();
+            let body = client.get(format!("{url}/v1/fs/ticket?path={}{}", enc(path), scope))
+                .bearer_auth("test-token").send().unwrap().error_for_status().unwrap().text().unwrap();
+            serde_json::from_str(&body).unwrap()
+        };
+        let full = ticket("demo_analysis/report.md", None);
+        let bare = ticket("report.md", None);
+        assert_eq!(full["path"], "demo_analysis/report.md");
+        assert_eq!(full["path"], bare["path"]);
+        let read = client.get(format!("{url}/v1/fs/read?ticket={}", bare["ticket"].as_str().unwrap()))
+            .send().unwrap().error_for_status().unwrap().text().unwrap();
+        assert_eq!(read, "report");
+        assert_eq!(ticket("report.md", Some(&owned.join("demo_analysis")))["path"], "report.md");
+        std::fs::write(owned.join("report.md"), b"different report").unwrap();
+        assert_eq!(ticket("report.md", None)["path"], "report.md");
+        assert_ne!(full["path"], ticket("report.md", None)["path"]);
+        stop(&env, &state); std::fs::remove_dir_all(base).unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_gateway_tickets_never_reopen_an_escaped_path() {

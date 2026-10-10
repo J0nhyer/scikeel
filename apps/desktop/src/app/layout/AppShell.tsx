@@ -1,3 +1,4 @@
+import { useNotificationScope } from "@/lib/useNotificationScope";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation } from "react-router-dom";
@@ -26,6 +27,7 @@ import { findLeaf, leaves, useLayoutStore, type SplitDir } from "@/lib/layout";
 import { useNativeContextMenuGuard } from "@/lib/nativeMenu";
 
 export function AppShell() {
+  useNotificationScope();
   const { t } = useTranslation("nav");
   // One tracker for every message row in the app (lib/hoverTracking).
   useHoverTracking();

@@ -18,3 +18,9 @@ describe("persistent conversation attachment cards",()=>{
     fireEvent.click(screen.getByRole("button",{name:"Close preview"}));expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
+
+it("keeps image-processing explanations folded without losing download", () => {
+  render(<ConversationAttachmentCard attachment={{ ...file, imageDelivery: "resized" }} owner={{ sessionId: "session_a" }} />);
+  expect(screen.getByText("Image resized for the model; original retained.")).not.toBeVisible();
+  expect(screen.getByRole("button", { name: "Download data.csv" })).toBeEnabled();
+});

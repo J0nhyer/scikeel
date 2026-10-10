@@ -10,5 +10,14 @@
       "error": "Kontext konnte nicht komprimiert werden.",
       "done": "Kontext komprimiert. Die nächste Antwort nutzt das komprimierte Gespräch."
     }
+  },
+  "notification": {
+    "close": "Benachrichtigung schließen",
+    "region": "Benachrichtigungen",
+    "details": "Details",
+    "closeDetails": "Details schließen",
+    "retry": "Erneut versuchen",
+    "actionFailed": "Aktion fehlgeschlagen",
+    "problem": "Aktion erforderlich"
   }
 }

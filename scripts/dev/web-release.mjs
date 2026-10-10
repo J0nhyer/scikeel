@@ -117,8 +117,10 @@ export async function validateInstalledImage(candidate, digest) {
 export async function browserStage(candidate, run = runProcess) {
   requireBrowserConfiguration(process.env);
   const desktop = join(candidate.source.root, 'apps/desktop');
-  const tests = ['src/test/webRelease.acceptance.test.mjs'];
-  const environment = { OSD_RELEASE_ACCEPTANCE: '1', OSD_WEB_CANDIDATE: candidate.artifacts.web.directory };
+  const notificationScenario = 'src/test/webNotifications.acceptance.test.mjs';
+  if (!await lstat(join(desktop, notificationScenario)).catch(() => null)) throw new Error('Required notification browser scenario is unavailable');
+  const tests = ['src/test/webRelease.acceptance.test.mjs', notificationScenario];
+  const environment = { OSD_RELEASE_ACCEPTANCE: '1', OSD_NOTIFICATIONS_ACCEPTANCE: '1', OSD_WEB_CANDIDATE: candidate.artifacts.web.directory };
   const groups = candidate.selection.browserGroups;
   if (groups.includes('login')) { tests.push('src/test/webLogin.acceptance.test.mjs'); environment.OSD_LOGIN_ACCEPTANCE = '1'; }
   if (groups.includes('session')) {

@@ -758,5 +758,10 @@
       "missing_outputs": "Falta un archivo de entrega solicitado.",
       "failed_checks": "Una comprobación obligatoria falló o falta su evidencia."
     }
+  },
+  "modelTimeout": {
+    "first_byte": "El modelo no empezó a responder en 2 minutos. Inténtalo de nuevo o elige otro modelo.",
+    "idle": "La respuesta del modelo se interrumpió tras 2 minutos sin datos. Tu trabajo anterior se conserva.",
+    "total": "Esta solicitud al modelo alcanzó el límite de 1 hora. Tu trabajo anterior se conserva; continúa en otro turno."
   }
 }

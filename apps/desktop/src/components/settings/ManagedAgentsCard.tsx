@@ -1,3 +1,5 @@
+import { toast, useToastStore } from "@/lib/toast";
+import { StateNotice } from "../ui/StateNotice";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Row, Section, Switch } from "./Section";
@@ -23,7 +25,8 @@ async function readAccess(response: Response): Promise<Access> {
 }
 
 export function ManagedAgentsCard() {
-  const { t } = useTranslation("settings");
+  const { t } = useTranslation(["settings", "common"]);
+  const account = useRuntimeStore(state => state.gatewayUser?.id);
   const refresh = useRuntimeStore((state) => state.refreshGatewayRuntimes);
   const [access, setAccess] = useState<Access | null>(null);
   const [loading, setLoading] = useState(true);
@@ -47,11 +50,13 @@ export function ManagedAgentsCard() {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [revision]);
+  }, [revision, account]);
 
-  const save = async (id: ManagedAgent, label: string, enabled: boolean) => {
+  const save = async (id: ManagedAgent, label: string, enabled: boolean, returnFocus?: HTMLElement) => {
     if (!access || loading || loadError || saving) return;
     const previous = access;
+    const accountId = useRuntimeStore.getState().gatewayUser?.id ?? null;
+    const eventId = crypto.randomUUID();
     setSaving(id);
     setMessage(null);
     setAccess({ ...access, [id]: enabled });
@@ -63,11 +68,15 @@ export function ManagedAgentsCard() {
         body: JSON.stringify({ runtime: id, enabled }),
         signal: AbortSignal.timeout(15000),
       });
-      setAccess(await readAccess(response));
-      setMessage({ error: false, text: t("managedAgents.saved", { runtime: label }) });
+      const updated = await readAccess(response);
+      if (useToastStore.getState().accountId !== accountId) return;
+      setAccess(updated);
+      toast.success(t("managedAgents.saved", { runtime: label }), { accountId, eventId, returnFocus });
       // Catalog refresh failure must not roll back an already persisted setting.
       void refresh().catch(() => {});
     } catch {
+      if (useToastStore.getState().accountId !== accountId) return;
+      toast.error(t("managedAgents.failed", { runtime: label }), { accountId, eventId, returnFocus });
       setAccess(previous);
       setMessage({ error: true, text: t("managedAgents.failed", { runtime: label }) });
     } finally {
@@ -79,16 +88,13 @@ export function ManagedAgentsCard() {
     {AGENTS.map(({ id, label }) => <Row key={id} title={label} control={
       <Switch label={t("managedAgents.allow", { runtime: label })} checked={access?.[id] ?? false}
         disabled={loading || loadError || !access || saving !== null}
-        onChange={(value) => { void save(id, label, value); }} />
+        onChange={(value) => { void save(id, label, value, document.activeElement instanceof HTMLElement ? document.activeElement : undefined); }} />
     } />)}
-    {loadError && <div className="px-4 pb-3 text-xs">
-      <p role="alert" className="text-error">{t("managedAgents.loadFailed")}</p>
-      <button type="button" className="mt-2 rounded-input border border-border px-3 py-2 text-text"
-        onClick={() => setRevision((value) => value + 1)}>{t("managedAgents.retry")}</button>
+    {loadError && <div role="alert" className="px-4 pb-3">
+      <StateNotice issueId={`agent-load:${revision}`} summary={t("common:notification.problem")} detail={t("managedAgents.loadFailed")}
+        action={{ label: t("managedAgents.retry"), run: () => setRevision(value => value + 1) }} />
     </div>}
-    {(saving || message) && <p className={`px-4 pb-3 text-xs ${message?.error ? "text-error" : "text-muted"}`}
-      role={message?.error ? "alert" : "status"}>
-      {saving ? t("managedAgents.saving") : message?.text}
-    </p>}
+    {saving && <p className="px-4 pb-3 text-xs text-muted" role="status">{t("managedAgents.saving")}</p>}
+    {message?.error && <div role="alert" className="px-4 pb-3"><StateNotice issueId={`agent-save:${message.text}`} summary={t("common:notification.problem")} detail={message.text} /></div>}
   </Section>;
 }

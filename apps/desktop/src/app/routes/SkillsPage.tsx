@@ -1,3 +1,4 @@
+import { StateNotice } from "@/components/ui/StateNotice";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -191,12 +192,8 @@ export function SkillsPage() {
             </div>
 
             {skillsStatus === "error" && (
-              <div role="alert" className="mt-4 flex flex-wrap items-center gap-3 text-sm text-error">
-                <span>{t("skills.loadFailed")}</span>
-                <button type="button" onClick={() => void loadCatalog()} className="inline-flex min-h-9 items-center gap-1.5 text-link">
-                  <RefreshCw size={14} /> {t("skills.retry")}
-                </button>
-              </div>
+              <div role="alert" className="mt-4"><StateNotice issueId={skillsStatus} summary={t("skills.loadFailed")} detail={t("skills.loadFailed")}
+                action={{ label: t("skills.retry"), run: () => loadCatalog() }} /></div>
             )}
             {skillsStatus === "loading" && skills.length === 0 && kind !== "agent" && (
               <p role="status" className="mt-4 text-sm text-muted">{t("skills.loading")}</p>

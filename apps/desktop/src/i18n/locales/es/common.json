@@ -10,5 +10,14 @@
       "error": "No se pudo comprimir el contexto.",
       "done": "Contexto comprimido. La siguiente respuesta usará la conversación comprimida."
     }
+  },
+  "notification": {
+    "close": "Cerrar notificación",
+    "region": "Notificaciones",
+    "details": "Detalles",
+    "closeDetails": "Cerrar detalles",
+    "retry": "Reintentar",
+    "actionFailed": "La acción falló",
+    "problem": "Se requiere atención"
   }
 }

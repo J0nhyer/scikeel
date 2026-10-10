@@ -1,3 +1,7 @@
+2026-10-09 19:03 · Published Web notification lifecycle release 2026-10-09T10-45-54-186Z-69d8a690: 1,928 frontend, 415 platform, 43 release checks and nine mandatory browser scenarios passed; served bundle identity, HTTP 200 health and real OpenCode reply verified; previous release retained for rollback.
+
+2026-10-09 17:47 · Implemented Web notification lifecycle in isolated production-matched worktree (7470179): 1,928 frontend and 43 release checks passed, ten browser scenarios passed with zero skips, bounded Web build/lint/typecheck passed, and original platform service/health restored; candidate is not published.
+
 2026-10-08 02:19 · Added a browser clipboard fallback for unavailable or rejected writeText, preserving selection and focus; 25 clipboard/message/selection tests, typecheck and lint passed; project service restored and batch deployment pending.
 
 2026-10-08 01:36 · Hid the AI assistant selector in the Web chat composer; model and reasoning selectors remain available, lint passed, and batch deployment is pending.

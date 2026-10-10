@@ -1,3 +1,6 @@
+import { toast } from "./toast";
+import { useRuntimeStore } from "./runtime";
+import i18n from "@/i18n";
 import { useCallback, useEffect, useState, useRef } from "react";
 import { gatewayOrigin, isGatewayWeb } from "./webMode";
 import { researchPageId } from "./research";
@@ -129,10 +132,26 @@ export function useCollaboration(sessionId: string | null, enabled: boolean) {
     if (!isGatewayWeb || !enabled || !sessionId) return;
     pageUsers.set(sessionId, (pageUsers.get(sessionId) ?? 0) + 1);
     let active = true;
+    const accountId = useRuntimeStore.getState().gatewayUser?.id ?? null;
+    let observedRevision = -1;
+    let observed: { execution: number; status: string | undefined } | null = null;
     const read = async () => {
       try {
         const value = await collaborationRequest(sessionId);
         if (active) {
+          if (value.state.revision < observedRevision) return;
+          observedRevision = value.state.revision;
+          const status = value.state.delivery?.status;
+          if (observed && status === "completed" && (observed.execution !== value.state.execution || observed.status !== "completed")) {
+            toast.success(i18n.t("session:collaboration.deliveryCompleted"), {
+              accountId, sessionId, eventId: `delivery:${value.state.execution}:completed`,
+            });
+          } else if (observed && status === "failed" && (observed.execution !== value.state.execution || observed.status !== "failed")) {
+            toast.error(i18n.t("session:collaboration.deliveryFailed"), {
+              accountId, sessionId, eventId: `delivery:${value.state.execution}:failed:${value.state.delivery?.attempts ?? 0}`,
+            });
+          }
+          observed = { execution: value.state.execution, status };
           apply(value);
           setError(null);
         }

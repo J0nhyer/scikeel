@@ -33,6 +33,13 @@ describe("gateway workspace files", () => {
     expect(fetchMock.mock.calls[0][1]?.headers).toEqual({ authorization: "Bearer test-token" });
   });
 
+  it("returns the resolved workspace path for a bare filename", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      ticket: "report", path: "demo_analysis/report.md",
+    })));
+    expect(await resolveArtifactPath("report.md", "/user/session")).toBe("demo_analysis/report.md");
+  });
+
   it("rechecks missing files when later messages mention them after creation", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: "file not found" }), { status: 404 }))

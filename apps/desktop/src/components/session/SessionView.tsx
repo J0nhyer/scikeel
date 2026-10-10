@@ -1,3 +1,4 @@
+import { StateNotice } from "../ui/StateNotice";
 import { interactionDraftIdentity } from "@/lib/interactionState";
 import { ProjectEnvironmentPanel } from "./ProjectEnvironmentPanel";
 import type { AttachmentPromptContext } from "@ai4s/shared";
@@ -780,6 +781,7 @@ export function SessionView({
               )}
             </button>
           )}
+          {collaboration.state.delivery && <ResearchDeliveryStatus key={`${eid}:${collaboration.state.execution}`} delivery={collaboration.state.delivery} />}
           {eid && hasRuns && (
             <button
               onClick={() => {
@@ -1023,11 +1025,7 @@ export function SessionView({
                 </p>
               </div>
             )}
-            {error && focused && (
-              <div className="rounded-input border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
-                {error}
-              </div>
-            )}
+
             {connected && isEmpty && !eid && !webReadOnly && (
               <WorkflowStarters onPick={(p) => void onSend(p)} />
             )}
@@ -1170,6 +1168,7 @@ export function SessionView({
             Width is a proportion of the pane (zoom-independent), so it never
             spans edge-to-edge nor gets too narrow. */}
         <div
+          data-notification-avoid
           ref={composerRef}
           className={cn(
             "pointer-events-none absolute inset-x-0 bottom-0 z-10",
@@ -1203,10 +1202,10 @@ export function SessionView({
             style={zoom !== 1 ? { zoom } : undefined}
             className="pointer-events-auto relative mx-auto w-full max-w-[760px] space-y-3 px-8"
           >
+            {error && focused && <StateNotice issueId={`runtime:${eid ?? key}:${error}`} summary={t("common:notification.problem")} detail={error} />}
             {decisionInputError && <p role="alert" className="text-xs text-danger">{decisionInputError}</p>}
-            {collaboration.error && <div role="alert" className="text-xs text-danger">{collaboration.error}<button className="ml-2 underline" onClick={()=>void collaboration.refresh()}>{t("collaboration.retry")}</button></div>}
+            {collaboration.error && <StateNotice issueId={`collaboration:${eid}:${collaboration.error}`} summary={t("collaboration.retry")} detail={collaboration.error} action={{ label: t("collaboration.retry"), run: collaboration.refresh }} />}
             {collaboration.state.decisions.length>0 && <details className="text-xs text-muted"><summary>{t("collaboration.savedDecisions")}</summary><ul className="mt-2 space-y-2">{collaboration.state.decisions.map(d=><li key={d.id}><p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{d.question}</p><p className="whitespace-pre-wrap text-text [overflow-wrap:anywhere]">{d.answer}</p></li>)}</ul></details>}
-            {collaboration.state.delivery && <ResearchDeliveryStatus delivery={collaboration.state.delivery} />}
             {collaboration.state.pending && <ResearchDecisionCard key={collaboration.state.pending.id} decision={collaboration.state.pending} paused={collaboration.state.phase==="paused"} busy={collaboration.saving} onAnswer={collaboration.answer} onPause={collaboration.pause}/>}
             {activeRequest && (
               <InteractionPrompt

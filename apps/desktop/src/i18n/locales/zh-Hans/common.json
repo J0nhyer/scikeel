@@ -10,5 +10,14 @@
       "error": "压缩上下文失败。",
       "done": "上下文已压缩，下一条回复将使用压缩后的对话。"
     }
+  },
+  "notification": {
+    "close": "关闭通知",
+    "region": "通知",
+    "details": "详情",
+    "closeDetails": "关闭详情",
+    "retry": "重试",
+    "actionFailed": "操作失败",
+    "problem": "需要处理"
   }
 }

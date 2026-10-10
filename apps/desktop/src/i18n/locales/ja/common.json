@@ -10,5 +10,14 @@
       "error": "コンテキストを圧縮できませんでした。",
       "done": "コンテキストを圧縮しました。次の返信は圧縮後の会話を使用します。"
     }
+  },
+  "notification": {
+    "close": "通知を閉じる",
+    "region": "通知",
+    "details": "詳細",
+    "closeDetails": "詳細を閉じる",
+    "retry": "再試行",
+    "actionFailed": "操作に失敗しました",
+    "problem": "対応が必要です"
   }
 }

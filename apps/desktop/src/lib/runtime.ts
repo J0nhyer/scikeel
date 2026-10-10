@@ -1564,6 +1564,13 @@ function providerLabel(provider: string | undefined): string {
  * only speak for messages that are provably one provider's (#117).
  */
 export function explainRuntimeError(message: string, action?: RetryAction): string {
+  // Only broker-issued stable markers explain local deadlines. A remote socket
+  // reset alone cannot identify whether the local broker timed out.
+  const timeout = /\[model_(first_byte|idle|total)_timeout\]/.exec(message);
+  if (timeout?.[1] === "first_byte") return i18n.t("session:modelTimeout.first_byte");
+  if (timeout?.[1] === "idle") return i18n.t("session:modelTimeout.idle");
+  if (timeout?.[1] === "total") return i18n.t("session:modelTimeout.total");
+
   // Known cause, straight from the runtime — no guessing from wording.
   if (action?.reason === "free_tier_limit") {
     return (
@@ -2054,7 +2061,7 @@ async function performTurn(
           [key]: {
             ...cur,
             loaded: true,
-            blocks: [...cur.blocks, { kind: "status-line", text: `Send failed: ${msg}`, tone: "error" }],
+            blocks: [...cur.blocks, { kind: "status-line", text: `Send failed: ${msg}`, tone: "error", presentation: { kind: "failure", eventId: `send:${cur.blocks.length}` } }],
           },
         },
       };
@@ -3059,7 +3066,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
                 [sid]: {
                   ...cur,
                   loaded: true,
-                  blocks: [...cur.blocks, { kind: "status-line", text: message, tone: "error" }],
+                  blocks: [...cur.blocks, { kind: "status-line", text: message, tone: "error", presentation: { kind: "failure", eventId: `error:${cur.blocks.length}` } }],
                 },
               },
             };
@@ -4477,6 +4484,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             kind: "status-line",
             text: i18n.t("session:localCommand.cleared"),
             tone: "review",
+            presentation: { kind: "information", eventId: "local-clear" },
             divider: true,
           },
         ],
@@ -5072,7 +5080,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             loaded: true,
             blocks: [
               ...(settled[sid] ?? cur).blocks,
-              { kind: "status-line", text: "Interrupted", tone: "error" },
+              { kind: "status-line", text: "Interrupted", tone: "error", presentation: { kind: "interruption", eventId: "stop" } },
             ],
           },
         },
@@ -5626,7 +5634,7 @@ export function foldEvent(
       if (last?.kind === "status-line" && (last.tone === "done" || last.tone === "error")) {
         return { blocks, index };
       }
-      blocks.push({ kind: "status-line", text: "done", tone: "done" });
+      blocks.push({ kind: "status-line", text: "done", tone: "done", presentation: { kind: "completion", eventId: `${event.sessionId}:${blocks.length}` } });
       return { blocks, index };
     }
     default:
@@ -5861,7 +5869,7 @@ export function historyToThread(
       if (m.error && !/abort/i.test(m.error)) {
         // Same explanation the live line got: a restart is exactly when the user
         // no longer has the context to work out what to do about it.
-        blocks.push({ kind: "status-line", text: explainRuntimeError(m.error), tone: "error" });
+        blocks.push({ kind: "status-line", text: explainRuntimeError(m.error), tone: "error", presentation: { kind: "failure", eventId: m.id ?? `history:${messageIndex}` } });
         // …and the same repair offer. The damage is on disk, so reopening the
         // session shows the failure again; without this the way out would exist
         // only in the tab that happened to be open when it first happened. The
@@ -5877,6 +5885,7 @@ export function historyToThread(
       kind: "status-line",
       text: "Interrupted — this turn did not finish. Send a new message to continue.",
       tone: "error",
+      presentation: { kind: "interruption", eventId: `history:${messages[messages.length - 1]?.id ?? "interrupted"}` },
     });
   }
   return { blocks, index: {} };

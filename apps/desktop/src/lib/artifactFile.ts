@@ -29,26 +29,34 @@ export async function readArtifact(path: string, root?: FileRoot): Promise<Artif
   return invoke<ArtifactFile>("read_artifact", { path, root });
 }
 
+interface FileTicket { ticket: string; path?: string }
+
+async function requestFileTicket(path: string, root?: FileRoot, dir?: string): Promise<FileTicket> {
+  // The gateway token must NOT ride in this URL: it feeds an <iframe>/<img>
+  // src and the "open in a tab" action, and a document can read its own
+  // location whatever its sandbox — so one prompt-injected HTML artifact
+  // would post the token out and hand over the whole gateway. Trade it,
+  // over an Authorization header, for a ticket that unlocks this one file.
+  const t = gatewayToken();
+  const query =
+    `path=${encodeURIComponent(path)}` +
+    `${root ? `&root=${root}` : ""}${dir ? `&dir=${encodeURIComponent(dir)}` : ""}`;
+  const res = await fetch(`${gatewayOrigin()}/v1/fs/ticket?${query}`, {
+    headers: t ? { authorization: `Bearer ${t}` } : {},
+  });
+  if (!res.ok) throw await fileRequestError(res);
+  const result = (await res.json()) as FileTicket;
+  const { ticket } = result;
+  if (!ticket) throw new Error("The server did not provide a file preview URL");
+  return result;
+}
+
 /** Local-server URL a workspace file is previewable at (desktop only). The tiny
  *  Rust file server gives the webview a real http://127.0.0.1 URL with correct
  *  MIME, so native viewers (PDF, images, HTML) render it directly. */
 export async function previewUrl(path: string, root?: FileRoot, dir?: string): Promise<string | null> {
   if (isGatewayWeb) {
-    // The gateway token must NOT ride in this URL: it feeds an <iframe>/<img>
-    // src and the "open in a tab" action, and a document can read its own
-    // location whatever its sandbox — so one prompt-injected HTML artifact
-    // would post the token out and hand over the whole gateway. Trade it,
-    // over an Authorization header, for a ticket that unlocks this one file.
-    const t = gatewayToken();
-    const query =
-      `path=${encodeURIComponent(path)}` +
-      `${root ? `&root=${root}` : ""}${dir ? `&dir=${encodeURIComponent(dir)}` : ""}`;
-    const res = await fetch(`${gatewayOrigin()}/v1/fs/ticket?${query}`, {
-      headers: t ? { authorization: `Bearer ${t}` } : {},
-    });
-    if (!res.ok) throw await fileRequestError(res);
-    const { ticket } = (await res.json()) as { ticket?: string };
-    if (!ticket) throw new Error("The server did not provide a file preview URL");
+    const { ticket } = await requestFileTicket(path, root, dir);
     return `${gatewayOrigin()}/v1/fs/read?ticket=${encodeURIComponent(ticket)}`;
   }
   if (!isTauri) return null;
@@ -77,13 +85,14 @@ export async function downloadArtifact(path: string, root?: FileRoot, dir?: stri
  *  null when no such file exists; echoes the path back in browser dev. */
 export async function resolveArtifactPath(path: string, dir?: string): Promise<string | null> {
   if (isGatewayWeb) {
-    // The file-ticket endpoint resolves bare names inside this workspace too.
+    // Use the resolved workspace path so bare names and full paths deduplicate.
+    // Older gateways only return a ticket; keep their original path as a fallback.
     // Never turn a planned filename into a download without checking it exists.
     // Only share pending lookups: a missing file may be created on the next turn.
     const key = JSON.stringify([gatewayOrigin(), dir, path]);
     const pending = webResolvedPaths.get(key);
     if (pending) return pending;
-    const lookup = previewUrl(path, undefined, dir).then(() => path).catch(() => null);
+    const lookup = requestFileTicket(path, undefined, dir).then((result) => result.path ?? path).catch(() => null);
     webResolvedPaths.set(key, lookup);
     void lookup.finally(() => webResolvedPaths.delete(key));
     return lookup;
