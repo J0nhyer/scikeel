@@ -1,7 +1,7 @@
 # Web Default Model Settings
 
 Date: 2026-10-11
-Status: Draft for user review
+Status: Implemented, published and live-verified on 2026-10-11
 Scope: Multi-user gateway Web, including phone-width viewports
 
 ## 1. User intent
@@ -10,7 +10,7 @@ The model control under Settings changes the signed-in user's default model for 
 
 ## 2. Investigation and evidence
 
-The running `osd-platform.service` uses `.deploy/web-releases/2026-10-10T18-04-19-460Z-4fe1363a/source`, not the main checkout. Findings below refer to that deployed source unless stated otherwise. The checkout contains extensive unrelated changes; implementation must start from a production-compatible source and preserve that work.
+At initial diagnosis, `osd-platform.service` used `.deploy/web-releases/2026-10-10T18-04-19-460Z-4fe1363a/source`, not the main checkout. Findings below refer to that deployed source unless stated otherwise. The checkout contains extensive unrelated changes; implementation must start from a production-compatible source and preserve that work.
 
 A read-only authenticated check on 2026-10-11 returned HTTP 200 from `/api/runtime` with the current assistant `opencode`; `/global/config` returned HTTP 200 with `model: opencode/big-pickle`. Codex and Claude were reported disabled/unavailable. No assistant switch, model write, conversation turn, or model-provider acceptance call was performed.
 
@@ -30,7 +30,7 @@ This proves the state-transition defect. It is not a browser capture of the user
 
 ### Verified adjacent behavior
 
-- The SDK writes `{ model }` to `PATCH /global/config` and reads the same endpoint. The gateway allows model-only config writes; this is not categorically a forbidden configuration action.
+- The SDK writes `{ model }` to `PATCH /global/config` and reads the same endpoint. Managed CLI runtimes permit model-only writes. Live acceptance on 2026-10-11 verified that the production sandbox gateway instead returns HTTP 404: its route policy permits only the config read. The initial investigation incorrectly generalized the CLI behavior to this gateway.
 - Managed CLI runtimes expose compatible config endpoints and persist the chosen model through `setUserModel`, scoped by user and assistant. They must remain supported, but live Claude acceptance is excluded.
 - `WebChoiceMenu` invokes async selections without handling rejection. The store records `modelSwitchError`, but `GatewayModelsPanel` does not present that failure. A failed default write lacks useful feedback in this panel.
 - Existing model choices are stored separately in `sessionModels`. The Settings control must retain this separation.
@@ -86,4 +86,10 @@ Run meaningful tests through package scripts with the existing cgroup limits and
 
 Expected changes are limited to catalog publication/default-switch state in `apps/desktop/src/lib/runtime.ts`, default-picker failure handling, `GatewayModelsPanel.tsx`, localized copy, and focused store/component/platform/browser tests. Preserve the existing API and storage schemas unless a concrete failing test demonstrates an additional persistence defect.
 
-This document records diagnosis and a proposed design. No product fix or deployment has been performed for this task. User review precedes an implementation plan.
+The user authorized implementation and publication. The first frontend release passed bounded checks and was published; live Settings acceptance then verified the additional sandbox gateway save blocker. The implementation now also permits a platform-handled model-only update after validating its key against the current tenant's sanitized model catalog, checks current account generation, forwards only `{ model }` to that account's worker with an account-owned directory, and returns only the model. Extra config fields, directory overrides, foreign origins and unlisted model keys remain rejected. Upstream errors and raw config must never expose credentials. A deterministic two-user regression verifies isolation, rejected requests, upstream failure and retry. No model-provider turn is needed to validate the default save.
+
+
+Startup inspection also found that the managed runner rewrites the administrator broker profile when an account worker starts. After an accepted model-only runtime write, the platform therefore atomically stores only `{ model }` in a private per-account preference file. Worker configuration reads this preference and restores it only if its provider/model remains enabled; retired or foreign choices fall back to the administrator default. This avoids changing the sandbox image or widening config access. Deterministic tests verify persisted separate-user values and startup model validation; final live acceptance must include a service restart, reload and restoration of the original account default.
+
+
+Final release: `2026-10-11T06-04-04-295Z-c82d78f1`. Bounded checks passed: lint/typecheck, 1,961 frontend tests for the unchanged frontend, 424 final platform tests and 10 candidate browser assertions. Live Settings verification passed at 1280 and 390 pixels: save/readback, enabled picker, reload persistence, no overflow and no browser page errors. The 1280-pixel scenario also verified persistence across an actual platform restart. Both contexts restored the original `opencode/big-pickle` default. Settings verification sent no model turns; the standard release gate separately passed the authorized free OpenCode transport check. Evidence: `.deploy/verification/model-default-2026-10-11/live/results.json`. The publication workflow retains the previous release and recovery configuration.

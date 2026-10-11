@@ -37,7 +37,7 @@ No new production module is needed. Keep changes to the large runtime file local
 
 ## Task 1: Establish an isolated production-compatible baseline
 
-- [ ] **1. Read superpowers:using-git-worktrees and inspect the active deployment.** Use the current package release workflow for read-only inspection:
+- [x] **1. Read superpowers:using-git-worktrees and inspect the active deployment.** Use the current package release workflow for read-only inspection:
 
 ```bash
 pnpm web:release inspect --source /opt/open-science-desktop
@@ -46,7 +46,7 @@ systemctl show osd-platform.service -p WorkingDirectory --value
 
 Record the active release ID, manifest fingerprint, source directory and rollback release. Do not print credentials or environment files. Expected: inspection identifies the active source and distinguishes main-checkout changes from deployed source.
 
-- [ ] **2. Create `/opt/open-science-desktop/.worktrees/web-default-model-settings` on branch `fix/web-default-model-settings` using the worktree skill.** Overlay only the active release's source inventory into this newly created worktree, remove source-allowed baseline files absent from that inventory only inside the new worktree, and validate pinned installed dependencies before staging their views. Use the following Node program from the main checkout; arguments are the active manifest path and the new worktree path:
+- [x] **2. Create `/opt/open-science-desktop/.worktrees/web-default-model-settings` on branch `fix/web-default-model-settings` using the worktree skill.** Overlay only the active release's source inventory into this newly created worktree, remove source-allowed baseline files absent from that inventory only inside the new worktree, and validate pinned installed dependencies before staging their views. Use the following Node program from the main checkout; arguments are the active manifest path and the new worktree path:
 
 ```js
 import { readFile, unlink } from 'node:fs/promises';
@@ -88,13 +88,13 @@ node /opt/open-science-desktop/.deploy/verification/model-default-2026-10-11/pre
 ```
  Do not reinstall dependencies or remove the resource guard. Expected: exact source/dependency identity match. If production changes during preparation, rebuild the isolated baseline from the newly inspected release.
 
-- [ ] **3. Commit the isolated baseline locally, then copy only this spec and plan into its docs directory.** Check the staged file list before committing. Do not push or attach a remote. Run `pnpm web:release inspect --source /opt/open-science-desktop/.worktrees/web-default-model-settings`; before product edits, source changes against production must be empty. Record the baseline milestone in the one progress file.
+- [x] **3. Commit the isolated baseline locally, then copy only this spec and plan into its docs directory.** Check the staged file list before committing. Do not push or attach a remote. Run `pnpm web:release inspect --source /opt/open-science-desktop/.worktrees/web-default-model-settings`; before product edits, source changes against production must be empty. Record the baseline milestone in the one progress file.
 
 ## Task 2: Reproduce the race through the real store
 
 **Files:** `apps/desktop/src/lib/runtime.store.test.ts`.
 
-- [ ] **1. Add deterministic gates to the existing mock.** Add and reset `defaultModelGate: Promise<void> | null`. Change its default read to capture the return value before awaiting the gate, so an old request can complete after a newer write:
+- [x] **1. Add deterministic gates to the existing mock.** Add and reset `defaultModelGate: Promise<void> | null`. Change its default read to capture the return value before awaiting the gate, so an old request can complete after a newer write:
 
 ```ts
 async getDefaultModel() {
@@ -130,7 +130,7 @@ function primeDefaultSettings() {
 }
 ```
 
-- [ ] **2. Add this race regression using the actual `setDefaultModel` and `loadCatalog`.** Only control the recovery boundary; do not mock catalog publication or copy the production condition into the assertion:
+- [x] **2. Add this race regression using the actual `setDefaultModel` and `loadCatalog`.** Only control the recovery boundary; do not mock catalog publication or copy the production condition into the assertion:
 
 ```ts
 it.each(['catalog-first', 'reconnect-first'])('settles the default catalog: %s', async order => {
@@ -162,7 +162,7 @@ it.each(['catalog-first', 'reconnect-first'])('settles the default catalog: %s',
 });
 ```
 
-- [ ] **3. Add a stale-read case and a catalog-failure case.** These exercise the existing request/publication boundaries:
+- [x] **3. Add a stale-read case and a catalog-failure case.** These exercise the existing request/publication boundaries:
 
 ```ts
 it('excludes a stale default response after a newer save', async () => {
@@ -199,7 +199,7 @@ it('keeps a failed current catalog unavailable', async () => {
 ```
 
 
-- [ ] **4. Run the focused reproduction and confirm the intended failure.** From the isolated worktree:
+- [x] **4. Run the focused reproduction and confirm the intended failure.** From the isolated worktree:
 
 ```bash
 pnpm test src/lib/runtime.store.test.ts -t 'settles the default catalog|stale default'
@@ -211,7 +211,7 @@ Expected before the fix: catalog-first fails because the catalog remains loading
 
 **Files:** `apps/desktop/src/lib/runtime.ts`, `apps/desktop/src/lib/runtime.store.test.ts`, seven `apps/desktop/src/i18n/locales/{en,zh-Hans,de,es,fr,ja,ko}/settings.json` files.
 
-- [ ] **1. Publish successful current catalog availability during switching.** Replace the successful models publication callback in `loadCatalog` with this localized change:
+- [x] **1. Publish successful current catalog availability during switching.** Replace the successful models publication callback in `loadCatalog` with this localized change:
 
 ```ts
 set((state) => {
@@ -227,7 +227,7 @@ set((state) => {
 
 Keep `current()`, client identity checks, retry bounds, availability enrichment and dangling-model rules. Do not settle catalog status from a switch's `finally` or a timer.
 
-- [ ] **2. Invalidate old Web model reads when a new default save begins.** Extend the existing Web invalidation in `setDefaultModel`:
+- [x] **2. Invalidate old Web model reads when a new default save begins.** Extend the existing Web invalidation in `setDefaultModel`:
 
 ```ts
 if (isGatewayWeb) {
@@ -239,7 +239,7 @@ set({ modelSwitching: true, switching: true, modelSwitchError: null });
 
 Preserve the existing successful write → `defaultModel` update → required reconnection ordering and diagnostic probes. This invalidates reads started before the accepted write without changing desktop publication behavior.
 
-- [ ] **3. Make errors phase-aware and protect superseded contexts.** First add `model.defaultRecoveryFailed` to all seven settings locales using the exact values in Task 4's table, so the new recovery assertion tests real localized copy. Capture the client and existing Web context generation at setter entry. Move the disconnected-client check inside its try block so failure is recorded for the Settings UI. Track write acceptance locally; no new persisted state is needed:
+- [x] **3. Make errors phase-aware and protect superseded contexts.** First add `model.defaultRecoveryFailed` to all seven settings locales using the exact values in Task 4's table, so the new recovery assertion tests real localized copy. Capture the client and existing Web context generation at setter entry. Move the disconnected-client check inside its try block so failure is recorded for the Settings UI. Track write acceptance locally; no new persisted state is needed:
 
 ```ts
 const source = client;
@@ -281,7 +281,7 @@ modelSwitching: false,
 
 Assistant/workspace operations retain ownership of their existing `switching` lifecycle. Preserve a saved default after reconnection failure rather than reporting an imaginary rollback.
 
-- [ ] **4. Expand store regression cases.** Extend the existing model-switch failure describe block with these explicit outcomes:
+- [x] **4. Expand store regression cases.** Extend the existing model-switch failure describe block with these explicit outcomes:
 
 | Trigger | Required assertions |
 | --- | --- |
@@ -304,7 +304,7 @@ Expected: race and failure assertions pass, existing catalog/recovery tests rema
 
 **Files:** `WebModelPicker.tsx`, `WebModelPicker.test.tsx`, `GatewayModelsPanel.tsx`, new `GatewayModelsPanel.test.tsx`, seven `settings.json` locale files.
 
-- [ ] **1. Add failing interaction assertions.** In picker tests, seed two available models and `defaultModel`, render `<WebModelPicker defaultMode />`, choose the second model, and assert the default setter receives its full key while the session map remains unchanged. Repeat for desktop menu and phone sheet roles. Reject the setter after recording `modelSwitchError`; assert the rejection is consumed and the panel displays its detail. Retain existing conversation-selector tests and effort behavior.
+- [x] **1. Add failing interaction assertions.** In picker tests, seed two available models and `defaultModel`, render `<WebModelPicker defaultMode />`, choose the second model, and assert the default setter receives its full key while the session map remains unchanged. Repeat for desktop menu and phone sheet roles. Reject the setter after recording `modelSwitchError`; assert the rejection is consumed and the panel displays its detail. Retain existing conversation-selector tests and effort behavior.
 
 A complete Settings selection test using the existing fixture is:
 
@@ -331,7 +331,7 @@ it('saves the default without changing explicit session choices', async () => {
 
 Use the existing test's state reset pattern to restore overridden setters after the test. For the new panel test, mock only `ManagedAgentsCard` and seed store role `user`; use real picker/rendering.
 
-- [ ] **2. Add the remaining three keys under the existing `model` object in every settings locale.** Preserve all existing keys, including `defaultRecoveryFailed` added in Task 3. The new values are:
+- [x] **2. Add the remaining three keys under the existing `model` object in every settings locale.** Preserve all existing keys, including `defaultRecoveryFailed` added in Task 3. The new values are:
 
 | Locale | `defaultTitle` | `defaultDescription` | `defaultSaveProblem` | `defaultRecoveryFailed` |
 | --- | --- | --- | --- | --- |
@@ -343,7 +343,7 @@ Use the existing test's state reset pattern to restore overridden setters after 
 | ja | デフォルトモデル | このアカウントで現在のアシスタントとの新しい会話に使用するモデルです。既存の会話のモデル選択は変わりません。 | デフォルトモデルの変更を完了できませんでした | デフォルトモデルは保存されましたが、アシスタントに再接続できませんでした：{{detail}} |
 | ko | 기본 모델 | 현재 계정과 어시스턴트의 새 대화에서 이 모델을 사용합니다. 기존 대화의 모델 선택은 유지됩니다. | 기본 모델 변경을 완료하지 못했습니다 | 기본 모델은 저장되었지만 어시스턴트에 다시 연결하지 못했습니다: {{detail}} |
 
-- [ ] **3. Handle default-selection rejection in `WebModelPicker`.** Add the settings namespace and use the following handler and label; leave reasoning/conversation behavior intact:
+- [x] **3. Handle default-selection rejection in `WebModelPicker`.** Add the settings namespace and use the following handler and label; leave reasoning/conversation behavior intact:
 
 ```tsx
 const { t } = useTranslation(['session', 'settings']);
@@ -362,7 +362,7 @@ onSelect={selectModel}
 
 Do not add a generic catch to every `WebChoiceMenu` consumer, and do not emit a second toast for the same failure.
 
-- [ ] **4. Present the description and error in `GatewayModelsPanel`.** Subscribe to `modelSwitchError`, use `model.defaultTitle` instead of `model.title` for the default row, and place the description immediately below it. Reuse the deployed `StateNotice` component:
+- [x] **4. Present the description and error in `GatewayModelsPanel`.** Subscribe to `modelSwitchError`, use `model.defaultTitle` instead of `model.title` for the default row, and place the description immediately below it. Reuse the deployed `StateNotice` component:
 
 ```tsx
 const modelError = useRuntimeStore(s => s.modelSwitchError);
@@ -374,7 +374,7 @@ const modelError = useRuntimeStore(s => s.modelSwitchError);
 
 Keep unavailable-catalog retry controls. Users can retry a save by selecting the desired model again once the runtime/catalog is usable. Catalog refresh alone must not be presented as retrying a rejected model write.
 
-- [ ] **5. Run targeted UI/localization checks and commit.**
+- [x] **5. Run targeted UI/localization checks and commit.**
 
 ```bash
 pnpm test src/components/thread/WebModelPicker.test.tsx src/components/settings/GatewayModelsPanel.test.tsx src/app/routes/SettingsPage.web.test.tsx src/i18n/parity.test.ts src/i18n/config.test.ts
@@ -386,7 +386,7 @@ Expected: English/Chinese accessible labels, menu/sheet selection, visible failu
 
 **Files:** `runtime.store.test.ts`, `services/platform/test/platform-server.test.mjs`, `webSessionContinuity.acceptance.test.mjs`.
 
-- [ ] **1. Add real-store send assertions.** Reuse `primeDefaultSettings`, mock successful recovery, change to `fixture/new`, then call the existing `sendPrompt('default inheritance fixture')` from an unbound draft. Assert `sendPromptFullSpy.mock.calls.at(-1)?.[3]` is `fixture/new`. For an explicit draft, set `sessionModels[DRAFT_KEY] = 'fixture/old'` before sending and expect the old model. For an existing session, seed its explicit model and make it the active layout leaf using the existing per-session test helpers; changing the default must leave that record intact. Assert `abortSession`, `sendPromptSpy` and `createSessionSpy` receive no calls merely from changing the default. Snapshot `runningSessions` before the change and assert its entries remain unchanged.
+- [x] **1. Add real-store send assertions.** Reuse `primeDefaultSettings`, mock successful recovery, change to `fixture/new`, then call the existing `sendPrompt('default inheritance fixture')` from an unbound draft. Assert `sendPromptFullSpy.mock.calls.at(-1)?.[3]` is `fixture/new`. For an explicit draft, set `sessionModels[DRAFT_KEY] = 'fixture/old'` before sending and expect the old model. For an existing session, seed its explicit model and make it the active layout leaf using the existing per-session test helpers; changing the default must leave that record intact. Assert `abortSession`, `sendPromptSpy` and `createSessionSpy` receive no calls merely from changing the default. Snapshot `runningSessions` before the change and assert its entries remain unchanged.
 
 ```ts
 expect(mocks.sendPromptFullSpy.mock.calls.at(-1)?.[3]).toBe('fixture/new');
@@ -396,7 +396,7 @@ expect(mocks.abortSession).not.toHaveBeenCalled();
 
 Keep send assertions separate from the no-send assertion so previous test activity cannot invalidate their meaning. If a failing test reveals that opening a draft silently pins a default, change only that pinning site to retain an absent model until explicit selection or actual first send; do not clear explicit draft keys or historical session models.
 
-- [ ] **2. Strengthen the existing deterministic platform fixture.** Capture the existing student login result as `const studentLogin = await login(student, 'student', 'student-password')` in the managed-CLI test so its user ID is available. In `platform-server.test.mjs`, after `patchAdminModel` changes the admin's Codex default, reread the student's `/global/config` and assert its value remains `codex/gpt-fast`; read the admin's `/api/runtime` and assert its Codex `selectedModel` is the saved ID. To make isolation distinguishable, switch the student to `gpt-deep` before the admin PATCH and assert the student stays deep afterward. Recreate the fixture `CliRuntimeManager` with its same temporary persisted runtime directory using the test's existing construction arguments, call `init()`, and assert `modelForUser(adminLogin.user.id, 'codex')` and `modelForUser(studentLogin.user.id, 'codex')` retain their distinct values. Close the recreated manager in `finally`. Use this complete reconstruction after the isolation assertion:
+- [x] **2. Strengthen the existing deterministic platform fixture.** Capture the existing student login result as `const studentLogin = await login(student, 'student', 'student-password')` in the managed-CLI test so its user ID is available. In `platform-server.test.mjs`, after `patchAdminModel` changes the admin's Codex default, reread the student's `/global/config` and assert its value remains `codex/gpt-fast`; read the admin's `/api/runtime` and assert its Codex `selectedModel` is the saved ID. To make isolation distinguishable, switch the student to `gpt-deep` before the admin PATCH and assert the student stays deep afterward. Recreate the fixture `CliRuntimeManager` with its same temporary persisted runtime directory using the test's existing construction arguments, call `init()`, and assert `modelForUser(adminLogin.user.id, 'codex')` and `modelForUser(studentLogin.user.id, 'codex')` retain their distinct values. Close the recreated manager in `finally`. Use this complete reconstruction after the isolation assertion:
 
 ```js
 const restored = new CliRuntimeManager({
@@ -431,7 +431,7 @@ assert.deepEqual(await json(studentDefault), { model: 'codex/gpt-deep' });
 
 Existing deterministic Claude fixtures remain allowed; no live Claude/provider request is part of this suite.
 
-- [ ] **3. Extend the existing candidate continuity browser test.** Make its fixture HTML route accept `/settings` as well as `/` and `/live`. After its existing continuity assertions, run new fresh contexts at widths 1280 and 390 against the same fake server. Intercept `/global/config` and `/config/providers` at the page layer with an in-memory default and two fixture models; all writes remain local fixtures. A complete route handler for saved config is:
+- [x] **3. Extend the existing candidate continuity browser test.** Make its fixture HTML route accept `/settings` as well as `/` and `/live`. After its existing continuity assertions, run new fresh contexts at widths 1280 and 390 against the same fake server. Intercept `/global/config` and `/config/providers` at the page layer with an in-memory default and two fixture models; all writes remain local fixtures. A complete route handler for saved config is:
 
 ```js
 let configured = 'fixture/model';
@@ -469,7 +469,7 @@ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWi
 
 Create each context with locale `en` stored via `addInitScript`; instantiate `page` before routes. Collect `pageerror` messages and assert none. Run the rejection route once, verify the visible error and unchanged configured default, clear `failWrite`, select again, and assert recovery. Capture only public UI screenshots into release verification artifacts. Close contexts and fake server/SSE resources using the existing `finally` cleanup. Store tests prove both precise race orderings; the browser scenario verifies the complete user interaction and reload without a paid model call.
 
-- [ ] **4. Run deterministic checks.**
+- [x] **4. Run deterministic checks.**
 
 ```bash
 pnpm test src/lib/runtime.store.test.ts src/components/thread/WebModelPicker.test.tsx src/components/settings/GatewayModelsPanel.test.tsx
@@ -480,7 +480,7 @@ Expected: inheritance, distinct-user persisted defaults, existing sessions and r
 
 ## Task 6: Validate the candidate and prepare release evidence
 
-- [ ] **1. Run the standard release inspection from the isolated checkout.**
+- [x] **1. Run the standard release inspection from the isolated checkout.**
 
 ```bash
 pnpm web:release inspect --source /opt/open-science-desktop/.worktrees/web-default-model-settings
@@ -488,7 +488,7 @@ pnpm web:release inspect --source /opt/open-science-desktop/.worktrees/web-defau
 
 Expected change list: only this plan's product/test/localization paths. Review any extra file before preparation. A `runtime.ts` change correctly selects broad frontend/platform checks, session browser acceptance and live OpenCode verification; do not narrow the release gates to hide failures. The patch does not require a new sandbox image.
 
-- [ ] **2. Prepare a candidate through the package release workflow.**
+- [x] **2. Prepare a candidate through the package release workflow.**
 
 ```bash
 pnpm web:release prepare --source /opt/open-science-desktop/.worktrees/web-default-model-settings
@@ -498,7 +498,7 @@ Use the release workflow's validated browser settings. It runs bounded lint/type
 
 Expected: a prepared manifest with recorded check results, candidate artifact hashes, successful desktop/phone Settings scenario, and the existing conversation continuity scenario. Inspect browser results to ensure the added default scenario actually ran rather than being skipped.
 
-- [ ] **3. Prepare a concise reviewable release result.** Record the candidate ID, complete source diff, test totals, retained screenshots, and rollback release. Add one progress milestone for verified candidate readiness. This task ends with a prepared candidate; publishing requires the user's instruction to deploy or existing explicit deployment authorization.
+- [x] **3. Prepare a concise reviewable release result.** Record the candidate ID, complete source diff, test totals, retained screenshots, and rollback release. Add one progress milestone for verified candidate readiness. This task ends with a prepared candidate; publishing requires the user's instruction to deploy or existing explicit deployment authorization.
 
 When publication is authorized, use the exact prepared ID:
 
@@ -519,3 +519,14 @@ Then verify live health and Settings rendering at desktop/phone widths. If perfo
 | Bounded checks, phone/desktop Web acceptance, deployment integrity | 1, 6 |
 
 Implementation is complete when the real-store regression passes for both response orders, default persistence/inheritance and user isolation pass, errors remain visible/retryable without an unhandled rejection, and candidate browser/build gates pass. Candidate readiness and publication are separate recorded milestones. This planning turn has made no product change or deployment.
+
+
+## Live acceptance correction (2026-10-11)
+
+The first frontend release's live Settings save returned HTTP 404 in the production sandbox gateway. Managed CLI fixture success did not prove the managed sandbox path: `runtime-route-policy.mjs` denied `PATCH /global/config`. Extend the approved implementation with a platform-handled model-only route, validate model membership in the authenticated account's sanitized catalog, enforce current account generation and owned root directory, forward only the model, and sanitize the response. Reject extra config fields, directory query overrides, foreign origins and unlisted models; test two-user isolation, upstream failure and retry. Rerun the full bounded publication workflow with the backend change and verify desktop/phone live save, reload and original-default restoration before declaring completion.
+
+
+Startup correction: the runner regenerates the managed profile, so runtime config alone cannot preserve an account default across worker restart. Atomically persist only the accepted model in private per-account platform storage and restore it while issuing the next managed profile, provided it remains enabled. Test reconstructed reads, two-user separation and retired/foreign fallback. Verify a real service restart after saving at desktop width, then verify phone save/reload and restore the original model in cleanup. This adds no credential storage or sandbox image change.
+
+
+Completion evidence (2026-10-11): release `2026-10-11T06-04-04-295Z-c82d78f1` is published. Original frontend checks passed 1,961 tests; the final backend checks passed 424 tests with zero failures, and all 10 required candidate browser assertions passed. Live 1280/390-pixel save and reload passed, desktop service-restart persistence passed, and the original default was restored in both contexts. Live results and screenshots are retained under `.deploy/verification/model-default-2026-10-11/live/`. Product changes remain on the isolated `fix/web-default-model-settings` worktree; unrelated main-checkout changes remain preserved.
