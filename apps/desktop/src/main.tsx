@@ -10,7 +10,7 @@ import { router } from "./app/router";
 import { consumeUrlToken, installGatewayAuthGuard } from "./lib/webMode";
 import "./index.css";
 import { installLoginPreparation } from "./lib/loginPreparation";
-import { installPlatformAccountLifecycle, useRuntimeStore } from "./lib/runtime";
+import { installPlatformAccountLifecycle, signOutPlatformBrowser, useRuntimeStore } from "./lib/runtime";
 
 // Web client: adopt a token from the opened link (so a copied URL just works),
 // then catch gateway 401s (rotated/revoked token) → re-auth. Both before any
@@ -18,7 +18,7 @@ import { installPlatformAccountLifecycle, useRuntimeStore } from "./lib/runtime"
 consumeUrlToken();
 installGatewayAuthGuard();
 installPlatformAccountLifecycle();
-installLoginPreparation(useRuntimeStore);
+installLoginPreparation(useRuntimeStore, signOutPlatformBrowser);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

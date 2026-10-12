@@ -3,14 +3,27 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { GatewayAccountMenu } from "./GatewayAccountMenu";
+import { useRuntimeStore } from "@/lib/runtime";
 
 const navigate = vi.fn();
+vi.mock("@/lib/runtime", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/runtime")>("@/lib/runtime")),
+  signOutPlatformBrowser: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/webMode", () => ({ isGatewayWeb: true, isPlatformWeb: true }));
 vi.mock("react-router-dom", async () => ({
   ...(await vi.importActual<typeof import("react-router-dom")>("react-router-dom")),
   useNavigate: () => navigate,
 }));
 
 describe("GatewayAccountMenu", () => {
+  it.each(["connecting", "error", "offline"] as const)("keeps logout available with unknown identity while %s", status => {
+    useRuntimeStore.setState({ status, gatewayUser: null });
+    render(<MemoryRouter><GatewayAccountMenu user={null} /></MemoryRouter>);
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+    expect(screen.queryByRole("menuitem", { name: "Settings" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Admin")).not.toBeInTheDocument();
+  });
   it("shows the signed-in identity, admin badge, settings and logout", async () => {
     const user = userEvent.setup();
     render(<MemoryRouter><GatewayAccountMenu user={{ id: "usr_1", username: "alice", role: "admin" }} /></MemoryRouter>);

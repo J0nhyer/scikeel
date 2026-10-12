@@ -274,6 +274,7 @@
     }
   },
   "live": {
+    "account": { "signOutFailed": "ログアウトできませんでした。もう一度お試しください。" },
     "starting": {
       "titleWeb": "ワークスペースに接続しています…",
       "titleSessionsWeb": "会話を読み込んでいます…",

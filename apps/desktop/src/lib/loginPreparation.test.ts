@@ -54,3 +54,32 @@ it("hands off a usable limited catalog without waiting for optional checks", () 
   listener(current);
   expect(ready).toHaveBeenCalledOnce();
 });
+
+it("handles overlay logout after login failure and reports a failed request for retry", async () => {
+  const signOut = vi.fn().mockRejectedValueOnce(new Error("HTTP 502")).mockResolvedValue(undefined);
+  const failed = vi.fn(); document.addEventListener("scikeel:sign-out-failed", failed);
+  const stop = installLoginPreparation(source, signOut);
+  current = { ...current, status: "error" }; listener(current);
+  document.dispatchEvent(new Event("scikeel:sign-out"));
+  await Promise.resolve(); await Promise.resolve();
+  expect(signOut).toHaveBeenCalledOnce(); expect(failed).toHaveBeenCalledOnce();
+  document.dispatchEvent(new Event("scikeel:sign-out"));
+  await Promise.resolve(); await Promise.resolve();
+  expect(signOut).toHaveBeenCalledTimes(2);
+  stop(); document.removeEventListener("scikeel:sign-out-failed", failed);
+});
+
+it("coalesces overlay logout and never hands off the app while signing out", async () => {
+  let release!: () => void;
+  const signOut = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+  const ready = vi.fn(); document.addEventListener("scikeel:login-ready", ready);
+  const stop = installLoginPreparation(source, signOut);
+  document.dispatchEvent(new Event("scikeel:sign-out")); document.dispatchEvent(new Event("scikeel:sign-out"));
+  current = { ...current, status: "ready", sessionListReady: true, gatewayCatalogState: "ready", defaultModel: "model" };
+  listener(current);
+  expect(signOut).toHaveBeenCalledOnce(); expect(ready).not.toHaveBeenCalled();
+  release(); await Promise.resolve(); await Promise.resolve();
+  stop(); document.dispatchEvent(new Event("scikeel:sign-out"));
+  expect(signOut).toHaveBeenCalledOnce();
+  document.removeEventListener("scikeel:login-ready", ready);
+});

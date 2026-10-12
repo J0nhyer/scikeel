@@ -939,7 +939,30 @@ test("login preloads public client assets without starting a workspace, and the 
   await client.request("/");
   const app = await client.request("/");
   assert.equal(app.status, 200);
-  assert.match(await app.text(), /scikeel:login-ready/);
+  const prepared = await app.text();
+  assert.match(prepared, /scikeel:login-ready/);
+  assert.match(prepared, /scikeel:sign-out/);
+  assert.match(prepared, /scikeel:sign-out-failed/);
+  assert.match(prepared, /form\.after\(signOut\)/);
+});
+
+test("logout revokes only its independent login session without touching an unavailable workspace", async () => {
+  const f = await makeFixture();
+  const a = makeClient(f.base); const b = makeClient(f.base);
+  await login(a, "admin", "admin-password"); await login(b, "admin", "admin-password");
+  let workerCalls = 0;
+  const forbidden = async () => { workerCalls++; throw new Error("logout must not touch workspace"); };
+  f.manager.ensureWorker = forbidden;
+  f.manager.restartWorker = forbidden;
+  const originalStop = f.manager.stopWorker.bind(f.manager);
+  f.manager.stopWorker = forbidden;
+  try {
+    const logout = await a.request("/auth/logout", { method: "POST", headers: { accept: "application/json" } });
+    assert.equal(logout.status, 200); assert.deepEqual(await logout.json(), { ok: true });
+    assert.equal((await a.request("/api/me", { headers: { accept: "application/json" } })).status, 401);
+    assert.equal((await b.request("/api/me", { headers: { accept: "application/json" } })).status, 200);
+    assert.equal(workerCalls, 0);
+  } finally { f.manager.stopWorker = originalStop; }
 });
 
 test('conversation collaboration defaults are owned, unavailable without runtime, and proposals cannot approve',async()=>{

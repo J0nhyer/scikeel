@@ -274,6 +274,7 @@
     }
   },
   "live": {
+    "account": { "signOutFailed": "Could not sign out. Please retry." },
     "starting": {
       "titleWeb": "Connecting to your workspace…",
       "titleSessionsWeb": "Loading conversations…",

@@ -615,6 +615,42 @@ describe("platform connection context", () => {
     expect(useRuntimeStore.getState().draftWorkspaces).toEqual({ draft: "/ws/unsent" });
     expect(useRuntimeStore.getState().runningSessions.ses_live).toBe(true);
   });
+  it("fences an account reply when browser suspension is called directly", async () => {
+    let release!: (value: Response) => void;
+    const pending = new Promise<Response>(resolve => { release = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/api/me") ? pending : response(String(input))));
+    await useRuntimeStore.getState().connectRetry(1);
+    useRuntimeStore.getState().suspendPlatformBrowser();
+    release(response("/api/me"));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(useRuntimeStore.getState().gatewayUser).toBeNull();
+  });
+  it("does not publish a queued recovery after logout suspends its owner", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => response(String(input)));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = useRuntimeStore.getState().connectRetry(1);
+    useRuntimeStore.getState().suspendPlatformBrowser();
+    expect(await pending).toBe(false);
+    expect(useRuntimeStore.getState().status).toBe("offline");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("clears account and workspace presentation only after confirmed logout", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => response(String(input))));
+    await useRuntimeStore.getState().connectRetry(1);
+    const workspace = useRuntimeStore.getState().workspace;
+    localStorage.setItem("ai4s.theme.v2", "dark");
+    try {
+      useRuntimeStore.getState().suspendPlatformBrowser();
+      expect(useRuntimeStore.getState().workspace).toBe(workspace);
+      expect(useRuntimeStore.getState().gatewayUser?.username).toBe("fixture");
+      useRuntimeStore.getState().clearPlatformPresentation();
+      expect(useRuntimeStore.getState().gatewayUser).toBeNull();
+      expect(useRuntimeStore.getState().workspace).toBeNull();
+      expect(useRuntimeStore.getState().webWorkspace).toBeNull();
+      expect(useRuntimeStore.getState().gatewayRuntime).toBeNull();
+      expect(localStorage.getItem("ai4s.theme.v2")).toBe("dark");
+    } finally { localStorage.removeItem("ai4s.theme.v2"); }
+  });
   it("retries failed required metadata before opening a usable connection", async () => {
     mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
     let attempts = 0;

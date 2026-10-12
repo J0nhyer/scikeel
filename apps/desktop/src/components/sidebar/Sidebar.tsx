@@ -46,7 +46,7 @@ import { useIsMobile } from "@/lib/useIsMobile";
 import { useDragDivider } from "@/lib/useDragDivider";
 import { useLayoutStore } from "@/lib/layout";
 import { startPaneDrag } from "@/lib/dragPane";
-import { isGatewayWeb } from "@/lib/webMode";
+import { isGatewayWeb, isPlatformWeb } from "@/lib/webMode";
 import { pathKey, samePath } from "@/lib/workspacePath";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { GatewayAccountMenu } from "@/components/sidebar/GatewayAccountMenu";
@@ -1028,7 +1028,7 @@ export function Sidebar({ project }: { project: Project }) {
         </>
         )}
 
-        {isGatewayWeb && <div className="mt-auto"><GatewayAccountMenu user={gatewayUser} /></div>}
+        {isGatewayWeb && (isPlatformWeb || gatewayUser) && <div className="mt-auto"><GatewayAccountMenu user={gatewayUser} /></div>}
 
         {pendingRemoveProject && (
           <ConfirmDialog

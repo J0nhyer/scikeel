@@ -274,6 +274,7 @@
     }
   },
   "live": {
+    "account": { "signOutFailed": "No se pudo cerrar la sesión. Inténtalo de nuevo." },
     "starting": {
       "titleWeb": "Conectando con tu espacio de trabajo…",
       "titleSessionsWeb": "Cargando conversaciones…",

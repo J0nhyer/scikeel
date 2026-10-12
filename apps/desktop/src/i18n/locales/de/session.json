@@ -274,6 +274,7 @@
     }
   },
   "live": {
+    "account": { "signOutFailed": "Abmeldung fehlgeschlagen. Bitte erneut versuchen." },
     "starting": {
       "titleWeb": "Verbindung zum Arbeitsbereich wird hergestellt…",
       "titleSessionsWeb": "Gespräche werden geladen…",

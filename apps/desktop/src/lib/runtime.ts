@@ -4311,6 +4311,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     if (isGatewayWeb && webRecovery?.context === webContextVersion) return webRecovery.promise;
     const owner = isGatewayWeb ? { context: webContextVersion, controller: new AbortController(), deadline: performance.now() + 90_000, promise: Promise.resolve(false) } : null;
     const run = Promise.resolve().then(async () => {
+    if (owner?.controller.signal.aborted || (isPlatformWeb && platformBrowserSuspended)) return false;
     // Same hold the SDK's own reconnect gets: a deliberate reconnect that
     // succeeds immediately must not repaint every status consumer on the way
     // through. Switching Screens goes openSession → setWorkspace →
@@ -4476,8 +4477,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   },
 
   suspendPlatformBrowser: () => {
-    if (!isPlatformWeb) return;
+    if (!isPlatformWeb || platformBrowserSuspended) return;
     platformBrowserSuspended = true;
+    platformAccount?.suspend();
     cancelWebRecovery();
     ++gatewayCatalogVersion;
     teardownClient();
@@ -4489,8 +4491,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     if (!isPlatformWeb) return;
     useToastStore.getState().reset();
     set({ gatewayUser: null, gatewayUserRole: null, gatewayContext: null, currentId: null,
+      workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [],
       sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
-      runningSessions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {},
+      runningSessions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},
       gatewayRuntimes: [], providers: [], defaultModel: null, error: null });
   },
 

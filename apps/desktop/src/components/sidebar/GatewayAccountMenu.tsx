@@ -1,11 +1,11 @@
-import { useToastStore } from "@/lib/toast";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useEffect } from "react";
-import { ChevronUp, LogOut, Settings } from "lucide-react";
+import { ChevronUp, Settings } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import type { GatewayUser } from "@/lib/runtime";
 import { useRuntimeStore } from "@/lib/runtime";
+import { GatewaySignOut } from "./GatewaySignOut";
 
 export function GatewayAccountMenu({ user }: {
   user: GatewayUser | null;
@@ -26,7 +26,7 @@ export function GatewayAccountMenu({ user }: {
       window.removeEventListener("focus", refresh);
     };
   }, [userId]);
-  if (!user) return null;
+  if (!user) return <div className="border-t border-border p-1"><GatewaySignOut /></div>;
   return <DropdownMenu.Root>
     <DropdownMenu.Trigger className="flex min-h-12 w-full items-center gap-3 border-t border-border px-3 text-left text-sm text-text hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-accent"
       aria-label={t("sidebar.account", { username: user.username })}>
@@ -42,12 +42,7 @@ export function GatewayAccountMenu({ user }: {
         className="flex min-h-10 cursor-pointer items-center gap-2 rounded px-3 text-sm text-text outline-none data-[highlighted]:bg-surface-2">
         <Settings size={15} /> {t("sidebar.settings")}
       </DropdownMenu.Item>
-      {/* Keep the form mounted until the browser submits it and navigates away. */}
-      <form method="post" action="/auth/logout" onSubmit={() => useToastStore.getState().reset()}><DropdownMenu.Item asChild onSelect={(event) => event.preventDefault()}>
-        <button type="submit" className="flex min-h-10 w-full cursor-pointer items-center gap-2 rounded px-3 text-left text-sm text-text outline-none data-[highlighted]:bg-surface-2">
-          <LogOut size={15} /> {t("sidebar.signOut")}
-        </button>
-      </DropdownMenu.Item></form>
+      <GatewaySignOut inMenu />
     </DropdownMenu.Content></DropdownMenu.Portal>
   </DropdownMenu.Root>;
 }

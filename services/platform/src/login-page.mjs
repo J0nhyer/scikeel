@@ -117,7 +117,7 @@ export function withLoginPreparation(html) {
     const page = loginPage({ locale });
     const css = LOGIN_STYLES;
     const body = page.match(/<body>([\s\S]*?)<script>/)[1];
-    return [locale, `<style>${css}:host{display:block;min-height:100vh;background:var(--login-bg);color:var(--login-text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}</style>${body}`];
+    return [locale, `<style>${css}:host{display:block;min-height:100vh;background:var(--login-bg);color:var(--login-text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.sign-out{display:block;width:100%;min-height:44px;margin-top:12px;border:0;border-radius:6px;background:transparent;color:var(--login-text);font-size:14px}.sign-out:hover{background:var(--login-border)}.sign-out-error{margin-top:12px}</style>${body}`];
   }));
   const payload = JSON.stringify(templates).replaceAll("<", "\\u003c");
   const head = `<script>${loginAppearanceBootstrap({ followSystem: false })}</script><style id="scikeel-login-visibility">html[data-scikeel-login-preparing] #root{visibility:hidden}</style><script>
@@ -150,6 +150,24 @@ try {
   form.setAttribute('aria-busy', 'true');
   submit.querySelector('[data-copy]').textContent = locale === 'en' ? 'Signing in…' : '正在登录…';
   let failed = false;
+  const signOut = document.createElement('button');
+  signOut.type = 'button'; signOut.className = 'sign-out';
+  signOut.textContent = locale === 'en' ? 'Sign out' : '退出登录';
+  form.after(signOut);
+  const signOutError = document.createElement('p');
+  signOutError.className = 'error sign-out-error'; signOutError.hidden = true;
+  signOutError.setAttribute('role', 'alert'); signOut.after(signOutError);
+  signOut.addEventListener('click', () => {
+    signOut.disabled = true; signOut.setAttribute('aria-busy', 'true');
+    signOutError.hidden = true;
+    failed = false; submit.disabled = true;
+    document.dispatchEvent(new Event('scikeel:sign-out'));
+  });
+  document.addEventListener('scikeel:sign-out-failed', () => {
+    signOut.disabled = false; signOut.removeAttribute('aria-busy');
+    signOutError.textContent = locale === 'en' ? 'Could not sign out. Please retry.' : '无法退出登录，请重试。';
+    signOutError.hidden = false;
+  });
   form.addEventListener('submit', event => {
     event.preventDefault();
     if (failed) {

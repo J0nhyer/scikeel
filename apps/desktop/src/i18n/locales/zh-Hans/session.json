@@ -274,6 +274,7 @@
     }
   },
   "live": {
+    "account": { "signOutFailed": "无法退出登录，请重试。" },
     "starting": {
       "titleWeb": "正在连接工作区…",
       "titleSessionsWeb": "正在加载会话…",
