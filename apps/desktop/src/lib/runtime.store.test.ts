@@ -171,6 +171,7 @@ vi.mock("./webMode", () => ({
   get isPlatformWeb() { return mocks.isPlatformWeb; },
   gatewayToken: () => "gateway-test-token",
   gatewayOrigin: () => "http://gateway.test",
+  setPlatformSessionExpiryHandler: vi.fn(),
 }));
 vi.mock("./collaboration",()=>({prepareCollaborationSend:mocks.prepareCollaborationSend}));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
@@ -396,7 +397,7 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
 });
 
 import type { ArtifactBlock, ThreadBlock } from "@ai4s/shared";
-import { DRAFT_KEY, draftKeyFor, adoptSourceFolder, rootSessionOf, installWebRecovery, useRuntimeStore } from "./runtime";
+import { DRAFT_KEY, draftKeyFor, adoptSourceFolder, rootSessionOf, installWebRecovery, installPlatformAccountLifecycle, useRuntimeStore } from "./runtime";
 import { useSshStore } from "./ssh";
 import { useToastStore } from "./toast";
 import { leaves, makeLeaf, useLayoutStore } from "./layout";
@@ -556,6 +557,12 @@ describe("Web catalog readiness", () => {
 });
 
 describe("platform connection context", () => {
+  let disposeAccount: () => void;
+  beforeEach(() => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    disposeAccount = installPlatformAccountLifecycle();
+  });
+  afterEach(() => disposeAccount());
   it("publishes account identity even when workspace identity fails on cold connection", async () => {
     mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
     const user = { id: "usr_fixture", username: "fixture", role: "user" as const };
@@ -574,6 +581,40 @@ describe("platform connection context", () => {
       : { runtime: "opencode", kind: "opencode", available: [{ runtime: "opencode", kind: "opencode", enabled: true }] };
     return new Response(JSON.stringify(data));
   }
+  it("keeps account reads alive through workspace reconnect and retains identity", async () => {
+    let release!: (value: Response) => void;
+    const accountReply = new Promise<Response>(resolve => { release = resolve; });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/api/me") ? accountReply : response(String(input)));
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().connectRetry(1);
+    useRuntimeStore.getState().disconnect();
+    await useRuntimeStore.getState().connectRetry(1);
+    release(response("/api/me"));
+    await vi.waitFor(() => expect(useRuntimeStore.getState().gatewayUser?.username).toBe("fixture"));
+    await useRuntimeStore.getState().connectRetry(1);
+    expect(useRuntimeStore.getState().gatewayUser?.username).toBe("fixture");
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/api/me"))).toHaveLength(1);
+  });
+  it("suspends browser recovery without aborting turns or clearing drafts", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => response(String(input))));
+    await useRuntimeStore.getState().connectRetry(1);
+    const identity = useRuntimeStore.getState().gatewayUser;
+    useRuntimeStore.setState({ runningSessions: { ses_live: true }, draftWorkspaces: { draft: "/ws/unsent" } });
+    mocks.abortSession.mockClear();
+    const calls = vi.mocked(fetch).mock.calls.length;
+    useRuntimeStore.getState().suspendPlatformBrowser();
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    await useRuntimeStore.getState().bootstrap();
+    const stop = installWebRecovery();
+    window.dispatchEvent(new Event("online")); document.dispatchEvent(new Event("visibilitychange"));
+    stop();
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(calls);
+    expect(mocks.abortSession).not.toHaveBeenCalled();
+    expect(mocks.restartRuntime).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().gatewayUser).toEqual(identity);
+    expect(useRuntimeStore.getState().draftWorkspaces).toEqual({ draft: "/ws/unsent" });
+    expect(useRuntimeStore.getState().runningSessions.ses_live).toBe(true);
+  });
   it("retries failed required metadata before opening a usable connection", async () => {
     mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
     let attempts = 0;
@@ -3691,6 +3732,22 @@ describe("auto-review on turn completion", () => {
     expect(mocks.abortSession).toHaveBeenCalledWith("ses_review_1");
     expect(mocks.appendTextPartSpy).not.toHaveBeenCalled();
     expect(useRuntimeStore.getState().threads["ses_review_1"]).toBeUndefined();
+  });
+
+  it("keeps server-side reviewers running when the platform browser signs out", async () => {
+    armed(["ses_1"]);
+    wroteAFile("ses_1");
+    mocks.fireEvent({ type: "session.idle", sessionId: "ses_1" });
+    await vi.waitFor(() => expect(reviewCalls()).toHaveLength(1));
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    const dispose = installPlatformAccountLifecycle();
+    try {
+      mocks.abortSession.mockClear();
+      useRuntimeStore.getState().suspendPlatformBrowser();
+      expect(mocks.abortSession).not.toHaveBeenCalled();
+      expect(useRuntimeStore.getState().backgroundReviews.ses_1).toBe("running");
+      expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    } finally { dispose(); }
   });
 
   it("turning auto-review off cancels the running review and every queued review", async () => {

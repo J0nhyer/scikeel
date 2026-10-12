@@ -30,19 +30,33 @@ it("returns to login once when the platform session expires, preserving the curr
   const { mode, replace } = await setup(true, 401, { "x-scikeel-auth": "session-required" });
   const gate = vi.fn();
   mode.setUnauthorizedHandler(gate);
+  const suspend = vi.fn();
+  mode.setPlatformSessionExpiryHandler(suspend);
   await window.fetch("/v1/whoami");
   await window.fetch("/api/me");
   expect(replace).toHaveBeenCalledExactlyOnceWith("/login?next=%2Flive%2Fsession%3Fview%3Dfiles");
   expect(gate).not.toHaveBeenCalled();
+  expect(suspend).toHaveBeenCalledOnce();
+  expect(suspend.mock.invocationCallOrder[0]).toBeLessThan(replace.mock.invocationCallOrder[0]);
 });
 
 it("does not open the token gate or log out for an upstream 401", async () => {
   const { mode, replace } = await setup(true);
   const gate = vi.fn();
   mode.setUnauthorizedHandler(gate);
+  const suspend = vi.fn();
+  mode.setPlatformSessionExpiryHandler(suspend);
   await window.fetch("/session");
   expect(replace).not.toHaveBeenCalled();
   expect(gate).not.toHaveBeenCalled();
+  expect(suspend).not.toHaveBeenCalled();
+});
+
+it("does not suspend authentication for a workspace 502", async () => {
+  const { mode, replace } = await setup(true, 502);
+  const suspend = vi.fn(); mode.setPlatformSessionExpiryHandler(suspend);
+  await window.fetch("/v1/whoami");
+  expect(suspend).not.toHaveBeenCalled(); expect(replace).not.toHaveBeenCalled();
 });
 
 it("keeps token authentication for the standalone gateway", async () => {

@@ -70,6 +70,11 @@ export function consumeUrlToken(): void {
 // token gate, instead of silently looping on "connecting".
 
 let unauthorizedHandler: (() => void) | null = null;
+let platformSessionExpiryHandler: (() => void) | null = null;
+
+export function setPlatformSessionExpiryHandler(fn: (() => void) | null): void {
+  platformSessionExpiryHandler = fn;
+}
 
 /** Register what to do when the gateway rejects the token (AppShell shows the
  *  gate). Pass null to clear. */
@@ -100,6 +105,7 @@ export function installGatewayAuthGuard(): void {
       const loginRedirect = redirectedUrl?.origin === origin && redirectedUrl.pathname === "/login";
       if ((sessionExpired || loginRedirect) && !redirecting) {
         redirecting = true;
+        platformSessionExpiryHandler?.();
         clearGatewayToken();
         const next = window.location.pathname + window.location.search;
         window.location.replace(`/login?next=${encodeURIComponent(next)}`);

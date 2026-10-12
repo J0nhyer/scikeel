@@ -67,7 +67,8 @@ import {
   type ProxyMode,
   type ToolStatus,
 } from "./tauri";
-import { isGatewayWeb, isPlatformWeb, gatewayToken, gatewayOrigin } from "./webMode";
+import { isGatewayWeb, isPlatformWeb, gatewayToken, gatewayOrigin, setPlatformSessionExpiryHandler } from "./webMode";
+import { createGatewayAccountLifecycle } from "./gatewayAccount";
 import { createResearchTask, type ResearchBrief } from "./research";
 import { activeAcpAgent } from "./acpAgents";
 import { acpTransport } from "./acpTransport";
@@ -110,7 +111,7 @@ import {
 import { fallbackDefaultModel } from "@/components/settings/modelCatalog";
 import { webModelChoices, webModelEffort } from "./webModelCatalog";
 import { listProvidersWithAvailability, ZEN_PROVIDER_ID } from "./zenModels";
-import { toast } from "@/lib/toast";
+import { toast, useToastStore } from "@/lib/toast";
 import i18n from "@/i18n";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -431,6 +432,8 @@ interface RuntimeState {
   connect: () => Promise<void>;
   /** Resolves true once connected, false when the retry window is exhausted. */
   connectRetry: (tries?: number) => Promise<boolean>;
+  suspendPlatformBrowser: () => void;
+  clearPlatformPresentation: () => void;
   /** Tell the user, once, that an unreadable OpenCode config was moved aside
    *  and rebuilt — otherwise settings they had (providers, MCP servers) are
    *  simply gone with no explanation (#118). */
@@ -662,6 +665,47 @@ const uncertainWebCreates = new Set<string>();
 let connectionVersion = 0;
 let catalogController: AbortController | null = null;
 let webRecovery: { context: number; controller: AbortController; deadline: number; promise: Promise<boolean> } | null = null;
+let platformAccount: ReturnType<typeof createGatewayAccountLifecycle> | null = null;
+let platformAccountStarted = false;
+let platformBrowserSuspended = false;
+
+export function installPlatformAccountLifecycle(): () => void {
+  if (!isPlatformWeb || platformAccount) return () => {};
+  platformBrowserSuspended = platformAccountStarted = false;
+  const account = createGatewayAccountLifecycle({
+    fetchImpl: (input, init) => fetch(input, init),
+    publish: user => useRuntimeStore.setState(state => ({
+      gatewayUser: user, gatewayUserRole: user.role,
+      ...(state.gatewayUser && state.gatewayUser.id !== user.id ? { questions: [], permissions: [], interactions: {} } : {}),
+    })),
+    suspend: () => useRuntimeStore.getState().suspendPlatformBrowser(),
+    clear: () => useRuntimeStore.getState().clearPlatformPresentation(),
+    navigate: () => window.location.replace("/login"),
+  });
+  platformAccount = account;
+  setPlatformSessionExpiryHandler(account.suspend);
+  return () => {
+    account.dispose();
+    if (platformAccount !== account) return;
+    platformAccount = null;
+    platformBrowserSuspended = platformAccountStarted = false;
+    setPlatformSessionExpiryHandler(null);
+  };
+}
+
+function loadPlatformAccount() {
+  if (!isPlatformWeb || platformBrowserSuspended) return;
+  if (!platformAccount) installPlatformAccountLifecycle();
+  if (platformAccountStarted) return;
+  platformAccountStarted = true;
+  void platformAccount?.load();
+}
+
+export function signOutPlatformBrowser(): Promise<void> {
+  if (!isPlatformWeb) return Promise.reject(new Error("Platform account unavailable"));
+  if (!platformAccount) installPlatformAccountLifecycle();
+  return platformAccount!.signOut();
+}
 
 function cancelWebRecovery() {
   if (!isGatewayWeb) return;
@@ -697,6 +741,7 @@ export function installWebRecovery(): () => void {
   if (!isGatewayWeb) return () => {};
   let lastAttempt = -Infinity;
   const recover = () => {
+    if (isPlatformWeb && platformBrowserSuspended) return;
     const state = useRuntimeStore.getState();
     if (document.hidden || window.location.pathname.startsWith("/login") ||
       (state.status !== "error" && state.status !== "offline") || webRecovery ||
@@ -2703,9 +2748,11 @@ export function contextLimitFor(state: RuntimeState, key: string): number {
 
 export const useRuntimeStore = create<RuntimeState>((set, get) => {
   const connectOnce = async () => {
+    if (isPlatformWeb && platformBrowserSuspended) return;
+    loadPlatformAccount();
     const attempt = ++connectionVersion;
     const owner = isGatewayWeb ? webRecovery : null;
-    const active = () => attempt === connectionVersion && !owner?.controller.signal.aborted;
+    const active = () => attempt === connectionVersion && !owner?.controller.signal.aborted && !(isPlatformWeb && platformBrowserSuspended);
     const deadline = owner?.deadline ?? performance.now() + 90_000;
     const requestSignal = (ceiling: number) => {
       const timeout = AbortSignal.timeout(beforeDeadline(deadline, ceiling));
@@ -2781,7 +2828,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         })(), signal);
       };
       const metadata = readContext<{ runtime?: GatewayRuntimeId; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[]; context?: {instanceId:string;generation:number} | null }>("/api/runtime", 15000).then(value => ({ value, error: null }), error => ({ value: null, error }));
-      account = readContext<{ user?: GatewayUser }>("/api/me", 15000).catch(() => null);
+      if (!isPlatformWeb) account = readContext<{ user?: GatewayUser }>("/api/me", 15000).catch(() => null);
       try {
         const who = await readContext("/v1/whoami", 60000, password ? { Authorization: `Bearer ${password}` } : undefined) as { directory?: string; mode?: string };
         if (!active()) return;
@@ -2850,8 +2897,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         webReadOnly: readOnly,
         gatewayRuntime,
         gatewayRuntimes,
-        gatewayUserRole,
-        gatewayUser,
+        ...(!isPlatformWeb ? { gatewayUserRole, gatewayUser } : {}),
         gatewayCatalogState: gatewayRuntimes.find((item) => item.runtime === gatewayRuntime)?.status ?? "unavailable",
       });
       if (gatewayRuntime && gatewayRuntime !== "opencode") {
@@ -2934,8 +2980,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         acpAgentName: gatewayRuntimeKind === "server" ? gatewayRuntimeName : null,
         gatewayRuntime,
         gatewayRuntimes,
-        gatewayUserRole,
-        gatewayUser,
+        ...(!isPlatformWeb ? { gatewayUserRole, gatewayUser } : {}),
       });
       // Background streams reuse the same sidecar; the foreground now streams
       // this folder, so drop any background stream that was covering it (avoid a
@@ -2967,7 +3012,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         void get().reconcileRunning();
       }
     });
-    if (isGatewayWeb) void account.then(me => {
+    if (isGatewayWeb && !isPlatformWeb) void account.then(me => {
       if (!active() || c !== client) return;
       const user = me?.user;
       if (user && (user.role === "admin" || user.role === "user") && typeof user.id === "string" && typeof user.username === "string") {
@@ -3438,6 +3483,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
               let presentationClient: AgentRuntime | null = client;
               let temporaryClient: OpenCodeClient | null = null;
               try {
+                if (isPlatformWeb && platformBrowserSuspended) return;
                 if (sourceDirectory && sourceDirectory !== get().workspace) {
                   presentationClient = streamClients.get(sourceDirectory) ?? null;
                   if (!presentationClient && streamBaseUrl) {
@@ -4261,6 +4307,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   // strobe the page connecting→error→connecting four times a second. The last
   // error is surfaced only if the whole retry window is exhausted.
   connectRetry: (tries = isGatewayWeb ? 4 : 120) => {
+    if (isPlatformWeb && platformBrowserSuspended) return Promise.resolve(false);
     if (isGatewayWeb && webRecovery?.context === webContextVersion) return webRecovery.promise;
     const owner = isGatewayWeb ? { context: webContextVersion, controller: new AbortController(), deadline: performance.now() + 90_000, promise: Promise.resolve(false) } : null;
     const run = Promise.resolve().then(async () => {
@@ -4377,6 +4424,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   },
 
   bootstrap: () => {
+    if (isPlatformWeb && platformBrowserSuspended) return Promise.resolve();
     if (bootstrapInFlight) return bootstrapInFlight;
     const run = (async () => {
       void get().detectTools();
@@ -4425,6 +4473,25 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     };
     void run.then(clear, clear);
     return run;
+  },
+
+  suspendPlatformBrowser: () => {
+    if (!isPlatformWeb) return;
+    platformBrowserSuspended = true;
+    cancelWebRecovery();
+    ++gatewayCatalogVersion;
+    teardownClient();
+    teardownStreamClients();
+    set({ status: "offline", switching: false, modelSwitching: false, gatewayRuntimeSwitching: false });
+  },
+
+  clearPlatformPresentation: () => {
+    if (!isPlatformWeb) return;
+    useToastStore.getState().reset();
+    set({ gatewayUser: null, gatewayUserRole: null, gatewayContext: null, currentId: null,
+      sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
+      runningSessions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {},
+      gatewayRuntimes: [], providers: [], defaultModel: null, error: null });
   },
 
   disconnect: () => {
