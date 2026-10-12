@@ -1,7 +1,7 @@
 # Web Account Access and Workspace Recovery Design
 
 Date: 2026-10-12
-Status: Proposed approach approved; written spec awaiting user review. Implementation and deployment are not authorized by this document.
+Status: Written spec approved by the user on 2026-10-12 by requesting implementation planning. Implementation and deployment still require subsequent authorization.
 Scope: SciKeel public multi-user gateway Web, including phone-width viewports.
 
 ## 1. Problem and Intended Outcome
@@ -173,4 +173,4 @@ Spec self-review completed on October 12: checked evidence versus hypotheses, lo
 
 Implementation planning must start from the effective deployed baseline and preserve unrelated checkout changes. Publication uses the existing frozen-source verification/release workflow; a failed bounded build leaves the deployed bundle untouched, and rollback preserves user data and credentials.
 
-This is a design artifact, not a claim that the proposed behavior has been implemented, tested, or deployed. The user must review this written spec before a plan is prepared. Implementation and deployment require subsequent authorization.
+This is a design artifact, not a claim that the proposed behavior has been implemented, tested, or deployed. The user approved this written spec on October 12 by requesting a plan. Implementation and deployment require subsequent authorization.
