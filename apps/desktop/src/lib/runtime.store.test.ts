@@ -556,6 +556,18 @@ describe("Web catalog readiness", () => {
 });
 
 describe("platform connection context", () => {
+  it("publishes account identity even when workspace identity fails on cold connection", async () => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    const user = { id: "usr_fixture", username: "fixture", role: "user" as const };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input), "http://gateway.test").pathname;
+      return new Response(JSON.stringify(path === "/api/me" ? { user } : { error: "worker unavailable" }),
+        { status: path === "/api/me" ? 200 : 502, headers: { "content-type": "application/json" } });
+    }));
+    await useRuntimeStore.getState().connectRetry(1);
+    expect(useRuntimeStore.getState().gatewayUser).toEqual(user);
+    expect(useRuntimeStore.getState().status).toBe("error");
+  });
   function response(path: string): Response {
     const data = path.endsWith("/v1/whoami") ? { directory: "/ws/base", mode: "full" }
       : path.endsWith("/api/me") ? { user: { id: "usr_fixture", username: "fixture", role: "user" } }
