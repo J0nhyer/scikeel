@@ -56,7 +56,7 @@ export function FileEditor({
   valueRef.current = value;
   const ariaLabelRef = useRef(ariaLabel);
   ariaLabelRef.current = ariaLabel;
-  const theme = useUiStore((s) => s.theme);
+  const theme = useUiStore((s) => s.theme === "system" ? (s.systemDark ? "dark" : "light") : s.theme);
 
   useImperativeHandle(
     handleRef,

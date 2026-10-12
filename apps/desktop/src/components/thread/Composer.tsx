@@ -1,3 +1,6 @@
+import type { AttachmentPromptContext } from "@ai4s/shared";
+import { useComposerAttachments } from "./useComposerAttachments";
+import { ConversationAttachmentCard } from "./ConversationAttachmentCard";
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -38,7 +41,6 @@ import {
   walkWorkspace,
 } from "@/components/thread/references";
 import { ModelPicker } from "@/components/thread/ModelPicker";
-import { RuntimePicker } from "@/components/thread/RuntimePicker";
 import { WebModelPicker } from "@/components/thread/WebModelPicker";
 import { AcpConfigPicker } from "@/components/thread/AcpConfigPicker";
 import type { AcpConfigOption } from "@ai4s/sdk/acp";
@@ -147,6 +149,7 @@ export function Composer({
   placeholder,
   approvalMode,
   onApprovalModeChange,
+  collaborationControl,
   agentMode,
   onAgentModeChange,
   showModelPicker,
@@ -165,7 +168,7 @@ export function Composer({
 }: {
   /** `attachments` are the chip file names, omitted when there are none. The
    *  text already names them; the list lets the send attach the images too. */
-  onSend?: (text: string, attachments?: string[]) => void;
+  onSend?: (text: string, attachments?: string[], context?: AttachmentPromptContext) => void | boolean | Promise<void | boolean>;
   onRunShell?: (command: string) => void;
   onRunCommand?: (name: string, args: string) => void;
   commands?: ComposerCommand[];
@@ -181,6 +184,7 @@ export function Composer({
   onApprovalModeChange?: (mode: ApprovalMode) => void;
   /** The Build/Plan agent switch — same both-or-nothing contract; the live
    *  session withholds it when the runtime has no "plan" agent. */
+  collaborationControl?: React.ReactNode;
   agentMode?: AgentMode;
   onAgentModeChange?: (mode: AgentMode) => void;
   /** Show the inline model + reasoning-effort switcher (left of send). The live
@@ -259,6 +263,10 @@ export function Composer({
   const owned = useRef<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [webSubmitting, setWebSubmitting] = useState(false);
+  const webFileInput = useRef<HTMLInputElement>(null);
+  const attachmentAccount = useRuntimeStore((state) => isGatewayWeb ? state.gatewayUser?.id : undefined);
+  const webAttachments = useComposerAttachments(`${attachmentAccount ?? "local"}:${draftKey ?? "web-composer"}`, currentSessionId);
   /** Highlighted palette row; clamped to the current matches. */
   const [sel, setSel] = useState(0);
   /** Esc closed the palette for the current input; typing reopens it. */
@@ -454,7 +462,7 @@ export function Composer({
   }, [value]);
 
   const submit = () => {
-    if (disabled) return;
+    if (disabled || webSubmitting || (isGatewayWeb && webAttachments.blocked)) return;
     const text = value.trim();
     setHist(null);
     // A chipped command runs as itself — arguments optional.
@@ -484,6 +492,26 @@ export function Composer({
         setValue("");
         return;
       }
+    }
+    if (isGatewayWeb && onSend) {
+      if (!text) return;
+      const submittedValue = value;
+      const refs = [...refSessions];
+      setWebSubmitting(true);
+      void (async () => {
+        try {
+          const context = await webAttachments.prepareSend(text);
+          const blocks = refs.length ? await buildReferences(refs) : "";
+          const accepted = await onSend(blocks ? `${blocks}\n\n${text}` : text, undefined, context);
+          if (accepted === false) return;
+          if (text) recordHistory(text);
+          setValue((current) => current === submittedValue ? "" : current);
+          webAttachments.acceptSend(context.attachmentIds);
+          setRefSessions((current) => current.filter((r) => !refs.some((sent) => sent.id === r.id)));
+        } catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
+        finally { setWebSubmitting(false); }
+      })();
+      return;
     }
     if (!text && files.length === 0 && refSessions.length === 0) return;
     const fileNote =
@@ -638,6 +666,11 @@ export function Composer({
   // text, because only `image/*` was looked for. A very long text paste becomes
   // a file too, rather than flooding the box.
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (isGatewayWeb && onSend) {
+      const pasted = Array.from(e.clipboardData.items ?? []).filter((item) => item.kind === "file").map((item) => item.getAsFile()).filter((file): file is File => file !== null);
+      if (pasted.length) { e.preventDefault(); webAttachments.add(pasted.map((file) => file.name ? file : new File([file], `pasted.${imageExt(file.type)}`, { type: file.type }))); }
+      return;
+    }
     if (!isTauri || !onSend) return;
     const blobs = Array.from(e.clipboardData.items ?? [])
       .filter((it) => it.kind === "file")
@@ -774,18 +807,21 @@ export function Composer({
     }
   };
 
-  const canAttach = isTauri && !!onSend;
+  const canAttach = (isTauri || isGatewayWeb) && !!onSend;
   const canSend =
-    !disabled &&
+    !disabled && !webSubmitting && !(isGatewayWeb && webAttachments.blocked) &&
     (command
       ? true // a chipped command may run without arguments
       : shellMode
         ? value.slice(1).trim().length > 0
-        : !!value.trim() || files.length > 0);
+        : isGatewayWeb ? !!value.trim() : !!value.trim() || files.length > 0);
 
   return (
     <div
       ref={rootRef}
+      onDragOver={(e) => { if (isGatewayWeb && onSend && Array.from(e.dataTransfer.types).includes("Files")) { e.preventDefault(); setDragOver(true); } }}
+      onDragLeave={() => { if (isGatewayWeb) setDragOver(false); }}
+      onDrop={(e) => { if (isGatewayWeb && onSend && e.dataTransfer.files.length) { e.preventDefault(); setDragOver(false); webAttachments.add(Array.from(e.dataTransfer.files)); } }}
       className={cn(
         "relative rounded-card border bg-surface px-2 py-2 shadow-card",
         // Plan mode gets the blue link tone — distinct from shell (warn) and
@@ -801,6 +837,8 @@ export function Composer({
         dragOver && "border-accent ring-2 ring-accent/40",
       )}
     >
+      {isGatewayWeb && onSend && <input ref={webFileInput} type="file" multiple className="hidden" aria-label={t("composer.attachments.add")} onChange={(e) => { webAttachments.add(Array.from(e.target.files ?? [])); e.target.value = ""; }} />}
+      {isGatewayWeb && webAttachments.items.length > 0 && <div className="mb-2 grid max-w-full grid-cols-1 gap-2 sm:grid-cols-2">{webAttachments.items.map((item) => <div key={item.localId} className="min-w-0"><ConversationAttachmentCard attachment={item.attachment} owner={webAttachments.owner} pending={item} onRemove={() => webAttachments.remove(item.localId)} onRetry={() => webAttachments.retry(item.localId)} /></div>)}</div>}
       {refOpen && (
         <div
           role="listbox"
@@ -947,13 +985,14 @@ export function Composer({
         aria-label={t("composer.placeholder.default")}
       />
       {/* Codex-style action row: mode controls bottom-left, send bottom-right.
-          ONE line, always. A wrapping row looks broken — the send button ends
+          Desktop stays on one line. Web controls can wrap as a group so neither
+          model/effort nor research controls cover one another on phones. A wrapping desktop row looks broken — the send button ends
           up on its own line under the other controls, with a gap between them
           — and flexbox wraps on an item's natural width rather than shrinking
           it first, so the long model name alone was enough to trigger it.
           Everything here is fixed-width except the model chip, which truncates;
           below `TOOLBAR_LABEL_MIN_PX` the buttons drop their labels too. */}
-      <div className="flex min-w-0 items-center gap-1.5 pt-1">
+      <div className={cn("flex min-w-0 items-center gap-1.5 pt-1", isGatewayWeb && "flex-wrap")}>
         {command ? (
           <span
             className="flex h-7 shrink-0 items-center gap-1 rounded-input bg-accent/15 pl-2 pr-1 font-mono text-xs text-accent"
@@ -982,7 +1021,7 @@ export function Composer({
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
               aria-label={t("composer.attach.addAria")}
               title={t("composer.attach.title")}
-              onClick={() => void addFiles()}
+              onClick={() => isGatewayWeb ? webFileInput.current?.click() : void addFiles()}
               disabled={adding}
             >
               <Paperclip size={15} />
@@ -992,7 +1031,8 @@ export function Composer({
         {/* Folder picker for a fresh draft — renders nothing once the session
             exists (its folder then shows in the header's Files toggle). */}
         {showWorkspaceChip && <WorkspaceChip draftKey={draftKey} />}
-        {agentMode && onAgentModeChange && (
+        {collaborationControl && <div className="max-w-full shrink-0">{collaborationControl}</div>}
+        {agentMode && onAgentModeChange && !collaborationControl && (
           <div className="relative shrink-0" ref={agentRef}>
             {agentOpen && (
               <div
@@ -1143,10 +1183,8 @@ export function Composer({
           )}
           {showModelPicker && (
             <>
-              {isGatewayWeb ? <>
-                <RuntimePicker compact={compactToolbar} />
-                <WebModelPicker sessionId={modelSessionId} compact={compactToolbar} />
-              </> : <ModelPicker sessionId={modelSessionId} compact={compactToolbar} />}
+              {isGatewayWeb ? <WebModelPicker sessionId={modelSessionId} compact={compactToolbar} />
+                : <ModelPicker sessionId={modelSessionId} compact={compactToolbar} />}
             </>
           )}
           {configOptions && onConfigOption && (

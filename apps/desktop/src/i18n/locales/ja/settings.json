@@ -1,4 +1,14 @@
 {
+  "managedAgents": {
+    "title": "Agent access management",
+    "hint": "Applies to all users. Turning an Agent off hides it from assistant lists, lets running tasks finish and blocks subsequent calls. Turning it on restores it when the server configuration is available.",
+    "allow": "Allow {{runtime}}",
+    "saving": "Saving…",
+    "saved": "{{runtime}} saved.",
+    "failed": "Could not save {{runtime}}. Try again.",
+    "loadFailed": "Could not load Agent access settings.",
+    "retry": "Retry"
+  },
   "nav": {
     "back": "アプリに戻る",
     "general": "一般",
@@ -20,7 +30,9 @@
     "theme": {
       "light": "ライト",
       "warm": "ウォーム",
-      "dark": "ダーク"
+      "dark": "ダーク",
+      "system": "システム",
+      "cdut": "CDUT"
     },
     "zoom": {
       "label": "ズーム",
@@ -28,6 +40,17 @@
       "in": "拡大",
       "out": "縮小",
       "reset": "リセット"
+    },
+    "summary": {
+      "light": "明るく見やすい研究ワークスペース。",
+      "dark": "研究に集中できる落ち着いたダーク画面。",
+      "system": "端末のライト・ダーク設定に合わせます。",
+      "cdut": "大学のシンボルと控えめな装飾を備えた青と白のスタイル。",
+      "warm": "既存の暖色設定は保持されます。カードを選択して変更できます。"
+    },
+    "campusDecoration": {
+      "label": "キャンパス装飾",
+      "hint": "空の会話にのみ校訓と線の装飾を表示します。"
     }
   },
   "language": {
@@ -107,6 +130,10 @@
     "privacy": "公開 GitHub Releases API だけに接続します。ワークスペースのファイルや API キーは送信しません。"
   },
   "model": {
+    "defaultTitle": "デフォルトモデル",
+    "defaultDescription": "このアカウントで現在のアシスタントとの新しい会話に使用するモデルです。既存の会話のモデル選択は変わりません。",
+    "defaultSaveProblem": "デフォルトモデルの変更を完了できませんでした",
+    "defaultRecoveryFailed": "デフォルトモデルは保存されましたが、アシスタントに再接続できませんでした：{{detail}}",
     "catalogLimited": "サーバーで確認できたのは一部のモデルだけです。",
     "title": "モデル",
     "hint": "新しい会話が既定で使うモデル。選べる範囲は下の Providers が決めます。",

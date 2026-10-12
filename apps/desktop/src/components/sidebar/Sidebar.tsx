@@ -1,3 +1,4 @@
+import { useSessionTitles, editableSessionTitle } from "@/lib/sessionTitle";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -56,11 +57,14 @@ import {
   ContextMenuSeparator,
   ContextMenuSub,
 } from "@/components/ui/ContextMenu";
-import logo from "@/assets/logo.webp";
+import { NameProjectDialog } from "@/components/projects/NameProjectDialog";
+import { useWebDraftTransition } from "@/components/projects/useWebDraftTransition";
+import { BrandMark } from "@/components/brand/BrandMark";
 
 interface Row {
   id: string;
   title: string;
+  rawTitle?: string;
   to: string;
   kind: "session" | "example";
   /** The project this session belongs to, if any. Names the Screen a click
@@ -107,11 +111,14 @@ export function Sidebar({ project }: { project: Project }) {
   // In settings the sidebar becomes the settings navigation: "Back to app" on
   // top, one row per section, and NO collapse affordance — a collapsed sidebar
   // would strand the user with no way back.
+  const transition = useWebDraftTransition();
   const inSettings = location.pathname.startsWith("/settings");
   const activeSection = resolveSection(location.pathname.split("/")[2]);
   // Select each field individually: a bare `useRuntimeStore()` subscribes to the
   // whole store, re-rendering the sidebar on every SSE fold during a session (#34).
   const sessions = useRuntimeStore((s) => s.sessions);
+  const refreshTitleSessions = useRuntimeStore((s) => s.refreshSessions);
+  const displayTitle = useSessionTitles(sessions, refreshTitleSessions);
   const gatewayUser = useRuntimeStore((s) => s.gatewayUser);
   const projects = useRuntimeStore((s) => s.projects);
   const workspace = useRuntimeStore((s) => s.workspace);
@@ -179,6 +186,14 @@ export function Sidebar({ project }: { project: Project }) {
   });
 
   const startNew = () => {
+    if (isGatewayWeb) {
+      void transition.requestTransition(async () => {
+        const path = useRuntimeStore.getState().gatewayWorkspace;
+        if (!path) throw new Error("The workspace is unavailable. Try reconnecting.");
+        return { path };
+      });
+      return;
+    }
     // Desktop: "New" is new work — it gets its own Screen with its own draft
     // pane, never the focused pane (which is a conversation in progress).
     if (!isMobile && !isGatewayWeb) useLayoutStore.getState().openInNewGroup(null);
@@ -206,6 +221,12 @@ export function Sidebar({ project }: { project: Project }) {
   }, [projects]);
   const [namingProject, setNamingProject] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
+  const createLock = useRef(false);
+  const [createdProject, setCreatedProject] = useState<ProjectInfo | null>(null);
+  const [createError, setCreateError] = useState<string>();
+  const requestNaming = () => {
+    setCreatedProject(null); setCreateError(undefined); setNamingProject(true);
+  };
   const [importBusy, setImportBusy] = useState(false);
   const [pendingImportPath, setPendingImportPath] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -223,15 +244,27 @@ export function Sidebar({ project }: { project: Project }) {
 
   const submitNewProject = async (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || createBusy) {
-      setNamingProject(false);
-      return;
-    }
+    if (!trimmed || createLock.current || webReadOnly) return;
+    createLock.current = true;
     setCreateBusy(true);
-    const created = await createProject(trimmed);
-    setCreateBusy(false);
-    setNamingProject(false);
-    if (created) navigate("/live");
+    setCreateError(undefined);
+    try {
+      if (isGatewayWeb) {
+        let project = createdProject;
+        const entered = await transition.requestTransition(async () => {
+          project ??= await createProject(trimmed);
+          if (project) setCreatedProject(project);
+          else setCreateError(useRuntimeStore.getState().error ?? "Could not create the project.");
+          return project;
+        });
+        if (entered) setNamingProject(false);
+        else if (project) setCreateError(t("projects.entryFailed"));
+      } else {
+        const project = await createProject(trimmed);
+        if (project) { setNamingProject(false); navigate("/live"); }
+        else setCreateError(useRuntimeStore.getState().error ?? "Could not create the project.");
+      }
+    } finally { createLock.current = false; setCreateBusy(false); }
   };
 
   // Entering a project — "new session in project X", or just having imported
@@ -240,6 +273,10 @@ export function Sidebar({ project }: { project: Project }) {
   // own draft slot is what the composer sends under, and that is the slot the
   // project folder has to be aimed at (#69).
   const openProjectScreen = async (p: ProjectInfo) => {
+    if (isGatewayWeb) {
+      await transition.requestTransition(async () => p);
+      return;
+    }
     const leafId =
       !isMobile && !isGatewayWeb
         ? useLayoutStore.getState().openInNewGroup(null, p.name)
@@ -305,7 +342,8 @@ export function Sidebar({ project }: { project: Project }) {
   for (const s of topSessions) {
     const row: Row = {
       id: s.id,
-      title: s.title,
+      title: displayTitle(s) ?? s.title,
+      rawTitle: editableSessionTitle(s),
       to: `/live/${s.id}`,
       kind: "session",
     };
@@ -379,7 +417,7 @@ export function Sidebar({ project }: { project: Project }) {
       return (
         <div key={row.to} className="py-0.5 pl-2 pr-1">
           <InlineNameInput
-            defaultValue={row.title}
+            defaultValue={row.rawTitle ?? row.title}
             onSubmit={(v) => {
               setRenamingSession(null);
               void renameSession(row.id, v);
@@ -614,18 +652,19 @@ export function Sidebar({ project }: { project: Project }) {
         {!inSettings && (
         <>
         <div className={cn("px-4 pb-3", overlayTitlebar ? "pt-1" : "pt-4")}>
-          <div className="flex min-w-0 items-baseline gap-1.5">
+          <div className="flex min-w-0 items-center gap-1.5">
             {/* Brand = home: clicking the logo/name returns to the main page. */}
             <button
               onClick={() => navigate("/live")}
               aria-label={t("sidebar.home")}
               title={t("sidebar.home")}
-              className="flex min-w-0 items-baseline gap-1.5 outline-none"
+              data-brand-home
+              className="flex min-w-0 items-center gap-2 outline-none"
             >
-              <img src={logo} alt="" className="h-[18px] w-auto shrink-0 self-center" />
+              <BrandMark className="block h-6 w-6 shrink-0 text-accent" />
               {/* eslint-disable-next-line i18next/no-literal-string -- product brand name, not translated across locales (see AGENTS.md) */}
-              <div className="truncate font-serif text-[17px] font-semibold leading-none tracking-tight text-text">
-                Open Science
+              <div data-brand-name className="truncate text-[17px] font-semibold leading-none tracking-tight text-text">
+                SciKeel
               </div>
             </button>
             {!overlayTitlebar && (
@@ -691,8 +730,14 @@ export function Sidebar({ project }: { project: Project }) {
               <span className="flex-1 truncate text-left">{t("projects.heading")}</span>
               <ChevronRight size={13} className="shrink-0 opacity-60 transition-transform group-hover/head:translate-x-0.5" />
             </button>
-            {/* Creating/importing a project needs local FS access — hidden in web. */}
-            <DropdownMenu.Root>
+            {isGatewayWeb && (
+              <button aria-label={t("projects.new")} title={t("projects.new")}
+                disabled={webReadOnly || createBusy || transition.busy} onClick={requestNaming}
+                className="rounded p-0.5 text-muted outline-none hover:bg-surface-2 hover:text-text disabled:opacity-50">
+                <Plus size={13} />
+              </button>
+            )}
+            {!isGatewayWeb && <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
                 <button
                   aria-label={t("projects.new")}
@@ -712,7 +757,7 @@ export function Sidebar({ project }: { project: Project }) {
                   className="z-50 min-w-[210px] rounded-card border border-border bg-surface p-1 text-[13px] text-text shadow-pop"
                 >
                   <DropdownMenu.Item
-                    onSelect={() => setNamingProject(true)}
+                    onSelect={requestNaming}
                     className="flex cursor-pointer items-center gap-2 rounded-input px-2 py-1.5 outline-none data-[highlighted]:bg-surface-2"
                   >
                     <Plus size={14} className="shrink-0 text-muted" />
@@ -727,7 +772,7 @@ export function Sidebar({ project }: { project: Project }) {
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
-            </DropdownMenu.Root>
+            </DropdownMenu.Root>}
           </div>
           {namingProject && (
             <NameProjectDialog
@@ -736,6 +781,8 @@ export function Sidebar({ project }: { project: Project }) {
               subtitle={t("projects.nameSubtitle")}
               placeholder={t("projects.namePlaceholder")}
               busy={createBusy}
+              created={!!createdProject}
+              error={createError}
               onSave={(v) => void submitNewProject(v)}
               onCancel={() => {
                 if (!createBusy) setNamingProject(false);
@@ -754,7 +801,8 @@ export function Sidebar({ project }: { project: Project }) {
           )}
           {projects.length === 0 && !namingProject && (
             <button
-              onClick={() => setNamingProject(true)}
+              onClick={requestNaming}
+              disabled={webReadOnly || createBusy || transition.busy}
               className="flex w-full items-center gap-2 rounded-input px-2 py-1 text-[13px] text-muted hover:bg-surface-2 hover:text-text"
             >
               <Folder size={14} className="shrink-0" />
@@ -788,6 +836,7 @@ export function Sidebar({ project }: { project: Project }) {
                         >
                           {t("projects.newSession")}
                         </ContextMenuItem>
+                        {!isGatewayWeb && <>
                         <ContextMenuItem
                           icon={<Pencil size={14} />}
                           onSelect={() => requestAnimationFrame(() => setRenamingId(p.id))}
@@ -815,6 +864,7 @@ export function Sidebar({ project }: { project: Project }) {
                         >
                           {t("projects.remove")}
                         </ContextMenuItem>
+                        </>}
                       </>
                     }
                   >
@@ -852,9 +902,9 @@ export function Sidebar({ project }: { project: Project }) {
                         className="min-w-0 flex-1 truncate text-left font-medium"
                         onDoubleClick={(e) => {
                           e.stopPropagation();
-                          setRenamingId(p.id);
+                          if (!isGatewayWeb) setRenamingId(p.id);
                         }}
-                        title={p.imported ? (p.importedFrom ?? p.path) : t("projects.renameHint")}
+                        title={isGatewayWeb ? p.path : p.imported ? (p.importedFrom ?? p.path) : t("projects.renameHint")}
                       >
                         {p.name}
                       </span>
@@ -880,7 +930,8 @@ export function Sidebar({ project }: { project: Project }) {
                             name: p.name,
                           })}
                           title={t("projects.newSessionAria", { name: p.name })}
-                          className="hidden rounded p-1 text-muted hover:bg-border hover:text-text group-hover/project:block"
+                          disabled={isGatewayWeb && transition.busy}
+                          className={cn("rounded p-1 text-muted hover:bg-border hover:text-text disabled:opacity-50", isGatewayWeb ? "block" : "hidden group-hover/project:block")}
                         >
                           <Plus size={13} />
                         </button>
@@ -977,7 +1028,7 @@ export function Sidebar({ project }: { project: Project }) {
         </>
         )}
 
-        {isGatewayWeb && <div className="mt-auto"><GatewayAccountMenu user={gatewayUser} showUpdateBadge={showUpdateBadge} /></div>}
+        {isGatewayWeb && <div className="mt-auto"><GatewayAccountMenu user={gatewayUser} /></div>}
 
         {pendingRemoveProject && (
           <ConfirmDialog
@@ -1005,7 +1056,7 @@ export function Sidebar({ project }: { project: Project }) {
             }
             body={
               pendingDelete.kind === "session"
-                ? t("confirmDelete.sessionBody", { title: pendingDelete.title })
+                ? t("confirmDelete.sessionBody", { title: displayTitle(pendingDelete) })
                 : t("confirmDelete.exampleBody", { title: pendingDelete.title })
             }
             confirmLabel={
@@ -1017,6 +1068,7 @@ export function Sidebar({ project }: { project: Project }) {
             onCancel={() => setPendingDelete(null)}
           />
         )}
+        {transition.confirmation}
       </aside>
 
       {/* Drag divider: resize within [SIDEBAR_MIN, SIDEBAR_MAX]; dragging far
@@ -1206,84 +1258,5 @@ function InlineNameInput({
         busy && "animate-pulse opacity-60",
       )}
     />
-  );
-}
-
-/** Modal for naming a new (from-scratch) project: a focused, pre-selected input
- *  with Save/Cancel. Used instead of an inline row so "New project" reads as a
- *  deliberate step (matching the from-scratch / existing-folder menu split). */
-function NameProjectDialog({
-  defaultName,
-  title,
-  subtitle,
-  placeholder,
-  busy,
-  onSave,
-  onCancel,
-}: {
-  defaultName: string;
-  title: string;
-  subtitle: string;
-  placeholder?: string;
-  busy: boolean;
-  onSave: (value: string) => void;
-  onCancel: () => void;
-}) {
-  const { t } = useTranslation("common");
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    ref.current?.focus();
-    ref.current?.select();
-  }, []);
-  const save = () => {
-    const v = ref.current?.value ?? "";
-    if (v.trim() && !busy) onSave(v);
-  };
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={() => !busy && onCancel()}
-      role="presentation"
-    >
-      <div
-        role="dialog"
-        aria-label={title}
-        className="w-[420px] max-w-[calc(100vw-2rem)] rounded-card border border-border bg-surface p-5 shadow-card"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="text-base font-semibold text-text">{title}</div>
-        <p className="mt-1 text-sm text-muted">{subtitle}</p>
-        <input
-          ref={ref}
-          defaultValue={defaultName}
-          placeholder={placeholder}
-          disabled={busy}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") save();
-            else if (e.key === "Escape") onCancel();
-          }}
-          className={cn(
-            "mt-4 w-full rounded-input border border-border bg-surface px-3 py-2 text-sm text-text outline-none placeholder:text-muted focus:border-accent",
-            busy && "animate-pulse opacity-60",
-          )}
-        />
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            className="rounded-input border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-2 disabled:opacity-50"
-            onClick={onCancel}
-            disabled={busy}
-          >
-            {t("actions.cancel")}
-          </button>
-          <button
-            className="rounded-input bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-            onClick={save}
-            disabled={busy}
-          >
-            {t("actions.save")}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { StateNotice } from "@/components/ui/StateNotice";
+import { useCallback, useRef, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
@@ -143,12 +144,16 @@ export function FilesPage({
     setDirState(next);
   };
 
+  const loadGeneration = useRef(0);
   const load = useCallback(async (rel: string) => {
+    const generation = ++loadGeneration.current;
     setEntries(null);
     setError(null);
     try {
-      setEntries(await listDir(rel, "base"));
+      const next = await listDir(rel, "base");
+      if (generation === loadGeneration.current) setEntries(next);
     } catch (e) {
+      if (generation !== loadGeneration.current) return;
       if (rel) {
         rememberDirectory(GLOBAL_FILES_LOCATION, "");
         setDirState("");
@@ -161,6 +166,9 @@ export function FilesPage({
 
   useEffect(() => {
     void load(dir);
+    // This ref tracks request generations, rather than a mounted DOM node.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { loadGeneration.current++; };
   }, [dir, load]);
 
   const open = (entry: DirEntry) => {
@@ -242,7 +250,7 @@ export function FilesPage({
               <Loader2 size={14} className="animate-spin" /> {t("files.loading")}
             </div>
           )}
-          {error && <div className="p-2 text-sm text-error">{error}</div>}
+          {error && <StateNotice issueId={`files-base:${dir}:${error}`} summary={t("common:notification.problem")} detail={error} action={{ label: t("common:notification.retry"), run: () => load(dir) }} />}
           {entries && entries.length === 0 && !error && (
             <div className="p-2 text-sm text-muted">
               {isTauri || isGatewayWeb ? t("files.folderEmpty") : t("files.explorerUnavailableWeb")}
@@ -441,7 +449,7 @@ export function SessionFilesPane({
             <Loader2 size={14} className="animate-spin" /> {t("files.loading")}
           </div>
         )}
-        {error && <div className="p-2 text-sm text-error">{error}</div>}
+        {error && <StateNotice issueId={`files-session:${sessionId}:${dir}:${error}`} summary={t("common:notification.problem")} detail={error} action={{ label: t("common:notification.retry"), run: () => setReload(n => n + 1) }} />}
         {entries && entries.length === 0 && !error && (
           <div className="p-2 text-sm text-muted">{t("files.folderEmpty")}</div>
         )}

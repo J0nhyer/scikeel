@@ -8,7 +8,9 @@
     "signOut": "Abmelden",
     "account": "Konto {{username}}",
     "adminBadge": "Admin",
-    "home": "Startseite"
+    "home": "Startseite",
+    "campusName": "Chengdu University of Technology",
+    "campusStudentProject": "Studentisches Forschungsprojekt"
   },
   "items": {
     "new": "Neu",
@@ -52,7 +54,12 @@
     "seeAll": "Alle Projekte",
     "openFolder": "{{path}} öffnen",
     "newSession": "Neue Sitzung",
-    "openFolderLabel": "Ordner öffnen"
+    "openFolderLabel": "Ordner öffnen",
+    "discardTitle": "Neue Unterhaltung starten?",
+    "discardBody": "Ihre nicht gesendete Nachricht und ausstehenden Anhänge werden verworfen. Gespeicherte Unterhaltungen und Projektdateien bleiben erhalten.",
+    "discardAction": "Verwerfen und fortfahren",
+    "entryFailed": "Projekt erstellt, aber die Unterhaltung konnte nicht geöffnet werden.",
+    "retryOpening": "Erneut öffnen"
   },
   "history": {
     "heading": "Sitzungen",
@@ -91,7 +98,9 @@
     "exportDone_one": "{{count}} Unterhaltung exportiert.",
     "exportDone_other": "{{count}} Unterhaltungen exportiert.",
     "exportDonePartial_one": "{{count}} Unterhaltung exportiert; {{failed}} konnte nicht gelesen werden.",
-    "exportDonePartial_other": "{{count}} Unterhaltungen exportiert; {{failed}} konnten nicht gelesen werden."
+    "exportDonePartial_other": "{{count}} Unterhaltungen exportiert; {{failed}} konnten nicht gelesen werden.",
+    "titleGenerating": "Titel wird erstellt…",
+    "titleUntitled": "Neue Unterhaltung"
   },
   "confirmDelete": {
     "sessionTitle": "Sitzung löschen?",
@@ -181,7 +190,7 @@
       "openNotebooks": "Notebooks öffnen",
       "manageSkills": "Skills verwalten",
       "openSettings": "Einstellungen öffnen",
-      "toggleTheme": "Design wechseln (Hell / Warm / Dunkel)"
+      "toggleTheme": "Darstellung wechseln"
     }
   },
   "rowMenu": {

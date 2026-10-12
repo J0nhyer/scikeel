@@ -1,3 +1,4 @@
+import { useSessionTitles, editableSessionTitle } from "@/lib/sessionTitle";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
@@ -14,7 +15,7 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import type { SessionMeta } from "@ai4s/sdk";
+import { withManualSessionTitle, type SessionMeta } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
 import { getClient, useRuntimeStore } from "@/lib/runtime";
 import { useLayoutStore } from "@/lib/layout";
@@ -68,6 +69,8 @@ export function HistoryPage() {
   const [query, setQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [rows, setRows] = useState<SessionMeta[]>([]);
+  const refreshTitleSessions = useRuntimeStore((s) => s.refreshSessions);
+  const displayTitle = useSessionTitles(rows, refreshTitleSessions);
   const [cursor, setCursor] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [exhausted, setExhausted] = useState(false);
@@ -121,6 +124,39 @@ export function HistoryPage() {
     void load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, showArchived, status]);
+
+  const recentSessions = useRuntimeStore(state => state.sessions);
+  useEffect(() => {
+    const recent = new Map(recentSessions.map(session => [session.id, session]));
+    setRows(previous => {
+      let changed = false;
+      const next = previous.map(row => {
+        const session = recent.get(row.id);
+        if (!session || (session.updated ?? 0) < (row.updated ?? 0)) return row;
+        if (session.title === row.title && session.titlePresentation === row.titlePresentation && session.metadata === row.metadata) return row;
+        changed = true;
+        return { ...row, title: session.title, titlePresentation: session.titlePresentation, metadata: session.metadata };
+      });
+      return changed ? next : previous;
+    });
+  }, [recentSessions]);
+
+  // Observe only loaded rows; late titles must not reorder or recreate sessions.
+  useEffect(() => {
+    const client = getClient();
+    return client?.onEvent?.(event => {
+      if (event.type === "session.deleted") {
+        setRows(previous => previous.filter(row => row.id !== event.sessionId));
+      } else if (event.type === "session.updated") {
+        setRows(previous => previous.map(row => {
+          if (row.id !== event.sessionId) return row;
+          const changed = { ...row, ...event.session, title: event.title };
+          if (!changed.titlePresentation && event.title === row.title) changed.titlePresentation = row.titlePresentation;
+          return changed;
+        }));
+      }
+    });
+  }, [status]);
 
   // Keyed by comparison key — a project path (from Rust) and a session directory
   // (from the sidecar) spell the same Windows folder differently (#76).
@@ -292,11 +328,11 @@ export function HistoryPage() {
                         <MessageSquare size={14} className="shrink-0 text-muted" />
                         {renamingId === s.id ? (
                           <RenameInput
-                            defaultValue={s.title}
+                            defaultValue={editableSessionTitle(s)}
                             onSubmit={(v) => {
                               setRenamingId(null);
                               if (v.trim() && v.trim() !== s.title) {
-                                patchRow(s.id, { title: v.trim() });
+                                patchRow(s.id, withManualSessionTitle(s, v.trim()));
                                 void renameSession(s.id, v);
                               }
                             }}
@@ -307,7 +343,7 @@ export function HistoryPage() {
                             onClick={() => open(s.id)}
                             className="min-w-0 flex-1 truncate text-left text-sm text-text outline-none hover:underline"
                           >
-                            {s.title}
+                            {displayTitle(s)}
                           </button>
                         )}
                         {s.archived != null && (
@@ -338,7 +374,7 @@ export function HistoryPage() {
                         <DropdownMenu.Root>
                           <DropdownMenu.Trigger asChild>
                             <button
-                              aria-label={t("history.rowActions", { title: s.title })}
+                              aria-label={t("history.rowActions", { title: displayTitle(s) })}
                               className="rounded p-1 text-muted opacity-0 outline-none hover:bg-surface-2 hover:text-text group-hover:opacity-100 data-[state=open]:opacity-100 max-md:opacity-100"
                             >
                               <MoreHorizontal size={15} />
@@ -455,7 +491,7 @@ export function HistoryPage() {
       {pendingDelete && (
         <ConfirmDialog
           title={t("confirmDelete.sessionTitle")}
-          body={t("confirmDelete.sessionBody", { title: pendingDelete.title })}
+          body={t("confirmDelete.sessionBody", { title: displayTitle(pendingDelete) })}
           confirmLabel={t("confirmDelete.deleteAction")}
           onConfirm={() => {
             patchRow(pendingDelete.id, null);

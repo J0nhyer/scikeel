@@ -46,6 +46,7 @@ const providers: ProviderInfo[] = [
 
 beforeEach(() => {
   resetZenModelCache();
+  sessionStorage.clear();
   env.isTauri = true;
   env.isGatewayWeb = false;
   env.servedIds.mockReset();
@@ -109,7 +110,7 @@ describe("zenServedModels", () => {
     env.isGatewayWeb = true;
     env.gatewayGet.mockResolvedValue({ models: ["hy3-free"] });
     expect([...((await zenServedModels()) ?? [])]).toEqual(["hy3-free"]);
-    expect(env.gatewayGet).toHaveBeenCalledWith("/v1/zen-models");
+    expect(env.gatewayGet).toHaveBeenCalledWith("/v1/zen-models", expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
   it("stays unknown where nothing can ask (plain browser dev)", async () => {
@@ -133,5 +134,82 @@ describe("listProvidersWithAvailability", () => {
     env.servedIds.mockRejectedValue(new Error("offline"));
     const client = { listProviders: vi.fn(async () => providers) };
     expect(await listProvidersWithAvailability(client)).toBe(providers);
+  });
+});
+
+describe("Web availability does not block native models", () => {
+  it("returns non-Zen providers without making an availability request", async () => {
+    env.isTauri = false; env.isGatewayWeb = true;
+    const native = [providers[1]];
+    env.gatewayGet.mockResolvedValue(null);
+    expect(await listProvidersWithAvailability({ listProviders: vi.fn(async () => native) })).toBe(native);
+    expect(env.gatewayGet).not.toHaveBeenCalled();
+  });
+  it("publishes native Zen models before the advisory finishes", async () => {
+    env.isTauri = false; env.isGatewayWeb = true;
+    let release!: (value: { models: string[] }) => void;
+    env.gatewayGet.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    let result: unknown;
+    const loading = listProvidersWithAvailability({ listProviders: vi.fn(async () => providers) }).then(value => { result = value; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(result).toBe(providers);
+    } finally { release({ models: ["mimo-v2.5-free"] }); await loading; }
+  });
+});
+
+describe("public Web availability cache", () => {
+  it("keeps failure caching in memory for only thirty seconds", async () => {
+    env.isTauri = false; env.isGatewayWeb = true;
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    env.gatewayGet.mockResolvedValue(null);
+    try {
+      expect(await zenServedModels()).toBeNull();
+      now += 29_000;
+      expect(await zenServedModels()).toBeNull();
+      expect(env.gatewayGet).toHaveBeenCalledOnce();
+      expect(sessionStorage.length).toBe(0);
+      now += 1001;
+      await zenServedModels();
+      expect(env.gatewayGet).toHaveBeenCalledTimes(2);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("reuses successful public IDs after a page-memory reset", async () => {
+    env.isTauri = false; env.isGatewayWeb = true;
+    env.gatewayGet.mockResolvedValue({ models: ["mimo-v2.5-free"] });
+    await zenServedModels(); resetZenModelCache();
+    const models = await listProvidersWithAvailability({ listProviders: vi.fn(async () => providers) });
+    expect(models[0].models[1].available).toBe(false);
+    expect(env.gatewayGet).toHaveBeenCalledOnce();
+  });
+  it.each([
+    "broken", JSON.stringify({ version: 2, fetchedAt: Date.now(), models: ["mimo-v2.5-free"] }),
+    JSON.stringify({ version: 1, fetchedAt: Date.now() - 601000, models: ["mimo-v2.5-free"] }),
+    JSON.stringify({ version: 1, fetchedAt: Date.now() + 60000, models: ["mimo-v2.5-free"] }),
+    JSON.stringify({ version: 1, fetchedAt: Date.now(), models: ["bad\nmodel"] }),
+    JSON.stringify({ version: 1, fetchedAt: Date.now(), models: Array(4097).fill("mimo-v2.5-free") }),
+  ])("ignores an invalid or expired cache", async value => {
+    env.isTauri = false; env.isGatewayWeb = true;
+    sessionStorage.setItem("scikeel.zen.models.v1", value);
+    env.gatewayGet.mockResolvedValue(null);
+    expect(await listProvidersWithAvailability({ listProviders: vi.fn(async () => providers) })).toBe(providers);
+    await zenServedModels();
+    expect(env.gatewayGet).toHaveBeenCalledOnce();
+  });
+  it("shares one background request and notifies callers only after success", async () => {
+    env.isTauri = false; env.isGatewayWeb = true;
+    let release!: (value: { models: string[] }) => void;
+    env.gatewayGet.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    const update = vi.fn();
+    const source = { listProviders: vi.fn(async () => providers) };
+    await Promise.all([listProvidersWithAvailability(source, update), listProvidersWithAvailability(source, update)]);
+    expect(update).not.toHaveBeenCalled();
+    expect(env.gatewayGet).toHaveBeenCalledOnce();
+    release({ models: ["mimo-v2.5-free"] });
+    await zenServedModels(); await Promise.resolve();
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(update.mock.calls[0][0][0].models[1].available).toBe(false);
   });
 });

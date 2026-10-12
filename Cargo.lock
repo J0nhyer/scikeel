@@ -2816,12 +2816,23 @@ name = "osd-core"
 version = "0.5.2"
 dependencies = [
  "getrandom 0.4.3",
+ "libc",
  "notify",
  "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "osd-sandbox-host"
+version = "0.5.2"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

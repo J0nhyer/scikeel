@@ -10,6 +10,22 @@
 @tailwind components;
 @tailwind utilities;
 
+.appearance-preview { display:grid; grid-template-columns:25% 1fr; height:96px; overflow:hidden; border:1px solid #dce3ed; border-radius:7px; background:#fff; }
+.appearance-preview-sidebar { background:#f1f4f8; padding:14px 7px; }
+.appearance-preview-sidebar i { display:block; height:4px; background:#b8c6d9; border-radius:3px; margin-bottom:9px; }
+.appearance-preview-content { padding:23px 10px 10px; }
+.appearance-preview-content i { display:block; width:70%; height:5px; margin:0 auto 9px; border-radius:3px; background:#e5ebf3; }
+.appearance-preview-content i:first-child { background:#98b5e2; width:50%; }
+.appearance-preview-content b { display:block; height:17px; margin-top:13px; border:1px solid #dce3ed; border-radius:4px; }
+.appearance-preview-dark { background:#111823; border-color:#344255; }
+.appearance-preview-dark .appearance-preview-sidebar { background:#1a2432; }
+.appearance-preview-dark i { background:#4e6079; }
+.appearance-preview-dark b { border-color:#344255; }
+.appearance-preview-system { background:linear-gradient(100deg,#fff 50%,#111823 50%); }
+.appearance-preview-cdut .appearance-preview-sidebar { background:#e7eff9; }
+.appearance-preview-cdut .appearance-preview-content i:first-child { background:#1e3e6e; }
+[data-theme="cdut"] .sidebar-surface { background:#eff4fa; }
+
 /* Webview page-zoom factor (Cmd/Ctrl +/-), owned by ZoomProvider. The macOS
    traffic lights are native chrome and never zoom, so titlebar strips counter-
    scale their height and traffic-light inset by 1/--zoom (see overlayTitlebarStyle)
@@ -546,4 +562,43 @@ textarea,
 .osd-find-hit-current {
   background-color: color-mix(in srgb, var(--accent) 60%, transparent);
   outline: 1px solid var(--accent);
+}
+
+/* CDUT — fixed blue-and-white campus appearance. */
+[data-theme="cdut"] {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #eff4fa;
+  --border: #dce5f0;
+  --border-faint: #edf2f8;
+  --text: #172b45;
+  --muted: #65778d;
+  --accent: #1e3e6e;
+  --accent-fg: #ffffff;
+  --link: #2563eb;
+  --warn: #c98a2b;
+  --ok: #4b8b5b;
+  --error: #c0564b;
+  --series-1: #2a78d6;
+  --series-2: #1baf7a;
+  --series-3: #eda100;
+  --series-4: #008300;
+  --series-5: #4a3aa7;
+  --series-6: #e34948;
+  --series-7: #e87ba4;
+  --series-8: #eb6834;
+  --chart-grid: #e6e6ea;
+  --chart-axis: #c9c9cf;
+  /* Code highlighting (GitHub-light hues; see .hljs-* rules below). */
+  --hl-keyword: #cf222e;
+  --hl-entity: #8250df;
+  --hl-constant: #0550ae;
+  --hl-string: #0a3069;
+  --hl-builtin: #953800;
+  --hl-comment: #6e7781;
+  --hl-tag: #116329;
+  --hl-addition: #116329;
+  --hl-addition-bg: #dafbe1;
+  --hl-deletion: #82071e;
+  --hl-deletion-bg: #ffebe9;
 }

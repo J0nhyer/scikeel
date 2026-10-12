@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import i18n from "@/i18n";
 import type { OpenCodeEvent, HistoryMessage } from "@ai4s/sdk";
 import { AUTO_REVIEW_PROMPT } from "./autoReview";
 import { GOAL_RESUME_NUDGE } from "./goalPrompts";
@@ -6,6 +7,7 @@ import {
   datedWorkspaceName,
   explainRuntimeError,
   turnStillStreaming,
+  turnIsOver,
   foldCarriageReturns,
   foldEvent,
   historyToThread,
@@ -605,7 +607,7 @@ describe("historyToThread", () => {
     const t = historyToThread(msgs);
     expect(t.blocks).toEqual([
       { kind: "user", text: "hi" },
-      { kind: "status-line", text: "no channel available for this model", tone: "error" },
+      { kind: "status-line", text: "no channel available for this model", tone: "error", presentation: { kind: "failure", eventId: "history:1" } },
     ]);
   });
 
@@ -623,12 +625,43 @@ describe("historyToThread", () => {
     expect(line.kind === "status-line" && line.text).toMatch(/OpenCode Zen/);
   });
 
-  it("keeps user-interrupted turns quiet: an aborted error adds no red line", () => {
+  it("keeps aborted turns quiet until server idleness is confirmed", () => {
     const msgs: HistoryMessage[] = [
       { role: "user", parts: [{ type: "text", text: "hi" }] },
       { role: "assistant", completed: 2, error: "The operation was aborted.", parts: [] },
     ];
     expect(historyToThread(msgs).blocks).toEqual([{ kind: "user", text: "hi" }]);
+  });
+
+  it("reports one confirmed cancellation even when the runtime finalized its tool", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "wait" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [
+        { type: "tool", tool: "bash", state: { status: "completed", input: { command: "sleep 90" } } },
+      ] },
+    ];
+    expect(historyToThread(msgs, undefined, true).blocks.filter(b => b.kind === "status-line" && b.tone === "error")).toHaveLength(1);
+    expect(historyToThread(msgs).blocks.some(b => b.kind === "status-line")).toBe(false);
+  });
+
+  it("does not carry a previous aborted turn into a later successful reply", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "old turn" }] },
+      { role: "assistant", completed: 2, error: "Aborted", parts: [] },
+      { role: "user", parts: [{ type: "text", text: "new turn" }] },
+      { role: "assistant", completed: 4, parts: [{ type: "text", text: "done" }] },
+    ];
+    expect(historyToThread(msgs, undefined, true).blocks.some(b => b.kind === "status-line")).toBe(false);
+  });
+
+  it("does not carry an abandoned frozen tool into a later successful reply", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "old turn" }] },
+      { role: "assistant", parts: [{ type: "tool", tool: "read", state: { status: "running" } }] },
+      { role: "user", parts: [{ type: "text", text: "new turn" }] },
+      { role: "assistant", completed: 4, parts: [{ type: "text", text: "done" }] },
+    ];
+    expect(historyToThread(msgs, undefined, true).blocks.some(b => b.kind === "status-line")).toBe(false);
   });
 
   it("falls back to the bash command as the row title (agent steps too)", () => {
@@ -657,11 +690,43 @@ describe("historyToThread", () => {
         ],
       },
     ];
-    const t = historyToThread(msgs);
-    expect(t.blocks[1]).toMatchObject({ kind: "tool-call", status: "pending" });
-    expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "pending" });
+    // serverIdle = true: the server confirms the session is no longer running, so
+    // the frozen steps really were abandoned.
+    const t = historyToThread(msgs, undefined, true);
+    // serverIdle also drives the row itself: a step abandoned by a dead session
+    // reads as failed, not as still-pending.
+    expect(t.blocks[1]).toMatchObject({ kind: "tool-call", status: "failed" });
+    expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "failed" });
     const last = t.blocks[t.blocks.length - 1];
     expect(last).toMatchObject({ kind: "status-line", tone: "error" });
+  });
+
+  it("leaves a live turn unflagged: frozen steps with serverIdle=false add no red line", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "explore" }] },
+      {
+        role: "assistant",
+        parts: [
+          { type: "tool", tool: "read", state: { status: "running", title: "README.md" } },
+          { type: "tool", tool: "glob", state: { status: "pending", title: "*.md" } },
+        ],
+      },
+    ];
+    const t = historyToThread(msgs, undefined, false);
+    expect(t.blocks[1]).toMatchObject({ kind: "tool-call", status: "pending" });
+    expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "pending" });
+    expect(t.blocks.some((b) => b.kind === "status-line")).toBe(false);
+  });
+
+  it("stays quiet when the running status could not be read (serverIdle omitted)", () => {
+    const msgs: HistoryMessage[] = [
+      { role: "user", parts: [{ type: "text", text: "explore" }] },
+      {
+        role: "assistant",
+        parts: [{ type: "tool", tool: "read", state: { status: "running", title: "README.md" } }],
+      },
+    ];
+    expect(historyToThread(msgs).blocks.some((b) => b.kind === "status-line")).toBe(false);
   });
 
   it("shows a slash command as what the user typed, not its expanded template", () => {
@@ -943,4 +1008,64 @@ describe("turnStillStreaming", () => {
     expect(turnStillStreaming(done, RUNTIME_START)).toBe(false);
     expect(turnStillStreaming(failed, RUNTIME_START)).toBe(false);
   });
+});
+
+describe("turnIsOver", () => {
+  // The gate reconcileRunning uses before it asks the server whether a turn is
+  // live. A finished turn must read as over, or a completed conversation gets a
+  // red interruption line on every reconciliation. A trailing user message is
+  // also "over" here — and it cannot produce that line anyway, because the line
+  // only appears when a tool part is frozen and a trailing user message has no
+  // assistant parts after it.
+  it("reads a finished assistant turn as over and an unfinished one as not", () => {
+    const done = [{ role: "assistant" as const, parts: [], completed: 3_100 }];
+    const live = [{ role: "assistant" as const, parts: [] }];
+    expect(turnIsOver(done)).toBe(true);
+    expect(turnIsOver(live)).toBe(false);
+  });
+
+  it("does not call a trailing user message a finished turn", () => {
+    expect(turnIsOver([{ role: "user" as const, parts: [] }])).toBe(false);
+    expect(turnIsOver([])).toBe(false);
+  });
+});
+
+describe('tool failure evidence', () => {
+  it('keeps the same failure detail in live folding and reloaded history', () => {
+    const live = foldEvent(empty, { type: 'tool.updated', sessionId: S, callId: 'call_bad', tool: 'webfetch', status: 'failed', error: 'Remote service rejected the request.' });
+    const history = historyToThread([{ role: 'assistant', parts: [{ type: 'tool', callID: 'call_bad', tool: 'webfetch', state: { status: 'error', error: 'Remote service rejected the request.' } }] }]);
+    expect(live.blocks[0]).toMatchObject({ status: 'failed', output: 'Remote service rejected the request.' });
+    expect(history.blocks[0]).toMatchObject({ status: 'failed', output: 'Remote service rejected the request.' });
+  });
+  it('does not treat completed invalid-tool wrappers as successful execution', () => {
+    const result = historyToThread([{ role: 'assistant', parts: [{ type: 'tool', callID: 'call_invalid', tool: 'invalid', state: { status: 'completed', output: 'Unknown tool recovery' } }] }]);
+    expect(result.blocks[0]).toMatchObject({ status: 'failed', outcome: { code: 'tool_unavailable' } });
+  });
+});
+
+
+describe("local model timeout messages", () => {
+  it("explains only stable broker timeout markers", () => {
+    expect(explainRuntimeError("[model_first_byte_timeout] details")).toContain("2 minutes");
+    expect(explainRuntimeError("[model_idle_timeout] details")).toContain("existing work is preserved");
+    expect(explainRuntimeError("[model_total_timeout] details")).toContain("1-hour limit");
+    expect(explainRuntimeError("Connection reset by server")).toBe("Connection reset by server");
+  });
+  it("recovers timeout explanations from persisted adapter envelopes", () => {
+    const payload = JSON.stringify({type: "response.failed", response: {error: {code: "model_total_timeout", message: "[model_total_timeout] details"}}});
+    const live = explainRuntimeError("[model_total_timeout] details");
+    expect(explainRuntimeError(payload)).toBe(live);
+    expect(live).not.toContain("response.failed");
+  });
+});
+
+it("persists a localized timeout status while retaining partial work", async () => {
+  const previous = i18n.language;
+  try {
+    await i18n.changeLanguage("zh-Hans");
+    const blocks = historyToThread([{role: "assistant", completed: 2, error: "[model_total_timeout] details", parts: [{type: "text", text: "Partial research result."}]}]).blocks;
+    expect(blocks.some(block => block.kind === "status-line" && block.text.includes("1 小时"))).toBe(true);
+    expect(JSON.stringify(blocks)).toContain("Partial research result.");
+    expect(explainRuntimeError("Connection reset by server")).toBe("Connection reset by server");
+  } finally { await i18n.changeLanguage(previous); }
 });

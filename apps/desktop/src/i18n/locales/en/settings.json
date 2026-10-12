@@ -20,7 +20,9 @@
     "theme": {
       "light": "Light",
       "warm": "Warm",
-      "dark": "Dark"
+      "dark": "Dark",
+      "system": "System",
+      "cdut": "CDUT"
     },
     "zoom": {
       "label": "Zoom",
@@ -28,6 +30,17 @@
       "in": "Zoom in",
       "out": "Zoom out",
       "reset": "Reset"
+    },
+    "summary": {
+      "light": "A clear, light research workspace.",
+      "dark": "Quiet dark surfaces for focused research.",
+      "system": "Follow your device’s light or dark appearance.",
+      "cdut": "Campus blue and white, with institution artwork and subtle empty-conversation decoration.",
+      "warm": "Your existing Warm preference is preserved. Choose a card to change appearance."
+    },
+    "campusDecoration": {
+      "label": "Campus decoration",
+      "hint": "Show the motto and line motif only on empty conversations."
     }
   },
   "language": {
@@ -107,6 +120,10 @@
     "privacy": "Only the public GitHub Releases API is contacted. No workspace files or API keys are sent."
   },
   "model": {
+    "defaultTitle": "Default model",
+    "defaultDescription": "New conversations use this model for your account and current assistant. Existing conversation choices stay the same.",
+    "defaultSaveProblem": "Could not finish changing the default model",
+    "defaultRecoveryFailed": "The default model was saved, but the assistant could not reconnect: {{detail}}",
     "catalogLimited": "The server could only identify some models for this assistant.",
     "title": "Model",
     "hint": "The model every new conversation starts on. Providers below supply what you can pick.",
@@ -135,6 +152,16 @@
     "removeFavorite": "Remove {{model}} from favorites",
     "change": "Change",
     "noProvidersHint": "Connect a provider below."
+  },
+  "managedAgents": {
+    "title": "Agent access management",
+    "hint": "Applies to all users. Turning an Agent off hides it from assistant lists, lets running tasks finish and blocks subsequent calls. Turning it on restores it when the server configuration is available.",
+    "allow": "Allow {{runtime}}",
+    "saving": "Saving…",
+    "saved": "{{runtime}} saved.",
+    "failed": "Could not save {{runtime}}. Try again.",
+    "loadFailed": "Could not load Agent access settings.",
+    "retry": "Retry"
   },
   "managedModels": {
     "title": "Managed CLI models",

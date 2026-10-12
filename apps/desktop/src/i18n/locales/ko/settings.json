@@ -1,4 +1,14 @@
 {
+  "managedAgents": {
+    "title": "Agent access management",
+    "hint": "Applies to all users. Turning an Agent off hides it from assistant lists, lets running tasks finish and blocks subsequent calls. Turning it on restores it when the server configuration is available.",
+    "allow": "Allow {{runtime}}",
+    "saving": "Saving…",
+    "saved": "{{runtime}} saved.",
+    "failed": "Could not save {{runtime}}. Try again.",
+    "loadFailed": "Could not load Agent access settings.",
+    "retry": "Retry"
+  },
   "nav": {
     "back": "앱으로 돌아가기",
     "general": "일반",
@@ -20,7 +30,9 @@
     "theme": {
       "light": "라이트",
       "warm": "웜",
-      "dark": "다크"
+      "dark": "다크",
+      "system": "시스템",
+      "cdut": "CDUT"
     },
     "zoom": {
       "label": "확대/축소",
@@ -28,6 +40,17 @@
       "in": "확대",
       "out": "축소",
       "reset": "초기화"
+    },
+    "summary": {
+      "light": "밝고 선명한 연구 작업 공간입니다.",
+      "dark": "연구에 집중할 수 있는 차분한 어두운 화면입니다.",
+      "system": "기기의 밝거나 어두운 화면 설정을 따릅니다.",
+      "cdut": "대학 상징과 은은한 장식이 있는 파란색과 흰색 스타일입니다.",
+      "warm": "기존의 따뜻한 색상 설정은 유지됩니다. 카드를 선택하여 변경하세요."
+    },
+    "campusDecoration": {
+      "label": "캠퍼스 장식",
+      "hint": "빈 대화에만 교훈과 선 장식을 표시합니다."
     }
   },
   "language": {
@@ -107,6 +130,10 @@
     "privacy": "공개 GitHub Releases API에만 연결합니다. 워크스페이스 파일이나 API 키는 전송하지 않습니다."
   },
   "model": {
+    "defaultTitle": "기본 모델",
+    "defaultDescription": "현재 계정과 어시스턴트의 새 대화에서 이 모델을 사용합니다. 기존 대화의 모델 선택은 유지됩니다.",
+    "defaultSaveProblem": "기본 모델 변경을 완료하지 못했습니다",
+    "defaultRecoveryFailed": "기본 모델은 저장되었지만 어시스턴트에 다시 연결하지 못했습니다: {{detail}}",
     "catalogLimited": "서버에서 일부 모델만 확인할 수 있습니다.",
     "title": "모델",
     "hint": "새 대화가 기본으로 사용하는 모델. 선택 범위는 아래 Providers가 정합니다.",

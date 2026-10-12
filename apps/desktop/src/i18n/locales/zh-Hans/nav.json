@@ -8,7 +8,9 @@
     "signOut": "退出登录",
     "account": "{{username}} 的账号",
     "adminBadge": "管理员",
-    "home": "回到首页"
+    "home": "回到首页",
+    "campusName": "成都理工大学",
+    "campusStudentProject": "学生科研项目"
   },
   "items": {
     "new": "新建",
@@ -52,7 +54,12 @@
     "seeAll": "全部项目",
     "openFolder": "打开 {{path}}",
     "newSession": "新建会话",
-    "openFolderLabel": "打开文件夹"
+    "openFolderLabel": "打开文件夹",
+    "discardTitle": "开始新会话？",
+    "discardBody": "未发送的消息和待发送附件将被丢弃。已保存的会话和项目文件会保留。",
+    "discardAction": "丢弃并继续",
+    "entryFailed": "项目已创建，但无法打开会话。",
+    "retryOpening": "重新打开"
   },
   "history": {
     "heading": "会话",
@@ -89,7 +96,9 @@
     "exportBodyFiltered": "匹配「{{query}}」的会话会写成 Markdown 文件，保存到你选择的文件夹，并附带索引。不会删除或修改任何内容。",
     "exportConfirm": "选择文件夹",
     "exportDone_other": "已导出 {{count}} 个会话。",
-    "exportDonePartial_other": "已导出 {{count}} 个会话，{{failed}} 个无法读取。"
+    "exportDonePartial_other": "已导出 {{count}} 个会话，{{failed}} 个无法读取。",
+    "titleGenerating": "正在生成标题…",
+    "titleUntitled": "新会话"
   },
   "confirmDelete": {
     "sessionTitle": "删除会话？",
@@ -179,7 +188,7 @@
       "openNotebooks": "打开笔记本",
       "manageSkills": "管理技能",
       "openSettings": "打开设置",
-      "toggleTheme": "切换主题（浅色 / 暖色 / 深色）"
+      "toggleTheme": "切换外观"
     }
   },
   "rowMenu": {

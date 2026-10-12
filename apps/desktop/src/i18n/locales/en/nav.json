@@ -8,7 +8,9 @@
     "signOut": "Sign out",
     "account": "{{username}} account",
     "adminBadge": "Admin",
-    "home": "Home"
+    "home": "Home",
+    "campusName": "Chengdu University of Technology",
+    "campusStudentProject": "Student research project"
   },
   "items": {
     "new": "New",
@@ -52,7 +54,12 @@
     "seeAll": "All projects",
     "openFolder": "Open {{path}}",
     "newSession": "New session",
-    "openFolderLabel": "Open folder"
+    "openFolderLabel": "Open folder",
+    "discardTitle": "Start a new conversation?",
+    "discardBody": "Your unsent message and pending attachments will be discarded. Saved conversations and project files are kept.",
+    "discardAction": "Discard and continue",
+    "entryFailed": "Project created, but the conversation could not be opened.",
+    "retryOpening": "Retry opening"
   },
   "history": {
     "heading": "Sessions",
@@ -91,7 +98,9 @@
     "exportDone_one": "Exported {{count}} conversation.",
     "exportDone_other": "Exported {{count}} conversations.",
     "exportDonePartial_one": "Exported {{count}} conversation; {{failed}} could not be read.",
-    "exportDonePartial_other": "Exported {{count}} conversations; {{failed}} could not be read."
+    "exportDonePartial_other": "Exported {{count}} conversations; {{failed}} could not be read.",
+    "titleGenerating": "Generating title…",
+    "titleUntitled": "New conversation"
   },
   "confirmDelete": {
     "sessionTitle": "Delete session?",
@@ -181,7 +190,7 @@
       "openNotebooks": "Open notebooks",
       "manageSkills": "Manage skills",
       "openSettings": "Open settings",
-      "toggleTheme": "Switch theme (light / warm / dark)"
+      "toggleTheme": "Switch appearance"
     }
   },
   "rowMenu": {

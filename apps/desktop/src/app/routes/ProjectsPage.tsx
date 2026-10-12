@@ -8,6 +8,7 @@ import {
   MoreHorizontal,
   Pencil,
   Pin,
+  Plus,
   Search,
 } from "lucide-react";
 import type { SessionMeta } from "@ai4s/sdk";
@@ -18,6 +19,7 @@ import { timeAgo } from "@/lib/relativeTime";
 import { openProjectFolder, renameProject, type ProjectInfo } from "@/lib/tauri";
 import { isGatewayWeb } from "@/lib/webMode";
 import { pathKey } from "@/lib/workspacePath";
+import { useWebDraftTransition } from "@/components/projects/useWebDraftTransition";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 /** The last path segment (folder name) of an absolute workspace path. */
@@ -34,6 +36,8 @@ interface Row extends ProjectInfo {
 export function ProjectsPage() {
   const { t } = useTranslation(["nav", "common"]);
   const navigate = useNavigate();
+  const transition = useWebDraftTransition();
+  const webReadOnly = useRuntimeStore((state) => state.webReadOnly);
   const projects = useRuntimeStore((s) => s.projects);
   const sessions = useRuntimeStore((s) => s.sessions);
   const setProjectPinned = useRuntimeStore((s) => s.setProjectPinned);
@@ -99,6 +103,7 @@ export function ProjectsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
+      {transition.confirmation}
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-8">
         <h1 className="font-serif text-2xl leading-tight text-text">{t("projects.heading")}</h1>
 
@@ -170,20 +175,33 @@ export function ProjectsPage() {
 
                     {/* Sources — click to open the folder in the OS file manager. */}
                     <div className="hidden min-w-0 md:block">
-                      <button
+                      {isGatewayWeb ? (
+                        <span title={p.path} className="inline-flex max-w-full items-center gap-1.5 truncate rounded-md border border-border bg-surface px-2 py-1 text-xs text-text">
+                          <Folder size={12} className="shrink-0 text-muted" />
+                          <span className="truncate">{baseName(p.path)}</span>
+                        </span>
+                      ) : <button
                         onClick={() => void openProjectFolder(p.id)}
-                        disabled={isGatewayWeb}
                         title={t("projects.openFolder", { path: p.path })}
                         className="inline-flex max-w-full items-center gap-1.5 truncate rounded-md border border-border bg-surface px-2 py-1 text-xs text-text outline-none enabled:hover:border-accent enabled:hover:bg-surface-2 disabled:cursor-default"
                       >
                         <Folder size={12} className="shrink-0 text-muted" />
                         <span className="truncate">{baseName(p.path)}</span>
-                      </button>
+                      </button>}
                     </div>
 
                     {/* Updated */}
                     <span className="text-sm tabular-nums text-muted">{timeAgo(p.updated, now)}</span>
 
+                    {isGatewayWeb && (
+                      <button aria-label={t("projects.newSessionAria", { name: p.name })}
+                        title={t("projects.newSessionAria", { name: p.name })}
+                        disabled={webReadOnly || transition.busy}
+                        onClick={() => void transition.requestTransition(async () => p)}
+                        className="justify-self-end rounded p-1 text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50">
+                        <Plus size={15} />
+                      </button>
+                    )}
                     {/* Actions — rename/remove/pin/open are host-local; hidden in web. */}
                     {!isGatewayWeb && (
                     <div className="flex items-center justify-end gap-0.5">

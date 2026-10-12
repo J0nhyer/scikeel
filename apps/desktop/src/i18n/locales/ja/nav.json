@@ -8,7 +8,9 @@
     "signOut": "ログアウト",
     "account": "{{username}}のアカウント",
     "adminBadge": "管理者",
-    "home": "ホームへ戻る"
+    "home": "ホームへ戻る",
+    "campusName": "Chengdu University of Technology",
+    "campusStudentProject": "学生研究プロジェクト"
   },
   "items": {
     "new": "新規",
@@ -52,7 +54,12 @@
     "seeAll": "すべてのプロジェクト",
     "openFolder": "{{path}} を開く",
     "newSession": "新しいセッション",
-    "openFolderLabel": "フォルダを開く"
+    "openFolderLabel": "フォルダを開く",
+    "discardTitle": "新しい会話を開始しますか？",
+    "discardBody": "未送信のメッセージと添付ファイルは破棄されます。保存済みの会話とプロジェクトファイルは保持されます。",
+    "discardAction": "破棄して続行",
+    "entryFailed": "プロジェクトを作成しましたが、会話を開けませんでした。",
+    "retryOpening": "もう一度開く"
   },
   "history": {
     "heading": "セッション",
@@ -89,7 +96,9 @@
     "exportBodyFiltered": "「{{query}}」に一致する会話を Markdown ファイルとして、選んだフォルダに目次付きで書き出します。削除や変更は行いません。",
     "exportConfirm": "フォルダを選択",
     "exportDone_other": "{{count}} 件の会話をエクスポートしました。",
-    "exportDonePartial_other": "{{count}} 件をエクスポートしました（{{failed}} 件は読み取れませんでした）。"
+    "exportDonePartial_other": "{{count}} 件をエクスポートしました（{{failed}} 件は読み取れませんでした）。",
+    "titleGenerating": "タイトルを生成中…",
+    "titleUntitled": "新しい会話"
   },
   "confirmDelete": {
     "sessionTitle": "セッションを削除しますか？",
@@ -179,7 +188,7 @@
       "openNotebooks": "ノートブックを開く",
       "manageSkills": "スキルを管理",
       "openSettings": "設定を開く",
-      "toggleTheme": "テーマを切り替え（ライト / ウォーム / ダーク）"
+      "toggleTheme": "外観を切り替え"
     }
   },
   "rowMenu": {

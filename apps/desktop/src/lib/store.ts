@@ -1,14 +1,14 @@
 import { create } from "zustand";
 import { detectInitialLocale, LOCALE_KEY } from "@/i18n/config";
 import { isMacUA, isTauri, trafficLightsPresent } from "./tauri";
+import { APPEARANCE_CHOICES, readAppearance, readUiPreference, writeUiPreference, systemPrefersDark, type Theme } from "./appearance";
 
-export type Theme = "light" | "warm" | "dark";
+export type { Theme } from "./appearance";
 
-export const THEMES: readonly Theme[] = ["light", "warm", "dark"];
+export const THEMES: readonly Theme[] = APPEARANCE_CHOICES;
 
 const THEME_KEY = "ai4s.theme.v2";
-/** Two-theme era key: its "light" was the warm paper palette, now called "warm". */
-const LEGACY_THEME_KEY = "ai4s.theme";
+const CAMPUS_DECORATION_KEY = "scikeel.campus-decoration.v1";
 const SIDEBAR_WIDTH_KEY = "ai4s.sidebar.width";
 const SIDEBAR_COLLAPSED_KEY = "ai4s.sidebar.collapsed";
 const INSPECTOR_WIDTH_KEY = "ai4s.inspector.width";
@@ -27,26 +27,19 @@ export const INSPECTOR_MAX = 960;
 export const INSPECTOR_DEFAULT = 560;
 
 function initialTheme(): Theme {
-  if (typeof window === "undefined") return "light";
-  const saved = window.localStorage.getItem(THEME_KEY);
-  if (saved === "light" || saved === "warm" || saved === "dark") return saved;
-  const legacy = window.localStorage.getItem(LEGACY_THEME_KEY);
-  if (legacy === "dark") return "dark";
-  if (legacy === "light") return "warm";
-  const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-  return prefersDark ? "dark" : "light";
+  return readAppearance(readUiPreference);
 }
 
 function initialSidebarWidth(): number {
   if (typeof window === "undefined") return SIDEBAR_DEFAULT;
-  const saved = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
+  const saved = Number(readUiPreference(SIDEBAR_WIDTH_KEY));
   if (!Number.isFinite(saved) || saved === 0) return SIDEBAR_DEFAULT;
   return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, saved));
 }
 
 function initialInspectorWidth(): number {
   if (typeof window === "undefined") return INSPECTOR_DEFAULT;
-  const saved = Number(window.localStorage.getItem(INSPECTOR_WIDTH_KEY));
+  const saved = Number(readUiPreference(INSPECTOR_WIDTH_KEY));
   if (!Number.isFinite(saved) || saved === 0) return INSPECTOR_DEFAULT;
   return Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, saved));
 }
@@ -57,13 +50,17 @@ function clampZoom(z: number): number {
 
 function initialZoom(): number {
   if (typeof window === "undefined") return 1;
-  const saved = Number(window.localStorage.getItem(ZOOM_KEY));
+  const saved = Number(readUiPreference(ZOOM_KEY));
   if (!Number.isFinite(saved) || saved <= 0) return 1;
   return clampZoom(saved);
 }
 
 interface UiState {
   theme: Theme;
+  systemDark: boolean;
+  campusDecoration: boolean;
+  setSystemDark: (dark: boolean) => void;
+  setCampusDecoration: (enabled: boolean) => void;
   /** Active UI locale (BCP-47). Persisted; mirrors the `theme` pattern. */
   locale: string;
   inspectorOpen: boolean;
@@ -103,16 +100,23 @@ interface UiState {
 
 export const useUiStore = create<UiState>((set, get) => ({
   theme: initialTheme(),
+  systemDark: systemPrefersDark(),
+  campusDecoration: readUiPreference(CAMPUS_DECORATION_KEY) !== "0",
+  setSystemDark: (systemDark) => set({ systemDark }),
+  setCampusDecoration: (campusDecoration) => {
+    writeUiPreference(CAMPUS_DECORATION_KEY, campusDecoration ? "1" : "0");
+    set({ campusDecoration });
+  },
   locale: detectInitialLocale(),
   inspectorOpen: true,
   sidebarCollapsed:
-    typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1",
+    readUiPreference(SIDEBAR_COLLAPSED_KEY) === "1",
   sidebarWidth: initialSidebarWidth(),
   isFullscreen: false,
   paletteOpen: false,
   zoom: initialZoom(),
   setTheme: (theme) => {
-    if (typeof window !== "undefined") window.localStorage.setItem(THEME_KEY, theme);
+    writeUiPreference(THEME_KEY, theme);
     set({ theme });
   },
   toggleTheme: () => get().setTheme(THEMES[(THEMES.indexOf(get().theme) + 1) % THEMES.length]),

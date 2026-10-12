@@ -1,4 +1,74 @@
 {
+  "research": {
+    "issues": {
+      "changed_inputs": "An original input changed or is missing. Inspect the source versions before accepting the results.",
+      "missing_outputs": "Some requested outputs are missing. Continue the task to produce them.",
+      "failed_checks": "Checks failed, lack evidence, or have not been completed. Inspect the check results.",
+      "missing_progress": "Execution ended without a valid final progress record. Inspect the conversation and continue explicitly."
+    },
+    "startFailed": "Could not start research. Please retry.",
+    "title": "Research task",
+    "start": "Start a research task",
+    "intro": "Turn your thesis or research idea into a clear plan, decisions, and checked outputs.",
+    "loading": "Loading research task…",
+    "retry": "Retry",
+    "objective": "Research objective",
+    "goal": "Research goal",
+    "goals": {
+      "thesis": "Undergraduate thesis / graduation design",
+      "publication": "Publication-oriented research"
+    },
+    "mode": "Working mode",
+    "modes": {
+      "guided": "Guided",
+      "collaborative": "Collaborative",
+      "delegated": "Delegated"
+    },
+    "modeHints": {
+      "guided": "Understand and confirm each meaningful research step before moving on.",
+      "collaborative": "Confirm a plan, let the Agent run routine steps, and decide important changes together.",
+      "delegated": "Let the Agent complete and check the confirmed task; it asks when information or a new decision is needed."
+    },
+    "inputs": "Input files (optional, one path per line)",
+    "deliverables": "Expected output files (one path per line)",
+    "pathsHint": "Use paths within this conversation’s workspace. Original inputs are preserved; tool approvals still apply.",
+    "confirmScope": "I confirm this objective, input files, and expected outputs within this conversation's workspace.",
+    "confirmStart": "Confirm scope and start",
+    "yourDecision": "Your decision",
+    "confirmDecision": "Confirm decision",
+    "continue": "Continue research",
+    "stop": "Stop research",
+    "pageBound": "Closing this page stops execution.",
+    "awaitingPlan": "The Agent will record the plan and actual progress here.",
+    "missingArtifact": "Not created: {{path}}",
+    "checkAttribution": "Checks reported by the Agent; file existence verified by SciKeel.",
+    "missingEvidence": "Evidence file missing",
+    "requestedOutputs": "Expected outputs: {{paths}}",
+    "inputFiles": "Inputs: {{paths}}",
+    "noInputs": "Not provided",
+    "states": {
+      "ready": "Ready",
+      "running": "Working",
+      "waiting_input": "Your decision needed",
+      "paused": "Stopped",
+      "completed": "Outputs checked",
+      "failed": "Needs attention",
+      "cancelled": "Cancelled"
+    },
+    "steps": {
+      "pending": "Planned",
+      "running": "Working",
+      "completed": "Done",
+      "failed": "Failed"
+    },
+    "checks": {
+      "passed": "Passed",
+      "failed": "Failed",
+      "pending": "Not checked"
+    },
+    "startPrompt": "Start the confirmed research task. Follow the selected working mode and record the plan, research decisions, outputs and checks.",
+    "continuePrompt": "Continue the confirmed research task using my recorded decisions. Explain the results and update the actual progress and checks."
+  },
   "notFound": {
     "title": "Session introuvable",
     "hint": "Choisissez une session dans la barre latérale."
@@ -44,6 +114,7 @@
     },
     "commandsAria": "Commandes",
     "runtime": {
+      "select": "Select assistant",
       "aria": "Assistant IA",
       "modelLabel": "Modèle",
       "unavailable": "Cet assistant IA est indisponible",
@@ -156,6 +227,17 @@
       "confirmTitle": "Compacter le contexte ?",
       "confirmBody": "Les échanges précédents sont remplacés par un résumé afin que la prochaine réponse s'exécute dans un contexte borné. La conversation d'origine complète reste stockée localement.",
       "confirmAction": "Compacter"
+    },
+    "attachments": {
+      "add": "Attach files",
+      "preview": "Preview {{name}}",
+      "download": "Download {{name}}",
+      "retry": "Retry {{name}}",
+      "remove": "Remove {{name}}",
+      "close": "Close preview",
+      "imageResized": "Image resized for the model; original retained.",
+      "imageStill": "A still image is sent to the model; original retained.",
+      "unavailable": "Preview unavailable for this file. Download the original to open it."
     }
   },
   "localCommand": {
@@ -164,6 +246,10 @@
     "cleared": "Contexte du chat effacé. Les fichiers restent dans le même dossier."
   },
   "starters": {
+    "research-idea": {
+      "title": "Start from a research idea",
+      "description": "Explore a topic, define a question, and plan your next step."
+    },
     "newSession": "Nouvelle session",
     "heading": "Que devrions-nous explorer ?",
     "subheading": "Décrivez votre analyse ci-dessous — ou partez de l'un de ces exemples.",
@@ -189,7 +275,11 @@
   },
   "live": {
     "starting": {
-      "bodyWeb": "En attente de la réponse de l'application hôte. Laissez cette page ouverte — la connexion se fera d'elle-même dès que l'hôte sera joignable.",
+      "titleWeb": "Connexion à votre espace de travail…",
+      "titleSessionsWeb": "Chargement des conversations…",
+      "bodyWeb": "Le serveur prépare votre espace de travail. Cela prend plus de temps que prévu ; une nouvelle tentative est en cours.",
+      "bodySessionsWeb": "Récupération de vos conversations sur le serveur. Les requêtes échouées seront réessayées automatiquement.",
+      "sessionsError": "Impossible de charger vos conversations. Veuillez vous reconnecter.",
       "title": "Démarrage du runtime local…",
       "body": "Le runtime d'agent intégré démarre. Au premier lancement, macOS peut demander l'autorisation d'accéder à vos dossiers — accordez-la et l'opération se termine d'elle-même."
     },
@@ -287,7 +377,82 @@
         "default_other": "a exécuté {{count}} étapes"
       },
       "failedCount": "{{count}} en échec"
-    }
+    },
+    "outcome": {
+      "tool_permission_denied": {
+        "message": "L’exécution n’a pas été autorisée.",
+        "nextAction": "Vérifiez l’autorisation actuelle de l’outil."
+      },
+      "network_admission_denied": {
+        "message": "L’autorisation réseau n’a pas pu être obtenue.",
+        "nextAction": "Vérifiez la connexion réseau gérée."
+      },
+      "network_destination_denied": {
+        "message": "La destination est hors du périmètre autorisé.",
+        "nextAction": "Choisissez une destination publique autorisée."
+      },
+      "network_grant_expired": {
+        "message": "L’autorisation réseau a expiré.",
+        "nextAction": "Lancez un nouvel appel autorisé si nécessaire."
+      },
+      "network_grant_revoked": {
+        "message": "L’autorisation réseau a été révoquée.",
+        "nextAction": "Vérifiez si l’exécution a été arrêtée."
+      },
+      "network_busy": {
+        "message": "La capacité réseau est temporairement saturée.",
+        "nextAction": "Réessayez dans le délai imparti à cet appel."
+      },
+      "network_timeout": {
+        "message": "La requête réseau a dépassé le délai.",
+        "nextAction": "Réessayez dans le délai imparti à cet appel."
+      },
+      "network_upstream_refused": {
+        "message": "Le service distant a refusé la requête.",
+        "nextAction": "Vérifiez son état connu et sa disponibilité."
+      },
+      "search_unavailable": {
+        "message": "Le service de recherche configuré est indisponible.",
+        "nextAction": "Vérifiez sa configuration ou utilisez une fonction disponible."
+      },
+      "delivery_missing_input": {
+        "message": "Une entrée d’origine est manquante.",
+        "nextAction": "Corrigez son chemin relatif à l’espace de travail."
+      },
+      "delivery_mode_mismatch": {
+        "message": "La livraison est incompatible avec le mode actuel.",
+        "nextAction": "Vérifiez le mode de recherche actuel."
+      },
+      "delivery_execution_paused": {
+        "message": "L’exécution de la recherche est en pause.",
+        "nextAction": "Reprenez l’exécution autorisée si nécessaire."
+      },
+      "edit_ambiguous_match": {
+        "message": "Le remplacement correspond à plusieurs emplacements.",
+        "nextAction": "Lisez le fichier et fournissez un contexte textuel unique."
+      },
+      "edit_no_change": {
+        "message": "Le remplacement ne modifierait rien.",
+        "nextAction": "Vérifiez si le contenu demandé existe déjà."
+      },
+      "tool_unavailable": {
+        "message": "L’outil sélectionné est indisponible.",
+        "nextAction": "Utilisez la liste actuelle des outils disponibles."
+      },
+      "execution_cancelled": {
+        "message": "L’exécution a été annulée.",
+        "nextAction": "Vérifiez les effets partiels éventuels avant de continuer."
+      },
+      "execution_interrupted": {
+        "message": "L’exécution a été interrompue.",
+        "nextAction": "Vérifiez ses effets avant de lancer un nouvel appel."
+      },
+      "tool_internal_error": {
+        "message": "L’outil n’a pas pu terminer l’opération.",
+        "nextAction": "Utilisez son identifiant de corrélation pour examiner l’échec."
+      }
+    },
+    "outcomeDetails": "Détails"
   },
   "artifact": {
     "kind": {
@@ -349,7 +514,20 @@
     "submit": "Envoyer",
     "reject": "Rejeter",
     "alwaysAllow": "Toujours autoriser",
-    "allowOnce": "Autoriser une fois"
+    "allowOnce": "Autoriser une fois",
+    "state": {
+      "submitting": "Envoi de votre réponse…",
+      "retryable": "La demande a échoué. Votre réponse est conservée.",
+      "expired": "Cette demande a expiré. Votre réponse est conservée.",
+      "unknown": "Envoi non confirmé. Vérifier ne renvoie pas votre réponse.",
+      "check": "Vérifier le statut",
+      "permission": {
+        "submitting": "Envoi de votre décision…",
+        "retryable": "La demande a échoué. Vérifiez-la avant de réessayer.",
+        "expired": "Cette demande a expiré. Aucune autorisation accordée.",
+        "unknown": "Envoi non confirmé. Vérifier ne donne aucune autorisation."
+      }
+    }
   },
   "turn": {
     "worked": "Travail",
@@ -528,5 +706,62 @@
     "close": "Fermer la recherche",
     "none": "aucun résultat",
     "find": "Rechercher…"
+  },
+  "environment": {
+    "title": "Python environment",
+    "absent": "Shared science environment",
+    "valid": "Private project environment",
+    "broken": "Private environment needs repair",
+    "explanation": "Common scientific libraries are already available. Extra dependencies use a separate environment for this project.",
+    "lockRequired": "Add requirements.lock with exact package versions and SHA256 hashes to prepare a private environment.",
+    "failed": "The environment could not be prepared. Check the dependency lock and retry; the previous environment is preserved.",
+    "stopFirst": "Finish or stop the active task before installing dependencies.",
+    "confirm": "Approve installation of these locked dependencies for this project?",
+    "approve": "Approve and install",
+    "cancel": "Cancel",
+    "installing": "Installing…",
+    "loading": "Preparing…",
+    "prepare": "Prepare private dependencies"
+  },
+  "collaboration": {
+    "guidedDescription": "Confirm one research step, review its result, then choose the next step.",
+    "stepConfirmation": "Next research step",
+    "label": "Autonomie",
+    "modes": {
+      "guided": "Faible",
+      "collaborative": "Moyenne",
+      "delegated": "Élevée",
+      "autonomous": "Complète"
+    },
+    "description": "Agree on a plan; decide important choices together.",
+    "unavailable": "Available in a later stage",
+    "confirmation": "Research decision",
+    "answer": "Your answer or adjustment",
+    "continue": "Continue with the suggestion",
+    "submit": "Confirm answer",
+    "pause": "Pause",
+    "paused": "Execution is paused. Saving an answer does not restart it.",
+    "retry": "Retry",
+    "savedDecisions": "Confirmed research decisions",
+    "suggestion": "Suggestion",
+    "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
+    "delegatedDescription": "Terminer le travail autorisé ; demander les choix importants non approuvés.",
+    "deliveryCompleted": "Fichiers livrés vérifiés",
+    "deliveryFailed": "Échec de la vérification de livraison",
+    "deliverySelfCheck": "Les fichiers et preuves sont vérifiés ; les conclusions scientifiques restent des auto-vérifications de l’agent.",
+    "deliveryRepairLimit": "La limite de deux corrections est atteinte. Consultez le résultat partiel.",
+    "deliveryIssues": {
+      "changed_inputs": "Une entrée originale manque ou a changé.",
+      "missing_progress": "Le rapport d’exécution manque ou est invalide.",
+      "pending_decisions": "Une décision de recherche reste non résolue dans le rapport.",
+      "incomplete_report": "Le rapport d’exécution est inachevé.",
+      "missing_outputs": "Un fichier demandé manque.",
+      "failed_checks": "Une vérification requise a échoué ou sa preuve manque."
+    }
+  },
+  "modelTimeout": {
+    "first_byte": "Le modèle n’a pas commencé à répondre dans les 2 minutes. Réessayez ou choisissez un autre modèle.",
+    "idle": "La réponse du modèle a été interrompue après 2 minutes sans données. Votre travail existant est conservé.",
+    "total": "Cette requête au modèle a atteint la limite d’une heure. Votre travail existant est conservé ; poursuivez dans un nouveau tour."
   }
 }

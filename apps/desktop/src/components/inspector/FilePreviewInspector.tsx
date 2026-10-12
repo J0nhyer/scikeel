@@ -1,3 +1,4 @@
+import { StateNotice } from "../ui/StateNotice";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Code2,
@@ -958,7 +959,7 @@ export function PreviewError({
     }
   };
 
-  if (!tooLarge) return <div className="p-4 text-sm text-muted">{error}</div>;
+  if (!tooLarge) return <div className="p-4"><StateNotice issueId={`preview:${path}:${error}`} summary={t("common:notification.problem")} detail={error} /></div>;
   return (
     <div className="p-4">
       <div className="rounded-card border border-border bg-surface p-4 text-sm text-muted">

@@ -1,5 +1,6 @@
+export type { AttachmentPromptContext } from "@ai4s/shared";
 export { OpenCodeClient, ApiError, isApiStatus } from "./OpenCodeClient";
-export type { CustomProviderModality, CustomProviderModel } from "./OpenCodeClient";
+export type { OpenCodeCatalogReadOptions, CustomProviderModality, CustomProviderModel, ProjectEnvironmentInfo, ProjectEnvironmentApproval } from "./OpenCodeClient";
 export type { AgentRuntime } from "./runtime";
 export { BaseAgentRuntime } from "./base-runtime";
 export {
@@ -9,6 +10,7 @@ export {
   type TextUpdatedEvent,
   type ToolUpdatedEvent,
   type SessionIdleEvent,
+  type SessionUpdatedEvent,
   type RuntimeErrorEvent,
   type SessionRetryEvent,
   type RetryAction,
@@ -40,3 +42,6 @@ export {
   type PermissionReply,
   type PromptFile,
 } from "./types";
+
+export { hasDefaultSessionTitle, titleExcerpt, TITLE_WAIT_MS, withManualSessionTitle } from "./sessionTitle";
+export type { SessionTitlePresentation } from "./types";

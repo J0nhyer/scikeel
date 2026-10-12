@@ -899,6 +899,7 @@ export async function listProjects(): Promise<ProjectInfo[]> {
 
 /** Rename a project's display name (keyed by id; the folder never moves). */
 export async function renameProject(id: string, name: string): Promise<void> {
+  if (isGatewayWeb) { await gatewayPost(`/v1/projects/${encodeURIComponent(id)}`, {name}, "PATCH"); return; }
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("rename_project", { id, name });
@@ -914,6 +915,7 @@ export async function openProjectFolder(id: string): Promise<void> {
 
 /** Pin/unpin a project to the sidebar. */
 export async function setProjectPinned(id: string, pinned: boolean): Promise<void> {
+  if (isGatewayWeb) { await gatewayPost(`/v1/projects/${encodeURIComponent(id)}/pin`, {pinned}); return; }
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("set_project_pinned", { id, pinned });
@@ -923,6 +925,7 @@ export async function setProjectPinned(id: string, pinned: boolean): Promise<voi
  *  project's external repo is untouched; an app-created project's folder stays,
  *  demoted to a plain folder). */
 export async function deleteProject(id: string): Promise<void> {
+  if (isGatewayWeb) { await gatewayPost(`/v1/projects/${encodeURIComponent(id)}`, {}, "DELETE"); return; }
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("delete_project", { id });

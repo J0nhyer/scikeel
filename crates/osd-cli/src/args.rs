@@ -9,7 +9,7 @@ use std::collections::HashMap;
 /// Flags that never take a value. Anything else spelled `--x` consumes the
 /// next argument, so an unknown flag fails loudly instead of eating a word of
 /// the prompt.
-const BOOLEANS: &[&str] = &["json", "lan", "wait", "help", "quiet", "all", "force"];
+const BOOLEANS: &[&str] = &["json", "lan", "managed", "wait", "help", "quiet", "all", "force"];
 
 pub struct Args {
     pub command: String,
@@ -125,6 +125,15 @@ mod tests {
         assert!(a.has("json"));
         assert_eq!(a.value("model").as_deref(), Some("anthropic/claude"));
         assert_eq!(a.rest(1), "do it");
+    }
+
+    #[test]
+    fn managed_server_switch_preserves_its_assigned_address() {
+        let a = parse("server --managed --bind-address 172.31.240.2 --port 4790");
+        assert!(a.has("managed"));
+        assert_eq!(a.value("bind-address").as_deref(), Some("172.31.240.2"));
+        assert_eq!(a.value("port").as_deref(), Some("4790"));
+        assert!(a.positional.is_empty());
     }
 
     #[test]

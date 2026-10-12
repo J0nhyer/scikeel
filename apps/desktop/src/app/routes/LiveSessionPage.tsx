@@ -195,6 +195,11 @@ export function LiveSessionPage() {
   // replace) so a new conversation adds a history entry (Back works).
   useEffect(() => {
     if (!focusedSid || waitingForWebSessions || unavailableId) return;
+    const current = useLayoutStore.getState();
+    const currentLeaf = current.tree && current.focusedLeafId ? findLeaf(current.tree, current.focusedLeafId) : null;
+    // URL -> focus already ran in this effect batch. Do not navigate using the
+    // saved pane from the render before that bind (it may name another project).
+    if ((currentLeaf?.sessionId ?? null) !== focusedSid) return;
     const want = `/live/${focusedSid}`;
     if (location.pathname !== want) navigate(want);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -216,6 +221,9 @@ export function LiveSessionPage() {
   // /clear thread (currentId is already null then).
   useEffect(() => {
     if (waitingForWebSessions || unavailableId) return;
+    const current = useLayoutStore.getState();
+    const currentLeaf = current.tree && current.focusedLeafId ? findLeaf(current.tree, current.focusedLeafId) : null;
+    if ((currentLeaf?.sessionId ?? null) !== focusedSid) return;
     if (focusedSid) {
       void openSession(focusedSid);
     } else if (useRuntimeStore.getState().currentId) {
@@ -274,7 +282,7 @@ export function LiveSessionPage() {
           onClose={() => useLayoutStore.getState().closePane(focusedLeaf.id)}
         />
       ) : (
-        <SessionView sessionId={focusedLeaf.sessionId} leafId={focusedLeaf.id} focused chromeAsTitlebar />
+        <SessionView key={focusedLeaf.id} sessionId={focusedLeaf.sessionId} leafId={focusedLeaf.id} focused chromeAsTitlebar />
       )
     ) : (
       <EmptyGroup />

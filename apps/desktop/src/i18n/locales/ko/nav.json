@@ -8,7 +8,9 @@
     "signOut": "로그아웃",
     "account": "{{username}} 계정",
     "adminBadge": "관리자",
-    "home": "홈으로"
+    "home": "홈으로",
+    "campusName": "Chengdu University of Technology",
+    "campusStudentProject": "학생 연구 프로젝트"
   },
   "items": {
     "new": "새로 만들기",
@@ -52,7 +54,12 @@
     "seeAll": "모든 프로젝트",
     "openFolder": "{{path}} 열기",
     "newSession": "새 세션",
-    "openFolderLabel": "폴더 열기"
+    "openFolderLabel": "폴더 열기",
+    "discardTitle": "새 대화를 시작할까요?",
+    "discardBody": "전송하지 않은 메시지와 대기 중인 첨부 파일이 삭제됩니다. 저장된 대화와 프로젝트 파일은 유지됩니다.",
+    "discardAction": "삭제하고 계속",
+    "entryFailed": "프로젝트가 생성되었지만 대화를 열 수 없습니다.",
+    "retryOpening": "다시 열기"
   },
   "history": {
     "heading": "세션",
@@ -89,7 +96,9 @@
     "exportBodyFiltered": "「{{query}}」과(와) 일치하는 대화를 선택한 폴더에 Markdown 파일과 목차로 저장합니다. 삭제하거나 변경하지 않습니다.",
     "exportConfirm": "폴더 선택",
     "exportDone_other": "대화 {{count}}개를 내보냈습니다.",
-    "exportDonePartial_other": "대화 {{count}}개를 내보냈고, {{failed}}개는 읽지 못했습니다."
+    "exportDonePartial_other": "대화 {{count}}개를 내보냈고, {{failed}}개는 읽지 못했습니다.",
+    "titleGenerating": "제목 생성 중…",
+    "titleUntitled": "새 대화"
   },
   "confirmDelete": {
     "sessionTitle": "세션을 삭제하시겠습니까?",
@@ -179,7 +188,7 @@
       "openNotebooks": "노트북 열기",
       "manageSkills": "스킬 관리",
       "openSettings": "설정 열기",
-      "toggleTheme": "테마 전환 (라이트 / 웜 / 다크)"
+      "toggleTheme": "외관 전환"
     }
   },
   "rowMenu": {

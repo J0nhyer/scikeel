@@ -14,6 +14,7 @@ pub mod browser_mcp_proxy;
 pub mod debug_log;
 pub mod env;
 pub mod examples;
+pub mod file_policy;
 pub mod gateway;
 pub mod git_snapshot;
 pub mod harness;

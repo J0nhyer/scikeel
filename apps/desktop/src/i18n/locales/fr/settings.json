@@ -1,4 +1,14 @@
 {
+  "managedAgents": {
+    "title": "Agent access management",
+    "hint": "Applies to all users. Turning an Agent off hides it from assistant lists, lets running tasks finish and blocks subsequent calls. Turning it on restores it when the server configuration is available.",
+    "allow": "Allow {{runtime}}",
+    "saving": "Saving…",
+    "saved": "{{runtime}} saved.",
+    "failed": "Could not save {{runtime}}. Try again.",
+    "loadFailed": "Could not load Agent access settings.",
+    "retry": "Retry"
+  },
   "nav": {
     "back": "Retour à l'app",
     "general": "Général",
@@ -20,7 +30,9 @@
     "theme": {
       "light": "Clair",
       "warm": "Chaud",
-      "dark": "Sombre"
+      "dark": "Sombre",
+      "system": "Système",
+      "cdut": "CDUT"
     },
     "zoom": {
       "label": "Zoom",
@@ -28,6 +40,17 @@
       "in": "Zoom avant",
       "out": "Zoom arrière",
       "reset": "Réinitialiser"
+    },
+    "summary": {
+      "light": "Un espace de recherche clair et lumineux.",
+      "dark": "Des surfaces sombres pour une recherche concentrée.",
+      "system": "Suivre l’apparence claire ou sombre de votre appareil.",
+      "cdut": "Un style bleu et blanc avec l’identité universitaire et une décoration discrète.",
+      "warm": "Votre apparence chaude est conservée. Choisissez une carte pour la changer."
+    },
+    "campusDecoration": {
+      "label": "Décoration du campus",
+      "hint": "Afficher la devise et les lignes uniquement dans les conversations vides."
     }
   },
   "language": {
@@ -107,6 +130,10 @@
     "privacy": "Seule l'API publique GitHub Releases est contactée. Aucun fichier de workspace ni clé API n'est envoyé."
   },
   "model": {
+    "defaultTitle": "Modèle par défaut",
+    "defaultDescription": "Les nouvelles conversations utilisent ce modèle pour votre compte et l’assistant actuel. Les conversations existantes conservent leur modèle.",
+    "defaultSaveProblem": "Le changement de modèle par défaut n’a pas pu être terminé",
+    "defaultRecoveryFailed": "Le modèle par défaut a été enregistré, mais l’assistant n’a pas pu se reconnecter : {{detail}}",
     "catalogLimited": "Le serveur n'a trouvé qu'une partie des modèles de cet assistant.",
     "title": "Modèle",
     "hint": "Le modèle avec lequel démarre chaque nouvelle conversation. Les fournisseurs ci-dessous déterminent les choix.",

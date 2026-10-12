@@ -19,3 +19,6 @@ notify = "6"
 # and PAC evaluation) rather than by parsing the registry — see system_proxy.rs.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

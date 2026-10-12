@@ -1,3 +1,4 @@
+import { ConversationAttachmentCard } from "./ConversationAttachmentCard";
 import { memo, useEffect, useRef, useState } from "react";
 import { Check, Copy, Loader2, Paperclip, Pencil, RotateCcw, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -142,9 +143,20 @@ export const UserMessage = memo(function UserMessage({
 
   return (
     <div {...{ [HOVER_HOST]: "" }} className="relative flex flex-col items-end">
-      <div className="w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-card bg-surface-2 px-4 py-2.5 text-[15px] leading-relaxed text-text">
-        {block.text}
-      </div>
+      {block.attachments?.length ? (
+        <div className={cn("flex w-fit min-w-0 max-w-[85%] flex-wrap justify-end gap-2", block.text && "mb-2")}>
+          {block.attachments.map((file) => (
+            <div key={file.id} className="w-60 min-w-0 max-w-full">
+              <ConversationAttachmentCard attachment={file} owner={{ sessionId: file.sessionId }} />
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {block.text && (
+        <div className="w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-card bg-surface-2 px-4 py-2.5 text-[15px] leading-relaxed text-text">
+          {block.text}
+        </div>
+      )}
       <div
         data-hover-row
         className="flex items-center justify-end gap-0.5 pr-0.5 pt-0.5"
@@ -190,6 +202,7 @@ export const AgentMessage = memo(function AgentMessage({
   usage,
   contextLimit,
   onOpenArtifact,
+  workspaceDirectory,
 }: {
   markdown: string;
   /** Turn timings and token accounting, when the runtime reported them —
@@ -199,6 +212,7 @@ export const AgentMessage = memo(function AgentMessage({
   usage?: MessageUsage;
   contextLimit?: number;
   onOpenArtifact?: (a: ArtifactBlock) => void;
+  workspaceDirectory?: string;
 }) {
   const { t } = useTranslation(["session", "common"]);
   const [copied, setCopied] = useState(false);
@@ -216,11 +230,11 @@ export const AgentMessage = memo(function AgentMessage({
   const mentionedKey = mentioned.join("\n");
   useEffect(() => {
     let cancelled = false;
+    setRefs([]);
     if (!mentionedKey) {
-      setRefs([]);
       return;
     }
-    void Promise.all(mentionedKey.split("\n").map((p) => resolveArtifactPath(p).catch(() => null))).then(
+    void Promise.all(mentionedKey.split("\n").map((p) => resolveArtifactPath(p, workspaceDirectory).catch(() => null))).then(
       (resolved) => {
         if (cancelled) return;
         setRefs([...new Set(resolved.filter((p): p is string => p !== null))]);
@@ -229,7 +243,7 @@ export const AgentMessage = memo(function AgentMessage({
     return () => {
       cancelled = true;
     };
-  }, [mentionedKey]);
+  }, [mentionedKey, workspaceDirectory]);
 
   const copy = async () => {
     try {
@@ -372,6 +386,13 @@ export const StatusLine = memo(function StatusLine({
   onRetry?: () => void;
 }) {
   const { t } = useTranslation(["session", "common"]);
+  if (block.presentation?.kind === "completion") return null;
+  if (block.presentation && !block.stall && !block.retry) return (
+    <details className="text-xs text-muted">
+      <summary className="min-h-11 cursor-pointer py-3">{t("common:notification.details")}</summary>
+      <p className="whitespace-pre-wrap break-words">{block.text}</p>
+    </details>
+  );
   return (
     <div className={cn(block.divider && "border-t border-border pt-4")}>
       <div className={cn("flex items-center gap-2 text-sm", TONE[block.tone ?? "review"])}>

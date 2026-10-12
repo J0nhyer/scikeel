@@ -1,0 +1,46 @@
+name: package-mirror
+on:
+  push:
+    branches: [feat/tenant-science-isolation]
+    paths:
+      - runtime/sandbox/image/package-mirror.lock
+      - .github/workflows/package-mirror.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+jobs:
+  public-mirror-wheels:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Download only the hash-locked wheels on the isolated builder
+        shell: bash
+        run: |
+          mkdir -p .deploy/package-mirror/wheels
+          sudo systemd-run --scope -p MemoryMax=512M -p MemorySwapMax=64M -p TasksMax=64 \
+            sudo -u "$USER" env PATH="$PATH" python -m pip download --require-hashes --only-binary=:all: \
+            --no-deps --disable-pip-version-check -r runtime/sandbox/image/package-mirror.lock \
+            --dest .deploy/package-mirror/wheels
+          cp runtime/sandbox/image/package-mirror.lock .deploy/package-mirror/
+          tar -C .deploy/package-mirror -czf .deploy/package-mirror-wheels.tar.gz wheels package-mirror.lock
+      - uses: actions/attest-build-provenance@v2
+        id: attest
+        with:
+          subject-path: .deploy/package-mirror-wheels.tar.gz
+      - name: Save verification evidence
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE" .deploy/package-mirror-attestation.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-mirror-${{ github.sha }}
+          path: |
+            .deploy/package-mirror-wheels.tar.gz
+            .deploy/package-mirror-attestation.jsonl
+          retention-days: 14

@@ -9,6 +9,8 @@ mod auth;
 mod client;
 mod commands;
 mod server;
+#[cfg(target_os = "linux")]
+mod managed;
 
 use args::Args;
 
@@ -55,6 +57,7 @@ osd — Open Science Desktop without a window
 Server options
   --port N          bind this exact port (default 4098, then any free port)
   --lan             also accept connections from the network (default: loopback)
+  --bind-address    assigned internal IPv4 address for a managed worker
   --token T         use this token instead of the stored/generated one
   --mode MODE       full (default) or read-only
   --workspace DIR   open on this folder
@@ -80,6 +83,8 @@ fn main() {
         return;
     }
     let result = match args.command.as_str() {
+        #[cfg(target_os = "linux")]
+        "managed-file-rpc" => managed::file_rpc(),
         "server" | "serve" => server::run(&args),
         "auth" => auth::run(&args),
         "version" | "--version" => {

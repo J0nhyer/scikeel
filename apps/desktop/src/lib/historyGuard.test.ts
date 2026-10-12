@@ -175,3 +175,30 @@ describe("history guard", () => {
     expect(findHistoryDefects(damaged)).toEqual([]);
   });
 });
+
+
+describe("pending webfetch permissions", () => {
+  async function prepare(tool: string, args: Record<string, unknown>) {
+    const plugin = await guard.HistoryGuardPlugin() as unknown as Record<string, (input: { tool: string }, output: { args: Record<string, unknown> }) => Promise<void>>;
+    expect(plugin["tool.execute.before"]).toBeTypeOf("function");
+    await plugin["tool.execute.before"]({ tool }, { args });
+  }
+
+  it("gives an omitted timeout a JSON-safe value before permission metadata is built", async () => {
+    const args = { url: "https://example.invalid", format: "markdown" };
+    await prepare("webfetch", args);
+    expect(args).toEqual({ url: "https://example.invalid", format: "markdown", timeout: 60 });
+  });
+
+  it("keeps an explicit timeout unchanged", async () => {
+    const args = { url: "https://example.invalid", timeout: 10 };
+    await prepare("webfetch", args);
+    expect(args.timeout).toBe(10);
+  });
+
+  it("leaves other tools unchanged", async () => {
+    const args = { command: "echo test" };
+    await prepare("bash", args);
+    expect(args).toEqual({ command: "echo test" });
+  });
+});

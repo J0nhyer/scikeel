@@ -20,7 +20,9 @@
     "theme": {
       "light": "浅色",
       "warm": "暖色",
-      "dark": "深色"
+      "dark": "深色",
+      "system": "跟随系统",
+      "cdut": "成都理工"
     },
     "zoom": {
       "label": "缩放",
@@ -28,6 +30,17 @@
       "in": "放大",
       "out": "缩小",
       "reset": "复原"
+    },
+    "summary": {
+      "light": "清晰的浅色科研工作区。",
+      "dark": "深色界面，专注阅读与研究。",
+      "system": "跟随设备的浅色或深色设置。",
+      "cdut": "成都理工蓝白风格，融入校园标识与空白会话装饰。",
+      "warm": "保留你已有的暖色偏好；选择上方样式即可切换。"
+    },
+    "campusDecoration": {
+      "label": "校园装饰",
+      "hint": "仅在空白会话中显示校训与线条装饰。"
     }
   },
   "language": {
@@ -107,6 +120,10 @@
     "privacy": "仅访问公开的 GitHub Releases API。不会发送工作区文件或 API 密钥。"
   },
   "model": {
+    "defaultTitle": "默认模型",
+    "defaultDescription": "当前账号在此助手中新建的对话将使用这个模型。已有对话的模型选择保持不变。",
+    "defaultSaveProblem": "默认模型切换未完成",
+    "defaultRecoveryFailed": "默认模型已保存，但助手重新连接失败：{{detail}}",
     "catalogLimited": "服务器只能识别此助手的部分模型。",
     "title": "模型",
     "hint": "每个新会话默认使用的模型。可选范围由下方的 Providers 提供。",
@@ -135,6 +152,16 @@
     "removeFavorite": "从收藏中移除 {{model}}",
     "change": "更换",
     "noProvidersHint": "在下方连接一个 Provider。"
+  },
+  "managedAgents": {
+    "title": "Agent 使用管理",
+    "hint": "设置对所有用户生效。关闭后，该 Agent 将从助手列表中隐藏，正在执行的任务继续完成，后续调用将被禁止。开启后，服务器配置可用时会重新显示。",
+    "allow": "允许使用 {{runtime}}",
+    "saving": "正在保存…",
+    "saved": "已保存 {{runtime}}。",
+    "failed": "无法保存 {{runtime}}，请重试。",
+    "loadFailed": "无法加载 Agent 使用设置。",
+    "retry": "重试"
   },
   "managedModels": {
     "title": "托管的 CLI 模型",
