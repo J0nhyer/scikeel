@@ -12,6 +12,7 @@
 
 ## Authorization and Execution Rules
 
+- Execution update (October 12, 2026): the user authorized implementation. Tasks 1-3 are complete on `fix/web-account-workspace-recovery`; stop at the required first review checkpoint. Tasks 4-10 and any publication remain pending. The following plan-only authorization describes the earlier writing turn, not the implementation turn.
 - Spec: `docs/superpowers/specs/2026-10-12-web-account-access-workspace-recovery-design.md`, approved for planning on October 12, 2026.
 - This turn authorizes the plan only. No product edits, worktree setup, service restart, test execution, or publication are implied by writing it.
 - Implementation has two checkpoints: Tasks 1-3 produce independently usable account/logout behavior; Tasks 4-9 produce controlled workspace recovery. Task 10 verifies the integrated candidate. Any first-checkpoint publication is a partial fix, not complete recovery.
@@ -106,9 +107,11 @@ setRecoveryHooks({ beforeCleanup, afterCleanup })
 
 ## Task 1: Establish a Reproducible Isolated Baseline
 
+**Status:** Complete. Effective Web source was updated to release `2026-10-12T12-09-53-262Z-99537e6d`; its platform sources matched the prior service source at inspection. All 1,080 source hashes matched after overlay. Baseline commit `c8b15a7`, 13 platform and 297 frontend checks passed. Existing whitespace in deployed OpenCode patch data was preserved verbatim; it was not introduced or reformatted by this feature. Account regression failed as intended and was committed in `0836307`.
+
 **Files:** Read effective release `manifest.json`, `scripts/dev/web-release-source.mjs`, `package.json`, and package guards; carry only this plan and its spec into the candidate. No production source edits.
 
-- [ ] **1. Inspect the effective source and active release.** Run:
+- [x] **1. Inspect the effective source and active release.** Run:
 
 ```bash
 pnpm web:release inspect --source /opt/open-science-desktop
@@ -118,9 +121,9 @@ git status --short
 
 Record source/bundle/image fingerprints and dependency references, never raw environment or cookies. A managed-source incompatibility from inspecting the main checkout is an expected baseline finding, not permission to deploy it. Identify the effective frozen source through `inspectProduction()` and the published pointer/manifest.
 
-- [ ] **2. Invoke `using-git-worktrees` and create an isolated linked checkout.** Use `/opt/open-science-desktop/.worktrees/web-account-workspace-recovery`, created from current HEAD, then verify its git common directory equals the main repository's. Overlay the source allowlist from `inventorySource(production.source, {git:false})` with `freezeSource()` and the dependency identity validated from that release manifest's `source.dependencies.references`. Remove only baseline source files absent from the deployed inventory in this new checkout; do not remove `.git`, main files, live files, credentials, or data. Preserve execution-session AGENTS rules even if the frozen source contains older guidance. Compare every source hash, commit the verified baseline locally, and set `task_checkout` to that absolute path. No new git repository, remote, dependency install, or push.
+- [x] **2. Invoke `using-git-worktrees` and create an isolated linked checkout.** Use `/opt/open-science-desktop/.worktrees/web-account-workspace-recovery`, created from current HEAD, then verify its git common directory equals the main repository's. Overlay the source allowlist from `inventorySource(production.source, {git:false})` with `freezeSource()` and the dependency identity validated from that release manifest's `source.dependencies.references`. Remove only baseline source files absent from the deployed inventory in this new checkout; do not remove `.git`, main files, live files, credentials, or data. Preserve execution-session AGENTS rules even if the frozen source contains older guidance. Compare every source hash, commit the verified baseline locally, and set `task_checkout` to that absolute path. No new git repository, remote, dependency install, or push.
 
-- [ ] **3. Verify the package test arguments and fixture boundaries.** Confirm `pnpm test <frontend paths>` is guarded, and use the platform package directly for its node:test paths:
+- [x] **3. Verify the package test arguments and fixture boundaries.** Confirm `pnpm test <frontend paths>` is guarded, and use the platform package directly for its node:test paths:
 
 ```bash
 pnpm --filter @ai4s/platform test test/auth-store.test.mjs test/managed-worker-manager.test.mjs
@@ -129,7 +132,7 @@ pnpm test src/lib/runtime.store.test.ts src/components/sidebar/GatewayAccountMen
 
 Expected: baseline deterministic suites pass under a shared cgroup/lock, with managed fixtures using temporary directories. If the host is busy, wait or use authorized project maintenance; never bypass admission. Save exit codes and counts. Live acceptance and opt-in browser suites are not claimed by these commands.
 
-- [ ] **4. Add the cold-failure store reproduction to `apps/desktop/src/lib/runtime.store.test.ts`.** Use the existing Web fixture and mocked SDK setup. Return an immediate valid `/api/me` user and repeated `/v1/whoami` 502, then assert account publication before runtime success:
+- [x] **4. Add the cold-failure store reproduction to `apps/desktop/src/lib/runtime.store.test.ts`.** Use the existing Web fixture and mocked SDK setup. Return an immediate valid `/api/me` user and repeated `/v1/whoami` 502, then assert account publication before runtime success:
 
 ```ts
 const user = { id: "usr_fixture", username: "fixture", role: "user" as const };
@@ -147,9 +150,11 @@ Run `pnpm test src/lib/runtime.store.test.ts`; expected red is the null account 
 
 ## Task 2: Separate Account Publication and Browser-Only Logout Lifecycle
 
+**Status:** Complete in `82f227f`. Guarded tests passed 315 checks, including late authentication results, body-inclusive deadlines, suspension, and preserving active background reviewers; guarded typecheck passed.
+
 **Files:** Create `apps/desktop/src/lib/gatewayAccount.ts` and `.test.ts`; modify `runtime.ts`, `runtime.store.test.ts`, `webMode.ts`, `webMode.test.ts`, `main.tsx`.
 
-- [ ] **1. Add deferred lifecycle tests.** Test successful account publication while whoami is pending/failed; workspace reconnect does not cancel account lookup; timeout includes JSON decoding; logout invalidates a late account reply; explicit session expiry suspends recovery once; a provider 401 and a 502 do not sign out. Include an abort-insensitive fetch mock to prove publication fencing rather than relying only on cancellation.
+- [x] **1. Add deferred lifecycle tests.** Test successful account publication while whoami is pending/failed; workspace reconnect does not cancel account lookup; timeout includes JSON decoding; logout invalidates a late account reply; explicit session expiry suspends recovery once; a provider 401 and a 502 do not sign out. Include an abort-insensitive fetch mock to prove publication fencing rather than relying only on cancellation.
 
 ```ts
 function deferred<T>() {
@@ -168,9 +173,9 @@ await loading;
 expect(publish).not.toHaveBeenCalled();
 ```
 
-- [ ] **2. Run red.** `pnpm test src/lib/gatewayAccount.test.ts src/lib/runtime.store.test.ts src/lib/webMode.test.ts`. Expected: new lifecycle export absent and intended account assertions fail. Do not tolerate unrelated suite failures.
+- [x] **2. Run red.** `pnpm test src/lib/gatewayAccount.test.ts src/lib/runtime.store.test.ts src/lib/webMode.test.ts`. Expected: new lifecycle export absent and intended account assertions fail. Do not tolerate unrelated suite failures.
 
-- [ ] **3. Implement one browser authentication-lifecycle helper.** Define `createGatewayAccountLifecycle({fetchImpl,publish,suspend,clear,navigate})` returning `load`, `suspend`, `signOut`, and `dispose`. `load` coalesces pending `/api/me`, uses 15-second complete-response timeout, validates id/username/role, and publishes only if its authentication epoch is current. `suspend` increments epoch, aborts reads, calls the browser-only suspension callback, and prohibits new loads/recovery until a new document/login lifecycle. `signOut` coalesces submissions; uses `POST /auth/logout`, JSON accept, same-origin credentials, a 15-second body-inclusive deadline, and only clears/navigates after a valid `{ok:true}` success. On failure keep suspension and return an error to the caller; allow logout retry, not connection resume. Use this exact result fence within `load`:
+- [x] **3. Implement one browser authentication-lifecycle helper.** Define `createGatewayAccountLifecycle({fetchImpl,publish,suspend,clear,navigate})` returning `load`, `suspend`, `signOut`, and `dispose`. `load` coalesces pending `/api/me`, uses 15-second complete-response timeout, validates id/username/role, and publishes only if its authentication epoch is current. `suspend` increments epoch, aborts reads, calls the browser-only suspension callback, and prohibits new loads/recovery until a new document/login lifecycle. `signOut` coalesces submissions; uses `POST /auth/logout`, JSON accept, same-origin credentials, a 15-second body-inclusive deadline, and only clears/navigates after a valid `{ok:true}` success. On failure keep suspension and return an error to the caller; allow logout retry, not connection resume. Use this exact result fence within `load`:
 
 ```ts
 const epoch = authenticationEpoch;
@@ -186,7 +191,7 @@ publish({ id: user.id, username: user.username, role: user.role });
 
 Keep state variables `authenticationEpoch`, `suspended`, pending account/logout promises, and request controllers inside the helper. Race both fetch and decoding against the deadline, remove abort listeners/timers in finally, and make dispose invalidate late work. Define a single app-lifetime installation in `main.tsx` before bootstrap; tests instantiate isolated helpers.
 
-- [ ] **4. Integrate without using `disconnect()`.** Remove the connection-owned `account.then` and account resets in deployed `connect`; trigger independent load at platform boot, not on every workspace generation. Add store methods `suspendPlatformBrowser()` and `clearPlatformPresentation()`. The first calls `cancelWebRecovery()`, aborts the catalog owner, closes local clients via teardown helpers, and sets offline without calling runtime abort, reviewer abort, task release, or workspace stop. The second clears identity and account-scoped in-memory presentation after logout succeeds; preserve workspace files, durable history/defaults, and unsent data until that success. Standalone token-gate and desktop disconnect behavior remain unchanged. Gate `bootstrap`, `connectRetry`, event/focus recovery, and SDK reconnect creation on the account helper's suspended flag. Route auth-guard expiry through suspension before redirect. The public contract is:
+- [x] **4. Integrate without using `disconnect()`.** Remove the connection-owned `account.then` and account resets in deployed `connect`; trigger independent load at platform boot, not on every workspace generation. Add store methods `suspendPlatformBrowser()` and `clearPlatformPresentation()`. The first calls `cancelWebRecovery()`, aborts the catalog owner, closes local clients via teardown helpers, and sets offline without calling runtime abort, reviewer abort, task release, or workspace stop. The second clears identity and account-scoped in-memory presentation after logout succeeds; preserve workspace files, durable history/defaults, and unsent data until that success. Standalone token-gate and desktop disconnect behavior remain unchanged. Gate `bootstrap`, `connectRetry`, event/focus recovery, and SDK reconnect creation on the account helper's suspended flag. Route auth-guard expiry through suspension before redirect. The public contract is:
 
 ```ts
 type PlatformBrowserLifecycle = {
@@ -197,13 +202,15 @@ type PlatformBrowserLifecycle = {
 
 Test that all runtime abort/stop spies stay at zero during logout, including existing background-review jobs; local event-stream close is allowed.
 
-- [ ] **5. Run green and commit.** Repeat Step 2, then `pnpm typecheck`. Expected: account survives workspace failure, no stale publication, no task stop/abort, and standalone behavior passes. Commit named paths as `fix: decouple Web account access from runtime recovery`.
+- [x] **5. Run green and commit.** Repeat Step 2, then `pnpm typecheck`. Expected: account survives workspace failure, no stale publication, no task stop/abort, and standalone behavior passes. Commit named paths as `fix: decouple Web account access from runtime recovery`.
 
 ## Task 3: Make Logout Reachable in All Authenticated Failure Surfaces
 
+**Status:** Complete in `746124d`; first review checkpoint reached. Self-review added red/green tests for direct suspension, queued recovery publication, and post-success workspace presentation clearing. Final guarded verification passed 2,035 frontend checks (33 opt-in/platform checks skipped), 43 scoped platform checks, lint, and a Web build including TypeScript checking. The final staged bundle `.deploy/web-build-iPcUO0` passed one non-skipped browser test with nine known/unknown/preparation combinations at 1280/390/320, including failed logout retry, independent-session validity, zero workspace starts, no page errors, and visible button/overflow bounds. Screenshots are in `.deploy/verification/account-*.png`; automated geometry passed, but the image-view tool could not decode them in this session. The original service was restored and its health, source, Web root, entry hash, and image were checked unchanged. No deployment or managed recovery work has started.
+
 **Files:** Create `apps/desktop/src/components/sidebar/GatewaySignOut.tsx` and `.test.tsx`; modify `GatewayAccountMenu.tsx`, `.test.tsx`, `Sidebar.tsx`, `loginPreparation.ts`, `.test.ts`, `services/platform/src/login-page.mjs`, `services/platform/test/platform-server.test.mjs`, and all supported `session.json` locales.
 
-- [ ] **1. Add UI/service red cases.** Unknown account at connecting/error/offline shows Sign out but no admin/settings item; known account menu still works by pointer/keyboard; submitting twice sends one request; 502 logout preserves actionable error and no success navigation. Preparation overlay shows a usable logout command before and after its error event. `POST /auth/logout` revokes one independent session and never calls `ensureWorker`, `stopWorker`, or `restartWorker`.
+- [x] **1. Add UI/service red cases.** Unknown account at connecting/error/offline shows Sign out but no admin/settings item; known account menu still works by pointer/keyboard; submitting twice sends one request; 502 logout preserves actionable error and no success navigation. Preparation overlay shows a usable logout command before and after its error event. `POST /auth/logout` revokes one independent session and never calls `ensureWorker`, `stopWorker`, or `restartWorker`.
 
 ```tsx
 render(<MemoryRouter><GatewayAccountMenu user={null} /></MemoryRouter>);
@@ -221,9 +228,9 @@ assert.equal((await a.request("/api/me", { headers: { accept: "application/json"
 assert.equal((await b.request("/api/me", { headers: { accept: "application/json" } })).status, 200);
 ```
 
-- [ ] **2. Run red.** `pnpm test src/components/sidebar/GatewayAccountMenu.test.tsx src/components/sidebar/GatewaySignOut.test.tsx src/lib/loginPreparation.test.ts`; then `pnpm --filter @ai4s/platform test test/platform-server.test.mjs test/auth-store.test.mjs`.
+- [x] **2. Run red.** `pnpm test src/components/sidebar/GatewayAccountMenu.test.tsx src/components/sidebar/GatewaySignOut.test.tsx src/lib/loginPreparation.test.ts`; then `pnpm --filter @ai4s/platform test test/platform-server.test.mjs test/auth-store.test.mjs`.
 
-- [ ] **3. Implement the shared logout control.** Keep the mounted form/menu keyboard behavior, intercept submit to call the Task 2 lifecycle's `signOut`, render localized error and busy state, and use `LogOut` icon plus existing label. If `user` is null, render this control directly instead of returning null; hide settings and admin role. Do not invent a user. Expose the same app-installed handler to the preparation markup via `scikeel:sign-out`; its result events are `scikeel:sign-out-failed` and successful navigation, with no cookie/token payload.
+- [x] **3. Implement the shared logout control.** Keep the mounted form/menu keyboard behavior, intercept submit to call the Task 2 lifecycle's `signOut`, render localized error and busy state, and use `LogOut` icon plus existing label. If `user` is null, render this control directly instead of returning null; hide settings and admin role. Do not invent a user. Expose the same app-installed handler to the preparation markup via `scikeel:sign-out`; its result events are `scikeel:sign-out-failed` and successful navigation, with no cookie/token payload.
 
 ```tsx
 <form method="post" action="/auth/logout" onSubmit={submitSignOut}>
@@ -236,7 +243,7 @@ assert.equal((await b.request("/api/me", { headers: { accept: "application/json"
 
 Define `submitSignOut` as the component's event handler: prevent default, set pending, await the installed handler, catch to set error, and clear pending in finally only while mounted. The server-rendered overlay button dispatches the same event outside its disabled login form. On failure it re-enables itself and shows an alert; it does not reload or navigate back into the broken app. No additional GET logout route.
 
-- [ ] **4. Run green/checkpoint.** Repeat Step 2 and `pnpm test src/i18n/parity.test.ts`. Expected: first failure, unknown identity, and inert preparation overlay all permit logout; logout failure does not claim success. Commit as `fix: keep Web sign out reachable while workspace is unavailable`. Stop at this checkpoint for review before lifecycle work or any partial publication.
+- [x] **4. Run green/checkpoint.** Repeat Step 2 and `pnpm test src/i18n/parity.test.ts`. Expected: first failure, unknown identity, and inert preparation overlay all permit logout; logout failure does not claim success. Commit as `fix: keep Web sign out reachable while workspace is unavailable`. Stop at this checkpoint for review before lifecycle work or any partial publication.
 
 ## Task 4: Add Bounded Liveness and Durable Recovery Windows
 
