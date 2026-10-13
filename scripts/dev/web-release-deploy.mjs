@@ -108,6 +108,12 @@ export async function verifyAsyncModelReply(json, sessionId, model, expected, {n
   }
   throw new Error('Required live OpenCode reply deadline exceeded');
 }
+export function liveWorkspaceHeaders(headers, runtime) {
+  const context = runtime?.context;
+  if (typeof context?.instanceId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(context.instanceId) ||
+      !Number.isSafeInteger(context.generation) || context.generation < 1) throw new Error('Required live workspace context is unavailable');
+  return { ...headers, 'x-scikeel-runtime-generation': String(context.generation) };
+}
 async function liveOpenCode(production) {
   const client = await sessionClient(production); let sessionId;
   async function json(path, options = {}) {
@@ -118,6 +124,7 @@ async function liveOpenCode(production) {
   try {
     const runtime = await json('/api/runtime');
     if (runtime.runtime !== 'opencode') throw new Error('Required live runtime is not OpenCode');
+    client.headers = liveWorkspaceHeaders(client.headers, runtime);
     const catalog = await json('/provider');
     const provider = (catalog.all ?? []).find((item) => item.id === 'opencode' && (catalog.connected ?? []).includes(item.id));
     const model = provider?.models?.['big-pickle'] ? 'big-pickle' : Object.keys(provider?.models ?? {}).find((id) => id.endsWith('-free'));

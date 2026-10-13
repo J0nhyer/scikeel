@@ -417,6 +417,15 @@ test('interaction changes select required session and interaction browser accept
 
 
 import {verifyAsyncModelReply} from './web-release-deploy.mjs';
+test('live gate captures a verified generation for all workspace mutations', async () => {
+  const { liveWorkspaceHeaders } = await import('./web-release-deploy.mjs');
+  const headers = { accept: 'application/json', origin: 'http://fixture' };
+  assert.deepEqual(liveWorkspaceHeaders(headers, { context: { instanceId: 'user-fixture', generation: 2 } }),
+    { ...headers, 'x-scikeel-runtime-generation': '2' });
+  assert.equal(headers['x-scikeel-runtime-generation'], undefined);
+  for (const context of [null, {}, { instanceId: '../foreign', generation: 1 }, { instanceId: 'user-fixture', generation: 0 }, { instanceId: 'user-fixture', generation: '2' }])
+    assert.throws(() => liveWorkspaceHeaders(headers, { context }), /workspace context/);
+});
 test('live gate uses asynchronous Web transport and requires completed history after a slow model reply',async()=>{
  let clock=0;const writes=[];
  const json=async(path,options)=>{
