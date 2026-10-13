@@ -103,6 +103,10 @@ export class TenantPolicy {
     if (!session) throw denied(404, "session not found");
     return session;
   }
+  sessions(context) {
+    const account=this.account(context),prefix=`${account.instanceId}:${account.generation}:`;
+    return [...this.#sessions].filter(([key])=>key.startsWith(prefix)).map(([_key,session])=>session);
+  }
   removeSession(context, id) {
     this.#sessions.delete(this.#key(context, id));
   }

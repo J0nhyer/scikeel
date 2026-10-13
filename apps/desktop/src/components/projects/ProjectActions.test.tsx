@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {MemoryRouter} from 'react-router-dom';
 import {useRuntimeStore} from '@/lib/runtime';
+import {WorkspaceRequestError} from '@/lib/workspaceManagement';
 const patch=vi.fn(),trash=vi.fn(),projects=vi.fn();
 vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),patchWorkspaceProject:(...args:unknown[])=>patch(...args),trashWorkspaceProject:(...args:unknown[])=>trash(...args),listWorkspaceProjects:()=>projects()}));
 const {ProjectActions}=await import('./ProjectActions').catch(()=>({} as typeof import('./ProjectActions')));
@@ -29,4 +30,19 @@ it('trash cancellation changes nothing and read-only menus disable mutations',as
   act(()=>useRuntimeStore.setState({webReadOnly:true}));
   await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));
   expect(screen.getByRole('menuitem',{name:'Rename'})).toHaveAttribute('data-disabled');
+});
+it('offers the shared new-session action from its menu',async()=>{
+  const newSession=vi.fn();
+  render(<MemoryRouter><ProjectActions project={project} onNewSession={newSession}/></MemoryRouter>);
+  await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));
+  await userEvent.click(screen.getByRole('menuitem',{name:'New session'}));
+  expect(newSession).toHaveBeenCalledTimes(1);
+});
+it('uses a fresh operation ID after correcting a rejected project name',async()=>{
+ patch.mockRejectedValueOnce(new WorkspaceRequestError('Invalid name','invalid_name',400)).mockResolvedValueOnce({id:project.id});
+ render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
+ await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));await userEvent.click(screen.getByRole('menuitem',{name:'Rename'}));
+ fireEvent.change(screen.getByRole('textbox'),{target:{value:'Rejected'}});await userEvent.click(screen.getByRole('button',{name:'Save'}));
+ await screen.findByRole('alert');fireEvent.change(screen.getByRole('textbox'),{target:{value:'Corrected'}});await userEvent.click(screen.getByRole('button',{name:'Save'}));
+ expect(patch.mock.calls[0][2]).not.toBe(patch.mock.calls[1][2]);
 });

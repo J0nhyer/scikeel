@@ -69,10 +69,19 @@
     "unavailable": "Project is unavailable.",
     "trashHeading": "Trash",
     "restore": "Restore",
-    "trashEmpty": "No deleted projects.",
+    "trashEmpty": "No deleted items.",
     "trashLoadFailed": "Could not load the trash.",
     "checkingState": "Checking project status…",
     "trashedConversation": "This project is in the trash. Restore it to reopen this conversation."
+  },
+  "fileManagement": {
+    "newFile": "New file",
+    "newFolder": "New folder",
+    "actionsAria": "File actions: {{name}}",
+    "move": "Move",
+    "trashTitle": "Move {{name}} to trash?",
+    "trashBody": "The file or folder is kept until restored. Running tasks must finish first.",
+    "destination": "Destination"
   },
   "history": {
     "heading": "Sessions",

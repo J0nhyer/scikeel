@@ -51,6 +51,10 @@ test('empty project file listing uses selected ID rather than active runtime',as
   const f=await fixture(t);const result=await f.management.entries(f.context,{kind:'project',projectId:f.projects[0].id},'');
   assert.equal(result.directory,'/owned/a/projects/a');assert.equal(result.entries[0].name,'result.txt');
 });
+test('private management payloads cannot be accessed through normal directory paths',async t=>{
+ const f=await fixture(t);
+ await assert.rejects(f.management.assertAccessible(f.context,'/owned/a/.scikeel/workspace-management/trash/payload'),{code:'protected_path'});
+});
 test('scope fields and project patches validate completely before any effect',async t=>{
  const f=await fixture(t);
  await assert.rejects(f.management.patchProject(f.context,f.projects[0].id,{name:'Changed',pinned:'invalid'}),{code:'invalid_project'});

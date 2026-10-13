@@ -19,3 +19,10 @@ test('read-only identity and malformed project fields cannot mutate',async()=>{
   const denied={};await f.routes.handle(request,denied,{...f.context,readOnly:true});assert.equal(denied.status,403);
   const invalid={};await f.routes.handle({...request,body:{name:'B',path:'/else'}},invalid,f.context);assert.equal(invalid.status,400);
 });
+test('file operations and durable receipt lookups use the file coordinator',async()=>{
+ const f=fixture();const calls=[];const files={operate:async(...args)=>{calls.push(args);return {state:'committed'};},receipt:async()=>({state:'pending'})};
+ const routes=createWorkspaceRoutes({management:f.routes.management??{state:{}},files,readJson:async request=>request.body,sendJson:(response,status,body)=>Object.assign(response,{status,body})});
+ const result={};await routes.handle({method:'POST',url:'/api/workspace/operations',headers:{host:'local',origin:'http://local'},body:{scope:{kind:'account'},operationId:'a',operation:{kind:'trash',path:'x'}}},result,f.context);
+ assert.equal(result.status,200);assert.equal(calls.length,1);
+ const receipt={};await routes.handle({method:'GET',url:'/api/workspace/operations/a',headers:{host:'local'}},receipt,f.context);assert.equal(receipt.body.state,'pending');
+});

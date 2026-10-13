@@ -69,10 +69,19 @@
     "unavailable": "Projekt ist nicht verfügbar.",
     "trashHeading": "Papierkorb",
     "restore": "Wiederherstellen",
-    "trashEmpty": "Keine gelöschten Projekte.",
+    "trashEmpty": "Keine gelöschten Elemente.",
     "trashLoadFailed": "Papierkorb konnte nicht geladen werden.",
     "checkingState": "Projektstatus wird geprüft…",
     "trashedConversation": "Dieses Projekt ist im Papierkorb. Stellen Sie es wieder her, um das Gespräch zu öffnen."
+  },
+  "fileManagement": {
+    "newFile": "Neue Datei",
+    "newFolder": "Neuer Ordner",
+    "actionsAria": "Dateiaktionen: {{name}}",
+    "move": "Verschieben",
+    "trashTitle": "{{name}} in den Papierkorb verschieben?",
+    "trashBody": "Die Datei oder der Ordner bleibt bis zur Wiederherstellung erhalten. Laufende Aufgaben müssen zuerst enden.",
+    "destination": "Ziel"
   },
   "history": {
     "heading": "Sitzungen",

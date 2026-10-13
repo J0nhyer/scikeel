@@ -2,9 +2,16 @@ import {workspaceError,workspaceHash} from './workspace-state.mjs';
 import {relativeInput} from './tenant-policy.mjs';
 
 export class WorkspaceManagement {
-  constructor({state,tenantPolicy,gateway,admission,resolveSession}) {Object.assign(this,{state,tenantPolicy,gateway,admission,resolveSession});}
+  constructor({state,tenantPolicy,gateway,admission,resolveSession,sessionRoots=async()=>[]}) {Object.assign(this,{state,tenantPolicy,gateway,admission,resolveSession,sessionRoots});}
+  async roots(context) {
+    const roots=[...(await this.allProjects(context)).map(project=>project.path),
+      ...this.tenantPolicy.sessions(context).map(session=>session.directory),...await this.sessionRoots(context)];
+    return [...new Set(roots.map(path=>this.tenantPolicy.directory(context,path)))];
+  }
   async assertAccessible(context,directory) {
     this.tenantPolicy.directory(context,directory);
+    const root=this.tenantPolicy.account(context).workspaceDir+'/.scikeel/workspace-management';
+    if(directory===root || directory.startsWith(root+'/'))throw workspaceError('protected_path',403);
     const data=await this.state.open(context.userId);
     for(const entry of Object.values(data.projects)) {
       if(entry.state==='trashed' && (directory===entry.project.path || directory.startsWith(entry.project.path+'/')))
@@ -93,7 +100,7 @@ export class WorkspaceManagement {
     if(!scope || !allowed.length || Object.keys(scope).some(key=>!allowed.includes(key)))throw workspaceError('invalid_scope',400);
     let directory=this.tenantPolicy.account(context).workspaceDir;
     if(scope?.kind==='project')directory=(await this.resolveProject(context,scope.projectId)).path;
-    else if(scope?.kind==='session')directory=this.tenantPolicy.session(context,scope.sessionId).directory;
+    else if(scope?.kind==='session')directory=(this.resolveSession?await this.resolveSession(context,scope.sessionId):this.tenantPolicy.session(context,scope.sessionId)).directory;
     else if(scope?.kind!=='account')throw workspaceError('invalid_scope',400);
     if(path)relativeInput(path);
     await this.assertAccessible(context,directory+(path?'/'+path:''));
@@ -103,7 +110,7 @@ export class WorkspaceManagement {
     const visible=[];
     for(const entry of entries){
       try{await this.assertAccessible(context,directory+'/'+entry.path);visible.push(entry);}
-      catch(error){if(error.code!=='project_trashed')throw error;}
+      catch(error){if(!['project_trashed','protected_path'].includes(error.code))throw error;}
     }
     return {directory,entries:visible};
   }

@@ -120,6 +120,22 @@ async function managedRequest(manager, workspaceDir, method, url, body) {
   return response;
 }
 
+test('native interactions hidden by workspace lifecycle cannot be resumed through old replies',async()=>{
+ const {root,manager}=await makeManager('codex');const workspace=join(root,'workspace');await mkdir(workspace);
+ try{
+  const session=await manager.createSession({userId:'usr_a',workspaceDir:workspace});let effects=0;
+  manager.sandboxJobs={approve:async()=>effects++,answer:async()=>effects++};
+  const permission='a'.repeat(64),question='b'.repeat(64);
+  manager.nativeApprovals.set(permission,{id:permission,userId:'usr_a',sessionID:session.id});
+  manager.nativeQuestions.set(question,{id:question,userId:'usr_a',sessionID:session.id});
+  manager.workspaceAccess=async()=>{throw Object.assign(new Error('Project trashed'),{code:'project_trashed',statusCode:409,status:409});};
+  for(const path of ['/permission','/question'])assert.deepEqual((await managedRequest(manager,workspace,'GET',path)).body,[]);
+  assert.equal((await managedRequest(manager,workspace,'POST',`/permission/${permission}/reply`,{reply:'once'})).status,409);
+  assert.equal((await managedRequest(manager,workspace,'POST',`/question/${question}/reply`,{answers:[['yes']]})).status,409);
+  assert.equal(effects,0);assert.equal(manager.nativeApprovals.has(permission),true);
+ }finally{await manager.close();}
+});
+
 for (const runtime of ["claude", "codex"]) {
   test(`${runtime} exposes usable bundled skills and rejects another workspace`, async () => {
     const { root, manager } = await makeManager(runtime);

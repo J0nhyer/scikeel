@@ -8,16 +8,17 @@ import {useRuntimeStore} from '@/lib/runtime';
 import {leaves,useLayoutStore} from '@/lib/layout';
 import {hasParkedDraft} from '@/lib/composerStash';
 import {hasPendingComposerAttachments} from '@/components/thread/useComposerAttachments';
-import {listWorkspaceProjects,patchWorkspaceProject,trashWorkspaceProject} from '@/lib/workspaceManagement';
+import {listWorkspaceProjects,patchWorkspaceProject,trashWorkspaceProject,workspaceOperationId,WorkspaceRequestError} from '@/lib/workspaceManagement';
 import {NameProjectDialog} from './NameProjectDialog';
 
-export function ProjectActions({project}:{project:ProjectInfo}) {
+export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNewSession?:()=>void}) {
   const {t}=useTranslation(['nav','common']);const navigate=useNavigate();
   const readOnly=useRuntimeStore(state=>state.webReadOnly);
   const [dialog,setDialog]=useState<'rename'|'trash'|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
-  const mounted=useRef(true),locked=useRef(false),operation=useRef(crypto.randomUUID());
+  const [uncertain,setUncertain]=useState(false);
+  const mounted=useRef(true),locked=useRef(false),operation=useRef(workspaceOperationId()),lastName=useRef<string|null>(null);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
-  const begin=(kind:'rename'|'trash')=>{operation.current=crypto.randomUUID();setError(null);setDialog(kind);};
+  const begin=(kind:'rename'|'trash')=>{operation.current=workspaceOperationId();lastName.current=null;setUncertain(false);setError(null);setDialog(kind);};
   const openRename=()=>begin('rename');
   const openTrash=()=>begin('trash');
   const run=async(action:()=>Promise<unknown>,after?:()=>void)=>{
@@ -25,9 +26,14 @@ export function ProjectActions({project}:{project:ProjectInfo}) {
     locked.current=true;setBusy(true);setError(null);const account=useRuntimeStore.getState().gatewayUser?.id;
     try{
       await action();
-      if(mounted.current && account===useRuntimeStore.getState().gatewayUser?.id){await useRuntimeStore.getState().refreshProjects();after?.();setDialog(null);}
-    }catch(reason){if(mounted.current && account===useRuntimeStore.getState().gatewayUser?.id)setError(reason instanceof Error?reason.message:String(reason));}
+      if(mounted.current && account===useRuntimeStore.getState().gatewayUser?.id){await useRuntimeStore.getState().refreshProjects();if(mounted.current && account===useRuntimeStore.getState().gatewayUser?.id){setUncertain(false);after?.();setDialog(null);}}
+    }catch(reason){if(mounted.current && account===useRuntimeStore.getState().gatewayUser?.id){setUncertain(reason instanceof WorkspaceRequestError && reason.status>=500);setError(reason instanceof Error?reason.message:String(reason));}}
     finally{locked.current=false;if(mounted.current)setBusy(false);}
+  };
+  const rename=(value:string)=>{
+    const name=value.trim();
+    if(lastName.current!==null && lastName.current!==name){if(uncertain)return;operation.current=workspaceOperationId();}
+    lastName.current=name;void run(()=>patchWorkspaceProject(project.id,{name},operation.current));
   };
   const trash=async()=>{
     const state=useRuntimeStore.getState();
@@ -51,13 +57,14 @@ export function ProjectActions({project}:{project:ProjectInfo}) {
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild><button type="button" aria-label={t('projects.actionsAria',{name:project.name})} title={t('projects.more')} className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"><MoreHorizontal size={16}/></button></DropdownMenu.Trigger>
       <DropdownMenu.Portal><DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[170px] max-w-[calc(100vw-2rem)] rounded-card border border-border bg-surface p-1 text-text shadow-pop">
+        {onNewSession && <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={onNewSession}>{t('projects.newSession')}</DropdownMenu.Item>}
         <DropdownMenu.Item className={item} onSelect={()=>navigate('/files?project='+encodeURIComponent(project.id))}>{t('projects.openFiles')}</DropdownMenu.Item>
         <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={openRename}>{t('projects.rename')}</DropdownMenu.Item>
         <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={()=>void run(()=>patchWorkspaceProject(project.id,{pinned:!project.pinned}))}>{t(project.pinned?'projects.unpin':'projects.pin')}</DropdownMenu.Item>
         <DropdownMenu.Item className={item+' text-error'} disabled={readOnly||busy} onSelect={openTrash}>{t('projects.trash')}</DropdownMenu.Item>
       </DropdownMenu.Content></DropdownMenu.Portal>
     </DropdownMenu.Root>
-    {dialog==='rename' && <NameProjectDialog defaultName={project.name} title={t('projects.rename')} subtitle={t('projects.nameSubtitle')} busy={busy} error={error??undefined} onCancel={()=>{if(!busy)setDialog(null);}} onSave={name=>void run(()=>patchWorkspaceProject(project.id,{name:name.trim()},operation.current))}/>}
+    {dialog==='rename' && <NameProjectDialog defaultName={project.name} title={t('projects.rename')} subtitle={t('projects.nameSubtitle')} busy={busy} inputDisabled={uncertain} cancelDisabled={uncertain} error={error??undefined} onCancel={()=>{if(!busy && !uncertain)setDialog(null);}} onSave={rename}/>}
     {dialog==='trash' && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"><div role="alertdialog" aria-label={t('projects.trashTitle',{name:project.name})} className="w-[360px] max-w-[calc(100vw-2rem)] rounded-card border border-border bg-surface p-4 shadow-card">
       <p className="text-sm font-medium text-text">{t('projects.trashTitle',{name:project.name})}</p><p className="mt-2 text-sm text-muted">{t('projects.trashBody')}</p>{error && <p role="alert" className="mt-2 text-sm text-error">{error}</p>}
       <div className="mt-4 flex justify-end gap-2"><button disabled={busy} onClick={()=>setDialog(null)} className="rounded border border-border px-3 py-2 text-sm">{t('common:actions.cancel')}</button><button disabled={busy||readOnly} onClick={()=>void run(trash)} className="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">{t('projects.trash')}</button></div>

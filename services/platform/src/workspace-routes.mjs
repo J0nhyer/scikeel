@@ -1,5 +1,5 @@
 import {workspaceError} from './workspace-state.mjs';
-export function createWorkspaceRoutes({management,readJson,sendJson,secureCookies=false}) {
+export function createWorkspaceRoutes({management,files,readJson,sendJson,secureCookies=false}) {
   return {async handle(request,response,context){
     const url=new URL(request.url,'http://platform.invalid'),path=url.pathname;
     if(!path.startsWith('/api/workspace/'))return false;
@@ -14,24 +14,25 @@ export function createWorkspaceRoutes({management,readJson,sendJson,secureCookie
       if(!body || typeof body!=='object' || Array.isArray(body))throw workspaceError('invalid_input',400);
       let result;
       const project=path.match(/^\/api\/workspace\/projects\/([a-f0-9]{16})(?:\/(trash))?$/);
-      const restore=path.match(/^\/api\/workspace\/trash\/([a-f0-9]{16})\/restore$/);
+      const restore=path.match(/^\/api\/workspace\/trash\/([a-f0-9]{16}|[a-f0-9]{32})\/restore$/);
       const session=path.match(/^\/api\/workspace\/sessions\/([A-Za-z0-9_-]{1,128})\/state$/);
       const receipt=path.match(/^\/api\/workspace\/operations\/([A-Za-z0-9_-]{1,128})$/);
       if(method==='GET' && session)result=await management.sessionState(context,session[1]);
       else if(method==='GET' && path==='/api/workspace/projects')result=await management.listProjects(context);
-      else if(method==='GET' && path==='/api/workspace/trash')result=await management.listTrash(context);
-      else if(method==='GET' && receipt)result=await management.state.receipt(context.userId,receipt[1]);
+      else if(method==='GET' && path==='/api/workspace/trash')result=[...await management.listTrash(context),...(files?await files.trash(context):[])];
+      else if(method==='GET' && receipt)result=files?await files.receipt(context,receipt[1]):await management.state.receipt(context.userId,receipt[1]);
       else if(method==='GET' && path==='/api/workspace/entries'){
         for(const key of url.searchParams.keys())if(!['scope','path'].includes(key) || url.searchParams.getAll(key).length!==1)throw workspaceError('invalid_input',400);
         let scope;try{scope=JSON.parse(url.searchParams.get('scope'));}catch{throw workspaceError('invalid_scope',400);}
-        result=await management.entries(context,scope,url.searchParams.get('path')??'');
+        result=await (files??management).entries(context,scope,url.searchParams.get('path')??'');
       }
+      else if(method==='POST' && path==='/api/workspace/operations' && files)result=await files.operate(context,body);
       else if(method==='PATCH' && project && !project[2]){
         if(Object.keys(body).some(key=>!['name','pinned','operationId'].includes(key)))throw workspaceError('invalid_input',400);
         result=await management.patchProject(context,project[1],body);
       }
       else if(method==='POST' && project?.[2])result=await management.trashProject(context,project[1],body);
-      else if(method==='POST' && restore)result=await management.restore(context,restore[1],body);
+      else if(method==='POST' && restore)result=restore[1].length===32 && files?await files.restore(context,restore[1],body):await management.restore(context,restore[1],body);
       else throw workspaceError('not_found',404);
       sendJson(response,200,result);
     }catch(error){sendJson(response,error.statusCode??503,{error:error.statusCode?error.message:'Workspace management unavailable',code:error.code??'workspace_unavailable'});}

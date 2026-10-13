@@ -36,7 +36,8 @@ export class WorkspaceState {
   }
   async #save(userId,value) {
     const serialized=JSON.stringify(value);
-    if(Buffer.byteLength(serialized)>this.maxStateBytes)throw workspaceError('workspace_metadata_full',507);
+    const reserved=Object.values(value.operations).reduce((sum,operation)=>sum+(operation.reservedBytes??0),0);
+    if(Buffer.byteLength(serialized)+reserved>this.maxStateBytes)throw workspaceError('workspace_metadata_full',507);
     await mkdir(this.dataDir,{recursive:true,mode:0o700});
     const path=join(this.dataDir,`${identifier(userId)}.json`);
     const temporary=join(this.dataDir,`.${randomUUID()}.tmp`);
@@ -61,14 +62,15 @@ export class WorkspaceState {
   async receipt(userId,operationId) {
     identifier(operationId);return (await this.open(userId)).operations[operationId]?.receipt??null;
   }
-  async prepare(userId,operationId,input) {
+  async prepare(userId,operationId,input,recovery) {
     identifier(operationId);
     return this.update(userId,data=>{
       const hash=workspaceHash(input),prior=data.operations[operationId];
       if(prior){if(prior.hash!==hash)throw workspaceError('operation_conflict');return prior.receipt;}
       if(Object.keys(data.operations).length>=this.maxOperations)throw workspaceError('workspace_metadata_full',507);
       const receipt={operationId,state:'pending'};
-      data.operations[operationId]={hash,input,receipt};return receipt;
+      const reservedBytes=recovery?2048+Buffer.byteLength(JSON.stringify(recovery.entry??{})):0;
+      data.operations[operationId]={hash,input,receipt,reservedBytes,...(recovery?{recovery}:{})};return receipt;
     });
   }
   async advance(userId,operationId,result) {
@@ -76,6 +78,31 @@ export class WorkspaceState {
     return this.update(userId,data=>{
       const prior=data.operations[operationId];if(!prior)throw workspaceError('operation_not_found',404);
       prior.receipt={operationId,state:'committed',result};return prior.receipt;
+    });
+  }
+  async recovery(userId,operationId,recovery) {
+    identifier(operationId);
+    return this.update(userId,data=>{
+      const prior=data.operations[operationId];if(!prior)throw workspaceError('operation_not_found',404);
+      prior.recovery=recovery;return prior.receipt;
+    });
+  }
+  async completeFile(userId,operationId,result,entry) {
+    identifier(operationId);
+    return this.update(userId,data=>{
+      const prior=data.operations[operationId];if(!prior)throw workspaceError('operation_not_found',404);
+      if(entry){data.files??={};data.files[entry.id]=entry;}
+      prior.reservedBytes=0;
+      prior.receipt={operationId,state:'committed',result};return prior.receipt;
+    });
+  }
+  async fail(userId,operationId,code,statusCode) {
+    identifier(operationId);
+    return this.update(userId,data=>{
+      const prior=data.operations[operationId];if(!prior)throw workspaceError('operation_not_found',404);
+      if(prior.receipt.state==='committed')return prior.receipt;
+      prior.reservedBytes=0;
+      prior.receipt={operationId,state:'failed',error:{code,statusCode}};return prior.receipt;
     });
   }
   async project(userId,operationId,input) {

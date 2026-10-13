@@ -39,7 +39,7 @@ test('actual platform routes retain project payload, hide archived runtime lists
   const address=await server.listen();const base=`http://${address.host}:${address.port}`;
   const login=await fetch(base+'/auth/login',{method:'POST',headers:{'content-type':'application/json',accept:'application/json'},body:JSON.stringify({username:'admin',password:'test-password'})});
   const cookie=login.headers.getSetCookie().map(value=>value.split(';')[0]).join('; ');
-  const request=(path,method='GET',body)=>fetch(base+path,{method,headers:{cookie,origin:base,accept:'application/json','content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+  const request=(path,method='GET',body)=>fetch(base+path,{method,headers:{cookie,origin:base,accept:'application/json','content-type':'application/json','x-scikeel-runtime-generation':'1'},...(body?{body:JSON.stringify(body)}:{})});
   const malformed=await request('/v1/fs/ticket?root=bad&path=notes.txt&ignored=x');assert.equal(malformed.status,400);
   const listed=await request('/api/workspace/projects');assert.equal(listed.status,200);const [p]=await listed.json();
   const ticket=await (await request('/v1/fs/ticket?root=workspace&path=notes.txt&dir='+encodeURIComponent(project.path))).json();
@@ -53,6 +53,7 @@ test('actual platform routes retain project payload, hide archived runtime lists
   assert.equal((await request('/v1/projects/'+p.id,'DELETE',{})).status,409);
   assert.equal((await request('/v1/projects/'+p.id,'PATCH',{name:'Changed through old route'})).status,409);
   assert.equal(project.name,'A');
+  await assert.rejects(server.collaboration.applyPermissions({userId:worker.userId,directory:project.path,sessionId:'ses_a',runtime:'opencode'},'guided'),{code:'project_trashed'});
   assert.equal((await request('/api/workspace/trash/'+p.id+'/restore','POST',{operationId:'op-restore'})).status,200);
   assert.equal((await (await request('/v1/projects')).json())[0].path,project.path);
   assert.equal(payload,'retained bytes');

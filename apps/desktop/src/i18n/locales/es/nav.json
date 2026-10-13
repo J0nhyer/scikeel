@@ -69,10 +69,19 @@
     "unavailable": "Proyecto no disponible.",
     "trashHeading": "Papelera",
     "restore": "Restaurar",
-    "trashEmpty": "No hay proyectos eliminados.",
+    "trashEmpty": "No hay elementos eliminados.",
     "trashLoadFailed": "No se pudo cargar la papelera.",
     "checkingState": "Comprobando el proyecto…",
     "trashedConversation": "Este proyecto está en la papelera. Restáurelo para abrir esta conversación."
+  },
+  "fileManagement": {
+    "newFile": "Nuevo archivo",
+    "newFolder": "Nueva carpeta",
+    "actionsAria": "Acciones del archivo: {{name}}",
+    "move": "Mover",
+    "trashTitle": "¿Mover {{name}} a la papelera?",
+    "trashBody": "El archivo o carpeta se conserva hasta restaurarlo. Las tareas en curso deben terminar primero.",
+    "destination": "Destino"
   },
   "history": {
     "heading": "Sesiones",

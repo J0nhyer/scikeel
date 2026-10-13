@@ -69,10 +69,19 @@
     "unavailable": "プロジェクトを利用できません。",
     "trashHeading": "ゴミ箱",
     "restore": "復元",
-    "trashEmpty": "削除されたプロジェクトはありません。",
+    "trashEmpty": "削除された項目はありません。",
     "trashLoadFailed": "ゴミ箱を読み込めませんでした。",
     "checkingState": "プロジェクトの状態を確認中…",
     "trashedConversation": "このプロジェクトはゴミ箱にあります。復元すると会話を再び開けます。"
+  },
+  "fileManagement": {
+    "newFile": "新しいファイル",
+    "newFolder": "新しいフォルダー",
+    "actionsAria": "ファイル操作: {{name}}",
+    "move": "移動",
+    "trashTitle": "{{name}} をゴミ箱に移動しますか？",
+    "trashBody": "ファイルやフォルダーは復元まで保持されます。実行中のタスクを先に終了してください。",
+    "destination": "移動先"
   },
   "history": {
     "heading": "セッション",

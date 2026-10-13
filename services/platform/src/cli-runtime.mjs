@@ -1480,31 +1480,33 @@ export class CliRuntimeManager {
       return true;
     }
     if(this.sandboxJobs && path==="/permission" && request.method==="GET") {
-      sendJson(response,200,[...this.nativeApprovals.values()].filter(value=>value.userId===userId).map(({userId:_owner,...value})=>value));return true;
+      sendJson(response,200,await this.visibleInteractions(userId,this.nativeApprovals));return true;
     }
     const nativeReply=this.sandboxJobs && /^\/permission\/([a-f0-9]{64})\/reply$/.exec(path);
     if(nativeReply && request.method==="POST") {
       try {
         const value=await jsonBody(request);const pending=this.nativeApprovals.get(nativeReply[1]);
         if(!pending || pending.userId!==userId || !["once","reject"].includes(value.reply))throw issue("permission_unavailable","permission unavailable",403);
+        await this.getOwnedSession(userId,pending.sessionID);
         await this.sandboxJobs.approve({userId,sessionId:pending.sessionID,id:pending.id,decision:value.reply==="once"?"accept":"decline"});
         this.nativeApprovals.delete(pending.id);this.emit(userId,{type:"permission.replied",properties:{sessionID:pending.sessionID,requestID:pending.id,reply:value.reply}});
         sendJson(response,200,true);
-      }catch(error){sendJson(response,error.status??403,{error:"permission unavailable"});}
+      }catch(error){sendJson(response,error.statusCode??error.status??403,{error:"permission unavailable"});}
       return true;
     }
     if(this.sandboxJobs && path==="/question" && request.method==="GET") {
-      sendJson(response,200,[...this.nativeQuestions.values()].filter(value=>value.userId===userId).map(({userId:_owner,...value})=>value));return true;
+      sendJson(response,200,await this.visibleInteractions(userId,this.nativeQuestions));return true;
     }
     const questionReply=this.sandboxJobs && /^\/question\/([a-f0-9]{64})\/(reply|reject)$/.exec(path);
     if(questionReply && request.method==="POST") {
       try {
         const value=await jsonBody(request);const pending=this.nativeQuestions.get(questionReply[1]);const reject=questionReply[2]==="reject";
         if(!pending || pending.userId!==userId || Object.keys(value).some(key=>key!=="answers"))throw issue("question_unavailable","question unavailable",403);
+        await this.getOwnedSession(userId,pending.sessionID);
         await this.sandboxJobs.answer({userId,sessionId:pending.sessionID,id:pending.id,...(reject?{reject:true}:{answers:value.answers})});
         this.nativeQuestions.delete(pending.id);this.emit(userId,{type:reject?"question.rejected":"question.replied",properties:{sessionID:pending.sessionID,requestID:pending.id}});
         sendJson(response,200,true);
-      }catch(error){sendJson(response,error.status??403,{error:"question unavailable"});}
+      }catch(error){sendJson(response,error.statusCode??error.status??403,{error:"question unavailable"});}
       return true;
     }
     if ((path === "/question" || path === "/permission") && request.method === "GET") {
@@ -1516,6 +1518,16 @@ export class CliRuntimeManager {
       return true;
     }
     return false;
+  }
+
+  async visibleInteractions(userId,requests) {
+    const visible=[];
+    for(const {userId:owner,...value}of requests.values()){
+      if(owner!==userId)continue;
+      try{await this.getOwnedSession(userId,value.sessionID);visible.push(value);}
+      catch(error){if(!["project_trashed","unknown_session"].includes(error.code))throw error;}
+    }
+    return visible;
   }
 
   async close() {

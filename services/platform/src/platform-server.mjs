@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { WorkspaceState, workspaceError } from "./workspace-state.mjs";
 import { WorkspaceAdmission } from "./workspace-admission.mjs";
+import { WorkspaceFiles } from "./workspace-files.mjs";
 import { WorkspaceManagement } from "./workspace-management.mjs";
 import { WorkspaceTickets } from "./workspace-tickets.mjs";
 import { createWorkspaceRoutes } from "./workspace-routes.mjs";
@@ -422,12 +423,14 @@ export class PlatformServer {
     if (enableWorkspaceManagement && tenantPolicy) {
       this.workspaceAdmission = new WorkspaceAdmission({resolveExecution: userId => this.#workspaceBusy(userId)});
       this.workspaceManagement = new WorkspaceManagement({state:new WorkspaceState({dataDir:resolve(workerManager.rootDir,"../workspace-management")}),
-        tenantPolicy,admission:this.workspaceAdmission,resolveSession:async(context,id)=>id.startsWith("ses_cli_") && cliRuntime?(await cliRuntime.ensureUser(context.userId)).sessions.get(id)??Promise.reject(workspaceError("session_not_found",404)):this.sessionAuthority.ensure(context,id),gateway:(context,path,method,body)=>this.#workspaceGateway(context,path,method,body)});
+        tenantPolicy,admission:this.workspaceAdmission,sessionRoots:async context=>cliRuntime?[...(await cliRuntime.ensureUser(context.userId)).sessions.values()].map(session=>session.directory):[],resolveSession:async(context,id)=>id.startsWith("ses_cli_") && cliRuntime?(await cliRuntime.ensureUser(context.userId)).sessions.get(id)??Promise.reject(workspaceError("session_not_found",404)):this.sessionAuthority.ensure(context,id),gateway:(context,path,method,body)=>this.#workspaceGateway(context,path,method,body)});
       if(cliRuntime)cliRuntime.workspaceAccess=async(userId,directory)=>{
         const context=await resolveContext(userId);await this.workspaceManagement.assertAccessible(context,directory);
       };
+      if(workspaceFiles)this.workspaceFiles=new WorkspaceFiles({management:this.workspaceManagement,native:workspaceFiles,state:this.workspaceManagement.state,tenantPolicy,admission:this.workspaceAdmission});
       this.workspaceRoutes = createWorkspaceRoutes({management:this.workspaceManagement,secureCookies,
-        readJson:(request,response)=>this.#readPayload(request,response),sendJson});
+        files:this.workspaceFiles,
+        readJson:(request,response)=>this.#readPayload(request,response,16*1024**2),sendJson});
       this.workspaceTickets = new WorkspaceTickets({resolveContext,assertAccessible:(context,path)=>this.workspaceManagement.assertAccessible(context,path),
         issueWorkerTicket:(context,target)=>this.#workspaceGateway(context,"/v1/fs/ticket?"+new URLSearchParams({root:"workspace",dir:target.directory,path:target.path})),
         streamWorkerFile:async(context,ticket,response,download)=>{
@@ -546,9 +549,9 @@ export class PlatformServer {
     return user;
   }
 
-  async #readPayload(request, response) {
+  async #readPayload(request, response, maxBytes=this.maxBodyBytes) {
     try {
-      return parseBody(request, await readBody(request, this.maxBodyBytes));
+      return parseBody(request, await readBody(request, maxBytes));
     } catch (error) {
       const status = error?.code === "body_too_large" ? 413 : 400;
       sendJson(response, status, { error: error?.message ?? "invalid request body" });
@@ -651,8 +654,7 @@ export class PlatformServer {
     if(!worker || worker.status!=="running")throw workspaceError("runtime_state_unknown",503);
     if(worker.maintenance || worker.activeMutations>0)return true;
     const context={userId,instanceId:worker.id,generation:worker.generation};
-    const projects=await this.workspaceManagement.allProjects(context);
-    const directories=new Set([worker.workspaceDir,...projects.map(project=>project.path)]);
+    const directories=new Set([worker.workspaceDir,...await this.workspaceManagement.roots(context)]);
     for(const directory of directories){
       const query="?"+new URLSearchParams({directory});
       const [statuses,permissions,questions]=await Promise.all([this.#workspaceGateway(context,"/session/status"+query),
@@ -660,7 +662,7 @@ export class PlatformServer {
       if(!statuses || typeof statuses!=="object" || Array.isArray(statuses) || !Array.isArray(permissions) || !Array.isArray(questions))throw workspaceError("runtime_state_unknown",503);
       if(Object.values(statuses).some(value=>value?.type!=="idle") || permissions.length || questions.length)return true;
     }
-    if(this.cliRuntime){const state=await this.cliRuntime.ensureUser(userId);if([...state.sessions.values()].some(session=>session.status==="running"))return true;}
+    if(this.cliRuntime){const state=await this.cliRuntime.ensureUser(userId);if([...state.sessions.values()].some(session=>session.status==="running") || [...this.cliRuntime.nativeApprovals?.values()??[],...this.cliRuntime.nativeQuestions?.values()??[]].some(request=>request.userId===userId))return true;}
     if([...this.collaboration.records.values()].some(value=>value.userId===userId && ["running","waiting_input"].includes(value.phase)))return true;
     if([...this.researchTasks.records.values()].some(value=>value.userId===userId && value.executionActive))return true;
     return false;
@@ -725,7 +727,7 @@ export class PlatformServer {
         if(url.pathname==="/v1/fs/ticket"){sendJson(response,200,await this.workspaceTickets.issue(user.id,{directory,path}));return;}
         if(url.pathname==="/v1/fs/list"){
           const entries=await this.#workspaceGateway(context,url.pathname+url.search);
-          const visible=[];for(const entry of entries){try{await this.workspaceManagement.assertAccessible(context,directory+"/"+entry.path);visible.push(entry);}catch(error){if(error.code!=="project_trashed")throw error;}}
+          const visible=[];for(const entry of entries){try{await this.workspaceManagement.assertAccessible(context,directory+"/"+entry.path);visible.push(entry);}catch(error){if(!["project_trashed","protected_path"].includes(error.code))throw error;}}
           sendJson(response,200,visible);return;
         }
       }
@@ -989,12 +991,16 @@ export class PlatformServer {
     }
     sendJson(response, 200, result);
   }
-  async #workerResearchRequest(task, path, method = "GET", body) {
+  async #workerResearchRequest(task, path, method = "GET", body, admitted=false) {
+    if(this.workspaceAdmission && !["GET","HEAD"].includes(method) && !admitted)
+      return this.workspaceAdmission.start(task.userId,()=>this.#workerResearchRequest(task,path,method,body,true));
     const worker = this.workerManager.getWorker(workerIdForUser(task.userId));
     if (task.generation !== undefined && (task.instanceId !== worker?.id || task.generation !== worker?.generation || worker?.status !== "running"))
       throw recoveryError("stale_workspace_context");
     const access = this.workerManager.getWorkerAccess(workerIdForUser(task.userId));
     if (!access) throw new Error("research worker is unavailable");
+    await this.workspaceManagement?.assertAccessible({userId:task.userId,instanceId:worker.id,generation:worker.generation},task.directory);
+    if(!["GET","HEAD"].includes(method))await this.workspaceFiles?.confirmPending({userId:task.userId,instanceId:worker.id,generation:worker.generation});
     const url = new URL(path, access.url);
     url.searchParams.set("directory", task.directory);
     const result = await fetch(url, {
@@ -1710,7 +1716,11 @@ export class PlatformServer {
       const path = parsed.pathname;
       if(this.workspaceAdmission && !["GET","HEAD"].includes(request.method) && !request.workspaceAdmitted && !path.startsWith("/api/workspace/") && !path.startsWith("/auth/")) {
         const admittedUser=await this.#currentUser(request);
-        if(admittedUser){request.workspaceAdmitted=true;await this.workspaceAdmission.start(admittedUser.id,()=>this.#handle(request,response));return;}
+        if(admittedUser){request.workspaceAdmitted=true;await this.workspaceAdmission.start(admittedUser.id,async()=>{
+          const worker=this.workerManager.getWorker(workerIdForUser(admittedUser.id));
+          if(worker?.status==="running")await this.workspaceFiles?.confirmPending({userId:admittedUser.id,instanceId:worker.id,generation:worker.generation});
+          return this.#handle(request,response);
+        });return;}
       }
 
       if (request.method === "GET" && path === "/health") {

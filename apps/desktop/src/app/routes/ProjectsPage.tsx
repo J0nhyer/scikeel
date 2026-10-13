@@ -195,7 +195,7 @@ export function ProjectsPage() {
                     <span className="text-sm tabular-nums text-muted">{timeAgo(p.updated, now)}</span>
 
                     {isGatewayWeb && <div className="flex items-center justify-end">
-                      <ProjectActions project={p}/>
+                      <ProjectActions project={p} onNewSession={()=>void transition.requestTransition(async()=>p)}/>
                       <button aria-label={t("projects.newSessionAria", { name: p.name })}
                         title={t("projects.newSessionAria", { name: p.name })}
                         disabled={webReadOnly || transition.busy}
