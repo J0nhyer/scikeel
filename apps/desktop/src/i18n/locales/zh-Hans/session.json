@@ -274,6 +274,26 @@
     }
   },
   "live": {
+    "recovery": {
+      "title": "工作区连接",
+      "retry": "重试连接",
+      "restart": "重启工作区",
+      "confirmRestart": "确认重启",
+      "cancel": "取消",
+      "sharedImpact": "这会影响正在使用此工作区的所有设备。",
+      "interruptWarning": "正在运行的研究可能中断。对话历史和工作区文件会保留。",
+      "cooldown": "请等待 {{seconds}} 秒后再重启。",
+      "states": {
+        "healthy": "工作区可用，请重试连接。",
+        "stopped": "工作区已停止，重试可重新准备。",
+        "starting": "工作区正在启动，请稍后重试。",
+        "recovering": "工作区正在恢复，请稍后重试。",
+        "unreachable": "暂时无法连接工作区，请重试检查状态。",
+        "unresponsive": "工作区运行时未响应。",
+        "unknown": "无法确认工作区状态。可以重试，不会中断正在运行的任务。",
+        "capacity": "工作区资源暂时不足，请稍后重试。"
+      }
+    },
     "account": { "signOutFailed": "无法退出登录，请重试。" },
     "starting": {
       "titleWeb": "正在连接工作区…",

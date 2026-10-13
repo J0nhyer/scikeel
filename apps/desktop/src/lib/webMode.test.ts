@@ -99,3 +99,16 @@ it("forwards cancellation without changing gateway authentication", async () => 
   await mode.gatewayGet("/v1/zen-models", { signal: controller.signal });
   expect(fetch).toHaveBeenCalledWith("http://localhost/v1/zen-models", expect.objectContaining({ signal: controller.signal, headers: { Authorization: "Bearer standalone-token" } }));
 });
+
+it("fences platform mutations without sending workspace identity to other origins or authentication", async () => {
+  const { mode, fetch } = await setup(true, 200);
+  mode.setPlatformWorkspaceGeneration(3);
+  await window.fetch("/api/collaboration/owned", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).get("x-scikeel-runtime-generation")).toBe("3");
+  await window.fetch("/session/owned/abort", { method: "POST", headers: { "x-scikeel-runtime-generation": "2" } });
+  expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).get("x-scikeel-runtime-generation")).toBe("2");
+  for (const path of ["/auth/logout", "/api/workspace/recover", "https://provider.invalid/turn"]) {
+    await window.fetch(path, { method: "POST" });
+    expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).has("x-scikeel-runtime-generation")).toBe(false);
+  }
+});

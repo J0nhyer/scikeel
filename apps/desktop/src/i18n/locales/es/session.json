@@ -274,6 +274,18 @@
     }
   },
   "live": {
+    "recovery": {
+      "title": "Conexión del espacio de trabajo", "retry": "Reintentar conexión", "restart": "Reiniciar espacio de trabajo", "confirmRestart": "Confirmar reinicio", "cancel": "Cancelar",
+      "sharedImpact": "Esto afecta a todos los dispositivos que usan este espacio de trabajo.",
+      "interruptWarning": "La investigación en curso puede interrumpirse. Se conservan el historial y los archivos.",
+      "cooldown": "Espera {{seconds}} segundos antes de reiniciar de nuevo.",
+      "states": {
+        "healthy": "El espacio de trabajo está disponible. Reintenta la conexión.", "stopped": "El espacio de trabajo está detenido. Reintenta para prepararlo.",
+        "starting": "El espacio de trabajo se está iniciando. Reintenta en breve.", "recovering": "El espacio de trabajo se está recuperando. Reintenta en breve.",
+        "unreachable": "No se pudo conectar. Reintenta para comprobar el estado.", "unresponsive": "El entorno de ejecución no responde.",
+        "unknown": "No se pudo verificar el estado. Reintenta sin interrumpir el trabajo en curso.", "capacity": "No hay capacidad disponible temporalmente. Reintenta en breve."
+      }
+    },
     "account": { "signOutFailed": "No se pudo cerrar la sesión. Inténtalo de nuevo." },
     "starting": {
       "titleWeb": "Conectando con tu espacio de trabajo…",

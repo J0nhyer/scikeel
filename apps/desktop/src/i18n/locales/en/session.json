@@ -274,6 +274,26 @@
     }
   },
   "live": {
+    "recovery": {
+      "title": "Workspace connection",
+      "retry": "Retry connection",
+      "restart": "Restart workspace",
+      "confirmRestart": "Confirm restart",
+      "cancel": "Cancel",
+      "sharedImpact": "This affects all devices using this workspace.",
+      "interruptWarning": "Running research may be interrupted. Conversation history and workspace files are kept.",
+      "cooldown": "Please wait {{seconds}} seconds before restarting again.",
+      "states": {
+        "healthy": "The workspace is available. Retry the connection.",
+        "stopped": "The workspace is stopped. Retry to prepare it.",
+        "starting": "The workspace is starting. Please retry shortly.",
+        "recovering": "The workspace is recovering. Please retry shortly.",
+        "unreachable": "The workspace could not be reached. Retry to check its status.",
+        "unresponsive": "The workspace runtime is not responding.",
+        "unknown": "Workspace status could not be verified. Retry without interrupting running work.",
+        "capacity": "Workspace capacity is temporarily unavailable. Please retry shortly."
+      }
+    },
     "account": { "signOutFailed": "Could not sign out. Please retry." },
     "starting": {
       "titleWeb": "Connecting to your workspace…",

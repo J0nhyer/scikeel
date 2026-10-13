@@ -1,8 +1,11 @@
+import { isWorkspaceReport, type WorkspaceReport } from "@ai4s/sdk";
+
 type PreparationState = {
   status: string;
   sessionListReady: boolean;
   gatewayCatalogState: string;
   defaultModel: string | null;
+  gatewayWorkspaceReport?: WorkspaceReport | null;
 };
 type PreparationSource = {
   getState: () => PreparationState;
@@ -16,19 +19,26 @@ export function installLoginPreparation(source: PreparationSource, signOut?: () 
   let finished = false;
   let disposed = false;
   let signingOut = false;
+  let failureShown = false;
   let unsubscribe = () => {};
-  const finish = (event: "scikeel:login-ready" | "scikeel:login-error") => {
+  const finish = (event: "scikeel:login-ready" | "scikeel:login-error" | "scikeel:login-recovery") => {
     if (finished) return;
-    finished = true;
     clearTimeout(timer);
+    if (event === "scikeel:login-error") {
+      if (!failureShown) document.dispatchEvent(new Event(event));
+      failureShown = true;
+      return;
+    }
+    finished = true;
     unsubscribe();
-    if (event === "scikeel:login-ready") document.removeEventListener("scikeel:sign-out", logout);
+    document.removeEventListener("scikeel:sign-out", logout);
     document.dispatchEvent(new Event(event));
   };
   const timer = setTimeout(() => finish("scikeel:login-error"), 90_000);
   const update = (state: PreparationState) => {
     if (finished || signingOut) return;
-    if (state.status === "error" || (state.status === "ready" && state.sessionListReady && state.gatewayCatalogState === "unavailable")) finish("scikeel:login-error");
+    if (state.status === "error" && isWorkspaceReport(state.gatewayWorkspaceReport)) finish("scikeel:login-recovery");
+    else if (state.status === "error" || (state.status === "ready" && state.sessionListReady && state.gatewayCatalogState === "unavailable")) finish("scikeel:login-error");
     else if (state.status === "ready" && state.sessionListReady &&
       (state.gatewayCatalogState === "ready" || state.gatewayCatalogState === "limited") && state.defaultModel) finish("scikeel:login-ready");
   };

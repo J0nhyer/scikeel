@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WebModelPicker } from "@/components/thread/WebModelPicker";
+import { installLoginPreparation } from "./loginPreparation";
 
 const mocks = vi.hoisted(() => ({
   /** Desktop or plain-browser runtime (drives the isTauri gates). */
@@ -134,6 +135,7 @@ const mocks = vi.hoisted(() => ({
   adoptWorkspaceSkills: vi.fn(async (_known: string[]) => ["agent-skill"]),
   /** Constructor options every OpenCodeClient was created with. */
   clientOpts: [] as Record<string, unknown>[],
+  contextChanged: null as (() => void) | null,
   /** compactSession(sid, providerID, modelID) — resolves; set failCompact to reject. */
   compactSessionSpy: vi.fn(),
   failCompact: false,
@@ -172,6 +174,7 @@ vi.mock("./webMode", () => ({
   gatewayToken: () => "gateway-test-token",
   gatewayOrigin: () => "http://gateway.test",
   setPlatformSessionExpiryHandler: vi.fn(),
+  setPlatformWorkspaceGeneration: vi.fn(),
 }));
 vi.mock("./collaboration",()=>({prepareCollaborationSend:mocks.prepareCollaborationSend}));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
@@ -182,6 +185,7 @@ vi.mock("./systemNotification", () => ({
 vi.mock("@ai4s/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@ai4s/sdk")>();
   class OpenCodeClient {
+    setGatewayContextChangedHandler(handler: () => void) { mocks.contextChanged = handler; }
     private statusCb: (s: string) => void = () => {};
     /** The real client keeps its status (BaseAgentRuntime); the store reads it
      *  after connecting rather than waiting for a transition. */
@@ -578,9 +582,119 @@ describe("platform connection context", () => {
   function response(path: string): Response {
     const data = path.endsWith("/v1/whoami") ? { directory: "/ws/base", mode: "full" }
       : path.endsWith("/api/me") ? { user: { id: "usr_fixture", username: "fixture", role: "user" } }
-      : { runtime: "opencode", kind: "opencode", available: [{ runtime: "opencode", kind: "opencode", enabled: true }] };
+      : { runtime: "opencode", kind: "opencode", context: { instanceId: "user-usr_fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true }] };
     return new Response(JSON.stringify(data));
   }
+  it("reconstructs a verified stopped workspace once and retains drafts without replaying a prompt", async () => {
+    let available = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/workspace/status")) return new Response(JSON.stringify({ context: { instanceId: "user-a", generation: 1 }, state: "stopped", activity: "unknown", canRestart: false, retryAfterMs: 0 }));
+      if (path.endsWith("/api/workspace/recover")) { available = true; return new Response(JSON.stringify({ context: { instanceId: "user-a", generation: 2 }, state: "healthy", activity: "unknown", canRestart: false, retryAfterMs: 0 })); }
+      if (path.endsWith("/v1/whoami") && !available) return new Response("worker unavailable", { status: 502 });
+      return response(path);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useRuntimeStore.setState({ draftWorkspaces: { draft: "/ws/unsent" } });
+    expect(await useRuntimeStore.getState().connectRetry(2)).toBe(true);
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/api/workspace/recover"))).toHaveLength(1);
+    expect(useRuntimeStore.getState().draftWorkspaces).toEqual({ draft: "/ws/unsent" });
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled(); expect(mocks.abortSession).not.toHaveBeenCalled();
+  });
+  it("refuses writable readiness when both metadata and status cannot verify context", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/workspace/status")) return new Response("{}", { status: 503 });
+      if (path.endsWith("/api/runtime")) return new Response(JSON.stringify({ runtime: "opencode", kind: "opencode", context: null, available: [] }));
+      return response(path);
+    }));
+    const recovery = vi.fn(); const failed = vi.fn();
+    document.documentElement.setAttribute("data-scikeel-login-preparing", "");
+    document.addEventListener("scikeel:login-recovery", recovery);
+    document.addEventListener("scikeel:login-error", failed);
+    const stop = installLoginPreparation(useRuntimeStore);
+    try {
+      expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+      expect(useRuntimeStore.getState().status).toBe("error"); expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+      expect(useRuntimeStore.getState().gatewayWorkspaceReport).toBeNull();
+      expect(failed).toHaveBeenCalledOnce(); expect(recovery).not.toHaveBeenCalled();
+    } finally {
+      stop(); document.documentElement.removeAttribute("data-scikeel-login-preparing");
+      document.removeEventListener("scikeel:login-recovery", recovery); document.removeEventListener("scikeel:login-error", failed);
+    }
+  });
+  it("required metadata failure still reads scoped workspace diagnosis", async () => {
+    const report = { context: { instanceId: "user-usr_fixture", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/workspace/status")) return new Response(JSON.stringify(report));
+      if (path.endsWith("/api/runtime")) return new Response("{}", { status: 503 });
+      return response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    expect(useRuntimeStore.getState().gatewayWorkspaceReport).toEqual(report); expect(mocks.abortSession).not.toHaveBeenCalled();
+  });
+  it("a context change invokes the existing reconnect owner without resending a turn", async () => {
+    let generation = 1;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/api/runtime")
+      ? new Response(JSON.stringify({ runtime: "opencode", kind: "opencode", context: { instanceId: "user-usr_fixture", generation }, available: [] }))
+      : response(String(input))));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    expect(mocks.contextChanged).toBeTypeOf("function");
+    mocks.sendPromptSpy.mockClear(); mocks.abortSession.mockClear();
+    generation = 2;
+    mocks.contextChanged?.();
+    await useRuntimeStore.getState().connectRetry(1);
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled(); expect(mocks.abortSession).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().status).toBe("ready");
+    expect(useRuntimeStore.getState().gatewayContext?.generation).toBe(2);
+  });
+  it("publishes eligible restart information without automatically restarting an alive workspace", async () => {
+    const report = { context: { instanceId: "user-a", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/workspace/status")) return new Response(JSON.stringify(report));
+      if (path.endsWith("/v1/whoami")) return new Response("worker unavailable", { status: 502 });
+      return response(path);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    expect(useRuntimeStore.getState().gatewayWorkspaceReport).toEqual(report);
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).endsWith("/api/workspace/recover"))).toHaveLength(0);
+    expect(mocks.abortSession).not.toHaveBeenCalled();
+  });
+  it("coalesces manual restart using the captured generation without replaying a turn", async () => {
+    let release!: (value: Response) => void;
+    const pending = new Promise<Response>(resolve => { release = resolve; });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => String(input).endsWith("/api/workspace/recover") ? pending : response(String(input)));
+    vi.stubGlobal("fetch", fetchMock);
+    const context = { instanceId: "user-a", generation: 1 };
+    const one = useRuntimeStore.getState().restartGatewayWorkspace(context);
+    const two = useRuntimeStore.getState().restartGatewayWorkspace({ ...context, generation: 2 });
+    expect(two).toBe(one);
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(call => String(call[0]).endsWith("/api/workspace/recover"))).toBe(true));
+    const command = fetchMock.mock.calls.find(call => String(call[0]).endsWith("/api/workspace/recover"));
+    expect(JSON.parse(String(command?.[1]?.body))).toEqual({ ...context, action: "restart", confirmed: true });
+    release(new Response(JSON.stringify({ context: { ...context, generation: 2 }, state: "healthy", activity: "unknown", canRestart: false, retryAfterMs: 0 })));
+    expect(await one).toBe(true); expect(useRuntimeStore.getState().gatewayRestartPending).toBe(false);
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled(); expect(mocks.abortSession).not.toHaveBeenCalled();
+  });
+  it("logout fences a queued manual restart before it can repaint or dispatch", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => response(String(input))); vi.stubGlobal("fetch", fetchMock);
+    const pending = useRuntimeStore.getState().restartGatewayWorkspace({ instanceId: "user-a", generation: 1 });
+    useRuntimeStore.getState().suspendPlatformBrowser();
+    expect(await pending).toBe(false); expect(useRuntimeStore.getState().status).toBe("offline");
+    expect(fetchMock).not.toHaveBeenCalled(); expect(useRuntimeStore.getState().gatewayRestartPending).toBe(false);
+  });
+  it("a cooldown refusal removes restart authority and does not replay the mutation", async () => {
+    const failure = { error: "Please wait before restarting the workspace again", code: "workspace_recovery_cooldown", stage: "recovery",
+      context: { instanceId: "user-a", generation: 1 }, action: "wait", retryable: true, retryAfterMs: 60000 };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(failure), { status: 503 })); vi.stubGlobal("fetch", fetchMock);
+    useRuntimeStore.setState({ gatewayWorkspaceReport: { context: failure.context, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 } });
+    expect(await useRuntimeStore.getState().restartGatewayWorkspace(failure.context)).toBe(false);
+    expect(useRuntimeStore.getState().gatewayWorkspaceReport).toMatchObject({ canRestart: false, retryAfterMs: 60000 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
   it("keeps account reads alive through workspace reconnect and retains identity", async () => {
     let release!: (value: Response) => void;
     const accountReply = new Promise<Response>(resolve => { release = resolve; });

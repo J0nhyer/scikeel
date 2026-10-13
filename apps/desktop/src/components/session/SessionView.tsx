@@ -186,6 +186,7 @@ export function SessionView({
   // SSE folds must not repaint this pane. The active thread is selected on its
   // own below (#34).
   const status = useRuntimeStore((s) => s.status);
+  const gatewayWorkspaceReport = useRuntimeStore((s) => s.gatewayWorkspaceReport);
   const switching = useRuntimeStore((s) => s.switching);
   const sessionListReady = useRuntimeStore((s) => s.sessionListReady);
   const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
@@ -995,6 +996,7 @@ export function SessionView({
             style={zoom !== 1 ? { zoom } : undefined}
             className="relative z-10 mx-auto flex max-w-[760px] flex-col gap-4 px-8 pt-6"
           >
+            {!connected && !connecting && isGatewayWeb && focused && <WorkspaceRecoveryActions report={gatewayWorkspaceReport} />}
             {!connected && !connecting && !isGatewayWeb && (
               <div className="rounded-card border border-border bg-surface p-5 shadow-card">
                 <div className="text-sm font-medium text-text">{t("live.runtime.title")}</div>
@@ -1403,3 +1405,4 @@ function ConnBadge({ status }: { status: RuntimeStatus }) {
     </span>
   );
 }
+import { WorkspaceRecoveryActions } from "./WorkspaceRecoveryActions";

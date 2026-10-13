@@ -334,7 +334,15 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     this.baseUrl = (opts.baseUrl ?? DEFAULT_OPENCODE_URL).replace(/\/$/, "");
     this.customFetch = !!opts.fetchImpl;
     // Bind to globalThis — an unbound `fetch` reference throws "Illegal invocation" in browsers.
-    this.fetchImpl = (opts.fetchImpl ?? globalThis.fetch).bind(globalThis);
+    const transport = (opts.fetchImpl ?? globalThis.fetch).bind(globalThis);
+    this.fetchImpl = (input, init) => {
+      if (this.gatewayGeneration !== null && !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase())) {
+        const headers = new Headers(init?.headers);
+        headers.set("x-scikeel-runtime-generation", String(this.gatewayGeneration));
+        return transport(input, { ...init, headers }).then(response => this.captureContext(response));
+      }
+      return transport(input, init).then(response => this.captureContext(response));
+    };
     this.authToken = opts.password ? btoa(`${opts.username ?? "opencode"}:${opts.password}`) : null;
     this.authHeader = this.authToken ? `Basic ${this.authToken}` : null;
     this.directory = opts.directory ?? null;
@@ -355,10 +363,24 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   private contextGeneration: number | undefined;
+  private gatewayGeneration: number | null = null;
+  private gatewayContextChangedHandler: (() => void) | null = null;
+  setGatewayContextChangedHandler(handler: (() => void) | null): void { this.gatewayContextChangedHandler = handler; }
+  private gatewayContextChanged(): void { this.close(); this.gatewayContextChangedHandler?.(); }
+  setGatewayGeneration(generation: number | null): void {
+    if (generation !== null && (!Number.isSafeInteger(generation) || generation < 1)) throw new Error("Invalid workspace generation");
+    this.gatewayGeneration = generation;
+    this.contextGeneration = generation ?? undefined;
+  }
   getContextGeneration(): number | undefined { return this.contextGeneration; }
   private captureContext(response: Response): Response {
     const generation=Number(response.headers.get("x-scikeel-runtime-generation"));
-    if (Number.isSafeInteger(generation) && generation > 0) this.contextGeneration=generation;
+    if (this.gatewayGeneration !== null && Number.isSafeInteger(generation) && generation > 0 && generation !== this.gatewayGeneration) {
+      void response.body?.cancel().catch(() => {});
+      this.gatewayContextChanged();
+      throw new ApiError("Workspace has changed; reconnect to its current state", 409, { code: "stale_workspace_context", contextGeneration: generation });
+    }
+    if (this.gatewayGeneration === null && Number.isSafeInteger(generation) && generation > 0) this.contextGeneration=generation;
     return response;
   }
 
@@ -1414,6 +1436,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       else if (code) source = "runtime";
     } catch { /* Keep the HTTP status on malformed/non-JSON responses. */ }
     const generation = Number(res.headers.get("x-scikeel-runtime-generation"));
+    if (this.gatewayGeneration !== null && ["stale_workspace_context", "runtime_context_changed"].includes(code ?? "")) this.gatewayContextChanged();
     return new ApiError(`${what} (${res.status}${detail ? `: ${detail}` : ""})`, res.status, {
       code, source, contextGeneration: Number.isSafeInteger(generation) && generation > 0 ? generation : undefined,
     });

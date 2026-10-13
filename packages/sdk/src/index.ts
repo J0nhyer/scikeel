@@ -1,5 +1,7 @@
 export type { AttachmentPromptContext } from "@ai4s/shared";
 export { OpenCodeClient, ApiError, isApiStatus } from "./OpenCodeClient";
+export { GatewayWorkspaceClient, GatewayWorkspaceError, isWorkspaceReport } from "./GatewayWorkspaceClient";
+export type { WorkspaceContext, WorkspaceReport, WorkspaceFailure, WorkspaceRecoveryCommand } from "./GatewayWorkspaceClient";
 export type { OpenCodeCatalogReadOptions, CustomProviderModality, CustomProviderModel, ProjectEnvironmentInfo, ProjectEnvironmentApproval } from "./OpenCodeClient";
 export type { AgentRuntime } from "./runtime";
 export { BaseAgentRuntime } from "./base-runtime";

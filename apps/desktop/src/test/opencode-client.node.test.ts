@@ -26,6 +26,31 @@ async function waitFor(pred: () => boolean, timeout = 3000) {
 }
 
 describe("OpenCodeClient ↔ OpenCode server", () => {
+  it("hands generation mismatch to connection recovery without retargeting the old client", async () => {
+    const changed = vi.fn(); const client = new OpenCodeClient({ baseUrl: "http://gateway.test",
+      fetchImpl: async () => new Response("[]", { headers: { "x-scikeel-runtime-generation": "2" } }) });
+    client.setGatewayGeneration(1); client.setGatewayContextChangedHandler(changed);
+    await expect(client.listSessions()).rejects.toMatchObject({ status: 409, code: "stale_workspace_context" });
+    expect(changed).toHaveBeenCalledOnce(); expect(client.getContextGeneration()).toBe(1);
+  });
+  it("a stale write refusal requests read-only reconnection without replaying the write", async () => {
+    const changed = vi.fn(); const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: "Workspace has changed", code: "stale_workspace_context" }), { status: 409 }));
+    const client = new OpenCodeClient({ baseUrl: "http://gateway.test", fetchImpl });
+    client.setGatewayGeneration(1); client.setGatewayContextChangedHandler(changed);
+    await expect(client.createSession()).rejects.toMatchObject({ status: 409, code: "stale_workspace_context" });
+    expect(changed).toHaveBeenCalledOnce(); expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+  it("fences platform writes with an explicitly selected generation without changing standalone calls", async () => {
+    const calls: Array<RequestInit | undefined> = [];
+    const fetchImpl: typeof fetch = async (_input, init) => { calls.push(init); return new Response(JSON.stringify({ id: "ses_test" })); };
+    const client = new OpenCodeClient({ baseUrl: "http://gateway.test", fetchImpl });
+    await client.createSession();
+    expect(new Headers(calls[0]?.headers).has("x-scikeel-runtime-generation")).toBe(false);
+    client.setGatewayGeneration(3); await client.createSession();
+    expect(new Headers(calls[1]?.headers).get("x-scikeel-runtime-generation")).toBe("3");
+    client.setGatewayGeneration(null); await client.createSession();
+    expect(new Headers(calls[2]?.headers).has("x-scikeel-runtime-generation")).toBe(false);
+  });
   it("connects, creates a session, sends a prompt, and streams normalized events", async () => {
     const events: OpenCodeEvent[] = [];
     const client = new OpenCodeClient({ baseUrl: `http://127.0.0.1:${server.port}` });

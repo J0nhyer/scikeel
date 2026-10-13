@@ -274,6 +274,18 @@
     }
   },
   "live": {
+    "recovery": {
+      "title": "Arbeitsbereichsverbindung", "retry": "Verbindung erneut versuchen", "restart": "Arbeitsbereich neu starten", "confirmRestart": "Neustart bestätigen", "cancel": "Abbrechen",
+      "sharedImpact": "Dies betrifft alle Geräte, die diesen Arbeitsbereich verwenden.",
+      "interruptWarning": "Laufende Forschung kann unterbrochen werden. Verlauf und Dateien bleiben erhalten.",
+      "cooldown": "Bitte vor einem weiteren Neustart {{seconds}} Sekunden warten.",
+      "states": {
+        "healthy": "Der Arbeitsbereich ist verfügbar. Verbindung erneut versuchen.", "stopped": "Der Arbeitsbereich ist gestoppt. Erneut versuchen, um ihn vorzubereiten.",
+        "starting": "Der Arbeitsbereich startet. Bitte kurz warten.", "recovering": "Der Arbeitsbereich wird wiederhergestellt. Bitte kurz warten.",
+        "unreachable": "Der Arbeitsbereich ist nicht erreichbar. Status erneut prüfen.", "unresponsive": "Die Laufzeit des Arbeitsbereichs antwortet nicht.",
+        "unknown": "Der Status konnte nicht bestätigt werden. Erneut versuchen, ohne laufende Arbeit zu unterbrechen.", "capacity": "Die Kapazität ist vorübergehend nicht verfügbar. Bitte später erneut versuchen."
+      }
+    },
     "account": { "signOutFailed": "Abmeldung fehlgeschlagen. Bitte erneut versuchen." },
     "starting": {
       "titleWeb": "Verbindung zum Arbeitsbereich wird hergestellt…",

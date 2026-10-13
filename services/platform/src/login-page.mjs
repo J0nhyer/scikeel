@@ -175,12 +175,14 @@ try {
       location.reload();
     }
   });
-  document.addEventListener('scikeel:login-ready', () => {
+  const handoff = () => {
     host.remove();
     if (root) root.inert = false;
     document.documentElement.removeAttribute('data-scikeel-login-preparing');
     try { sessionStorage.removeItem('scikeel.login.pending'); } catch {}
-  }, { once: true });
+  };
+  document.addEventListener('scikeel:login-ready', handoff, { once: true });
+  document.addEventListener('scikeel:login-recovery', handoff, { once: true });
   document.addEventListener('scikeel:login-error', () => {
     failed = true;
     submit.disabled = false;

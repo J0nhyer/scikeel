@@ -23,14 +23,16 @@ it("reports an initialization failure while keeping the login screen for retry",
   const failure = vi.fn(); document.addEventListener("scikeel:login-error", failure, { once: true });
   const stop = installLoginPreparation(source);
   current = { ...current, status: "error" }; listener(current);
-  expect(failure).toHaveBeenCalledOnce(); expect(unsubscribe).toHaveBeenCalledOnce(); stop();
+  expect(failure).toHaveBeenCalledOnce(); expect(unsubscribe).not.toHaveBeenCalled(); stop();
+  expect(unsubscribe).toHaveBeenCalledOnce();
 });
 
 it("does not leave a stalled initialization spinning forever", () => {
   const failure = vi.fn(); document.addEventListener("scikeel:login-error", failure, { once: true });
   const stop = installLoginPreparation(source);
   vi.advanceTimersByTime(90000);
-  expect(failure).toHaveBeenCalledOnce(); expect(unsubscribe).toHaveBeenCalledOnce(); stop();
+  expect(failure).toHaveBeenCalledOnce(); expect(unsubscribe).not.toHaveBeenCalled(); stop();
+  expect(unsubscribe).toHaveBeenCalledOnce();
 });
 
 it("does not gate a normal application reload or a standalone gateway", () => {
@@ -82,4 +84,29 @@ it("coalesces overlay logout and never hands off the app while signing out", asy
   stop(); document.dispatchEvent(new Event("scikeel:sign-out"));
   expect(signOut).toHaveBeenCalledOnce();
   document.removeEventListener("scikeel:login-ready", ready);
+});
+
+it("hands off structured workspace failure without falsely declaring the runtime ready", () => {
+  const recovery = vi.fn(); const ready = vi.fn();
+  document.addEventListener("scikeel:login-recovery", recovery);
+  document.addEventListener("scikeel:login-ready", ready);
+  const stop = installLoginPreparation(source);
+  current = { ...current, status: "error", gatewayWorkspaceReport: { context: { instanceId: "user-a", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 } };
+  listener(current); listener(current);
+  expect(recovery).toHaveBeenCalledOnce(); expect(ready).not.toHaveBeenCalled();
+  expect(current.status).toBe("error"); expect(unsubscribe).toHaveBeenCalledOnce();
+  stop(); document.removeEventListener("scikeel:login-recovery", recovery); document.removeEventListener("scikeel:login-ready", ready);
+});
+
+it("permits a later structured report to hand off fallback failure but never after logout", async () => {
+  const recovery = vi.fn(); document.addEventListener("scikeel:login-recovery", recovery);
+  const stop = installLoginPreparation(source);
+  current = { ...current, status: "error" }; listener(current);
+  current = { ...current, gatewayWorkspaceReport: { context: null, state: "unknown", activity: "unknown", canRestart: false, retryAfterMs: 0 } }; listener(current);
+  expect(recovery).toHaveBeenCalledOnce(); stop(); recovery.mockClear();
+  current = initial(); const secondStop = installLoginPreparation(source, vi.fn(async () => {}));
+  document.dispatchEvent(new Event("scikeel:sign-out"));
+  current = { ...current, status: "error", gatewayWorkspaceReport: { context: null, state: "unknown", activity: "unknown", canRestart: false, retryAfterMs: 0 } }; listener(current);
+  expect(recovery).not.toHaveBeenCalled(); await Promise.resolve();
+  secondStop(); document.removeEventListener("scikeel:login-recovery", recovery);
 });

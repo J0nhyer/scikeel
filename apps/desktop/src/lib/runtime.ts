@@ -6,6 +6,12 @@ import { attachmentRequestKey, claimAttachments, listConversationAttachments } f
 import { create } from "zustand";
 import {
   OpenCodeClient,
+  GatewayWorkspaceClient,
+  GatewayWorkspaceError,
+  isWorkspaceReport,
+  type WorkspaceReport,
+  type WorkspaceFailure,
+  type WorkspaceContext,
   DEFAULT_OPENCODE_URL,
   hasDefaultSessionTitle,
   withManualSessionTitle,
@@ -67,7 +73,7 @@ import {
   type ProxyMode,
   type ToolStatus,
 } from "./tauri";
-import { isGatewayWeb, isPlatformWeb, gatewayToken, gatewayOrigin, setPlatformSessionExpiryHandler } from "./webMode";
+import { isGatewayWeb, isPlatformWeb, gatewayToken, gatewayOrigin, setPlatformSessionExpiryHandler, setPlatformWorkspaceGeneration } from "./webMode";
 import { createGatewayAccountLifecycle } from "./gatewayAccount";
 import { createResearchTask, type ResearchBrief } from "./research";
 import { activeAcpAgent } from "./acpAgents";
@@ -423,6 +429,10 @@ interface RuntimeState {
   setShowAgents: (show: boolean, sessionId?: string) => void;
   interactions: Record<string, InteractionEntry>;
   gatewayContext: { instanceId: string; generation: number } | null;
+  gatewayWorkspaceReport: WorkspaceReport | null;
+  gatewayWorkspaceFailure: WorkspaceFailure | null;
+  gatewayRestartPending: boolean;
+  restartGatewayWorkspace: (context: WorkspaceContext) => Promise<boolean>;
   answerQuestion: (requestId: string, answers: string[][]) => Promise<void>;
   rejectQuestion: (requestId: string) => Promise<void>;
   replyPermission: (requestId: string, reply: PermissionReply) => Promise<void>;
@@ -664,7 +674,7 @@ let webContextVersion = 0;
 const uncertainWebCreates = new Set<string>();
 let connectionVersion = 0;
 let catalogController: AbortController | null = null;
-let webRecovery: { context: number; controller: AbortController; deadline: number; promise: Promise<boolean> } | null = null;
+let webRecovery: { context: number; controller: AbortController; deadline: number; promise: Promise<boolean>; replacementAttempted?: boolean } | null = null;
 let platformAccount: ReturnType<typeof createGatewayAccountLifecycle> | null = null;
 let platformAccountStarted = false;
 let platformBrowserSuspended = false;
@@ -2747,6 +2757,29 @@ export function contextLimitFor(state: RuntimeState, key: string): number {
 }
 
 export const useRuntimeStore = create<RuntimeState>((set, get) => {
+  const reportFailure = (failure: WorkspaceFailure | null): WorkspaceReport => ({
+    context: failure?.context ?? null, state: failure?.code === "workspace_capacity_unavailable" ? "capacity" : "unknown",
+    activity: "unknown", canRestart: false, retryAfterMs: failure?.retryAfterMs ?? 0,
+  });
+  const checkWorkspace = async (owner: typeof webRecovery, active: () => boolean) => {
+    if (!isPlatformWeb || !owner || !active()) return;
+    const transport = new GatewayWorkspaceClient();
+    const options = () => ({ signal: owner.controller.signal, timeoutMs: beforeDeadline(owner.deadline, 10000) });
+    try {
+      const report = await transport.status(options());
+      if (!active()) return;
+      set({ gatewayWorkspaceReport: report, gatewayWorkspaceFailure: null });
+      if (report.state === "stopped" && !owner.replacementAttempted) {
+        owner.replacementAttempted = true;
+        const recovered = await transport.recover({ action: "retry" }, { signal: owner.controller.signal, timeoutMs: beforeDeadline(owner.deadline, 60000) });
+        if (active()) set({ gatewayWorkspaceReport: recovered });
+      }
+    } catch (error) {
+      if (!active()) return;
+      const failure = error instanceof GatewayWorkspaceError ? error.failure : null;
+      set({ gatewayWorkspaceFailure: failure, gatewayWorkspaceReport: failure ? reportFailure(failure) : null });
+    }
+  };
   const connectOnce = async () => {
     if (isPlatformWeb && platformBrowserSuspended) return;
     loadPlatformAccount();
@@ -2839,7 +2872,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         directory = get().webWorkspace ?? who.directory ?? null;
         readOnly = who.mode === "read-only";
       } catch (error) {
-        if (isPlatformWeb) { failed(error instanceof Error ? error.message : String(error)); return; }
+        if (isPlatformWeb) { await checkWorkspace(owner, active); failed(error instanceof Error ? error.message : String(error)); return; }
       }
       try {
         const result = await metadata;
@@ -2851,8 +2884,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           throw new Error("Assistant identity is unavailable");
         }
         if (managed) {
+          if (isPlatformWeb && !(managed.context && isWorkspaceReport({ context: managed.context, state: "healthy", activity: "unknown", canRestart: false, retryAfterMs: 0 }))) {
+            const report = await new GatewayWorkspaceClient().status({ signal: requestSignal(10000), timeoutMs: beforeDeadline(deadline, 10000) }).catch(() => null);
+            if (!active()) return;
+            if (report?.state !== "healthy" || !report.context) throw new Error("Workspace context could not be verified");
+            managed.context = report.context;
+          }
           if (managed.context && typeof managed.context.instanceId === "string" && Number.isSafeInteger(managed.context.generation)) {
             const context=managed.context;
+            if (isPlatformWeb) setPlatformWorkspaceGeneration(context.generation);
             set(s=>({gatewayContext:context,...(s.gatewayContext && (s.gatewayContext.generation!==context.generation || s.gatewayContext.instanceId!==context.instanceId)?{interactions:Object.fromEntries(Object.entries(s.interactions).map(([id,entry])=>[id,transitionInteraction(entry,"expired","runtime_context_changed")]))}:{})}));
           }
           if (["opencode", "claude", "codex"].includes(managed.runtime ?? "")) {
@@ -2886,7 +2926,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           }
         }
       } catch (error) {
-        if (isPlatformWeb) { failed(error instanceof Error ? error.message : String(error)); return; }
+        if (isPlatformWeb) { await checkWorkspace(owner, active); failed(error instanceof Error ? error.message : String(error)); return; }
         // Standalone legacy gateways can omit assistant metadata.
       }
       if (!active()) return;
@@ -2970,6 +3010,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         directory: directory ?? undefined,
         password: password ?? undefined,
         sessionTitlePresentation: isGatewayWeb,
+      });
+      if (isPlatformWeb) oc.setGatewayGeneration?.(get().gatewayContext?.generation ?? null);
+      if (isPlatformWeb) oc.setGatewayContextChangedHandler?.(() => {
+        if (!active() || oc !== client || platformBrowserSuspended) return;
+        if (webRecovery) { lastConnectError = "Workspace context has changed"; return; }
+        cancelWebRecovery();
+        set({ status: "error", error: "Workspace context has changed" });
+        void get().connectRetry();
       });
       catalogController = isGatewayWeb ? new AbortController() : null;
       opencodeClient = oc;
@@ -3641,6 +3689,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // permanently waiting pane.
       if (isGatewayWeb && !get().sessionListReady) {
         c.close();
+        await checkWorkspace(owner, active);
         failed(i18n.t("session:live.starting.sessionsError"));
         return;
       }
@@ -3672,6 +3721,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     } catch (err) {
       if (!active()) return;
       if (isGatewayWeb && c === client) c.close();
+      await checkWorkspace(owner, active);
       const msg = err instanceof Error ? err.message : String(err);
       void logDebug(`connect FAILED: ${msg}`);
       failed(msg);
@@ -4036,6 +4086,43 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
 
   interactions: {},
   gatewayContext: null,
+  gatewayWorkspaceReport: null,
+  gatewayWorkspaceFailure: null,
+  gatewayRestartPending: false,
+  restartGatewayWorkspace: context => {
+    if (!isPlatformWeb || platformBrowserSuspended) return Promise.resolve(false);
+    if (webRecovery) return webRecovery.promise;
+    const owner = { context: webContextVersion, controller: new AbortController(), deadline: performance.now() + 90_000,
+      promise: Promise.resolve(false), replacementAttempted: true };
+    const active = () => webRecovery === owner && owner.context === webContextVersion && !owner.controller.signal.aborted && !platformBrowserSuspended;
+    const run = Promise.resolve().then(async () => {
+      if (!active()) return false;
+      set({ gatewayRestartPending: true, status: "connecting", error: null });
+      connectRetryDepth++;
+      try {
+        const report = await new GatewayWorkspaceClient().recover({ action: "restart", ...context, confirmed: true },
+          { signal: owner.controller.signal, timeoutMs: beforeDeadline(owner.deadline, 60000) });
+        if (!active()) return false;
+        set({ gatewayWorkspaceReport: report, gatewayWorkspaceFailure: null });
+        for (let attempt = 0; attempt < 4 && active(); attempt++) {
+          await connectOnce();
+          if (!active()) return false;
+          if (get().status === "ready") return true;
+          if (attempt < 3) await withSignal(sleep(250), owner.controller.signal);
+        }
+        if (active()) set({ status: "error", error: lastConnectError });
+        return false;
+      } catch (error) {
+        const failure = error instanceof GatewayWorkspaceError ? error.failure : null;
+        if (active()) set({ status: "error", error: error instanceof Error ? error.message : "Workspace recovery failed",
+          gatewayWorkspaceFailure: failure, gatewayWorkspaceReport: reportFailure(failure) });
+        return false;
+      } finally { connectRetryDepth--; if (webRecovery === owner) set({ gatewayRestartPending: false }); }
+    });
+    owner.promise = run; webRecovery = owner;
+    void run.finally(() => { if (webRecovery === owner) webRecovery = null; }).catch(() => {});
+    return run;
+  },
   answerQuestion: async (requestId, answers) => {
     await submitInteraction(set, get, requestId, "question", c => c.answerQuestion(requestId, answers), answers);
   },
@@ -4490,7 +4577,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   clearPlatformPresentation: () => {
     if (!isPlatformWeb) return;
     useToastStore.getState().reset();
-    set({ gatewayUser: null, gatewayUserRole: null, gatewayContext: null, currentId: null,
+    set({ gatewayUser: null, gatewayUserRole: null, gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
       workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [],
       sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
       runningSessions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},

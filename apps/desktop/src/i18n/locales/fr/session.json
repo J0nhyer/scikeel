@@ -274,6 +274,18 @@
     }
   },
   "live": {
+    "recovery": {
+      "title": "Connexion de l’espace de travail", "retry": "Réessayer la connexion", "restart": "Redémarrer l’espace de travail", "confirmRestart": "Confirmer le redémarrage", "cancel": "Annuler",
+      "sharedImpact": "Cela affecte tous les appareils utilisant cet espace de travail.",
+      "interruptWarning": "La recherche en cours peut être interrompue. L’historique et les fichiers sont conservés.",
+      "cooldown": "Attendez {{seconds}} secondes avant de redémarrer à nouveau.",
+      "states": {
+        "healthy": "L’espace de travail est disponible. Réessayez la connexion.", "stopped": "L’espace de travail est arrêté. Réessayez pour le préparer.",
+        "starting": "L’espace de travail démarre. Réessayez bientôt.", "recovering": "L’espace de travail est en cours de récupération. Réessayez bientôt.",
+        "unreachable": "Connexion impossible. Réessayez pour vérifier l’état.", "unresponsive": "L’environnement d’exécution ne répond pas.",
+        "unknown": "L’état n’a pas pu être vérifié. Réessayez sans interrompre le travail en cours.", "capacity": "La capacité est temporairement indisponible. Réessayez bientôt."
+      }
+    },
     "account": { "signOutFailed": "Impossible de se déconnecter. Réessayez." },
     "starting": {
       "titleWeb": "Connexion à votre espace de travail…",

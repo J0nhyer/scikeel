@@ -71,6 +71,10 @@ export function consumeUrlToken(): void {
 
 let unauthorizedHandler: (() => void) | null = null;
 let platformSessionExpiryHandler: (() => void) | null = null;
+let platformWorkspaceGeneration: number | null = null;
+export function setPlatformWorkspaceGeneration(generation: number | null): void {
+  platformWorkspaceGeneration = generation;
+}
 
 export function setPlatformSessionExpiryHandler(fn: (() => void) | null): void {
   platformSessionExpiryHandler = fn;
@@ -93,9 +97,17 @@ export function installGatewayAuthGuard(): void {
   const original = window.fetch.bind(window);
   let redirecting = false;
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const res = await original(input, init);
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const parsed = new URL(url, origin);
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    if (isPlatformWeb && parsed.origin === origin && platformWorkspaceGeneration !== null && !["GET", "HEAD"].includes(method) &&
+        !parsed.pathname.startsWith("/auth/") && !parsed.pathname.startsWith("/api/workspace/") && !parsed.pathname.startsWith("/api/admin/")) {
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      if (!headers.has("x-scikeel-runtime-generation")) headers.set("x-scikeel-runtime-generation", String(platformWorkspaceGeneration));
+      init = { ...init, headers };
+    }
+    const res = await original(input, init);
     // Compare parsed origins so a third-party URL sharing our prefix is excluded.
     if (new URL(url, origin).origin !== origin) return res;
     if (isPlatformWeb) {
