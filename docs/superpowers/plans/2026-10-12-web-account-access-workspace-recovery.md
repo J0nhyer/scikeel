@@ -12,26 +12,39 @@
 
 ## Authorization and Execution Rules
 
-- Execution update (October 12, 2026): the user authorized implementation. Tasks 1-3 are complete on `fix/web-account-workspace-recovery`; stop at the required first review checkpoint. Tasks 4-10 and any publication remain pending. The following plan-only authorization describes the earlier writing turn, not the implementation turn.
-- Spec: `docs/superpowers/specs/2026-10-12-web-account-access-workspace-recovery-design.md`, approved for planning on October 12, 2026.
-- This turn authorizes the plan only. No product edits, worktree setup, service restart, test execution, or publication are implied by writing it.
-- Implementation has two checkpoints: Tasks 1-3 produce independently usable account/logout behavior; Tasks 4-9 produce controlled workspace recovery. Task 10 verifies the integrated candidate. Any first-checkpoint publication is a partial fix, not complete recovery.
-- All task checkboxes start unchecked. Source snippets below are implementation contracts/core patches, not evidence of existing functionality. The implementation worker must complete the named integrations and tests in each step; snippets must not be pasted as unrelated new scaffolding.
+- Revised October 13, 2026, after the user approved the revised spec by requesting `plan`. This turn writes the plan only: no product edits, heavy tests, service restarts, or deployment. Continue implementation only on a subsequent execution request.
+- Spec: `docs/superpowers/specs/2026-10-12-web-account-access-workspace-recovery-design.md`, revised and approved for planning on October 13, 2026.
+- Execution history: Tasks 1-3 were implemented and internally reviewed on October 12 on `fix/web-account-workspace-recovery`. Their recorded test results are historical, not fresh verification. Tasks 4-10 and publication remain pending; do not recreate or erase the completed account/logout increment.
+- Implementation has two internal checkpoints: Tasks 1-3 produce independently usable account/logout behavior; Tasks 4-9 produce controlled workspace recovery. Task 10 verifies the integrated candidate. Review checkpoints are internal checks, not repeated user-approval barriers during authorized implementation. Publishing only the first increment is a partial fix, not complete recovery. Deployment requires separate authorization after candidate verification.
+- Checkboxes track actual execution: Tasks 1-3 are complete; Tasks 4-10 remain unchecked. Pending source snippets are implementation contracts/core patches, not evidence of existing functionality. Complete the named integrations and tests in each step; do not paste snippets as unrelated scaffolding.
 - Use TDD for each behavior: establish the intended assertion failure, implement, run the same focused command, then commit only the named task files. Unexpected test/setup failures require systematic debugging, not a reduced assertion. Suggested commit messages appear per task; stage exact named paths with `git add -- <paths>`, inspect `git diff --cached --name-only` and `git diff --cached --check`, then commit. Do not include unrelated files or generated credentials.
 - Never run Vite, Vitest, Cargo, or heavy jobs directly. Use the listed guarded package scripts sequentially. Package script commands below run from the isolated checkout root.
 - Preserve all unrelated main-checkout changes. Do not push, install dependencies without approval, change runtime limits, probe Claude live, or make native desktop UX a deliverable.
 
+## Remaining Delivery Order
+
+| Sequence | Tasks | Result required before moving on |
+| --- | --- | --- |
+| Recheck baseline and incident evidence | Task 4, preparation | Identify the failing layer when reproducible; otherwise record an unknown root cause without guessing. |
+| Bounded, shared availability classification | Task 4 | On-demand ten-second checks, five-second successful-result cache, two separated failures, cancellation, durable cooldown. |
+| Single authoritative server recovery | Tasks 5-6 | One admitted replacement, verified cleanup, generation fences, tenant checks, truthful interrupted-task records. |
+| Browser/SDK integration | Task 7 | Reuse the existing 90-second recovery owner; preserve drafts and never replay uncertain mutations. |
+| Actionable failure surfaces | Task 8 | Retry/signout remain usable; eligible restart requires an observed-generation interruption confirmation, including cold login failure. |
+| Exact-candidate acceptance | Tasks 9-10 | Two-device/two-tab checks, English/Chinese 1280/390/320 layouts, release registration, guarded full verification and bounded resource diagnosis. |
+
+No polling service, device eviction, blanket local-storage deletion, generic write retries, sandbox-image change, or runtime/host-limit increase is included. This repairs missing availability/recovery behavior; it does not claim to fix the unknown source of resource growth.
+
 ## Baseline and File Ownership
 
-The inspected service runs from `.deploy/web-releases/2026-10-11T19-55-20-683Z-4dcfb43d/source`. Re-inspect at execution; do not treat this path or the main checkout as the future production baseline. `managed-worker-manager.mjs`, `sandbox-client.mjs`, and related tenant modules exist in that deployed source but not in the current main inventory.
+The isolated checkout is `/opt/open-science-desktop/.worktrees/web-account-workspace-recovery`. Its baseline `c8b15a7` matches published Web release `2026-10-12T12-09-53-262Z-99537e6d`; account/logout commits are `82f227f` and `746124d`. The last inspected platform service source was `.deploy/web-releases/2026-10-11T19-55-20-683Z-4dcfb43d/source`, whose platform source matched at baseline inspection. Re-inspect effective source, Web bundle, and image before implementation; none of these historical paths is automatically the current publication target. If production has advanced, carry forward only verified later changes in the isolated checkout without overwriting the account/logout increment or unrelated main-worktree changes. Do not repeat the initial baseline overlay blindly.
 
 | File | Responsibility |
 | --- | --- |
-| `apps/desktop/src/lib/gatewayAccount.ts` (new) | Browser account-request lifecycle, logout suspension, and stale authentication-result fences; no runtime startup. |
+| `apps/desktop/src/lib/gatewayAccount.ts` (existing, Task 2 complete) | Browser account-request lifecycle, logout suspension, and stale authentication-result fences; no runtime startup. |
 | `apps/desktop/src/lib/runtime.ts` | Publish verified account metadata independently; browser-only teardown; integrate structured recovery through the existing connection owner. |
 | `apps/desktop/src/lib/webMode.ts`, `apps/desktop/src/main.tsx` | Bind authentication-expiry/logout lifecycle before bootstrap without changing standalone token behavior. |
-| `apps/desktop/src/components/sidebar/GatewaySignOut.tsx` (new), `GatewayAccountMenu.tsx` | Shared accessible logout command and unknown-identity fallback. |
-| `apps/desktop/src/lib/loginPreparation.ts`, `services/platform/src/login-page.mjs` | Reachable logout while the authenticated login-preparation overlay hides the app. |
+| `apps/desktop/src/components/sidebar/GatewaySignOut.tsx` (existing, Task 3 complete), `GatewayAccountMenu.tsx` | Shared accessible logout command and unknown-identity fallback. |
+| `apps/desktop/src/lib/loginPreparation.ts`, `services/platform/src/login-page.mjs` | Reachable overlay logout and structured-failure handoff to the existing React recovery surface. |
 | `services/platform/src/workspace-recovery.mjs` (new) | Sanitized recovery outcomes, bounded/coalesced probes, and durable replacement-window metadata; no independent workspace process manager. |
 | `services/platform/src/sandbox-client.mjs` | Optional cancellation/deadline for inspection, including closing the launcher socket. |
 | `services/platform/src/managed-worker-manager.mjs` | Authoritative lifecycle ownership, admission, generation fences, cleanup, mutation gating, and replacement. |
@@ -40,7 +53,7 @@ The inspected service runs from `.deploy/web-releases/2026-10-11T19-55-20-683Z-4
 | `packages/sdk/src/GatewayWorkspaceClient.ts` (new), `index.ts`, `OpenCodeClient.ts` | Typed same-origin recovery transport and optional expected-generation header for platform writes. |
 | `apps/desktop/src/components/session/WorkspaceRecoveryActions.tsx` (new), `SessionView.tsx` | Existing failure-surface actions and explicit shared-workspace restart confirmation. |
 | `apps/desktop/src/i18n/locales/{en,zh-Hans,de,es,fr,ja,ko}/session.json` | Recovery/logout failure strings with locale parity; modify all seven concrete paths, not a generated eighth locale. |
-| `apps/desktop/src/test/webAccountRecovery.acceptance.test.mjs` (new) | Exact staged-bundle cold failure, logout, two-page/device behavior, and viewport acceptance. |
+| `apps/desktop/src/test/webAccountRecovery.acceptance.test.mjs` (existing, extend) | Exact staged-bundle cold failure, logout, two-page/device behavior, and viewport acceptance. |
 | `scripts/dev/web-release.mjs`, `web-release-policy.mjs`, `web-release.test.mjs` | Mandatory new browser scenario registration; no weakened verification selection. |
 
 Tests live beside frontend helpers/components, in `services/platform/test/` for service modules, and under `apps/desktop/src/test/` for SDK/node/browser tests. Exact paths are listed per task. New modules are limited to genuine ownership boundaries above; do not split unrelated code.
@@ -101,6 +114,7 @@ workspaceStatus({ instanceId, userId })
 recoverWorker({ instanceId, userId, action, generation, confirmed })
 noteTransportFailure({ instanceId, generation })
 setRecoveryHooks({ beforeCleanup, afterCleanup })
+stopWorker(instanceId, { expectedGeneration } = {})
 ```
 
 `allowRecovery=false` is mandatory for an ordinary mutating request. It may verify an existing healthy instance, but cannot reconstruct and then silently dispatch that request into a replacement generation. A genuinely new user command can be resubmitted after the browser establishes fresh context; unknown prior delivery is reconciled, not replayed. Internal mutation paths must use the same gate, not rely on the default `true`.
@@ -243,13 +257,17 @@ assert.equal((await b.request("/api/me", { headers: { accept: "application/json"
 
 Define `submitSignOut` as the component's event handler: prevent default, set pending, await the installed handler, catch to set error, and clear pending in finally only while mounted. The server-rendered overlay button dispatches the same event outside its disabled login form. On failure it re-enables itself and shows an alert; it does not reload or navigate back into the broken app. No additional GET logout route.
 
-- [x] **4. Run green/checkpoint.** Repeat Step 2 and `pnpm test src/i18n/parity.test.ts`. Expected: first failure, unknown identity, and inert preparation overlay all permit logout; logout failure does not claim success. Commit as `fix: keep Web sign out reachable while workspace is unavailable`. Stop at this checkpoint for review before lifecycle work or any partial publication.
+- [x] **4. Run green/checkpoint.** Repeat Step 2 and `pnpm test src/i18n/parity.test.ts`. Expected: first failure, unknown identity, and inert preparation overlay all permit logout; logout failure does not claim success. Commit as `fix: keep Web sign out reachable while workspace is unavailable`. Internal review is complete; once continuation is authorized, proceed to Task 4 without asking for another checkpoint approval. Any partial publication still needs deployment authorization.
 
 ## Task 4: Add Bounded Liveness and Durable Recovery Windows
 
 **Files:** Create `services/platform/src/workspace-recovery.mjs`, `services/platform/test/workspace-recovery.test.mjs`; modify `sandbox-client.mjs`, `services/platform/test/sandbox-client.test.mjs`.
 
-- [ ] **1. Write policy/deadline tests first.** Use injected clock and deferred transport; cover five-second success TTL, one shared cycle, one failed cycle versus two separated failures, body decoding hang, catalog-only failure, inspection abort closing socket, caller disconnect not canceling shared owner, and cooldown surviving a new helper instance. Use temporary root paths, not `/private/workers` or live platform data. Corrupt cooldown metadata and failed atomic write must deny replacement.
+- [ ] **Preparation A: Re-identify the effective baseline.** Run `git status --short` and `pnpm web:release inspect --source /opt/open-science-desktop/.worktrees/web-account-workspace-recovery`; inspect `systemctl show osd-platform.service -p WorkingDirectory -p MainPID -p ActiveState`. Compare source/bundle/image fingerprints using the existing release manifest/inventory. Expected: the intended account/logout-only delta is understood, and no unrelated production changes are silently lost. Missing prerequisites or source/image mismatch block preparation, not justify weakening release checks. Do not dump service environment or process arguments.
+
+- [ ] **Preparation B: Record bounded incident evidence.** Use existing trusted diagnostics on the affected account if the incident is reproducible. Separate account authentication, platform health, launcher identity/status/generation, gateway health/whoami, and scoped runtime response; share a ten-second complete liveness sample, including response decoding, and cancel remaining reads on expiry. No inactive-account startup, destructive restart, real stress test, prompt/file-content logging, or credential logging. Read only existing authorized per-instance memory/pressure/high-event counters. Expected: a verified failing boundary or an explicit unverified root cause. Do not block deterministic regression work merely because the original incident is no longer reproducible. Task 10 repeats a bounded resource comparison against the candidate; reconstruction success alone is not a memory-fix claim.
+
+- [ ] **1. Write policy/deadline tests first.** Use injected clock and deferred transport; cover five-second success TTL, one shared cycle, one failed cycle versus two separated failures, body decoding hang, catalog-only failure, inspection abort closing socket, caller disconnect not canceling shared owner, and cooldown surviving a new helper instance. Advancing the clock without a caller must cause zero probes; `/api/me` and logout must cause zero liveness calls. Use temporary root paths, not `/private/workers` or live platform data. Corrupt cooldown metadata and failed atomic write must deny replacement.
 
 ```js
 let now = 1000; let calls = 0;
@@ -263,6 +281,9 @@ assert.equal(calls, 1);
 gates[0]({ context: { instanceId: "user-a", generation: 1 }, state: "healthy",
   activity: "idle", canRestart: false, retryAfterMs: 0 });
 assert.deepEqual(await a, await b);
+now += 6000;
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(calls, 1); // Expiry alone must not poll.
 ```
 
 - [ ] **2. Run red.** `pnpm --filter @ai4s/platform test test/workspace-recovery.test.mjs test/sandbox-client.test.mjs`.
@@ -277,6 +298,8 @@ export const REPLACEMENT_COOLDOWN_MS = 60000;
 ```
 
 Also export `recoveryError(code, details)` with a fixed message/stage/status table for every `WorkspaceFailureCode`. Unknown codes are rejected, not reflected into responses. Copy only `context`, `action`, and numeric `retryAfterMs` from validated details; set `retryable=true` only for retry/wait outcomes. Preserve 409 for stale context and 503 for bounded temporary failures. The route must not serialize arbitrary Error properties.
+
+The TTL is a cache, not a polling interval: only a caller or generation-matched transport invalidation can request a fresh cycle. A single 502 is not restart authority. Failed launcher identity inspection remains `unknown` with `canRestart:false`, even after repeated failures; repeated runtime failures may permit confirmation only when account/instance ownership is verified. Successful checks clear that generation's failure streak. Account routes never call this helper.
 
 `reserveReplacement` runs only under the manager's serialized lifecycle queue, reads `${rootDir}/recovery/${instanceId}.json`, validates exact schema/identity and safe integer timestamps, then writes `{version:1,userId,instanceId,generation,reservedAt:now}` atomically before any stop/start. Keep mode 0600, directory 0700, exclusive temporary creation and rename; never store credentials. Refuse rollback-clock timestamps as unavailable instead of clearing cooldown. Preserve failed attempt reservations; initial cold start is not a replacement, but a prior failure reservation applies even if the manager process restarted. Reuse local atomic-write style; do not extract a generic filesystem framework.
 
@@ -294,7 +317,7 @@ if (options.signal?.aborted) throw options.signal.reason;
 
 **Files:** Modify `managed-worker-manager.mjs`, `services/platform/test/managed-worker-manager.test.mjs`, `sandbox-control-plane.mjs`; test new restart/process-reconciliation cases in `services/platform/test/workspace-recovery.test.mjs`.
 
-- [ ] **1. Upgrade the manager fixture and add red cases.** `fixture` must maintain actual mock lifecycle status: register -> registered, start -> ready, stop -> stopped with advanced generation; inspect returns identity/status and private endpoints only when ready. Inject writable temporary metadata root and fake clock. Test running reuse with stale health, stopped-instance cleanup/reconstruction, alive unhealthy requires confirmation, same-generation concurrent restart, stale late confirmation, maintenance denial, reserve failure, stop uncertainty, and process recreation with a live launcher instance. Preserve old startup coalescing/tenant tests.
+- [ ] **1. Upgrade the manager fixture and add red cases.** `fixture` must maintain actual mock lifecycle status: register -> registered, start -> ready, stop -> stopped with advanced generation; inspect returns identity/status and private endpoints only when ready. Inject writable temporary metadata root and fake clock. Test running reuse with stale health, stopped-instance cleanup/reconstruction, alive unhealthy requires confirmation, same-generation concurrent restart, stale late confirmation, maintenance denial, reserve failure, stop uncertainty, and process recreation with a live launcher instance. Add separate cases for verified alive identity with unknown task activity (confirmation eligible after repeated failures), unverifiable launcher identity (never restart eligible), and maintenance (confirmation cannot override the lease). Preserve old startup coalescing/tenant tests.
 
 ```js
 const f = fixture({ rootDir: root, now: () => clock });
@@ -317,7 +340,7 @@ Define `failHealth` and clock plumbing in the fixture in this step; health failu
 
 - [ ] **3. Wire probes to existing identity/admission.** Inject the Task 4 helper into the manager. Inspect launcher before reusing stale `running` records; authenticate `/v1/health` and a read-only scoped runtime status inside the same complete deadline. Native assistant activity uses the existing execution probe. A base-directory idle reply cannot prove that other project directories or native jobs are idle: include known current-generation session/native reservations, active mutations, and maintenance in activity classification; missing coverage stays unknown. Record failures with `noteTransportFailure` for matching generation only. Probe failure never silently changes permission mode or redirects to an unverified address. `workspaceStatus` does not create a record/start just to answer an absent workspace.
 
-For fresh process state, inspect before starting: verified registered/stopped may enter existing startup; ready-but-unowned context returns a truthful unknown/restart-confirmation outcome until broker authority is reconciled. Do not run the existing profile configuration against a healthy live generation merely to adopt it; that may reconfigure execution. Unknown instance may register for genuine initial startup, but any other inspection error fails closed.
+For fresh process state, inspect before starting: verified registered/stopped may enter existing startup; ready-but-not-adopted context must not be configured as a fresh instance. Recover an observation-only record from launcher-verified owned registration and generation; keep mutations fenced until broker authority is reconciled. A confirmed cleanup path is eligible only if ownership and safe cleanup can be verified; otherwise report unknown with `canRestart:false`. Do not run the existing profile configuration against a healthy live generation merely to adopt it; that may reconfigure execution. Unknown instance may register for genuine initial startup, but any other inspection error fails closed.
 
 - [ ] **4. Implement controlled replacement inside the existing serial queue.** Coalesce replacement by old generation; revalidate generation/maintenance after awaiting probes and immediately before termination. `retry` never stops an alive/unknown instance. `restart` requires exact generation and `confirmed===true`, repeated failed liveness, and no maintenance. A later old-generation request returns stale rather than repeating the operation. Fence new mutations before cleanup; invalidate old probe/authority; persist reservation before cleanup; verify launcher stop, release old admission, revoke credentials/brokers, then invoke the existing startup path once. Avoid calling public serialized `stopWorker` recursively while holding `#serialized`; use private lifecycle helpers to prevent self-deadlock.
 
@@ -452,15 +475,15 @@ if (!active()) return false;
 set({ gatewayWorkspaceReport: report });
 ```
 
-`owner` is the current `webRecovery` owner, not a new second store loop. Status healthy reconnects only. Unknown/unresponsive never dispatches restart automatically. Legacy metadata fallback stays confined to non-platform Web; this new status client is platform-only.
+`owner` is the current `webRecovery` owner, not a new second store loop. Status healthy reconnects only. Unknown/unresponsive never dispatches restart automatically. Retry never upgrades to a live-instance restart. A new status arriving during an open confirmation cannot retarget that confirmation; the command always carries the captured context, and stale context returns 409. Logout during status/recovery cancels local publication, not the shared server lifecycle. Legacy metadata fallback stays confined to non-platform Web; this new status client is platform-only.
 
 - [ ] **5. Run green and commit.** Repeat Step 2 and `pnpm typecheck`; assert prompt/stop/abort counters remain zero in healthy reload, logout, and liveness recovery cases. Commit as `feat: connect Web recovery to the scoped workspace SDK`.
 
 ## Task 8: Add Actionable Failure and Explicit Restart Confirmation
 
-**Files:** Create `apps/desktop/src/components/session/WorkspaceRecoveryActions.tsx`, `.test.tsx`; modify `SessionView.tsx`, `SessionView.launch.test.tsx`, preparation integration if it hides recovery controls, all supported `session.json` locales, `apps/desktop/src/i18n/parity.test.ts`.
+**Files:** Create `apps/desktop/src/components/session/WorkspaceRecoveryActions.tsx`, `.test.tsx`; modify `SessionView.tsx`, `SessionView.launch.test.tsx`, `apps/desktop/src/lib/loginPreparation.ts`, `.test.ts`, `services/platform/src/login-page.mjs`, `services/platform/test/platform-server.test.mjs`, all supported `session.json` locales, `apps/desktop/src/i18n/parity.test.ts`.
 
-- [ ] **1. Add action-matrix red tests.** Healthy reports omit restart; unknown/unresponsive with current context and canRestart expose it; maintenance, cooldown, unsupported standalone, and context-null disable/hide restart. Confirm dialog retains observed generation even after store generation changes, supports keyboard cancel, states impact on all devices, and requires explicit confirmation. Sign out remains usable during recovery and cooldown.
+- [ ] **1. Add action-matrix red tests.** Healthy reports omit restart; unknown/unresponsive with verified current context and server `canRestart:true` expose it; maintenance, cooldown, unverifiable identity, unsupported standalone, and context-null disable/hide restart. Confirm dialog retains observed generation even after store generation changes, supports keyboard cancel, states impact on all devices, and requires explicit confirmation. Sign out remains usable during recovery and cooldown. A cold login failure must expose the same React recovery controls despite the initially inert root; no hidden-button acceptance.
 
 ```tsx
 render(<WorkspaceRecoveryActions report={{ context: { instanceId: "user-a", generation: 1 },
@@ -472,17 +495,30 @@ await user.click(screen.getByRole("button", { name: "Confirm restart" }));
 expect(restart).toHaveBeenCalledWith({ instanceId: "user-a", generation: 1 });
 ```
 
-- [ ] **2. Run red.** `pnpm test src/components/session/WorkspaceRecoveryActions.test.tsx src/components/session/SessionView.launch.test.tsx src/i18n/parity.test.ts`.
+- [ ] **2. Run red.** `pnpm test src/components/session/WorkspaceRecoveryActions.test.tsx src/components/session/SessionView.launch.test.tsx src/lib/loginPreparation.test.ts src/i18n/parity.test.ts`; then `pnpm --filter @ai4s/platform test test/platform-server.test.mjs`.
 
 - [ ] **3. Implement compact existing-surface controls.** Use existing Radix Dialog (not a custom modal), `RefreshCw`/`LogOut` icons, localized commands, existing Retry/Connect behavior, and the Task 3 shared signout action. Display sanitized stage-specific summaries and a finite recovery state. Hide new actions outside platform Web. Confirmation includes account username only if verified, shared-workspace impact, interruption warning, cancel, and Confirm restart. Healthy pages must not gain a new dashboard or constant warning. Add keys `live.recovery.{retry,restart,confirmRestart,cancel,sharedImpact,interruptWarning,workspaceUnavailable,runtimeUnresponsive,capacityUnavailable,recovering,staleContext,cooldown,cleanupUnverified}` and `live.account.signOutFailed` to every supported locale.
+
+For a failed login preparation, add `scikeel:login-recovery` to the existing bridge. Extend its `PreparationState` with the SDK `gatewayWorkspaceReport` and `gatewayWorkspaceFailure` fields from Task 7. When `status === "error"` and a validated structured workspace failure/report is available, dispatch this event instead of leaving the root inaccessible behind the preparation error. Its server markup listener removes only the preparation host/marker and clears `root.inert`; it does not emit login-ready, set runtime ready, reload, erase drafts, or issue a recovery request. React displays the same failure controls and Radix confirmation after handoff. Keep the current overlay Retry/Sign out fallback for failure without a validated workspace report, and keep logout suspension/delayed-response fences intact. This reuses one recovery UI rather than implementing another confirmation in Shadow DOM. Add the event to the existing typed `finish` event union and remove the logout bridge listener on either ready or recovery handoff.
+
+Do not unsubscribe permanently on fallback `login-error` before a later structured report can arrive. Retain a bounded-by-page-lifetime subscription with an error-emitted guard until ready/recovery handoff, logout suspension, or disposal; clear the preparation deadline after the first terminal display, and allow only one handoff. Test both report-before-error and report-after-error, with zero handoff after logout begins.
+
+```js
+document.addEventListener('scikeel:login-recovery', () => {
+  host.remove();
+  if (root) root.inert = false;
+  document.documentElement.removeAttribute('data-scikeel-login-preparing');
+  try { sessionStorage.removeItem('scikeel.login.pending'); } catch {}
+}, { once: true });
+```
 
 - [ ] **4. Run green and commit.** Repeat Step 2 and `pnpm lint`; no untranslated strings, layout-shifting controls, or admin controls for unknown account. Commit as `feat: make Web workspace recovery failures actionable`.
 
 ## Task 9: Exact-Bundle Two-Page and Cold-Failure Acceptance
 
-**Files:** Create `apps/desktop/src/test/webAccountRecovery.acceptance.test.mjs`; modify `scripts/dev/web-release.mjs`, `web-release-policy.mjs`, `web-release.test.mjs`; extend existing service/store tests for spec scenarios not covered yet.
+**Files:** Extend `apps/desktop/src/test/webAccountRecovery.acceptance.test.mjs`, already created and exercised during Task 3; modify `scripts/dev/web-release.mjs`, `web-release-policy.mjs`, `web-release.test.mjs`; extend existing service/store tests for spec scenarios not covered yet. Preserve all nine original account/logout browser combinations.
 
-- [ ] **1. Add a release-registration red test.** `browserStage` must include the new scenario for both `login` and `session` groups without duplicate registration, set `OSD_ACCOUNT_RECOVERY_ACCEPTANCE=1`, and fail if its file is missing. Changes to gateway account/recovery SDK/policy must select frontend/platform tests and the new browser group. Never suppress required existing recovery/tool/notification scenarios or live checks.
+- [ ] **1. Add a release-registration red test.** `browserStage` must include the new scenario for both `login` and `session` groups without duplicate registration, set `OSD_ACCOUNT_RECOVERY_ACCEPTANCE=1`, and fail if its file is missing. Changes to gateway account/recovery SDK/policy must select frontend/platform tests and the new browser group. Its acceptance metadata must include 320 as well as 1280/390 when this scenario runs; desktop-only flags cannot count as full acceptance. Never suppress required existing recovery/tool/notification scenarios or live checks.
 
 ```js
 assert.ok(invocations.some(call => call.args.includes("src/test/webAccountRecovery.acceptance.test.mjs")));
@@ -491,9 +527,11 @@ assert.equal(environment.OSD_ACCOUNT_RECOVERY_ACCEPTANCE, "1");
 
 - [ ] **2. Run red.** `pnpm release:test scripts/dev/web-release.test.mjs`.
 
-- [ ] **3. Implement fixture-driven browser acceptance.** Follow `webRuntimeRecovery.acceptance.test.mjs`: load exact `OSD_WEB_CANDIDATE`, inject both flags, use Playwright path/executable prerequisites, a local HTTP fixture, and opt-in test guard. Record only path/status/timing/operation counts, no request bodies/cookies. Model/auth/workspace states are controllable independently. Mock server recovery uses one in-flight gate and old-generation validation; real server coalescing is separately established by manager tests, not inferred from a browser mock.
+- [ ] **3. Extend fixture-driven browser acceptance.** Follow `webRuntimeRecovery.acceptance.test.mjs`: load exact `OSD_WEB_CANDIDATE`, inject both flags, use Playwright path/executable prerequisites, a local HTTP fixture, and opt-in test guard. Record only path/status/timing/operation counts, no request bodies/cookies. Model/auth/workspace states are controllable independently. Mock server recovery uses one in-flight gate and old-generation validation; real server coalescing is separately established by manager tests, not inferred from a browser mock.
 
 Use two contexts for independent-device sessions and two pages in one context for shared-cookie behavior. Cold whoami 502 with account success shows signout; account failure also shows fallback; real preparation HTML must remain usable. Repeated restart clicks and two device confirmations yield one server fixture replacement; old context then returns 409. Lost prompt response does not increase prompt counter on retry/reload. Assert no false completed/interrupted task state and restored history after replacement.
+
+Include cold preparation -> structured failure -> React recovery handoff -> keyboard restart confirmation, plus fallback overlay logout without a structured report. Assert no restart for one failed cycle, healthy focus/refresh, catalog/provider failure, unverified launcher identity, or logout. Closing one joining page must not cancel another page's shared replacement. Restart and its cooldown must leave both independent login sessions valid; shared-cookie logout must produce explicit auth expiry on the other tab's next platform request without terminating research.
 
 ```js
 for (const width of [1280, 390, 320]) {
@@ -556,7 +594,7 @@ Verify served asset identity, independent account read/logout, cold failure beha
 
 ## Plan Self-Review
 
-Coverage: R1-R2 -> Tasks 1-3; R3-R4 -> Tasks 4-6; R5-R6 -> Tasks 5-8; R7 -> Tasks 6-7/9; simultaneous login -> Tasks 3/5-9; resource/tenant/viewport/publication constraints -> Tasks 4-10. All 21 spec scenarios have an assigned layer above.
+Coverage: R1-R2 -> Tasks 1-3; R3-R4 -> Tasks 4-6; R5-R6 -> Tasks 5-8; R7 -> Tasks 6-7/9; simultaneous login -> Tasks 3/5-9; resource/tenant/viewport/publication constraints -> Tasks 4-10. All 22 revised-spec scenarios have an assigned layer below.
 
 | Spec acceptance scenario | Implementing/verification tasks |
 | --- | --- |
@@ -577,6 +615,7 @@ Coverage: R1-R2 -> Tasks 1-3; R3-R4 -> Tasks 4-6; R5-R6 -> Tasks 5-8; R7 -> Task
 | Superseded login and old-generation results | 2, 5, 7 |
 | Catalog/provider outage without restart | 4, 5, 7 |
 | Capacity, maintenance, cleanup failure | 4, 5, 6 |
+| Incident not reproducible or resource-growth cause unknown | 4 preparation, 10 |
 | Interrupted research preserves data/history | 6, 7, 9, 10 |
 | Read-only/foreign account/origin | 5, 6, 7 |
 | Shared settings and stale collaboration | 6, 7, 9 |
@@ -584,4 +623,6 @@ Coverage: R1-R2 -> Tasks 1-3; R3-R4 -> Tasks 4-6; R5-R6 -> Tasks 5-8; R7 -> Task
 
 Checked API names, exact paths against the inspected deployment, unknown-first-context handling, cancellation versus operation delivery, shared-probe ownership, durable cooldown, mutation generation guards, process reconciliation, deadlock avoidance, logout without task abort, interrupted records, and dirty-baseline preservation. Numeric budgets match the spec. Test fixture upgrades are explicit; fake launcher `registered` forever is not valid liveness evidence.
 
-Execution and publication remain pending. No task, test, candidate, or product behavior is claimed complete by this document.
+October 13 self-review additionally checked no polling without callers, account-only route independence, single-failure versus verified-identity restart eligibility, maintenance denial despite confirmation, non-destructive retry, cold-preparation handoff, existing acceptance-file reuse, and coverage of the revised diagnosis criterion. Completed account/logout work is retained; future implementation reviews are internal checks, not redundant permission pauses.
+
+Tasks 1-3 have the recorded October 12 verification. Tasks 4-10 remain pending, including fresh integrated verification and publication. This revision wrote documentation only: no product code, heavy test run, service restart, candidate preparation, or deployment. A later execution request starts at Task 4 preparation and proceeds inline through candidate review; deployment still requires explicit authorization.

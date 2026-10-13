@@ -2,7 +2,7 @@
 
 Date: 2026-10-12
 Revised: 2026-10-13
-Status: Revised spec awaiting user review. The October 12 version was approved and its account/logout increment was implemented in isolation; this revision must be reviewed before updating the implementation plan or continuing product changes. Deployment is not authorized.
+Status: October 13 revision approved for implementation planning by the user's subsequent `plan` request. The account/logout increment was implemented in isolation on October 12; remaining product implementation awaits a subsequent execution request. Deployment is not authorized.
 Scope: SciKeel public multi-user gateway Web, including phone-width viewports.
 
 ## 1. Problem and Intended Outcome
@@ -192,4 +192,4 @@ October 13 revision self-review separates historical implementation results from
 
 Implementation planning must start from the effective deployed baseline and preserve unrelated checkout changes. Publication uses the existing frozen-source verification/release workflow; a failed bounded build leaves the deployed bundle untouched, and rollback preserves user data and credentials.
 
-The latest user instruction is spec first, then plan. This revision is a design artifact awaiting review, not authorization to update the existing plan, continue implementation, or deploy. The earlier account/logout increment and its recorded tests remain intact. After the user approves this revision, update the existing plan to reflect completed work and remaining scope; internal verification checkpoints must not introduce unnecessary approval pauses during authorized implementation. Publication remains a separate approval after verification of a concrete candidate.
+The user requested spec first, then plan, and approved this October 13 revision by subsequently requesting `plan`. Update the existing plan to reflect completed work and remaining scope; this planning request does not authorize product changes or deployment. The earlier account/logout increment and its recorded tests remain intact. Internal verification checkpoints must not introduce unnecessary approval pauses during authorized implementation. Publication remains a separate approval after verification of a concrete candidate.
