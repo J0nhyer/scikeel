@@ -325,7 +325,7 @@ describe("runtime selector", () => {
     // ACP takes MCP servers per session; OpenCode keeps them in its global
     // config. Without this an ACP agent runs with none of the connectors the
     // user configured — which reads as the feature being broken.
-    const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: unknown) => {
@@ -338,7 +338,7 @@ describe("runtime selector", () => {
               off: { type: "local", command: ["/opt/app/bin/other"], enabled: false },
             },
           });
-        return { ok: false, status: 404, json: async () => ({}) };
+        return json({}, 404);
       }),
     );
     try {

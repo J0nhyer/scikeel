@@ -355,6 +355,7 @@ test('session verification includes recovery even when continuity already exists
   await writeFile(join(desktop, 'webProjects.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webSessionContinuity.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webRuntimeRecovery.acceptance.test.mjs'), 'fixture');
+  await writeFile(join(desktop, 'webAccountRecovery.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webToolReliability.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webInteractionRecovery.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webCollaboration.acceptance.test.mjs'), 'fixture');
@@ -377,13 +378,16 @@ test('session verification includes recovery even when continuity already exists
     assert(args.includes('src/test/webNotifications.acceptance.test.mjs'));
     assert.equal(environment.OSD_CONTINUITY_BROWSER, '1');
     assert.equal(environment.OSD_RECOVERY_ACCEPTANCE, '1');
+    assert.equal(environment.OSD_ACCOUNT_RECOVERY_ACCEPTANCE, '1');
+    assert.equal(args.filter(path => path === 'src/test/webAccountRecovery.acceptance.test.mjs').length, 1);
     assert(args.includes('src/test/webToolReliability.acceptance.test.mjs'));
     assert.equal(environment.OSD_TOOL_BROWSER, '1');
     assert.equal(environment.OSD_INTERACTION_BROWSER, '1');
     assert.equal(environment.OSD_COLLABORATION_BROWSER, '1');
-    await writeFile(join(root, 'browser-results.json'), JSON.stringify({ success: true, numPassedTests: 8, numPendingTests: 0 }));
+    await writeFile(join(root, 'browser-results.json'), JSON.stringify({ success: true, numPassedTests: 9, numPendingTests: 0 }));
   });
-  assert.equal(result.passedTests, 8);
+  assert.equal(result.passedTests, 9);
+  assert(result.widths.includes(320));
   await rm(join(desktop, 'webInteractionRecovery.acceptance.test.mjs'));
   await assert.rejects(browserStage({ directory: root, source: { root }, artifacts: { web: { directory: root } }, selection: { browserGroups: ['session'] } }), /interaction browser scenario/);
   await writeFile(join(desktop, 'webInteractionRecovery.acceptance.test.mjs'), 'fixture');
