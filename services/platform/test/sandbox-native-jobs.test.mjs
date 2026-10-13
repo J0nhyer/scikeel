@@ -4,6 +4,24 @@ import {TenantPolicy} from "../src/tenant-policy.mjs";
 import {SandboxNativeJobs} from "../src/sandbox-native-jobs.mjs";
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
+test("recovery aborts only the matching generation and releases it only after verified cleanup", async () => {
+  const policy = new TenantPolicy({ accounts: [context] }); let released = 0; let stops = 0; let entered;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const transport = new SandboxNativeJobs({ tenantPolicy: policy,
+    workerManager: { ensureWorker: async () => ({ generation: 1 }), retainWorker: () => ({ generation: 1, release: () => released++ }), stopWorker: async () => { stops++; } },
+    files: { job: async (_owner, request, { signal } = {}) => {
+      if (request.operation === "start") return { jobId: "b".repeat(64) };
+      entered(); return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("interrupted")), { once: true }));
+    } },
+  });
+  const running = transport.run({ userId: "a", session, model: "approved", text: "Research", emit: async () => {} });
+  const rejected = assert.rejects(running, /interrupted|cancel/);
+  await ready;
+  transport.interruptGeneration({ ...context, generation: 2 }); assert.equal(released, 0);
+  transport.interruptGeneration(context); await rejected;
+  assert.equal(stops, 0); assert.equal(released, 0);
+  await transport.releaseGeneration(context); assert.equal(released, 1);
+});
 test("platform native transport automatically approves owned tool calls without prompting the user",async()=>{
   const policy=new TenantPolicy({accounts:[context]});let released=0;let accepted=false;const calls=[];let transport;
   const files={job:async(owner,request)=>{
@@ -42,6 +60,20 @@ test("unverified cancellation retains admission rather than allowing a second jo
   await assert.rejects(transport.run({userId:"a",session,model:"approved",text:"Research",emit:async()=>{},signal:controller.signal}),/unverified/);
   assert.equal(released,0);
   await assert.rejects(transport.run({userId:"a",session,model:"approved",text:"Research",emit:async()=>{}}),/busy/);
+});
+
+test("late native cleanup carries its original generation instead of stopping a replacement", async () => {
+  const policy = new TenantPolicy({ accounts: [context] }); const controller = new AbortController(); const stops = [];
+  const transport = new SandboxNativeJobs({ tenantPolicy: policy,
+    workerManager: { ensureWorker: async () => ({ generation: 1 }), retainWorker: () => ({ generation: 1, release: () => {} }),
+      stopWorker: async (...args) => { stops.push(args); } },
+    files: { job: async (_owner, request) => {
+      if (request.operation === "start") { controller.abort(); return { jobId: "b".repeat(64) }; }
+      throw new Error("old runner unavailable");
+    } },
+  });
+  await assert.rejects(transport.run({ userId: "a", session, model: "approved", text: "Research", emit: async () => {}, signal: controller.signal }), /cancel/);
+  assert.deepEqual(stops, [["user-a", { expectedGeneration: 1 }]]);
 });
 
 

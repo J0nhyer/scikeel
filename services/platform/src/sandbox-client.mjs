@@ -115,7 +115,7 @@ export class SandboxClient {
       socket.on("close", () => { if (!settled) fail(clientError("launcher disconnected", "launcher_disconnected")); });
     });
   }
-  register(args) { return this.call("register", args); }
+  register(args, options) { return this.call("register", args, options); }
   start(args) { return this.call("start", args); }
   stop(args) { return this.call("stop", args); }
   inspect(args, options) { return this.call("inspect", args, options); }

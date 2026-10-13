@@ -104,6 +104,23 @@ export class ResearchTasks {
   async get(userId, sessionId) {
     return this.locked(userId, sessionId, async () => structuredClone(await this.load(userId, sessionId)));
   }
+  async interruptGeneration(context) {
+    const folder = join(this.rootDir, id(context.userId));
+    let files;
+    try { files = await fs.readdir(folder); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+    for (const file of files.filter(name => name.endsWith(".json"))) {
+      const sessionId = id(file.slice(0, -5));
+      await this.locked(context.userId, sessionId, async () => {
+        const task = this.records.get(this.key(context.userId, sessionId)) ?? JSON.parse(await fs.readFile(join(folder, file), "utf8"));
+        if (task.version !== 1 || task.userId !== context.userId || task.sessionId !== sessionId) throw error("invalid saved research task", 500);
+        if (task.instanceId !== context.instanceId || task.generation !== context.generation ||
+            !task.executionActive && !["running", "waiting_input"].includes(task.status)) return;
+        task.executionActive = false; task.status = "paused"; task.stopReason = "workspace-restarted";
+        task.revision++; task.updatedAt = this.now();
+        await this.save(task);
+      });
+    }
+  }
   async create(owner, brief) {
     // Validate before checking for an existing record, so invalid retries fail.
     const objective = text(brief.objective);
@@ -244,7 +261,7 @@ export class ResearchTasks {
       return this.save(task);
     });
   }
-  async prepare(userId, sessionId, body) {
+  async prepare(userId, sessionId, body, owner) {
     return this.locked(userId, sessionId, async () => {
       const task = await this.load(userId, sessionId);
       if (!task) return null;
@@ -258,6 +275,7 @@ export class ResearchTasks {
         if (!task.inputVersions[index].exists) task.inputVersions[index] = await this.artifact(task, task.inputVersions[index].path);
       }
       task.execution++;
+      if (owner && Number.isSafeInteger(owner.generation)) { task.instanceId = owner.instanceId; task.generation = owner.generation; }
       task.executionActive = true;
       task.status = "running";
       task.report = null;

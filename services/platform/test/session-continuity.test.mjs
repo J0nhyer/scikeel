@@ -60,7 +60,9 @@ async function fixture(t){
  const server=new PlatformServer({host:'127.0.0.1',port:0,authStore,workerManager:manager,tenantPolicy:policy,logger:event=>logs.push(event)});
  const address=await server.listen();const origin=`http://127.0.0.1:${address.port}`;
  t.after(async()=>{await server.close();for(const s of sockets)s.destroy();await new Promise(resolve=>upstream.close(resolve));await rm(root,{recursive:true,force:true});});
- const request=(path,init={})=>fetch(origin+path,{...init,headers:{cookie:'osd_session=fixture',origin,'content-type':'application/json',...init.headers},signal:init.signal ?? AbortSignal.timeout(35000)});
+ const request=(path,init={})=>fetch(origin+path,{...init,headers:{cookie:'osd_session=fixture',origin,'content-type':'application/json',
+   ...(init.method && !['GET','HEAD'].includes(init.method) ? {'x-scikeel-runtime-generation':String(generation)} : {}),
+   ...init.headers},signal:init.signal ?? AbortSignal.timeout(35000)});
  return {server,request,policy,context,setCallID:value=>{callID=value;},prompts:()=>prompts,closedPrompts:()=>closedPrompts,holdPrompt:()=>{let release;promptGate=new Promise(done=>{release=()=>{promptGate=undefined;done();};});return release;},rotate:()=>{generation++;policy.registerAccount(context());},reverts:()=>reverts,frames:()=>frames,replies:()=>replies,logs,replyDirectories,expire:()=>{missing=true;},holdReply:()=>{let release;replyGate=new Promise(done=>{release=()=>{replyGate=undefined;done();};});return release;}};
 }
 test('persisted owned session rebinds current-generation authority before a revert mutation',async t=>{

@@ -2,25 +2,43 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ManagedWorkerManager } from "../src/managed-worker-manager.mjs";
 import { TenantPolicy } from "../src/tenant-policy.mjs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const digest = `sha256:${"a".repeat(64)}`;
 function fixture(options = {}) {
-  const calls = []; let generation = 1;
-  const client = { register: async (args) => { calls.push(["register", args]); return { ...args, generation }; },
-    start: async (args) => { calls.push(["start", args]); return { ...args, endpoint: "http://172.31.240.2:4790", runnerEndpoint: "http://172.31.240.2:4791", internalToken: "b".repeat(64) }; },
-    stop: async (args) => { calls.push(["stop", args]); generation++; return { ...args, stopped: true }; },
-    inspect: async () => ({ generation, status: "registered" }) };
+  const calls = []; const records = new Map();
+  const rootDir = mkdtempSync(join(tmpdir(), "scikeel-manager-"));
+  const client = { register: async (args) => {
+    calls.push(["register", args]); if (!records.has(args.instanceId)) records.set(args.instanceId, { instanceId: args.instanceId, generation: 1, status: "registered" });
+    return { instanceId: args.instanceId, generation: records.get(args.instanceId).generation };
+  }, start: async (args) => {
+    calls.push(["start", args]); const record = records.get(args.instanceId);
+    Object.assign(record, { status: "ready", endpoint: "http://172.31.240.2:4790", runnerEndpoint: "http://172.31.240.2:4791", internalToken: "b".repeat(64) });
+    return { ...args, endpoint: record.endpoint, runnerEndpoint: record.runnerEndpoint, internalToken: record.internalToken };
+  }, stop: async (args) => {
+    calls.push(["stop", args]); const record = records.get(args.instanceId);
+    if (record.status !== "stopped") { record.generation++; record.status = "stopped"; }
+    return { ...args, stopped: true };
+  }, inspect: async ({ instanceId }) => {
+    const record = records.get(instanceId);
+    if (!record) throw Object.assign(new Error("unknown instance"), { reason: "unknown_instance" });
+    return { ...record };
+  } };
   const policy = new TenantPolicy();
-  const manager = new ManagedWorkerManager({ rootDir: "/private/workers", imageDigest: digest, client, tenantPolicy: policy,
+  const manager = new ManagedWorkerManager({ rootDir, imageDigest: digest, client, tenantPolicy: policy,
     fetchImpl: async () => ({ ok: true, json: async () => ({}) }), ...options });
-  return { manager, calls, policy };
+  const close = manager.close.bind(manager);
+  manager.close = async () => { try { await close(); } finally { rmSync(rootDir, { recursive: true, force: true }); } };
+  return { manager, calls, policy, records };
 }
 test("quota tenant directories remain separate from writable platform metadata", async (t) => {
   const { manager } = fixture({ instancesDir: "/var/lib/scikeel/tenant-data/instances" });
   t.after(() => manager.close());
   const worker = await manager.ensureWorker({ instanceId: "user-a", userId: "a" });
   assert.equal(worker.workspaceDir, "/var/lib/scikeel/tenant-data/instances/user-a/workspace");
-  assert.equal(manager.rootDir, "/private/workers");
+  assert.ok(manager.rootDir.includes("scikeel-manager-"));
 });
 test("managed workers use launcher endpoints, generations and private internal credentials", async (t) => {
   const { manager, calls, policy } = fixture(); t.after(() => manager.close());
@@ -28,7 +46,7 @@ test("managed workers use launcher endpoints, generations and private internal c
   assert.equal(worker.generation, 1); assert.equal(worker.status, "running"); assert.equal(worker.token, undefined);
   assert.equal(manager.getWorkerAccess("user-a").token, "b".repeat(64));
   assert.equal(manager.getWorkerAccess("user-a").url, "http://172.31.240.2:4790");
-  assert.equal(policy.account({ userId: "a", instanceId: "user-a", generation: 1 }).workspaceDir, "/private/workers/instances/user-a/workspace");
+  assert.equal(policy.account({ userId: "a", instanceId: "user-a", generation: 1 }).workspaceDir, `${manager.rootDir}/instances/user-a/workspace`);
   await manager.ensureWorker({ instanceId: "user-a", userId: "a" }); assert.equal(calls.filter(([op]) => op === "start").length, 1);
   await assert.rejects(manager.ensureWorker({ instanceId: "user-a", userId: "b" }), /another user/);
   await manager.stopWorker("user-a"); assert.throws(() => manager.getWorkerAccess("user-a"));
@@ -104,4 +122,167 @@ test("a durable pending execution blocks eviction even when native status is idl
  assert.equal(calls.filter(([operation])=>operation==="stop").length,0);
  pending=false;await manager.ensureWorker({instanceId:"user-b",userId:"b"});
  assert.equal(manager.getWorker("user-a").status,"stopped");
+});
+
+test("expired running health is checked without restart and repeated failure requires confirmation", async t => {
+  let now = 1000; let unhealthy = false;
+  const f = fixture({ now: () => now, fetchImpl: async () => ({ ok: !unhealthy, json: async () => ({}) }) });
+  t.after(() => f.manager.close());
+  const owner = { instanceId: "user-a", userId: "a" };
+  await f.manager.ensureWorker(owner); unhealthy = true; now += 6000;
+  await assert.rejects(f.manager.ensureWorker(owner), error => error.code === "workspace_unreachable");
+  assert.equal(f.calls.filter(([op]) => op === "stop").length, 0);
+  now += 1100;
+  const report = await f.manager.workspaceStatus(owner);
+  assert.equal(report.state, "unresponsive"); assert.equal(report.canRestart, true);
+  await assert.rejects(f.manager.recoverWorker({ ...owner, action: "retry" }), error => error.code === "runtime_unresponsive");
+  await assert.rejects(f.manager.recoverWorker({ ...owner, action: "restart", generation: 1 }), error => error.statusCode === 409);
+  unhealthy = false;
+  await f.manager.ensureWorker(owner);
+  assert.equal(f.calls.filter(([op]) => op === "start").length, 1);
+});
+
+test("concurrent stopped reads join one replacement while writes cannot reconstruct", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  const owner = { instanceId: "user-a", userId: "a" };
+  await f.manager.ensureWorker(owner); await f.manager.stopWorker("user-a");
+  await assert.rejects(f.manager.ensureWorker({ ...owner, allowRecovery: false }), error => error.code === "workspace_recovery_required");
+  await Promise.all([f.manager.ensureWorker(owner), f.manager.ensureWorker(owner)]);
+  assert.equal(f.calls.filter(([op]) => op === "start").length, 2);
+  assert.equal(f.manager.getWorker("user-a").generation, 2);
+});
+
+test("old-generation confirmations and native cleanup never stop a replacement winner", async t => {
+  let now = 1000; let unhealthy = false;
+  const f = fixture({ now: () => now, fetchImpl: async () => ({ ok: !unhealthy, json: async () => ({}) }) });
+  t.after(() => f.manager.close());
+  const owner = { instanceId: "user-a", userId: "a" };
+  await f.manager.ensureWorker(owner); unhealthy = true; now += 6000;
+  await f.manager.workspaceStatus(owner); now += 1100; await f.manager.workspaceStatus(owner);
+  f.manager.configureWorker = async () => { unhealthy = false; };
+  const command = { ...owner, action: "restart", generation: 1, confirmed: true };
+  const results = await Promise.allSettled([f.manager.recoverWorker(command), f.manager.recoverWorker(command)]);
+  assert.equal(results.filter(value => value.status === "fulfilled").length, 1);
+  assert.equal(results.find(value => value.status === "rejected").reason.code, "stale_workspace_context");
+  await assert.rejects(f.manager.stopWorker("user-a", { expectedGeneration: 1 }), error => error.code === "stale_workspace_context");
+  assert.equal(f.calls.filter(([op]) => op === "stop").length, 1);
+  assert.equal(f.manager.getWorker("user-a").status, "running");
+});
+
+test("status never starts an absent workspace and unverified identity cannot be confirmed away", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  const owner = { instanceId: "user-a", userId: "a" };
+  assert.equal((await f.manager.workspaceStatus(owner)).state, "stopped");
+  assert.equal(f.calls.length, 0);
+  await f.manager.ensureWorker(owner);
+  f.manager.client.inspect = async () => { throw new Error("launcher unavailable"); };
+  f.manager.noteTransportFailure({ instanceId: "user-a", generation: 1 });
+  assert.equal((await f.manager.workspaceStatus(owner)).canRestart, false);
+  await assert.rejects(f.manager.recoverWorker({ ...owner, action: "restart", generation: 1, confirmed: true }));
+  assert.equal(f.calls.filter(([op]) => op === "stop").length, 0);
+});
+
+test("cleanup failure fences access and retains the durable reservation", async t => {
+  let now = 1000; let unhealthy = false;
+  const f = fixture({ now: () => now, fetchImpl: async () => ({ ok: !unhealthy, json: async () => ({}) }) });
+  const owner = { instanceId: "user-a", userId: "a" };
+  await f.manager.ensureWorker(owner); unhealthy = true; now += 6000;
+  await f.manager.workspaceStatus(owner); now += 1100; await f.manager.workspaceStatus(owner);
+  const stop = f.manager.client.stop; f.manager.client.stop = async () => { throw new Error("unknown cleanup"); };
+  await assert.rejects(f.manager.recoverWorker({ ...owner, action: "restart", generation: 1, confirmed: true }), error => error.code === "workspace_cleanup_unverified");
+  assert.throws(() => f.manager.getWorkerAccess("user-a"));
+  await assert.rejects(f.manager.ensureWorker(owner), error => ["workspace_cleanup_unverified", "workspace_recovery_cooldown"].includes(error.code));
+  assert.equal(f.calls.filter(([op]) => op === "start").length, 1);
+  f.manager.client.stop = stop; await f.manager.close();
+});
+
+test("maintenance and healthy status reject confirmed restarts without terminating work", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  const owner = { instanceId: "user-a", userId: "a" };
+  await f.manager.ensureWorker(owner);
+  const command = { ...owner, action: "restart", generation: 1, confirmed: true };
+  await assert.rejects(f.manager.recoverWorker(command), error => error.statusCode === 409);
+  const lease = await f.manager.acquireMaintenance({ ...owner, generation: 1 });
+  await assert.rejects(f.manager.recoverWorker(command), error => error.statusCode === 409);
+  assert.equal(f.calls.filter(([op]) => op === "stop").length, 0); lease.release();
+});
+
+test("replacement invokes local interruption hooks around verified cleanup exactly once", async t => {
+  let now = 1000; let unhealthy = false; const events = [];
+  const f = fixture({ now: () => now, fetchImpl: async () => ({ ok: !unhealthy, json: async () => ({}) }) });
+  t.after(() => f.manager.close());
+  const owner = { instanceId: "user-a", userId: "a" };
+  await f.manager.ensureWorker(owner); unhealthy = true; now += 6000;
+  await f.manager.workspaceStatus(owner); now += 1100; await f.manager.workspaceStatus(owner);
+  f.manager.setRecoveryHooks({ beforeCleanup: async context => { events.push(["before", context.generation]);
+    assert.throws(() => f.manager.retainWorker("user-a")); },
+  afterCleanup: async context => { events.push(["after", context.generation]); assert.equal(f.records.get("user-a").status, "stopped"); } });
+  f.manager.configureWorker = async () => { events.push(["configure", 2]); unhealthy = false; };
+  await f.manager.recoverWorker({ ...owner, action: "restart", generation: 1, confirmed: true });
+  assert.deepEqual(events, [["before", 1], ["after", 1], ["configure", 2]]);
+});
+
+test("fresh manager cannot reconfigure a live launcher generation as cold startup", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  f.records.set("user-a", { instanceId: "user-a", generation: 1, status: "ready", endpoint: "http://172.31.240.2:4790", runnerEndpoint: "http://172.31.240.2:4791", internalToken: "b".repeat(64) });
+  let configured = 0; f.manager.configureWorker = async () => { configured++; };
+  await assert.rejects(f.manager.ensureWorker({ instanceId: "user-a", userId: "a" }));
+  assert.equal(configured, 0); assert.equal(f.calls.filter(([op]) => op === "start").length, 0);
+});
+
+test("writes cannot join an in-flight read replacement", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  const owner = { instanceId: "user-a", userId: "a" };
+  await f.manager.ensureWorker(owner); await f.manager.stopWorker("user-a");
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  f.manager.configureWorker = () => gate;
+  const reading = f.manager.ensureWorker(owner);
+  const writing = f.manager.ensureWorker({ ...owner, allowRecovery: false });
+  release();
+  await assert.rejects(writing, error => error.code === "workspace_recovery_required");
+  await reading;
+});
+
+test("failed local reconciliation fences later admission even after cooldown", async () => {
+  let now = 1000; let unhealthy = false;
+  const f = fixture({ now: () => now, fetchImpl: async () => ({ ok: !unhealthy, json: async () => ({}) }) });
+  const owner = { instanceId: "user-a", userId: "a" };
+  try {
+    await f.manager.ensureWorker(owner); unhealthy = true; now += 6000;
+    await f.manager.workspaceStatus(owner); now += 1100; await f.manager.workspaceStatus(owner);
+    f.manager.setRecoveryHooks({ afterCleanup: async () => { throw new Error("local metadata unavailable"); } });
+    await assert.rejects(f.manager.recoverWorker({ ...owner, action: "restart", generation: 1, confirmed: true }));
+    now += 61000;
+    await assert.rejects(f.manager.ensureWorker(owner), error => error.code === "workspace_cleanup_unverified");
+    assert.equal(f.calls.filter(([op]) => op === "start").length, 1);
+  } finally { await f.manager.close(); }
+});
+
+test("verified orphaned launcher identity permits confirmation without silently adopting it", async t => {
+  let now = 1000;
+  const f = fixture({ now: () => now }); t.after(() => f.manager.close());
+  f.records.set("user-a", { instanceId: "user-a", generation: 1, status: "ready" });
+  const owner = { instanceId: "user-a", userId: "a" };
+  assert.equal((await f.manager.workspaceStatus(owner)).canRestart, false);
+  now += 1100;
+  const report = await f.manager.workspaceStatus(owner);
+  assert.equal(report.state, "unresponsive"); assert.equal(report.canRestart, true);
+  assert.throws(() => f.manager.getWorkerAccess("user-a"));
+  assert.equal(f.calls.filter(([op]) => op === "start").length, 0);
+});
+
+test("the status deadline includes initial identity lookup and rejects late identity publication", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let resolve; let settled = false;
+  f.manager.client.inspect = () => new Promise(done => { resolve = done; });
+  const pending = f.manager.workspaceStatus({ instanceId: "user-a", userId: "a" }).then(() => { settled = true; }, () => { settled = true; });
+  await new Promise(done => setImmediate(done));
+  t.mock.timers.tick(10000);
+  await new Promise(done => setImmediate(done));
+  const timedOut = settled;
+  resolve({ instanceId: "user-a", generation: 1, status: "ready" });
+  await new Promise(done => setImmediate(done));
+  assert.equal(timedOut, true);
+  await pending; assert.equal(f.manager.getWorker("user-a").generation, null);
 });

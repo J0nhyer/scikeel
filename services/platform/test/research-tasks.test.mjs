@@ -26,6 +26,23 @@ async function fixture() {
   return f;
 }
 const brief = { objective: "Compare two baseline methods", goal: "thesis", mode: "collaborative", inputs: ["data.csv"], deliverables: ["report.md"], pageId: "page-student" };
+
+test("verified workspace interruption pauses durable matching tasks without contacting the failed runtime", async () => {
+  const f = await fixture();
+  const context = { userId: "student", instanceId: "user-student", generation: 1 };
+  await f.store.create({ ...f.owner, ...context }, brief); await f.store.prepare("student", "ses_research", {});
+  await writeFile(join(f.directory, "report.md"), "Partial results");
+  const before = await f.store.get("student", "ses_research");
+  const other = { ...before, sessionId: "ses_new", generation: 2, executionActive: true, status: "running" };
+  await f.store.save(other);
+  const restored = new ResearchTasks({ rootDir: join(f.root, "records"), cancel: () => { throw new Error("no network cancel"); } });
+  await restored.interruptGeneration(context);
+  const task = await restored.get("student", "ses_research");
+  assert.equal(task.executionActive, false); assert.equal(task.status, "paused"); assert.equal(task.stopReason, "workspace-restarted");
+  assert.equal(task.execution, before.execution); assert.deepEqual(task.deliverables, before.deliverables);
+  assert.equal(await readFile(join(f.directory, "report.md"), "utf8"), "Partial results");
+  assert.equal(JSON.parse(await readFile(join(f.root, "records", "student", "ses_new.json"), "utf8")).status, "running");
+});
 async function report(f, value) {
   const task = await f.store.get(f.owner.userId, f.owner.sessionId);
   await writeFile(join(f.directory, task.reportPath), JSON.stringify({ version: 1, execution: task.execution, steps: [], decisions: [], artifacts: [], checks: [], ...value }));

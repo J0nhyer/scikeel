@@ -19,6 +19,7 @@ import { ManagedResearchFiles } from "./managed-research-files.mjs";
 import { ManagedAttachmentCopies } from "./managed-attachment-copies.mjs";
 import { AttachmentStore } from "./attachments.mjs";
 import { createAttachmentRouter } from "./attachment-routes.mjs";
+import { recoveryError } from "./workspace-recovery.mjs";
 
 const SESSION_COOKIE = "osd_session";
 const BOOTSTRAP_COOKIE = "osd_worker_bootstrap";
@@ -339,7 +340,7 @@ export class PlatformServer {
       materializeCopies:copies ? input=>copies.materialize(input) : null });
     this.attachmentTurns = new AttachmentTurns({ store: this.attachments, readHistory: (user, owner) => this.#attachmentHistory(user, owner.sessionId) });
     this.attachmentRouter = createAttachmentRouter({ store: this.attachments, resolveOwner: async (user, sessionId) => {
-      const { access, worker } = await this.#ensureWorker(user);
+      const { access, worker } = await this.#ensureWorker(user, { allowRecovery: false });
       return this.#researchOwner(user, sessionId, access, worker);
     } });
     this.webRoot = webRoot ? resolve(webRoot) : null;
@@ -398,6 +399,14 @@ export class PlatformServer {
         if(task.userId===context.userId && task.executionActive && await this.#researchRunning(task))return true;
       }
       return false;
+    });
+    workerManager.setRecoveryHooks?.({
+      beforeCleanup: context => this.cliRuntime?.sandboxJobs?.interruptGeneration?.(context),
+      afterCleanup: async context => {
+        await this.cliRuntime?.sandboxJobs?.releaseGeneration?.(context);
+        await this.researchTasks.interruptGeneration(context);
+        await this.collaboration.interruptGeneration(context);
+      },
     });
     this.runtimeCatalog = runtimeCatalog;
     this.saveRuntimeDefaultModel = saveRuntimeDefaultModel;
@@ -598,14 +607,21 @@ export class PlatformServer {
     return true;
   }
 
-  async #ensureWorker(user) {
+  async #ensureWorker(user, { allowRecovery = true } = {}) {
     const workerId = workerIdForUser(user.id);
-    await this.workerManager.ensureWorker({ instanceId: workerId, userId: user.id });
+    await this.workerManager.ensureWorker({ instanceId: workerId, userId: user.id, allowRecovery });
     return {
       workerId,
       worker: this.workerManager.getWorker(workerId),
       access: this.workerManager.getWorkerAccess(workerId),
     };
+  }
+  #requireWriteContext(request, user, worker = this.workerManager.getWorker(workerIdForUser(user.id))) {
+    if (!this.tenantPolicy || ["GET", "HEAD"].includes(request.method)) return;
+    const context = worker && Number.isSafeInteger(worker.generation) ? { instanceId: worker.id, generation: worker.generation } : null;
+    const current = worker && this.workerManager.getWorker(worker.id);
+    if (!context || current?.status !== "running" || current.generation !== context.generation ||
+        request.headers["x-scikeel-runtime-generation"] !== String(context.generation)) throw recoveryError("stale_workspace_context", { context });
   }
 
   #bootstrapRequired(request, user) {
@@ -625,6 +641,7 @@ export class PlatformServer {
   }
 
   async #proxy(request, response, access, user, worker) {
+    this.#requireWriteContext(request, user, worker);
     // This branch is enabled only for explicitly migrated managed accounts.
     // It never invokes the legacy host CLI adapters.
     if (this.tenantPolicy && (!this.cliRuntime?.isManaged(user.id) || (request.method==="GET" && (request.url??"").split("?")[0]==="/skill")) && !(request.url ?? "").startsWith("/v1/")) {
@@ -742,7 +759,7 @@ export class PlatformServer {
         try {
           const owner = await this.#researchOwner(user, sessionId, access, worker);
           if (owner.runtime !== task.runtime || resolve(owner.directory) !== task.directory) throw Object.assign(new Error("research task belongs to a different assistant or workspace"), { status: 409 });
-          promptBody = await this.researchTasks.prepare(user.id, sessionId, body);
+          promptBody = await this.researchTasks.prepare(user.id, sessionId, body, owner);
           serializedBody = JSON.stringify(promptBody);
         } catch (error) {
           sendJson(response, error.status ?? 400, { error: error.message });
@@ -767,15 +784,18 @@ export class PlatformServer {
       } catch (error) { sendJson(response, error.status ?? 400, { error: error.message, code: error.code }); return; }
     }
     if (this.cliRuntime && (!this.tenantPolicy || this.cliRuntime.sandboxJobs)) {
+      this.#requireWriteContext(request, user, worker);
       const handled = await this.cliRuntime.handle(request, response, {
         userId: user.id,
         workspaceDir: worker.workspaceDir,
         promptBody,
         attachmentInput: preparedAttachments,
+        workspaceContext: this.tenantPolicy ? { instanceId: worker.id, generation: worker.generation } : undefined,
       });
       if (handled) return;
     }
     const workerUrl = new URL(access.url);
+    this.#requireWriteContext(request, user, worker);
     const isV1 = parsed.pathname.startsWith("/v1/");
     const token = isV1 ? `Bearer ${access.token}` : `Basic ${workerBasicToken(access.token)}`;
     const headers = { ...request.headers };
@@ -823,6 +843,7 @@ export class PlatformServer {
       responded = true;
     });
     upstream.on("error", (error) => {
+      this.workerManager.noteTransportFailure?.({ instanceId: worker.id, generation: worker.generation });
       if (response.headersSent || responded) {
         response.destroy(error);
         return;
@@ -851,6 +872,7 @@ export class PlatformServer {
     return result.json();
   }
   async #attachmentLifecycle(request, response, user, owner, access, worker, route) {
+    this.#requireWriteContext(request, user, worker);
     let result;
     if (this.cliRuntime?.isManaged(user.id)) {
       if (!route) { await this.cliRuntime.abortSession(user.id, owner.sessionId); const { state } = await this.cliRuntime.getOwnedSession(user.id, owner.sessionId); state.sessions.delete(owner.sessionId); await this.cliRuntime.persistUser(state); result = true; }
@@ -879,6 +901,9 @@ export class PlatformServer {
     sendJson(response, 200, result);
   }
   async #workerResearchRequest(task, path, method = "GET", body) {
+    const worker = this.workerManager.getWorker(workerIdForUser(task.userId));
+    if (task.generation !== undefined && (task.instanceId !== worker?.id || task.generation !== worker?.generation || worker?.status !== "running"))
+      throw recoveryError("stale_workspace_context");
     const access = this.workerManager.getWorkerAccess(workerIdForUser(task.userId));
     if (!access) throw new Error("research worker is unavailable");
     const url = new URL(path, access.url);
@@ -899,7 +924,7 @@ export class PlatformServer {
         this.tenantPolicy.directory(context,session.directory);
         this.tenantPolicy.registerSession(context,{id:sessionId,directory:session.directory});
       }
-      return { userId: user.id, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime };
+      return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime };
     }
     if(this.tenantPolicy) {
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
@@ -916,7 +941,7 @@ export class PlatformServer {
       const registered=this.tenantPolicy.session(context,sessionId);
       if(this.tenantPolicy.directory(context,session.directory)!==registered.directory)throw Object.assign(new Error("research session changed"),{status:409});
     }
-    return { userId: user.id, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: "opencode", revertMessageID: session.revert?.messageID };
+    return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: "opencode", revertMessageID: session.revert?.messageID };
   }
   async #researchRunning(task) {
     if (task.runtime !== "opencode") {
@@ -937,6 +962,7 @@ export class PlatformServer {
   }
   async #cancelResearch(task) {
     const workerContext=this.workerManager.getWorker(workerIdForUser(task.userId));
+    if (task.generation !== undefined && (task.instanceId !== workerContext?.id || task.generation !== workerContext?.generation)) return;
     this.logger({type:"runtime.cancel",sessionId:task.sessionId,generation:workerContext?.generation,reason:task.cancelReason ?? "explicit_or_server_stop"});
     if (this.network && task.runtime === "opencode") {
       const worker = this.workerManager.getWorker(workerIdForUser(task.userId));
@@ -1142,8 +1168,9 @@ export class PlatformServer {
       if(!["GET","POST"].includes(request.method)){sendJson(response,405,{error:"Method not allowed"});return;}
       if(request.method==="POST"&&request.headers["sec-fetch-site"]==="cross-site"){sendJson(response,403,{error:"Foreign origin"});return;}
       if(request.method==="POST"&&request.headers.origin&&new URL(request.headers.origin).host!==request.headers.host){sendJson(response,403,{error:"Foreign origin"});return;}
-      const {access,worker}=await this.#ensureWorker(user);
+      const {access,worker}=await this.#ensureWorker(user, { allowRecovery: request.method === "GET" });
       const owner=await this.#researchOwner(user,sessionId,access,worker);
+      this.#requireWriteContext(request, user, worker);
       let state;
       if(request.method==="GET")state=await this.collaboration.get(owner);
       else{
@@ -1171,10 +1198,12 @@ export class PlatformServer {
       }
       const body = await this.#readPayload(request, response);
       if (!body) return;
+      this.#requireWriteContext(request, user);
       let task;
       if (body.action === "create") {
-        const { access, worker } = await this.#ensureWorker(user);
+        const { access, worker } = await this.#ensureWorker(user, { allowRecovery: false });
         const owner = await this.#researchOwner(user, sessionId, access, worker);
+        this.#requireWriteContext(request, user, worker);
         const preference=await this.collaboration.get(owner);
         task = await this.researchTasks.create(owner, this.collaborationAvailable(user.id,worker.generation)?{...body,mode:preference.mode}:body);
       } else if (body.action === "heartbeat") task = await this.researchTasks.heartbeat(user.id, sessionId, body.pageId);
@@ -1381,6 +1410,7 @@ export class PlatformServer {
       }
       const timeout = setTimeout(() => controller.abort(), 30000);
       try {
+        this.#requireWriteContext(request, user, worker);
         const upstream = await fetch(target, { method: operation.method, redirect: "error", signal: controller.signal,
           headers: { authorization: `Basic ${workerBasicToken(access.token)}`, accept: operation.operation === "event"
             ? "text/event-stream" : "application/json", "content-type": "application/json" },
@@ -1510,6 +1540,7 @@ export class PlatformServer {
       } finally { clearTimeout(timeout); permissionDecision?.release(); }
     } catch (error) {
       const status = error.statusCode ?? error.status ?? (error.code === "body_too_large" ? 413 : 502);
+      if (status === 502 && !request.aborted && !response.destroyed) this.workerManager.noteTransportFailure?.({ instanceId: worker.id, generation: worker.generation });
       if(typeof error.code==="string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(error.code))trace.code=error.code;
       const body={error:status<500?error.message:"managed runtime unavailable",...(error.code?{code:error.code,source:"gateway"}:{})};
       if(interaction && !interaction.replay)interaction.record.complete({status:status>=500?503:status,body:status>=500?{error:"Interaction delivery is not confirmed",code:"interaction_delivery_unknown",source:"gateway"}:body});
@@ -1670,6 +1701,7 @@ export class PlatformServer {
       if (collaborationPath) {
         const user = await this.#currentUser(request);
         if (!user) {this.#unauthorized(request,response);return;}
+        this.#requireWriteContext(request, user);
         await this.#collaborationApi(request,response,user,collaborationPath[1]); return;
       }
       if (path.startsWith("/api/")) {
@@ -1678,15 +1710,38 @@ export class PlatformServer {
           this.#unauthorized(request, response);
           return;
         }
+        if (path === "/api/workspace/status" && request.method === "GET") {
+          if (!this.tenantPolicy || !this.workerManager.workspaceStatus) { sendJson(response, 404, { error: "not found" }); return; }
+          sendJson(response, 200, await this.workerManager.workspaceStatus({ userId: user.id, instanceId: workerIdForUser(user.id) }), { "cache-control": "no-store" });
+          return;
+        }
+        if (path === "/api/workspace/recover" && request.method === "POST") {
+          if (!this.tenantPolicy || !this.workerManager.recoverWorker) { sendJson(response, 404, { error: "not found" }); return; }
+          if (request.headers.origin !== `${this.secureCookies ? "https" : "http"}://${request.headers.host}` || request.headers["sec-fetch-site"] === "cross-site") {
+            sendJson(response, 403, { error: "foreign origin" }); return;
+          }
+          const body = await this.#readPayload(request, response); if (!body) return;
+          const keys = Object.keys(body).sort().join(",");
+          const retry = keys === "action" && body.action === "retry";
+          const restart = keys === "action,confirmed,generation,instanceId" && body.action === "restart" && body.confirmed === true &&
+            /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(body.instanceId ?? "") && Number.isSafeInteger(body.generation) && body.generation > 0;
+          if (!retry && !restart) { sendJson(response, 400, { error: "invalid recovery command" }); return; }
+          if (restart && body.instanceId !== workerIdForUser(user.id)) { sendJson(response, 403, { error: "foreign workspace" }); return; }
+          sendJson(response, 200, await this.workerManager.recoverWorker({ ...body, userId: user.id, instanceId: workerIdForUser(user.id) }), { "cache-control": "no-store" });
+          return;
+        }
         if (path.startsWith("/api/environments/")) {
           if (!this.environments || !this.tenantPolicy) { sendJson(response, 404, {error: "not found"}); return; }
-          const {worker,access} = await this.#ensureWorker(user);
+          const {worker,access} = await this.#ensureWorker(user, { allowRecovery: ["GET", "HEAD"].includes(request.method) });
+          this.#requireWriteContext(request, user, worker);
           if(this.cliRuntime?.isManaged(user.id)) {
             const id=/^\/api\/environments\/([A-Za-z0-9_-]+)/.exec(path)?.[1];
             if(id)await this.#researchOwner(user,id,access,worker);
           }
           await this.#environmentRequest(request, response, user, worker); return;
         }
+        if (path.startsWith("/api/attachments") && path !== "/api/attachments/drafts" && !parsed.searchParams.has("draftId"))
+          this.#requireWriteContext(request, user);
         if (await this.attachmentRouter(request, response, user)) return;
         if (path === "/api/me" && request.method === "GET") {
           sendJson(response, 200, { user });
@@ -1785,7 +1840,12 @@ export class PlatformServer {
         return;
       }
       if (this.tenantPolicy && await this.#serveWeb(request, response)) return;
-      const { access, worker } = await this.#ensureWorker(user);
+      const readOnly = ["GET", "HEAD"].includes(request.method);
+      const { access, worker } = await this.#ensureWorker(user, { allowRecovery: !this.tenantPolicy || readOnly });
+      const expectedGeneration = request.headers["x-scikeel-runtime-generation"];
+      if (this.tenantPolicy && !readOnly && String(worker.generation) !== expectedGeneration)
+        throw recoveryError("stale_workspace_context", { context: { instanceId: worker.id, generation: worker.generation } });
+      if (Number.isSafeInteger(worker.generation)) response.setHeader("x-scikeel-runtime-generation", String(worker.generation));
       // A client can disconnect while its worker is still starting.
       // Do not register a lease after the close event has already fired.
       if (request.aborted || response.destroyed || response.writableEnded) return;
@@ -1807,6 +1867,10 @@ export class PlatformServer {
     } catch (error) {
       this.logger({ type: "platform.request_error", error: error?.message ?? String(error) });
       if (!response.headersSent) {
+        if (error?.failure) {
+          sendJson(response, error.statusCode, error.failure, { "cache-control": "no-store", ...(error.failure.retryAfterMs ? { "retry-after": String(Math.ceil(error.failure.retryAfterMs / 1000)) } : {}) });
+          return;
+        }
         sendJson(response, error?.retryable && error?.statusCode === 503 ? 503 : 500,
           { error: error?.retryable ? "workspace capacity unavailable; retry shortly" : "internal server error" });
       } else {

@@ -41,7 +41,7 @@ export class WorkspaceRecovery {
     if (!identifier(context?.userId) || !validWorkspaceContext(context)) throw new Error("invalid recovery context");
     return `${context.userId}/${context.instanceId}/${context.generation}`;
   }
-  check(context) {
+  check(context, { timeoutMs = PROBE_BUDGET_MS } = {}) {
     if (this.#closed) return Promise.reject(recoveryError("workspace_status_unknown"));
     const key = this.#key(context);
     let cycle = this.#cycles.get(key);
@@ -51,10 +51,11 @@ export class WorkspaceRecovery {
     const controller = new AbortController(); cycle.controller = controller;
     cycle.pending = (async () => {
       let timer;
-      const deadline = this.now() + PROBE_BUDGET_MS;
+      const budget = Math.max(1, Math.min(PROBE_BUDGET_MS, timeoutMs));
+      const deadline = this.now() + budget;
       try {
         const expired = new Promise((_, reject) => {
-          timer = setTimeout(() => controller.abort(new Error("probe timeout")), PROBE_BUDGET_MS);
+          timer = setTimeout(() => controller.abort(new Error("probe timeout")), budget);
           controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
         });
         let report;

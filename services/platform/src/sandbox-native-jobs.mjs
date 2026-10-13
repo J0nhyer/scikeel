@@ -11,7 +11,7 @@ export class SandboxNativeJobs {
   }
   async #context(userId,session) {
     const instanceId=`user-${userId}`;
-    const worker=await this.workerManager.ensureWorker({instanceId,userId});
+    const worker=await this.workerManager.ensureWorker({instanceId,userId,allowRecovery:false});
     const context={userId,instanceId,generation:worker.generation};
     const account=this.tenantPolicy.account(context);
     this.tenantPolicy.directory(context,session.directory);
@@ -20,13 +20,20 @@ export class SandboxNativeJobs {
     this.tenantPolicy.registerSession(context,{id:session.id,directory:session.directory});
     return {...context,project};
   }
-  async run({userId,session,model,text,images=[],nativeSessionId,emit,signal,variant}) {
+  async run({userId,session,model,text,images=[],nativeSessionId,emit,signal,variant,workspaceContext}) {
     if(session.runtime!=="codex" || typeof emit!=="function" || (variant!==undefined && variant!==null))throw new Error("sandbox native runtime unavailable");
     const key=`${userId}/${session.id}`;if(this.#turns.has(key))throw new Error("native session is busy");
-    const reservation={};this.#turns.set(key,reservation);let lease;let context;let started;let submitted=false;let cleanupVerified=true;
+    const controller = new AbortController();
+    signal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    let settled;
+    const reservation={controller,settled:new Promise(resolve=>{settled=resolve;})};
+    this.#turns.set(key,reservation);let lease;let context;let started;let submitted=false;let cleanupVerified=true;
     try {
       context=await this.#context(userId,session);
+      if (workspaceContext && (context.instanceId !== workspaceContext.instanceId || context.generation !== workspaceContext.generation)) throw new Error("native worker generation changed");
+      reservation.context=context;
       lease=this.workerManager.retainWorker(context.instanceId);
+      reservation.lease=lease;
       if(lease.generation!==context.generation)throw new Error("native worker generation changed");
       submitted=true;cleanupVerified=false;
       started=await this.files.job(context,{operation:"start",sessionId:session.id,project:context.project,model,text,images,
@@ -67,17 +74,33 @@ export class SandboxNativeJobs {
         });
       }
     } catch(error) {
+      if (reservation.recovering) { cleanupVerified=false; throw error; }
       if(submitted) {
         try {
           if(!started || (await this.files.job(context,{operation:"abort",jobId:started.jobId})).stopped!==true)throw new Error("native cleanup unavailable");
           cleanupVerified=true;
         } catch {
-          try {await this.workerManager.stopWorker(context.instanceId);cleanupVerified=true;}
+          try {await this.workerManager.stopWorker(context.instanceId,{expectedGeneration:context.generation});cleanupVerified=true;}
           catch {throw new Error("native cleanup unverified; workspace remains reserved");}
         }
       }
       throw error;
-    } finally {if(cleanupVerified){lease?.release();this.#turns.delete(key);}}
+    } finally {settled();if(cleanupVerified){lease?.release();if(this.#turns.get(key)===reservation)this.#turns.delete(key);}}
+  }
+  interruptGeneration(context) {
+    for (const turn of this.#turns.values()) if (turn.context?.userId === context.userId &&
+      turn.context.instanceId === context.instanceId && turn.context.generation === context.generation) {
+      turn.recovering=true; turn.controller.abort(new Error("native turn interrupted by workspace recovery"));
+    }
+  }
+  async releaseGeneration(context) {
+    for (const [key,turn] of this.#turns) if (turn.context?.userId === context.userId &&
+      turn.context.instanceId === context.instanceId && turn.context.generation === context.generation) {
+      let timer;
+      try { await Promise.race([turn.settled,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error("native cleanup unverified")),3000);})]); }
+      finally { clearTimeout(timer); }
+      turn.lease?.release(); if(this.#turns.get(key)===turn)this.#turns.delete(key);
+    }
   }
   async answer({userId,sessionId,id,answers,reject=false}) {
     const turn=this.#turns.get(`${userId}/${sessionId}`);

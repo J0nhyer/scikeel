@@ -116,7 +116,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       await waitManagedRuntime(access,{directory:context.workspaceDir});
       const timer = setInterval(() => {
         try { model.renew(token, context); }
-        catch { clearInterval(timer); void manager.stopWorker(context.instanceId).catch(() => {}); }
+        catch { clearInterval(timer); void manager.stopWorker(context.instanceId, {expectedGeneration:context.generation}).catch(() => {}); }
       }, 300000);
       timer.unref(); accounts.get(address).timer = timer;
     },

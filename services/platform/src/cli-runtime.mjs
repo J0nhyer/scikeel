@@ -870,11 +870,11 @@ export class CliRuntimeManager {
     });
   }
 
-  async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput }) {
+  async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput, workspaceContext }) {
     const { state, session } = await this.getOwnedSession(userId, sessionId);
     if (session.status === "running" || this.turnReservations.has(session.id)) throw issue("session_busy", "session is already running", 409);
     if (typeof text !== "string" || !text.trim()) throw issue("empty_prompt", "prompt is empty");
-    const turn = { userId, state, session, text, displayText, model, attachmentInput, cancelled: false };
+    const turn = { userId, state, session, text, displayText, model, attachmentInput, workspaceContext, cancelled: false };
     this.turnReservations.set(session.id, turn);
     session.status = "running";
     delete session._pendingNativeSessionId;
@@ -955,7 +955,7 @@ export class CliRuntimeManager {
     this.emitMessageUpdated(userId,session,assistant);
     const stale=Boolean(session.nativeSessionId && session.identityRevision!==profile.identityRevision);
     try {
-      const result=await this.sandboxJobs.run({userId,session,model:chosen,variant:chosenVariant,text:`${stale?handoverText(session.history):""}${text}`,
+      const result=await this.sandboxJobs.run({userId,session,workspaceContext:turn.workspaceContext,model:chosen,variant:chosenVariant,text:`${stale?handoverText(session.history):""}${text}`,
         images:(attachmentInput?.images??[]).map(image=>image.url),nativeSessionId:stale?undefined:session.nativeSessionId,signal:controller.signal,
         emit:async event=>{
           if(event.type==="text")this.appendAssistantText(userId,session,assistant,event.text);
@@ -1269,7 +1269,7 @@ export class CliRuntimeManager {
     escalation.unref();
   }
 
-  async handle(request, response, { userId, workspaceDir, promptBody, attachmentInput }) {
+  async handle(request, response, { userId, workspaceDir, promptBody, attachmentInput, workspaceContext }) {
     await this.init();
     if (!this.isManaged(userId)) return false;
     const parsed = new URL(request.url ?? "/", "http://platform.invalid");
@@ -1358,7 +1358,7 @@ export class CliRuntimeManager {
             if (body.model?.providerID !== this.runtimeForUser(userId)) throw issue("invalid_model", "model belongs to another AI assistant");
             model = normalizeModelId(body.model.modelID);
           }
-          const turn = await this.reservePrompt({ userId, sessionId, text: body.system ? `${body.system}\n${text || "Attached files"}` : text, displayText: attachmentInput?.displayText ?? (promptBody ? text : undefined), model, variant: body.variant, attachmentInput });
+          const turn = await this.reservePrompt({ userId, sessionId, text: body.system ? `${body.system}\n${text || "Attached files"}` : text, displayText: attachmentInput?.displayText ?? (promptBody ? text : undefined), model, variant: body.variant, attachmentInput, workspaceContext });
           void this.runReservedPrompt(turn).catch(() => {
             this.logger({ type: "cli.turn.error", userId, sessionId });
           });
@@ -1370,7 +1370,7 @@ export class CliRuntimeManager {
           const body = await jsonBody(request);
           const command = typeof body.command === "string" ? body.command : "";
           const args = typeof body.arguments === "string" ? body.arguments : "";
-          const turn = await this.reservePrompt({ userId, sessionId, text: `/${command}${args ? ` ${args}` : ""}` });
+          const turn = await this.reservePrompt({ userId, sessionId, text: `/${command}${args ? ` ${args}` : ""}`, workspaceContext });
           void this.runReservedPrompt(turn).catch(() => {
             this.logger({ type: "cli.command.error", userId, sessionId });
           });

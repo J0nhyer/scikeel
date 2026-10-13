@@ -115,6 +115,21 @@ export class CollaborationStore {
       return structuredClone(s);
     });
   }
+  async interruptGeneration(context) {
+    const folder = join(this.rootDir, id(context.userId));
+    let files;
+    try { files = await fs.readdir(folder); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+    for (const file of files.filter(name => name.endsWith(".json"))) {
+      const owner = { userId: context.userId, sessionId: id(file.slice(0, -5)) };
+      await this.locked(owner, async () => {
+        const state = this.records.get(this.key(owner)) ?? JSON.parse(await fs.readFile(join(folder, file), "utf8"));
+        if (state.version !== 1 || state.userId !== owner.userId || state.sessionId !== owner.sessionId) throw fail("Invalid saved collaboration state", 500);
+        if (state.instanceId !== context.instanceId || state.generation !== context.generation || !["running", "waiting_input"].includes(state.phase)) return;
+        state.phase = "paused"; state.revision++;
+        await this.save(state);
+      });
+    }
+  }
   revision(s, value) {
     if (value !== s.revision)
       throw fail("Collaboration changed; reload and retry");

@@ -27,6 +27,18 @@ const owner = {
   directory: "/workspace",
   workspaceDir: "/workspace",
 };
+
+test("generation interruption preserves durable decisions and does not cancel a replacement", async t => {
+  const f = await fixture(t); const context = { userId: "student", instanceId: "user-student", generation: 1 };
+  const o = { ...owner, ...context };
+  await f.store.begin(o, 0);
+  const pending = await f.store.checkpoint(o, { kind: "method", question: "Use A?", suggestedAnswer: "A" });
+  const restored = new CollaborationStore({ rootDir: f.root, cancel: () => { throw new Error("no network cancel"); } });
+  await restored.interruptGeneration(context);
+  const paused = await restored.get(o);
+  assert.equal(paused.phase, "paused"); assert.equal(paused.pending.id, pending.pending.id);
+  assert.equal(paused.execution, pending.execution); assert.equal(paused.revision, pending.revision + 1);
+});
 test("mode defaults, identity isolation and release availability", async (t) => {
   const f = await fixture(t);
   const s = await f.store.get(owner);

@@ -10,6 +10,7 @@ import { CliRuntimeManager } from "../src/cli-runtime.mjs";
 import { PlatformServer } from "../src/platform-server.mjs";
 import { WorkerManager } from "../src/worker-manager.mjs";
 import { TenantPolicy } from "../src/tenant-policy.mjs";
+import { recoveryError } from "../src/workspace-recovery.mjs";
 
 const fakeOsd = fileURLToPath(new URL("../fixtures/fake-osd.mjs", import.meta.url));
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
@@ -50,6 +51,7 @@ function makeClient(base) {
     jar,
     async request(path, options = {}) {
       const headers = { ...(options.headers ?? {}) };
+      if (options.method && !["GET", "HEAD"].includes(options.method) && !Object.hasOwn(headers, "x-scikeel-runtime-generation")) headers["x-scikeel-runtime-generation"] = "1";
       const cookies = cookieHeader(jar);
       if (cookies) headers.cookie = cookies;
       const response = await fetch(`${base}${path}`, {
@@ -130,6 +132,65 @@ async function login(client, username, password) {
   assert.equal(response.status, 200);
   return json(response);
 }
+
+test("workspace status is authenticated and never starts a worker or reads a catalog", async () => {
+  const f = await makeFixture({ tenantPolicy: new TenantPolicy() });
+  assert.equal((await fetch(f.base + "/api/workspace/status", { headers: { accept: "application/json" } })).status, 401);
+  const client = makeClient(f.base); const { user } = await login(client, "admin", "admin-password");
+  let calls = 0;
+  f.manager.ensureWorker = async () => { throw new Error("status must not start"); };
+  f.manager.workspaceStatus = async input => {
+    assert.deepEqual(input, { instanceId: `user-${user.id}`, userId: user.id }); calls++;
+    return { context: null, state: "stopped", activity: "unknown", canRestart: false, retryAfterMs: 0 };
+  };
+  const response = await client.request("/api/workspace/status");
+  assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal((await response.json()).state, "stopped"); assert.equal(calls, 1);
+});
+
+test("managed mutation requires its observed generation and cannot reconstruct a workspace", async () => {
+  const f = await makeFixture({ tenantPolicy: new TenantPolicy() }); const client = makeClient(f.base);
+  const { user } = await login(client, "admin", "admin-password"); const calls = [];
+  f.manager.ensureWorker = async input => { calls.push(input); };
+  f.manager.getWorker = () => ({ id: `user-${user.id}`, userId: user.id, generation: 2, status: "running" });
+  f.manager.getWorkerAccess = () => ({ url: "http://127.0.0.1:1", token: "private" });
+  for (const generation of [undefined, "1"]) {
+    const response = await client.request("/session", { method: "POST", headers: { origin: f.base,
+      "x-scikeel-runtime-generation": generation ?? "" }, body: "{}" });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).code, "stale_workspace_context");
+  }
+  assert.ok(calls.every(call => call.allowRecovery === false));
+});
+
+test("workspace recovery denies foreign origin/account and malformed restart without dispatch", async () => {
+  const f = await makeFixture({ tenantPolicy: new TenantPolicy() }); const client = makeClient(f.base);
+  const { user } = await login(client, "admin", "admin-password"); const calls = [];
+  f.manager.recoverWorker = async input => { calls.push(input); return { context: null, state: "stopped", activity: "unknown", canRestart: false, retryAfterMs: 0 }; };
+  const submit = (body, origin = f.base) => client.request("/api/workspace/recover", { method: "POST",
+    headers: { origin, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify(body) });
+  assert.equal((await submit({ action: "retry" }, "https://foreign.invalid")).status, 403);
+  assert.equal((await submit({ action: "restart", instanceId: "user-foreign", generation: 1, confirmed: true })).status, 403);
+  for (const body of [{ action: "retry", userId: user.id }, { action: "restart", instanceId: `user-${user.id}`, generation: 1 }, { action: "restart", instanceId: `user-${user.id}`, generation: 0, confirmed: true }]) {
+    assert.equal((await submit(body)).status, 400);
+  }
+  assert.equal(calls.length, 0);
+  assert.equal((await submit({ action: "retry" })).status, 200);
+  assert.deepEqual(calls[0], { userId: user.id, instanceId: `user-${user.id}`, action: "retry" });
+});
+
+test("workspace recovery emits sanitized stale/cooldown outcomes and does not expire login", async () => {
+  const f = await makeFixture({ tenantPolicy: new TenantPolicy() }); const client = makeClient(f.base);
+  const { user } = await login(client, "admin", "admin-password");
+  for (const [code, status] of [["stale_workspace_context", 409], ["workspace_recovery_cooldown", 503]]) {
+    f.manager.recoverWorker = async () => { throw recoveryError(code, { context: { instanceId: `user-${user.id}`, generation: 2 }, retryAfterMs: 10000, token: "secret" }); };
+    const response = await client.request("/api/workspace/recover", { method: "POST", headers: { origin: f.base, accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ action: "retry" }) });
+    assert.equal(response.status, status); const result = await response.json();
+    assert.equal(result.code, code); assert.equal(result.token, undefined);
+    if (status === 503) assert.equal(response.headers.get("retry-after"), "10");
+    assert.equal((await client.request("/api/me")).status, 200);
+  }
+});
 
 test("localized login keeps credentials private and preserves the destination on retries", async () => {
   const f = await makeFixture();
