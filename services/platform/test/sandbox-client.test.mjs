@@ -101,3 +101,19 @@ test("launcher rejection exposes only a curated diagnostic code", async () => {
     });
   }
 });
+
+test("inspection cancellation closes the socket and never extends the launcher deadline", async () => {
+  let closed = false; let received;
+  await socketFixture((socket, request) => {
+    received = request; socket.on("end", () => { closed = true; socket.end(); });
+  }, async client => {
+    const controller = new AbortController();
+    const pending = client.inspect({ instanceId: "a" }, { signal: controller.signal, timeoutMs: 100 });
+    await new Promise(done => setTimeout(done, 15)); controller.abort(new Error("probe cancelled"));
+    await assert.rejects(pending, /probe cancelled/);
+    await new Promise(done => setTimeout(done, 15));
+    assert.equal(closed, true); assert.deepEqual(received.args, { instanceId: "a" });
+    assert.equal(received.signal, undefined);
+    await assert.rejects(client.inspect({ instanceId: "a" }, { timeoutMs: 0 }), /invalid launcher timeout/);
+  });
+});

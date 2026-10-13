@@ -56,15 +56,23 @@ export class SandboxClient {
       throw new Error("invalid launcher client configuration");
     this.socketPath = socketPath; this.timeoutMs = timeoutMs;
   }
-  async call(op, args) {
+  async call(op, args, options = {}) {
+    const requestedTimeout = options.timeoutMs ?? this.timeoutMs;
+    if (!Number.isSafeInteger(requestedTimeout) || requestedTimeout < 1) throw new Error("invalid launcher timeout");
+    const timeoutMs = Math.min(this.timeoutMs, requestedTimeout);
+    options.signal?.throwIfAborted();
     const request = launcherRequest(op, args, randomUUID());
     const data = JSON.stringify(request) + "\n";
     if (Buffer.byteLength(data) > MAX_FRAME) throw new Error("launcher request exceeds limit");
     return new Promise((resolve, reject) => {
       const socket = createConnection({ path: this.socketPath });
       let buffer = Buffer.alloc(0); let frame; let settled = false;
-      const timer = setTimeout(() => fail(clientError("launcher timeout", "launcher_timeout")), this.timeoutMs);
-      function fail(error) { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); reject(error); }
+      const timer = setTimeout(() => fail(clientError("launcher timeout", "launcher_timeout")), timeoutMs);
+      const abort = () => fail(options.signal.reason);
+      const cleanup = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); socket.destroy(); };
+      function fail(error) { if (settled) return; settled = true; cleanup(); reject(error); }
+      options.signal?.addEventListener("abort", abort, { once: true });
+      if (options.signal?.aborted) { abort(); return; }
       socket.on("connect", () => socket.write(data));
       socket.on("error", () => fail(clientError("launcher unavailable", "launcher_unavailable")));
       socket.on("data", (bytes) => {
@@ -101,7 +109,7 @@ export class SandboxClient {
           }
           if (Object.hasOwn(result, "internalToken") && !/^[a-f0-9]{64}$/.test(result.internalToken)) throw new Error("invalid launcher internal token");
           if (op === "stop" && result.stopped !== true) throw new Error("invalid launcher stop response");
-          settled = true; clearTimeout(timer); socket.destroy(); resolve(result);
+          settled = true; cleanup(); resolve(result);
         } catch (error) { fail(error); }
       });
       socket.on("close", () => { if (!settled) fail(clientError("launcher disconnected", "launcher_disconnected")); });
@@ -110,5 +118,5 @@ export class SandboxClient {
   register(args) { return this.call("register", args); }
   start(args) { return this.call("start", args); }
   stop(args) { return this.call("stop", args); }
-  inspect(args) { return this.call("inspect", args); }
+  inspect(args, options) { return this.call("inspect", args, options); }
 }
