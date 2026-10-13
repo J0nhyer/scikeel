@@ -416,6 +416,25 @@ mod linux {
         pub fn workspace_save_text(&self, root: &str, name: &str, text: &str, expected: &str) -> io::Result<WorkspaceText> {
             self.publish_text(root,name,text,Some(expected))
         }
+        pub fn workspace_replace_text(&self, root: &str, staged: &str, name: &str, expected: &str, expected_source: &str) -> io::Result<WorkspaceText> {
+            if root!=WORKSPACE_ROOT || !staged.starts_with(".scikeel/workspace-management/staging/") || !staged.ends_with("/payload") || staged==name {return Err(denied());}
+            let mut source=self.workspace_entry(root,staged,libc::O_RDONLY)?;
+            let source_meta=source.metadata()?;
+            if revision(&source_meta,None)!=expected_source {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            Self::text_snapshot(&mut source)?;
+            let (source_parent,from)=self.parent(root,staged)?;
+            let (target_parent,to)=self.parent(root,name)?;
+            let mut current=self.open(&target_parent,&to,libc::O_RDONLY|libc::O_NOFOLLOW,0,true)?;
+            if Self::text_snapshot(&mut current)?.revision!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            let source_now=self.open(&source_parent,&from,libc::O_PATH|libc::O_NOFOLLOW,0,true)?;
+            if revision(&source_now.metadata()?,None)!=expected_source {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            // Account admission excludes runtime writers; privileged out-of-band
+            // writes are not an OS-level compare-and-swap transaction.
+            if unsafe{libc::syscall(libc::SYS_renameat2,source_parent.as_raw_fd(),from.as_ptr(),target_parent.as_raw_fd(),to.as_ptr(),0)}<0 {return Err(io::Error::last_os_error());}
+            source_parent.sync_all()?;target_parent.sync_all()?;
+            use std::io::{Seek,SeekFrom};source.seek(SeekFrom::Start(0))?;
+            Self::text_snapshot(&mut source)
+        }
         pub fn workspace_move(&self, root: &str, name: &str, destination: &str, expected: &str) -> io::Result<WorkspaceStat> {
             if name==destination || destination.starts_with(&format!("{name}/")) {return Err(denied());}
             let entry=self.workspace_entry(root,name,libc::O_PATH)?;
@@ -690,6 +709,61 @@ mod tests {
         }
         assert!(p.list(WORKSPACE_ROOT,"alias",100).is_err());
         assert!(p.open_regular(WORKSPACE_ROOT,"project/secret.txt",1024).is_ok());
+    }
+    #[test]
+    fn workspace_staged_text_replacement_preserves_journaled_identity() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        p.mkdir_all(WORKSPACE_ROOT,".scikeel/workspace-management/staging/save-a").unwrap();
+        let stage=".scikeel/workspace-management/staging/save-a/payload";
+        let original=p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap();
+        p.workspace_create_text(WORKSPACE_ROOT,stage,"new draft").unwrap();
+        let staged=p.workspace_stat(WORKSPACE_ROOT,stage).unwrap();
+        let saved=p.workspace_replace_text(WORKSPACE_ROOT,stage,"note.txt",&original.revision,&staged.revision).unwrap();
+        assert_eq!(saved.text,"new draft");
+        assert_eq!(p.workspace_stat(WORKSPACE_ROOT,"note.txt").unwrap().identity,staged.identity);
+        assert!(p.workspace_stat(WORKSPACE_ROOT,stage).is_err());
+        assert_eq!(p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap().revision,saved.revision);
+    }
+    #[test]
+    fn workspace_staged_text_conflicts_retain_both_draft_and_external_edit() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        p.mkdir_all(WORKSPACE_ROOT,".scikeel/workspace-management/staging/save-a").unwrap();
+        let stage=".scikeel/workspace-management/staging/save-a/payload";
+        let original=p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap();
+        p.workspace_create_text(WORKSPACE_ROOT,stage,"new draft").unwrap();
+        let staged=p.workspace_stat(WORKSPACE_ROOT,stage).unwrap();
+        std::fs::write(f.owned.join("note.txt"),"external edit").unwrap();
+        assert!(p.workspace_replace_text(WORKSPACE_ROOT,stage,"note.txt",&original.revision,&staged.revision).is_err());
+        assert_eq!(f.read(&p,"note.txt").unwrap(),b"external edit");assert_eq!(f.read(&p,stage).unwrap(),b"new draft");
+        let latest=p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap();
+        std::fs::write(f.owned.join(stage),"tampered staging").unwrap();
+        assert!(p.workspace_replace_text(WORKSPACE_ROOT,stage,"note.txt",&latest.revision,&staged.revision).is_err());
+        assert_eq!(f.read(&p,"note.txt").unwrap(),b"external edit");
+    }
+    #[test]
+    fn workspace_staged_text_replacement_refuses_links_foreign_roots_and_public_sources() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        p.mkdir_all(WORKSPACE_ROOT,".scikeel/workspace-management/staging/save-a").unwrap();
+        let stage=".scikeel/workspace-management/staging/save-a/payload";
+        let original=p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap();p.workspace_create_text(WORKSPACE_ROOT,stage,"draft").unwrap();
+        let staged=p.workspace_stat(WORKSPACE_ROOT,stage).unwrap();
+        symlink("note.txt",f.owned.join("alias.txt")).unwrap();
+        for (root,source,destination) in [(WORKSPACE_ROOT,stage,"alias.txt"),("foreign",stage,"note.txt"),(WORKSPACE_ROOT,"note.txt","note.txt")] {
+            assert!(p.workspace_replace_text(root,source,destination,&original.revision,&staged.revision).is_err());
+        }
+        assert_eq!(f.read(&p,"note.txt").unwrap(),b"owned");assert_eq!(f.read(&p,stage).unwrap(),b"draft");
+    }
+    #[test]
+    fn workspace_text_primitives_bound_utf8_and_never_replace_colliding_creates() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        assert!(p.workspace_create_text(WORKSPACE_ROOT,"note.txt","replacement").is_err());
+        assert!(p.workspace_create_text(WORKSPACE_ROOT,"large.txt",&"x".repeat(2*1024*1024+1)).is_err());
+        assert!(p.workspace_create_text(WORKSPACE_ROOT,"nul.txt","a\0b").is_err());
+        std::fs::write(f.owned.join("binary.txt"),[0xff,0xfe]).unwrap();assert!(p.workspace_read_text(WORKSPACE_ROOT,"binary.txt").is_err());
+        let created=p.workspace_create_text(WORKSPACE_ROOT,"unicode.txt","研究 draft").unwrap();
+        assert_eq!(p.workspace_read_text(WORKSPACE_ROOT,"unicode.txt").unwrap().revision,created.revision);
+        assert!(p.workspace_save_text(WORKSPACE_ROOT,"unicode.txt","changed",&"0".repeat(64)).is_err());
+        assert_eq!(f.read(&p,"unicode.txt").unwrap(),"研究 draft".as_bytes());
     }
     impl Drop for Fixture {
         fn drop(&mut self) {

@@ -49,3 +49,10 @@ it('does not move when the owned destination folders cannot be loaded',async()=>
  expect(await screen.findByRole('alert')).toHaveTextContent('Folders unavailable');
  expect(within(screen.getByRole('dialog',{name:'Move'})).getByRole('button',{name:'Move'})).toBeDisabled();
 });
+it('loads subsequent owned destination pages before choosing a later folder',async()=>{
+ entries.mockResolvedValueOnce({entries:[{name:'first',path:'first',isDir:true}],nextCursor:'page-a'}).mockResolvedValueOnce({entries:[{name:'later',path:'later',isDir:true}],nextCursor:null});
+ render(<WorkspaceFileActions scope={scope} entry={entry} onChanged={()=>{}}/>);
+ await userEvent.click(screen.getByRole('button',{name:'File actions: result.txt'}));await userEvent.click(screen.getByRole('menuitem',{name:'Move'}));
+ await screen.findByRole('option',{name:'first'});await userEvent.click(screen.getByRole('button',{name:'Load more'}));expect(await screen.findByRole('option',{name:'later'})).toBeInTheDocument();
+ expect(screen.getByRole('option',{name:'first'})).toBeInTheDocument();expect(entries).toHaveBeenLastCalledWith(scope,'','page-a');
+});

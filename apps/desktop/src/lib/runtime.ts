@@ -119,6 +119,7 @@ import { webModelChoices, webModelEffort } from "./webModelCatalog";
 import { listProvidersWithAvailability, ZEN_PROVIDER_ID } from "./zenModels";
 import { toast, useToastStore } from "@/lib/toast";
 import i18n from "@/i18n";
+import { clearWorkspaceTextDrafts, confirmWorkspaceDraftLeave } from "@/lib/workspaceDrafts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const URL_KEY = "ai4s.opencodeUrl";
@@ -713,6 +714,7 @@ function loadPlatformAccount() {
 
 export function signOutPlatformBrowser(): Promise<void> {
   if (!isPlatformWeb) return Promise.reject(new Error("Platform account unavailable"));
+  if (!confirmWorkspaceDraftLeave(i18n.t("nav:fileManagement.discardDraft"))) return Promise.resolve();
   if (!platformAccount) installPlatformAccountLifecycle();
   return platformAccount!.signOut();
 }
@@ -4577,6 +4579,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   clearPlatformPresentation: () => {
     if (!isPlatformWeb) return;
     useToastStore.getState().reset();
+    clearWorkspaceTextDrafts();
     set({ gatewayUser: null, gatewayUserRole: null, gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
       workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [],
       sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},

@@ -1,5 +1,6 @@
 import { useInRouterContext, useSearchParams } from "react-router-dom";
 import { workspaceEntries, type WorkspaceScope } from "@/lib/workspaceManagement";
+import { confirmWorkspaceDraftLeave, hasWorkspaceDrafts } from "@/lib/workspaceDrafts";
 import { WorkspaceTrashView } from "@/components/files/WorkspaceTrashView";
 import { WorkspaceFileActions, WorkspaceFileControls } from "@/components/files/WorkspaceFileActions";
 import { StateNotice } from "@/components/ui/StateNotice";
@@ -7,6 +8,7 @@ import { useCallback, useMemo, useRef, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
+  ChevronDown,
   Dna,
   Download,
   FileText,
@@ -124,7 +126,8 @@ function FileDownloadButton({ entry, root, directory }: { entry: DirEntry; root:
 interface FilesPageProps {onOpenFile?: (entry: DirEntry) => void; onClose?: () => void; scope?: WorkspaceScope;}
 export function FilesPage(props:FilesPageProps={}) {
   const routed=useInRouterContext();
-  return routed?<RoutedFilesPage {...props}/>:<FilesExplorer {...props} scope={props.scope??(isPlatformWeb?ACCOUNT_SCOPE:undefined)}/>;
+  const identity=useRuntimeStore(state=>isPlatformWeb?JSON.stringify([state.gatewayUser?.id,state.gatewayContext?.instanceId,state.gatewayContext?.generation]):'desktop');
+  return routed?<RoutedFilesPage key={identity} {...props}/>:<FilesExplorer key={identity} {...props} scope={props.scope??(isPlatformWeb?ACCOUNT_SCOPE:undefined)}/>;
 }
 function RoutedFilesPage(props:FilesPageProps) {
   const [query]=useSearchParams();
@@ -144,17 +147,19 @@ function FilesExplorer({
    *  has no title bar of its own and the pane adds none. */
   onClose?: () => void;
 } = {}) {
-  const { t } = useTranslation(["pages", "common"]);
+  const { t } = useTranslation(["pages", "common", "nav"]);
   const isMobile = useIsMobile();
   // Base-relative; "" = the base folder. Persisted client-side so returning to
   // Files continues from the directory the user was browsing.
-  const locationKey=scope?JSON.stringify(scope):GLOBAL_FILES_LOCATION;
+  const account=useRuntimeStore(state=>state.gatewayUser?.id);
+  const locationKey=scope?JSON.stringify([account,scope]):GLOBAL_FILES_LOCATION;
   const fileRoot=scope?"workspace":"base";
   const [dir, setDirState] = useState(() => rememberedDirectory(locationKey));
   const [entries, setEntries] = useState<DirEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<DirEntry | null>(null);
   const [canCreate,setCanCreate]=useState(false);
+  const [nextCursor,setNextCursor]=useState<string|null>(null),[loadingMore,setLoadingMore]=useState(false);const pageLock=useRef(false);
   // The base folder's path, for the root crumb (name + full path on hover).
   const [basePath, setBasePath] = useState<string | null>(null);
   useEffect(() => {
@@ -162,6 +167,7 @@ function FilesExplorer({
   }, []);
 
   const setDir = (next: string) => {
+    if(scope && !confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope))return;
     rememberDirectory(locationKey, next);
     setDirState(next);
   };
@@ -172,10 +178,11 @@ function FilesExplorer({
     setEntries(null);
     setError(null);
     setCanCreate(false);
+    setNextCursor(null);
     try {
       const managed=isGatewayWeb && scope?await workspaceEntries(scope,rel):null;
       const next=managed?managed.entries:await listDir(rel,"base");
-      if(managed && generation===loadGeneration.current){setBasePath(managed.directory);setCanCreate(managed.capabilities?.create===true);}
+      if(managed && generation===loadGeneration.current){setBasePath(managed.directory);setCanCreate(managed.capabilities?.create===true);setNextCursor(managed.nextCursor??null);}
       if (generation === loadGeneration.current) setEntries(next);
     } catch (e) {
       if (generation !== loadGeneration.current) return;
@@ -195,9 +202,23 @@ function FilesExplorer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     return () => { loadGeneration.current++; };
   }, [dir, load]);
-  const changed=()=>{setSelected(null);void load(dir);};
+  const changed=()=>{if(!scope || !hasWorkspaceDrafts(scope))setSelected(null);void load(dir);};
+  const loadMore=async()=>{
+    if(!scope || !nextCursor || pageLock.current)return;
+    const generation=loadGeneration.current,owner=useRuntimeStore.getState().gatewayUser?.id;pageLock.current=true;setLoadingMore(true);
+    try{const result=await workspaceEntries(scope,dir,nextCursor);if(generation===loadGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id){setEntries(previous=>[...(previous??[]).filter(entry=>!result.entries.some(next=>next.path===entry.path)),...result.entries]);setNextCursor(result.nextCursor??null);setError(null);}}
+    catch(error){if(generation===loadGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setError(error instanceof Error?error.message:String(error));}
+    finally{pageLock.current=false;if(generation===loadGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setLoadingMore(false);}
+  };
+  useEffect(()=>{
+    if(!scope)return;
+    const refresh=(event:Event)=>{const detail=(event as CustomEvent<{scope?:WorkspaceScope}>).detail;if(!detail?.scope || JSON.stringify(detail.scope)===JSON.stringify(scope)){if(!hasWorkspaceDrafts(scope))setSelected(null);void load(dir);}};
+    window.addEventListener('scikeel.workspace-files-updated',refresh);
+    return()=>window.removeEventListener('scikeel.workspace-files-updated',refresh);
+  },[scope,dir,load]);
 
   const open = (entry: DirEntry) => {
+    if(scope && selected && !confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope,selected.path))return;
     if (entry.isDir) {
       setSelected(null);
       setDir(entry.path);
@@ -303,13 +324,14 @@ function FilesExplorer({
               </div>
             </FileContextMenu>
           ))}
+          {nextCursor && <button type='button' disabled={loadingMore} aria-label={t('nav:fileManagement.loadMore')} title={t('nav:fileManagement.loadMore')} className='mx-auto mt-2 flex h-8 w-8 items-center justify-center rounded border border-border disabled:opacity-50' onClick={()=>void loadMore()}><ChevronDown size={15}/></button>}
         </div>
       </div>
 
       {!isTree && (
         <div className={cn("min-h-0 flex-1", isMobile && !selected && "hidden")}>
           {selected ? (
-            <FilePreview key={selected.path} entry={selected} root={fileRoot} workspaceDirectory={fileRoot==="workspace"?basePath??undefined:undefined} onClose={() => setSelected(null)} />
+            <FilePreview key={selected.path} entry={selected} root={fileRoot} workspaceScope={scope} workspaceDirectory={fileRoot==="workspace"?basePath??undefined:undefined} onClose={() => setSelected(null)} />
           ) : (
             <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted">
               {t("files.selectFilePrompt")}
@@ -327,12 +349,14 @@ function FilePreview({
   onClose,
   controls,
   workspaceDirectory,
+  workspaceScope,
 }: {
   entry: DirEntry;
   root: "workspace" | "base";
   onClose: () => void;
   controls?: React.ReactNode;
   workspaceDirectory?: string;
+  workspaceScope?: WorkspaceScope;
 }) {
   const ext = extOf(entry.name);
   if (ext === "ipynb")
@@ -351,6 +375,7 @@ function FilePreview({
       onClose={onClose}
       controls={controls}
       workspaceDirectory={workspaceDirectory}
+      workspaceScope={workspaceScope}
     />
   );
 }
@@ -361,7 +386,11 @@ function FilePreview({
  * the Files page itself is global). Clicking a file swaps the pane to its
  * preview; closing the preview returns to the list.
  */
-export function SessionFilesPane({
+export function SessionFilesPane(props:{sessionId:string;sessionDir?:string;onClose:()=>void;controls?:React.ReactNode}){
+  const identity=useRuntimeStore(state=>isPlatformWeb?JSON.stringify([state.gatewayUser?.id,state.gatewayContext?.instanceId,state.gatewayContext?.generation]):'desktop');
+  return <SessionFilesExplorer key={identity} {...props}/>;
+}
+function SessionFilesExplorer({
   sessionId,
   sessionDir,
   onClose,
@@ -373,17 +402,19 @@ export function SessionFilesPane({
   /** Pane-level header buttons (e.g. maximize), rendered before Close. */
   controls?: React.ReactNode;
 }) {
-  const { t } = useTranslation(["pages", "common"]);
+  const { t } = useTranslation(["pages", "common", "nav"]);
   const workspace = useRuntimeStore((s) => s.workspace);
   const scope=useMemo<WorkspaceScope>(()=>({kind:"session",sessionId}),[sessionId]);
   const [managedDirectory,setManagedDirectory]=useState<string|null>(null),[canCreate,setCanCreate]=useState(false);
   const directory=managedDirectory??sessionDir;
-  const locationKey = `session:${sessionId}`;
+  const account=useRuntimeStore(state=>state.gatewayUser?.id);
+  const locationKey = isPlatformWeb?JSON.stringify([account,'session',sessionId]):`session:${sessionId}`;
   const [dir, setDirState] = useState(() => rememberedDirectory(locationKey));
   const [entries, setEntries] = useState<DirEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<DirEntry | null>(null);
   const [reload, setReload] = useState(0);
+  const [nextCursor,setNextCursor]=useState<string|null>(null),[loadingMore,setLoadingMore]=useState(false);const pageLock=useRef(false),listingGeneration=useRef(0);
 
   const setDir = (next: string) => {
     setSelected(null);
@@ -393,11 +424,12 @@ export function SessionFilesPane({
 
   useEffect(() => {
     let cancelled = false;
+    listingGeneration.current++;setNextCursor(null);
     setEntries(null);
     setError(null);
     setCanCreate(false);
     const listing=isPlatformWeb?workspaceEntries(scope,dir).then(result=>{
-      if(!cancelled){setManagedDirectory(result.directory);setCanCreate(result.capabilities?.create===true);}return result.entries;
+      if(!cancelled){setManagedDirectory(result.directory);setCanCreate(result.capabilities?.create===true);setNextCursor(result.nextCursor??null);}return result.entries;
     }):listDir(dir, "workspace", sessionDir);
     listing
       .then((e) => {
@@ -419,6 +451,19 @@ export function SessionFilesPane({
     };
   }, [dir, locationKey, sessionDir, reload,scope]);
   const changed=()=>{setSelected(null);setReload(value=>value+1);};
+  const loadMore=async()=>{
+    if(!nextCursor || pageLock.current)return;
+    const generation=listingGeneration.current,owner=useRuntimeStore.getState().gatewayUser?.id;pageLock.current=true;setLoadingMore(true);
+    try{const result=await workspaceEntries(scope,dir,nextCursor);if(generation===listingGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id){setEntries(previous=>[...(previous??[]).filter(entry=>!result.entries.some(next=>next.path===entry.path)),...result.entries]);setNextCursor(result.nextCursor??null);setError(null);}}
+    catch(error){if(generation===listingGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setError(error instanceof Error?error.message:String(error));}
+    finally{pageLock.current=false;if(generation===listingGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setLoadingMore(false);}
+  };
+  useEffect(()=>{
+    if(!isPlatformWeb)return;
+    const refresh=(event:Event)=>{const detail=(event as CustomEvent<{scope?:WorkspaceScope}>).detail;if(!detail?.scope || JSON.stringify(detail.scope)===JSON.stringify(scope)){if(!hasWorkspaceDrafts(scope))setSelected(null);setReload(value=>value+1);}};
+    window.addEventListener('scikeel.workspace-files-updated',refresh);
+    return()=>window.removeEventListener('scikeel.workspace-files-updated',refresh);
+  },[scope]);
 
   if (selected) {
     return (
@@ -428,6 +473,7 @@ export function SessionFilesPane({
         onClose={() => setSelected(null)}
         controls={controls}
         workspaceDirectory={directory}
+        workspaceScope={isPlatformWeb?scope:undefined}
       />
     );
   }
@@ -507,6 +553,7 @@ export function SessionFilesPane({
             </div>
           </FileContextMenu>
         ))}
+        {nextCursor && <button type='button' disabled={loadingMore} aria-label={t('nav:fileManagement.loadMore')} title={t('nav:fileManagement.loadMore')} className='mx-auto mt-2 flex h-8 w-8 items-center justify-center rounded border border-border disabled:opacity-50' onClick={()=>void loadMore()}><ChevronDown size={15}/></button>}
       </div>
     </div>
   );

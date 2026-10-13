@@ -52,3 +52,8 @@ test('a two-MiB UTF-8 snapshot remains bounded after worst-case JSON escaping',a
  const result=await helper.call({operation:'readText',root:'workspace',path:'a'});
  assert.equal(result.text.length,2*1024**2);
 });
+test('staged text replacement binds both source and destination revisions',()=>{
+ const request={operation:'replaceTextFromStaging',root:'workspace',path:'.scikeel/workspace-management/staging/save-a/payload',destinationPath:'notes.md',expectedRevision:'a'.repeat(64),expectedSourceRevision:'b'.repeat(64)};
+ assert.deepEqual(fileRequest(request),request);
+ for(const change of [{expectedSourceRevision:undefined},{expectedRevision:'invalid'},{destinationPath:'../peer'},{path:'unrelated.txt'}])assert.throws(()=>fileRequest({...request,...change}));
+});

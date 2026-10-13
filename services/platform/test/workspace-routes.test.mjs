@@ -47,3 +47,9 @@ test('upload begin, status, commit and cancel dispatch with owner identity',asyn
  assert.deepEqual(calls.map(call=>call[0]),['begin','list','inspect','commit','cancel']);assert.ok(calls.every(call=>call[1]===context));
  const denied={};await routes.handle({method:'DELETE',url:'/api/workspace/uploads/'+id,headers:{host:'local',origin:'http://local'}},denied,{...context,readOnly:true});assert.equal(denied.status,403);
 });
+test('history retries use only an owned committed operation and never dispatch file mutations',async()=>{
+ const calls=[],files={retryHistory:async(...args)=>{calls.push(args);return {state:'committed'};}};
+ const routes=createWorkspaceRoutes({management:{},files,readJson:async request=>request.body,sendJson:(response,status,body)=>Object.assign(response,{status,body})});
+ const request={url:'/api/workspace/operations/owned/history',method:'POST',body:{operationId:'owned'},headers:{host:'local',origin:'http://local'}},context={userId:'a'},response={};await routes.handle(request,response,context);assert.equal(response.status,200);assert.deepEqual(calls[0],[context,'owned']);
+ const denied={};await routes.handle({...request,body:{operationId:'different'}},denied,context);assert.equal(denied.status,400);assert.equal(calls.length,1);
+});

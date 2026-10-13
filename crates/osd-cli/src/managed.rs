@@ -226,7 +226,7 @@ pub fn policy(value:&Value)->Result<ManagedFilePolicy,String> {
 }
 fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
     let object=value.as_object().ok_or("invalid file operation")?;
-    if object.keys().any(|key|!["operation","root","path","text","offset","limit","bytes","expectedRevision","destinationPath"].contains(&key.as_str())) || value["root"]!=WORKSPACE_ROOT {
+    if object.keys().any(|key|!["operation","root","path","text","offset","limit","bytes","expectedRevision","destinationPath","expectedSourceRevision"].contains(&key.as_str())) || value["root"]!=WORKSPACE_ROOT {
         return Err("invalid file operation".into());
     }
     let path=value["path"].as_str().ok_or("invalid file path")?;
@@ -236,6 +236,7 @@ fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
         Some("write"|"createText") => &["operation","root","path","text"],
         Some("saveTextIfRevision") => &["operation","root","path","text","expectedRevision"],
         Some("moveNoReplace") => &["operation","root","path","destinationPath","expectedRevision"],
+        Some("replaceTextFromStaging") => &["operation","root","path","destinationPath","expectedRevision","expectedSourceRevision"],
         _ => &["operation","root","path"],
     };
     if object.keys().any(|key| !allowed.contains(&key.as_str())) {return Err("invalid file fields".into());}
@@ -244,6 +245,7 @@ fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
         Some("readText") => serde_json::to_value(policy.workspace_read_text("workspace",path).map_err(management_error)?).map_err(|_|"invalid text response")?,
         Some("createText") => serde_json::to_value(policy.workspace_create_text("workspace",path,value["text"].as_str().ok_or("invalid file content")?).map_err(management_error)?).map_err(|_|"invalid text response")?,
         Some("saveTextIfRevision") => serde_json::to_value(policy.workspace_save_text("workspace",path,value["text"].as_str().ok_or("invalid file content")?,value["expectedRevision"].as_str().ok_or("missing revision")?).map_err(management_error)?).map_err(|_|"invalid text response")?,
+        Some("replaceTextFromStaging") => serde_json::to_value(policy.workspace_replace_text("workspace",path,value["destinationPath"].as_str().ok_or("missing destination")?,value["expectedRevision"].as_str().ok_or("missing revision")?,value["expectedSourceRevision"].as_str().ok_or("missing source revision")?).map_err(management_error)?).map_err(|_|"invalid text response")?,
         Some("moveNoReplace") => serde_json::to_value(policy.workspace_move("workspace",path,value["destinationPath"].as_str().ok_or("missing destination")?,value["expectedRevision"].as_str().ok_or("missing revision")?).map_err(management_error)?).map_err(|_|"invalid stat response")?,
         Some("readChunk") => {
             let offset=value["offset"].as_u64().ok_or("invalid chunk offset")?;

@@ -74,6 +74,7 @@ export class WorkspaceManagement {
         return prior;
       }
       if(input.expectedRevision!==project.revision)throw workspaceError('revision_conflict');
+      if(Object.values((await this.state.open(context.userId)).operations).some(operation=>operation.input?.kind==='file' && operation.receipt.state==='pending'))throw workspaceError('operation_pending');
       const prefix=project.path.slice(this.tenantPolicy.account(context).workspaceDir.length+1);
       if(Object.values((await this.state.open(context.userId)).uploads??{}).some(upload=>!['cancelled','committed'].includes(upload.state) && (upload.destination===prefix || upload.destination.startsWith(prefix+'/'))))throw workspaceError('upload_pending');
       return this.state.project(context.userId,input.operationId,{kind:'trash',project});
@@ -108,7 +109,7 @@ export class WorkspaceManagement {
     await this.assertAccessible(context,directory+(path?'/'+path:''));
     const query=new URLSearchParams({root:'workspace',path,dir:directory});
     const entries=await this.gateway(context,`/v1/fs/list?${query}`);
-    if(!Array.isArray(entries))throw workspaceError('files_unavailable',503);
+    if(!Array.isArray(entries) || entries.length>10000)throw workspaceError('files_unavailable',503);
     const visible=[];
     for(const entry of entries){
       try{await this.assertAccessible(context,directory+'/'+entry.path);visible.push(entry);}

@@ -8,6 +8,7 @@ export function fileRequest(value) {
     readChunk:["operation","root","path","offset","limit"], writeChunk:["operation","root","path","offset","bytes"],
     stat:["operation","root","path"],readText:["operation","root","path"],createText:["operation","root","path","text"],
     moveNoReplace:["operation","root","path","destinationPath","expectedRevision"],
+    replaceTextFromStaging:["operation","root","path","destinationPath","expectedRevision","expectedSourceRevision"],
     saveTextIfRevision:["operation","root","path","text","expectedRevision"] };
   const allowed = fields[value?.operation];
   if (!value || typeof value !== "object" || Array.isArray(value) || !allowed || Object.keys(value).some(key => !allowed.includes(key)) ||
@@ -15,8 +16,9 @@ export function fileRequest(value) {
       value.path.startsWith("/") || posix.normalize(value.path || ".") !== (value.path || ".") || value.path.split("/").some(part => part === "..") ||
       (value.operation === "write" && (typeof value.text !== "string" || Buffer.byteLength(value.text) > 1024 ** 2)) ||
       (["createText","saveTextIfRevision"].includes(value.operation) && (typeof value.text!=="string" || value.text.includes('\0') || Buffer.byteLength(value.text)>2*1024**2)) ||
-      (["moveNoReplace","saveTextIfRevision"].includes(value.operation) && !/^[a-f0-9]{64}$/.test(value.expectedRevision??"")) ||
-      (value.operation==="moveNoReplace" && (typeof value.destinationPath!=="string" || !value.destinationPath || value.destinationPath.length>4096 || /[\0\\]/.test(value.destinationPath) || value.destinationPath.startsWith("/") || posix.normalize(value.destinationPath)!==value.destinationPath || value.destinationPath.split("/").some(part=>["",".",".."].includes(part)))) ||
+      (["moveNoReplace","saveTextIfRevision","replaceTextFromStaging"].includes(value.operation) && !/^[a-f0-9]{64}$/.test(value.expectedRevision??"")) ||
+      (value.operation==='replaceTextFromStaging' && (!/^[a-f0-9]{64}$/.test(value.expectedSourceRevision??'') || !value.path.startsWith('.scikeel/workspace-management/staging/') || !value.path.endsWith('/payload'))) ||
+      (["moveNoReplace","replaceTextFromStaging"].includes(value.operation) && (typeof value.destinationPath!=="string" || !value.destinationPath || value.destinationPath.length>4096 || /[\0\\]/.test(value.destinationPath) || value.destinationPath.startsWith("/") || posix.normalize(value.destinationPath)!==value.destinationPath || value.destinationPath.split("/").some(part=>["",".",".."].includes(part)))) ||
       (["readChunk","writeChunk"].includes(value.operation) && (!Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > 25*1024**2)) ||
       (value.operation === "readChunk" && (!Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 256*1024)) ||
       (value.operation === "writeChunk" && (!Array.isArray(value.bytes) || value.bytes.length > 256*1024 || value.offset+value.bytes.length > 25*1024**2 ||

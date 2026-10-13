@@ -111,6 +111,10 @@ test('rename is limited to its parent and rejects non-portable or oversized name
  }
  assert.equal(f.moves(),0);assert.deepEqual((await f.state.open('a')).operations,{});
 });
+test('scoped paths include their trusted prefix within native RPC bounds and reject malformed Unicode',async t=>{
+ const f=await fixture(t),path=Array(16).fill('x'.repeat(240)).join('/')+'/'+ 'y'.repeat(230);assert.ok(Buffer.byteLength(path)<=4096);assert.ok(Buffer.byteLength('projects/study/'+path)>4096);
+ await assert.rejects(f.files.target(f.context,f.scope,path),{code:'invalid_name'});await assert.rejects(f.files.target(f.context,f.scope,'\ud800'),{code:'invalid_name'});assert.deepEqual((await f.state.open('a')).operations,{});
+});
 test('reconciliation obeys the runner single-file-RPC admission contract',async t=>{
  const f=await fixture(t);const call=f.native.call;let running=false;
  f.native.call=async(...args)=>{
@@ -154,4 +158,18 @@ test('a proven native collision is terminal and does not block unrelated subsequ
  f.native.call=call;await f.files.confirmPending(f.context);
  await f.files.operate(f.context,{scope:f.scope,operationId:'rename-b',operation:{...input.operation,destinationPath:'other.txt'}});
  await assert.rejects(f.files.operate(f.context,input),{code:'name_conflict'});assert.equal(f.moves(),1);
+});
+test('a committed file mutation reports failed history without replaying the saved payload',async t=>{
+ const f=await fixture(t);let history=0;f.files.provenance={record:async()=>{history++;throw new Error('history unavailable');}};
+ const input={scope:f.scope,operationId:'rename-a',operation:{kind:'rename',path:'result.txt',destinationPath:'renamed.txt',expectedRevision:'a'.repeat(64)}};
+ const receipt=await f.files.operate(f.context,input);assert.equal(receipt.state,'committed');assert.equal(receipt.result.warning,'history_failed');assert.equal(f.moves(),1);assert.equal(history,1);
+ const pending=await f.files.pending(f.context);assert.equal(pending.items[0].code,'history_failed');assert.equal(pending.items[0].retry.path,'/api/workspace/operations/rename-a/history');
+ f.files.provenance={record:async()=>{history++;}};
+ assert.equal(typeof f.files.retryHistory,'function');const retried=await f.files.retryHistory(f.context,'rename-a');assert.equal(retried.state,'committed');assert.equal(retried.result.warning,undefined);assert.equal(f.moves(),1);assert.equal(history,2);
+});
+test('lost native mutation replies record history once after identity reconciliation',async t=>{
+ const f=await fixture(t);let history=0;f.files.provenance={record:async()=>{history++;}};f.loseReply();
+ await assert.rejects(f.files.operate(f.context,{scope:f.scope,operationId:'rename-a',operation:{kind:'rename',path:'result.txt',destinationPath:'renamed.txt',expectedRevision:'a'.repeat(64)}}));
+ assert.equal((await f.files.receipt(f.context,'rename-a')).state,'committed');assert.equal(history,1);assert.equal(f.moves(),1);
+ await f.files.receipt(f.context,'rename-a');assert.equal(history,1);
 });

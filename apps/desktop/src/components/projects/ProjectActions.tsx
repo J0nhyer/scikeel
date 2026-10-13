@@ -10,6 +10,7 @@ import {hasParkedDraft} from '@/lib/composerStash';
 import {hasPendingComposerAttachments} from '@/components/thread/useComposerAttachments';
 import {listWorkspaceProjects,patchWorkspaceProject,trashWorkspaceProject,workspaceOperationId,WorkspaceRequestError} from '@/lib/workspaceManagement';
 import {NameProjectDialog} from './NameProjectDialog';
+import {hasWorkspaceDraftInDirectory} from '@/lib/workspaceDrafts';
 
 export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNewSession?:()=>void}) {
   const {t}=useTranslation(['nav','common']);const navigate=useNavigate();
@@ -36,6 +37,7 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
     lastName.current=name;void run(()=>patchWorkspaceProject(project.id,{name},operation.current));
   };
   const trash=async()=>{
+    if(hasWorkspaceDraftInDirectory(project.path))throw new Error(t('fileManagement.finishDraft'));
     const state=useRuntimeStore.getState();
     const belongs=(directory?:string)=>directory===project.path || directory?.startsWith(project.path+'/');
     const sessionIds=new Set(state.sessions.filter(session=>belongs(session.directory)).map(session=>session.id));

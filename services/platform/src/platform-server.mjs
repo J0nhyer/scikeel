@@ -5,6 +5,7 @@ import { WorkspaceState, workspaceError } from "./workspace-state.mjs";
 import { WorkspaceAdmission } from "./workspace-admission.mjs";
 import { WorkspaceFiles } from "./workspace-files.mjs";
 import { WorkspaceUploads } from "./workspace-uploads.mjs";
+import { WorkspaceProvenance } from "./workspace-provenance.mjs";
 import { WorkspaceManagement } from "./workspace-management.mjs";
 import { WorkspaceTickets } from "./workspace-tickets.mjs";
 import { createWorkspaceRoutes } from "./workspace-routes.mjs";
@@ -429,6 +430,7 @@ export class PlatformServer {
         const context=await resolveContext(userId);await this.workspaceManagement.assertAccessible(context,directory);
       };
       if(workspaceFiles)this.workspaceFiles=new WorkspaceFiles({management:this.workspaceManagement,native:workspaceFiles,state:this.workspaceManagement.state,tenantPolicy,admission:this.workspaceAdmission});
+      if(this.workspaceFiles)this.workspaceFiles.provenance=new WorkspaceProvenance({files:this.workspaceFiles});
       if(this.workspaceFiles)this.workspaceUploads=new WorkspaceUploads({state:this.workspaceManagement.state,files:this.workspaceFiles,management:this.workspaceManagement,quota:async context=>{
         tenantPolicy.account(context);
         const inspected=await workerManager.client?.inspect({instanceId:context.instanceId},{timeoutMs:3000});

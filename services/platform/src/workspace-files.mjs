@@ -1,6 +1,7 @@
 import {posix} from 'node:path';
 import {workspaceError,workspaceHash} from './workspace-state.mjs';
 import {relativeInput} from './tenant-policy.mjs';
+import {workspacePage} from './workspace-pages.mjs';
 
 const PRIVATE='.scikeel/workspace-management';
 const reserved=new Set(['.git','.openscience','.scikeel']);
@@ -18,9 +19,10 @@ export class WorkspaceFiles {
  }
  async target(context,scope,path,{mutate=true}={}){
   relativeInput(path);
-  if(Buffer.byteLength(path)>4096 || path.split('/').some(part=>Buffer.byteLength(part)>240 || /[\x00-\x1f\x7f<>:"|?*]/.test(part) || /[. ]$/.test(part) || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part)))throw workspaceError('invalid_name',400);
+  if(Buffer.byteLength(path)>4096 || Buffer.from(path).toString('utf8')!==path || path.split('/').some(part=>Buffer.byteLength(part)>240 || /[\x00-\x1f\x7f<>:"|?*]/.test(part) || /[. ]$/.test(part) || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part)))throw workspaceError('invalid_name',400);
   if(path.split('/').some(part=>reserved.has(part)))throw workspaceError('protected_path',403);
   const owned=await this.scope(context,scope);const relative=owned.prefix?owned.prefix+'/'+path:path;
+  if(Buffer.byteLength(relative)>4095)throw workspaceError('invalid_name',400);
   await this.management.assertAccessible(context,owned.directory+'/'+path);
   if(mutate){
    const roots=await this.management.roots(context);
@@ -39,9 +41,10 @@ export class WorkspaceFiles {
   if(!parent?.isDir)throw workspaceError('parent_missing',409);
  }
  async #reconcile(context,operationId,record){
-  if(record.receipt.state!=='pending')return record.receipt;
+  if(record.receipt.state!=='pending')return this.#history(context,operationId);
   const recovery=record.recovery;if(!recovery)throw workspaceError('operation_uncertain',503);
   const source=await this.stat(context,recovery.source),destination=await this.stat(context,recovery.destination);
+  if(record.input.operation?.kind==='saveText')return this.#reconcileText(context,operationId,record,source,destination);
   if(recovery.phase==='staging'){
    if(!source && !destination)return record.receipt;
    if(!source || destination || source.isDir!==recovery.isDir)throw workspaceError('operation_uncertain',503);
@@ -51,12 +54,56 @@ export class WorkspaceFiles {
    return record.receipt;
   }
   if(!source && destination?.identity===recovery.identity){
-   return this.state.completeFile(context.userId,operationId,{...recovery.result,identity:destination.identity,revision:destination.revision},recovery.entry);
+   await this.state.completeFile(context.userId,operationId,{...recovery.result,identity:destination.identity,revision:destination.revision},recovery.entry);
+   return this.#history(context,operationId);
   }
   if(source?.identity===recovery.identity && source.revision===recovery.revision && destination && destination.identity!==recovery.identity)return this.state.fail(context.userId,operationId,'name_conflict',409);
   // A read/receipt never guesses by replaying a native mutation.
   if(source?.identity===recovery.identity && source.revision===recovery.revision && !destination)return record.receipt;
   throw workspaceError('operation_uncertain',503);
+ }
+ async #reconcileText(context,operationId,record,source,destination){
+  const recovery=record.recovery;
+  if(recovery.phase==='staging'){
+   if(!destination || destination.identity!==recovery.originalIdentity)return this.state.fail(context.userId,operationId,'revision_conflict',409);
+   const current=await this.native.call(context,{operation:'readText',root:'workspace',path:recovery.destination});
+   if(current.revision!==record.input.operation.expectedRevision)return this.state.fail(context.userId,operationId,'revision_conflict',409);
+   if(!source)return record.receipt;
+   if(source.isDir)throw workspaceError('operation_uncertain',503);
+   const staged=await this.native.call(context,{operation:'readText',root:'workspace',path:recovery.source});
+   if(workspaceHash(staged.text)!==recovery.contentHash)throw workspaceError('operation_uncertain',503);
+   await this.state.recovery(context.userId,operationId,{...recovery,phase:'prepared',identity:source.identity,revision:source.revision});
+   return record.receipt;
+  }
+  if(!source && destination?.identity===recovery.identity){
+   const saved=await this.native.call(context,{operation:'readText',root:'workspace',path:recovery.destination});
+   if(workspaceHash(saved.text)!==recovery.contentHash)throw workspaceError('operation_uncertain',503);
+   await this.state.completeFile(context.userId,operationId,{...recovery.result,identity:destination.identity,revision:saved.revision});
+   return this.#history(context,operationId);
+  }
+  if(source?.identity!==recovery.identity || source.revision!==recovery.revision)throw workspaceError('operation_uncertain',503);
+  if(!destination || destination.identity!==recovery.originalIdentity)return this.state.fail(context.userId,operationId,'revision_conflict',409);
+  const current=await this.native.call(context,{operation:'readText',root:'workspace',path:recovery.destination});
+  if(current.revision!==record.input.operation.expectedRevision)return this.state.fail(context.userId,operationId,'revision_conflict',409);
+  return record.receipt;
+ }
+ async #history(context,operationId,retry=false){
+  const record=(await this.state.open(context.userId)).operations[operationId];
+  if(!record)throw workspaceError('operation_not_found',404);
+  if(!this.provenance || record.input?.kind!=='file' || record.receipt.state!=='committed' || record.history==='recorded' || record.history==='failed' && !retry)return record.receipt;
+  try{
+   await this.state.update(context.userId,data=>{data.operations[operationId].history='pending';});
+   await this.admission.mutate(context.userId,()=>this.provenance.record(context,operationId,record));
+   return await this.state.update(context.userId,data=>{const operation=data.operations[operationId];operation.history='recorded';if(operation.receipt.result?.warning==='history_failed')delete operation.receipt.result.warning;return operation.receipt;});
+  }catch{
+   const receipt={...record.receipt,result:{...record.receipt.result,warning:'history_failed'}};
+   try{await this.state.update(context.userId,data=>{const operation=data.operations[operationId];operation.history='failed';operation.receipt=receipt;});}catch{/* The payload remains committed even when metadata storage is full. */}
+   return receipt;
+  }
+ }
+ async retryHistory(context,operationId){
+  this.tenantPolicy.account(context);
+  return this.admission.start(context.userId,()=>this.#history(context,operationId,true));
  }
  async receipt(context,operationId){
   this.tenantPolicy.account(context);
@@ -70,7 +117,7 @@ export class WorkspaceFiles {
   const data=await this.state.open(context.userId);
   for(const [id,record]of Object.entries(data.operations))if(id!==except && record.input?.kind==='file' && record.receipt.state==='pending'){
    const receipt=await this.#reconcile(context,id,record);
-   if(receipt.state!=='committed')throw workspaceError('operation_pending',409);
+   if(receipt.state==='pending')throw workspaceError('operation_pending',409);
   }
  }
  async confirmPending(context){
@@ -79,7 +126,7 @@ export class WorkspaceFiles {
  }
  async #move(context,operationId,input,recovery){
   const prepared=await this.state.prepare(context.userId,operationId,input,recovery);
-  if(prepared.state==='committed')return prepared;
+  if(prepared.state==='committed')return this.#history(context,operationId);
   if(prepared.state==='failed')throw workspaceError(prepared.error.code,prepared.error.statusCode);
   const record=(await this.state.open(context.userId)).operations[operationId];
   if(record.recovery){
@@ -95,18 +142,20 @@ export class WorkspaceFiles {
    }
    throw workspaceError('operation_uncertain',503);
   }
-  return this.state.completeFile(context.userId,operationId,{...recovery.result,identity:result.identity,revision:result.revision},recovery.entry);
+  await this.state.completeFile(context.userId,operationId,{...recovery.result,identity:result.identity,revision:result.revision},recovery.entry);
+  return this.#history(context,operationId);
  }
  async operate(context,input){
   if(!input || Object.keys(input).some(key=>!['scope','operation','operationId'].includes(key)))throw workspaceError('invalid_operation',400);
   const {operation,operationId,scope}=input;
   const create=['createFile','createDirectory'].includes(operation?.kind);
-  const allowed=create?(operation.kind==='createFile'?['kind','path','text']:['kind','path']):['kind','path','destinationPath','expectedRevision'];
-  if(!operation || !['trash','move','rename','createFile','createDirectory'].includes(operation.kind) || Object.keys(operation).some(key=>!allowed.includes(key)) || (!create && !/^[a-f0-9]{64}$/.test(operation.expectedRevision??'')))throw workspaceError('invalid_operation',400);
+  const allowed=create?(operation.kind==='createFile'?['kind','path','text']:['kind','path']):operation?.kind==='saveText'?['kind','path','text','expectedRevision']:['kind','path','destinationPath','expectedRevision'];
+  if(!operation || !['trash','move','rename','createFile','createDirectory','saveText'].includes(operation.kind) || Object.keys(operation).some(key=>!allowed.includes(key)) || (!create && !/^[a-f0-9]{64}$/.test(operation.expectedRevision??'')))throw workspaceError('invalid_operation',400);
   this.tenantPolicy.account(context);
   return this.admission.mutate(context.userId,async()=>{
    await this.#pending(context,operationId);
    if(create)return this.#create(context,input);
+   if(operation.kind==='saveText')return this.#saveText(context,input);
    const normalized={kind:'file',scope,operation};
    const prior=(await this.state.open(context.userId)).operations[operationId];
    if(prior){if(prior.hash!==workspaceHash(normalized))throw workspaceError('operation_conflict');await this.scope(context,scope);return this.#move(context,operationId,normalized,prior.recovery);}
@@ -133,14 +182,90 @@ export class WorkspaceFiles {
    return this.#move(context,operationId,normalized,recovery);
   });
  }
+ async text(context,scope,path){
+  this.tenantPolicy.account(context);
+  return this.admission.start(context.userId,async()=>{
+   await this.#pending(context);
+   const target=await this.target(context,scope,path,{mutate:false}),stat=await this.stat(context,target.path);
+   if(!stat)throw workspaceError('entry_not_found',404);
+   if(stat.isDir)throw workspaceError('entry_unavailable',403);
+   if(stat.size>2*1024**2)throw workspaceError('text_too_large',413);
+   const snapshot=await this.native.call(context,{operation:'readText',root:'workspace',path:target.path});
+   if(typeof snapshot.text!=='string' || snapshot.text.includes('\0') || Buffer.byteLength(snapshot.text)>2*1024**2 || !/^[a-f0-9]{64}$/.test(snapshot.revision??''))throw workspaceError('entry_unavailable',403);
+   return {text:snapshot.text,revision:snapshot.revision};
+  });
+ }
+ async resumeText(context,operationId){
+  this.tenantPolicy.account(context);
+  return this.admission.mutate(context.userId,async()=>{
+   const record=(await this.state.open(context.userId)).operations[operationId];
+   if(!record || record.input?.kind!=='file' || record.input.operation?.kind!=='saveText')throw workspaceError('operation_not_found',404);
+   await this.scope(context,record.input.scope);
+   const receipt=await this.#reconcile(context,operationId,record);
+   if(receipt.state==='committed')return receipt;
+   if(receipt.state==='failed')throw workspaceError(receipt.error.code,receipt.error.statusCode);
+   const recovery=(await this.state.open(context.userId)).operations[operationId].recovery;
+   if(recovery.phase!=='prepared')throw workspaceError('operation_uncertain',503);
+   const snapshot=await this.native.call(context,{operation:'readText',root:'workspace',path:recovery.source});
+   if(workspaceHash(snapshot.text)!==recovery.contentHash)throw workspaceError('operation_uncertain',503);
+   const {kind,path,expectedRevision}=record.input.operation;
+   return this.operate(context,{scope:record.input.scope,operationId,operation:{kind,path,expectedRevision,text:snapshot.text}});
+  });
+ }
+ async #saveText(context,{scope,operationId,operation}){
+  const {text,expectedRevision}=operation;
+  if(typeof text!=='string' || text.includes('\0'))throw workspaceError('invalid_text',400);
+  if(Buffer.byteLength(text)>2*1024**2)throw workspaceError('text_too_large',413);
+  if(Buffer.from(text).toString('utf8')!==text)throw workspaceError('invalid_text',400);
+  const target=await this.target(context,scope,operation.path);
+  const contentHash=workspaceHash(text),normalized={kind:'file',scope,operation:{kind:'saveText',path:operation.path,contentHash,expectedRevision}};
+  const prior=(await this.state.open(context.userId)).operations[operationId];
+  if(prior && prior.hash!==workspaceHash(normalized))throw workspaceError('operation_conflict');
+  if(prior?.receipt.state==='committed')return this.#history(context,operationId);
+  if(prior?.receipt.state==='failed')throw workspaceError(prior.receipt.error.code,prior.receipt.error.statusCode);
+  let recovery=prior?.recovery;
+  if(!prior){
+   const stat=await this.stat(context,target.path);
+   if(!stat)throw workspaceError('entry_not_found',404);
+   if(stat.isDir || stat.size>2*1024**2)throw workspaceError('entry_unavailable',403);
+   const current=await this.native.call(context,{operation:'readText',root:'workspace',path:target.path});
+   if(current.revision!==expectedRevision)throw workspaceError('revision_conflict',409);
+   recovery={phase:'staging',source:`${PRIVATE}/staging/${workspaceHash({userId:context.userId,operationId}).slice(0,32)}/payload`,destination:target.path,isDir:false,originalIdentity:stat.identity,contentHash,result:{path:operation.path}};
+   await this.state.prepare(context.userId,operationId,normalized,recovery);
+  }
+  let record=(await this.state.open(context.userId)).operations[operationId];
+  let receipt=await this.#reconcile(context,operationId,record);
+  if(receipt.state==='committed')return receipt;
+  if(receipt.state==='failed')throw workspaceError(receipt.error.code,receipt.error.statusCode);
+  recovery=(await this.state.open(context.userId)).operations[operationId].recovery;
+  try{
+   if(recovery.phase==='staging'){
+    await this.native.call(context,{operation:'mkdirAll',root:'workspace',path:posix.dirname(recovery.source)});
+    if(!await this.stat(context,recovery.source))await this.native.call(context,{operation:'createText',root:'workspace',path:recovery.source,text});
+    record=(await this.state.open(context.userId)).operations[operationId];
+    receipt=await this.#reconcile(context,operationId,record);
+    if(receipt.state==='failed')throw workspaceError(receipt.error.code,receipt.error.statusCode);
+    recovery=(await this.state.open(context.userId)).operations[operationId].recovery;
+   }
+   const saved=await this.native.call(context,{operation:'replaceTextFromStaging',root:'workspace',path:recovery.source,destinationPath:recovery.destination,expectedRevision,expectedSourceRevision:recovery.revision});
+   await this.state.completeFile(context.userId,operationId,{...recovery.result,identity:recovery.identity,revision:saved.revision});
+  }catch(error){
+   if(error.code==='revision_conflict'){
+    const source=await this.stat(context,recovery.source);
+    if(source?.identity===recovery.identity){await this.state.fail(context.userId,operationId,error.code,409);throw error;}
+   }
+   throw workspaceError('operation_uncertain',503);
+  }
+  return this.#history(context,operationId);
+ }
  async #create(context,{scope,operationId,operation}){
   const isDir=operation.kind==='createDirectory';const text=isDir?'':operation.text;
-  if(!isDir && (typeof text!=='string' || text.includes('\0') || Buffer.byteLength(text)>2*1024**2))throw workspaceError('invalid_text',400);
+  if(!isDir && (typeof text!=='string' || text.includes('\0') || Buffer.byteLength(text)>2*1024**2 || Buffer.from(text).toString('utf8')!==text))throw workspaceError('invalid_text',400);
   const target=await this.target(context,scope,operation.path);
   const normalized={kind:'file',scope,operation:{kind:operation.kind,path:operation.path,...(!isDir?{contentHash:workspaceHash(text)}:{})}};
   const prior=(await this.state.open(context.userId)).operations[operationId];
   if(prior && prior.hash!==workspaceHash(normalized))throw workspaceError('operation_conflict');
-  if(prior?.receipt.state==='committed')return prior.receipt;
+  if(prior?.receipt.state==='committed')return this.#history(context,operationId);
   if(!prior && await this.stat(context,target.path))throw workspaceError('name_conflict');
   if(!prior)await this.parent(context,target.path);
   const source=`${PRIVATE}/staging/${workspaceHash({userId:context.userId,operationId}).slice(0,32)}/payload`;
@@ -155,18 +280,45 @@ export class WorkspaceFiles {
   }
   return this.#move(context,operationId,normalized,recovery);
  }
- async entries(context,scope,path=''){
+ async entries(context,scope,path='',pagination={}){
   return this.admission.start(context.userId,async()=>{
    await this.#pending(context);const listed=await this.management.entries(context,scope,path);const owned=await this.scope(context,scope);
-   const entries=[];
-   for(const entry of listed.entries){
+   const page=workspacePage(listed.entries,pagination,{userId:context.userId,scope,path},entry=>entry.path),entries=[];
+   for(const entry of page.items){
     relativeInput(entry.path);const relative=owned.prefix?owned.prefix+'/'+entry.path:entry.path;
     const stat=await this.stat(context,relative);if(!stat)continue;
     const capabilities=stat.isDir?[]:['preview','download'];
     try{await this.target(context,scope,entry.path);if(!context.readOnly)capabilities.push('rename','move','trash');}catch(error){if(error.code!=='protected_path')throw error;}
     entries.push({...entry,revision:stat.revision,capabilities});
    }
-   return {...listed,entries,capabilities:{create:!context.readOnly}};
+   return {...listed,entries,nextCursor:page.nextCursor,capabilities:{create:!context.readOnly}};
+  });
+ }
+ async pending(context,{limit=100,cursor}={}){
+  this.tenantPolicy.account(context);
+  if(!Number.isSafeInteger(limit) || limit<1 || limit>100 || (cursor!==undefined && (typeof cursor!=='string' || !/^[A-Za-z0-9_-]{1,128}$/.test(cursor))))throw workspaceError('invalid_input',400);
+  return this.admission.start(context.userId,async()=>{
+   const data=await this.state.open(context.userId);
+   const records=Object.entries(data.operations).filter(([id,record])=>(record.receipt.state==='pending' || record.receipt.state==='committed' && ['pending','failed'].includes(record.history)) && ['file','patchProject'].includes(record.input?.kind) && (cursor===undefined || id>cursor)).sort(([a],[b])=>a<b?-1:a>b?1:0);
+   const page=records.slice(0,limit),items=[],resolved=[];
+   for(const [operationId,record]of page){
+    let receipt,code;
+    try{receipt=await this.receipt(context,operationId);}catch{receipt=record.receipt;code='operation_uncertain';}
+    if(receipt?.state!=='pending' && receipt?.result?.warning!=='history_failed'){resolved.push({operationId,receipt,path:record.input.operation?.path??record.input.id,...(record.input.scope?{scope:record.input.scope}:{})});continue;}
+    const input=record.input,operation=input.operation;let retry=null;
+    if(receipt?.state==='committed' && receipt.result?.warning==='history_failed'){code='history_failed';retry={method:'POST',path:'/api/workspace/operations/'+operationId+'/history',body:{operationId}};}
+    else if(!code){
+     if(input.kind==='patchProject' && /^[a-f0-9]{16}$/.test(input.id))retry={method:'PATCH',path:'/api/workspace/projects/'+input.id,body:{...input.patch,operationId}};
+     else if(['rename','move','trash','createDirectory'].includes(operation?.kind))retry={method:'POST',path:'/api/workspace/operations',body:{scope:input.scope,operation,operationId}};
+     else if(operation?.kind==='createFile' && operation.contentHash===workspaceHash(''))retry={method:'POST',path:'/api/workspace/operations',body:{scope:input.scope,operation:{kind:'createFile',path:operation.path,text:''},operationId}};
+     else if(operation?.kind==='restore' && /^[a-f0-9]{32}$/.test(operation.id))retry={method:'POST',path:'/api/workspace/trash/'+operation.id+'/restore',body:{operationId,destinationPath:operation.path}};
+     else if(operation?.kind==='upload' && /^[a-f0-9]{32}$/.test(operation.id))retry={method:'POST',path:'/api/workspace/uploads/'+operation.id+'/commit',body:{operationId}};
+     else if(operation?.kind==='saveText' && (await this.state.open(context.userId)).operations[operationId].recovery?.phase==='prepared')retry={method:'POST',path:'/api/workspace/operations/'+operationId+'/resume',body:{operationId}};
+    }
+    items.push({operationId,receipt,path:operation?.path??input.patch?.name??input.id??operationId,...(input.scope?{scope:input.scope}:{}),retry,...(code?{code}:{})});
+   }
+   this.tenantPolicy.account(context);
+   return {items,resolved,nextCursor:records.length>limit?page.at(-1)[0]:null};
   });
  }
  async publishUpload(context,{id,operationId,sha256,expectedRevision}){
