@@ -114,14 +114,15 @@ export function liveWorkspaceHeaders(headers, runtime) {
       !Number.isSafeInteger(context.generation) || context.generation < 1) throw new Error('Required live workspace context is unavailable');
   return { ...headers, 'x-scikeel-runtime-generation': String(context.generation) };
 }
-async function liveOpenCode(production) {
-  const client = await sessionClient(production); let sessionId;
+export async function liveOpenCode(production, { connect = sessionClient, request = fetch } = {}) {
+  const client = await connect(production); let sessionId;
   async function json(path, options = {}) {
-    const response = await fetch(client.origin + path, { headers: client.headers, signal: AbortSignal.timeout(150000), ...options });
+    const response = await request(client.origin + path, { headers: client.headers, signal: AbortSignal.timeout(150000), ...options });
     if (!response.ok) throw new Error('Required live OpenCode request failed');
     return response.status === 204 ? null : response.json();
   }
   try {
+    await json('/v1/whoami');
     const runtime = await json('/api/runtime');
     if (runtime.runtime !== 'opencode') throw new Error('Required live runtime is not OpenCode');
     client.headers = liveWorkspaceHeaders(client.headers, runtime);
@@ -132,7 +133,7 @@ async function liveOpenCode(production) {
     const session = await json('/session', { method: 'POST', body: JSON.stringify({ title: 'Web release transport verification' }) });
     sessionId = session.id;
     if (!/^ses_[A-Za-z0-9]+$/.test(sessionId)) throw new Error('Unexpected verification session identity');
-    const heartbeat = await fetch(client.origin + '/api/collaboration/' + sessionId, { method: 'POST', headers: client.headers,
+    const heartbeat = await request(client.origin + '/api/collaboration/' + sessionId, { method: 'POST', headers: client.headers,
       body: JSON.stringify({ action: 'heartbeat', pageId: 'web-release-verification' }), signal: AbortSignal.timeout(10000) });
     if (!heartbeat.ok && heartbeat.status !== 404) throw new Error('Verification heartbeat failed');
     const expected = 'SCIKEEL_WEB_RELEASE_OK';

@@ -426,6 +426,27 @@ test('live gate captures a verified generation for all workspace mutations', asy
   for (const context of [null, {}, { instanceId: '../foreign', generation: 1 }, { instanceId: 'user-fixture', generation: 0 }, { instanceId: 'user-fixture', generation: '2' }])
     assert.throws(() => liveWorkspaceHeaders(headers, { context }), /workspace context/);
 });
+test('cold live verification acquires workspace identity before context and never writes without it', async () => {
+  const { liveOpenCode } = await import('./web-release-deploy.mjs');
+  const calls = []; let initialized = false; let closed = 0; let identityStatus = 200;
+  const connect = async () => ({ origin: 'http://fixture', headers: { accept: 'application/json' }, close: async () => { closed++; } });
+  const request = async (url, options) => {
+    const path = new URL(url).pathname; calls.push({ path, method: options?.method ?? 'GET', headers: options?.headers });
+    if (path === '/v1/whoami') { initialized = true; return Response.json({ directory: '/fixture/workspace', mode: 'full' }, { status: identityStatus }); }
+    const body = path === '/api/runtime' ? { runtime: 'opencode', context: initialized ? { instanceId: 'user-fixture', generation: 2 } : null }
+      : path === '/provider' ? { all: [{ id: 'opencode', models: { 'big-pickle': {} } }], connected: ['opencode'] }
+      : path === '/session' ? { id: 'ses_fixture' }
+      : path.endsWith('/message') ? [{ info: { role: 'assistant', time: { completed: 1 } }, parts: [{ type: 'text', text: 'SCIKEEL_WEB_RELEASE_OK' }] }] : {};
+    return Response.json(body);
+  };
+  assert.equal((await liveOpenCode({}, { connect, request })).status, 'passed');
+  assert.deepEqual(calls.slice(0, 2).map(call => call.path), ['/v1/whoami', '/api/runtime']);
+  assert(calls.filter(call => call.method === 'POST').every(call => call.headers['x-scikeel-runtime-generation'] === '2'));
+  assert.equal(closed, 1);
+  calls.length = 0; initialized = false; identityStatus = 502;
+  await assert.rejects(liveOpenCode({}, { connect, request }), /request failed/);
+  assert.deepEqual(calls.map(call => call.path), ['/v1/whoami']); assert.equal(closed, 2);
+});
 test('live gate uses asynchronous Web transport and requires completed history after a slow model reply',async()=>{
  let clock=0;const writes=[];
  const json=async(path,options)=>{
