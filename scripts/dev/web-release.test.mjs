@@ -353,6 +353,7 @@ test('session verification includes recovery even when continuity already exists
   await mkdir(desktop, { recursive: true });
   await writeFile(join(desktop, 'webNotifications.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webProjects.acceptance.test.mjs'), 'fixture');
+  await writeFile(join(desktop, 'webProjectFiles.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webSessionContinuity.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webRuntimeRecovery.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webAccountRecovery.acceptance.test.mjs'), 'fixture');
@@ -373,6 +374,8 @@ test('session verification includes recovery even when continuity already exists
     assert(args.includes('src/test/webRuntimeRecovery.acceptance.test.mjs'));
     assert.equal(environment.OSD_NOTIFICATIONS_ACCEPTANCE, '1');
     assert.equal(environment.OSD_PROJECTS_ACCEPTANCE, '1');
+    assert.equal(environment.OSD_PROJECT_FILES_ACCEPTANCE, '1');
+    assert(args.includes('src/test/webProjectFiles.acceptance.test.mjs'));
     assert.equal(environment.OSD_PROJECTS_WEB_ROOT, root);
     assert(args.includes('src/test/webProjects.acceptance.test.mjs'));
     assert(args.includes('src/test/webNotifications.acceptance.test.mjs'));
@@ -384,10 +387,13 @@ test('session verification includes recovery even when continuity already exists
     assert.equal(environment.OSD_TOOL_BROWSER, '1');
     assert.equal(environment.OSD_INTERACTION_BROWSER, '1');
     assert.equal(environment.OSD_COLLABORATION_BROWSER, '1');
-    await writeFile(join(root, 'browser-results.json'), JSON.stringify({ success: true, numPassedTests: 9, numPendingTests: 0 }));
+    await writeFile(join(root, 'browser-results.json'), JSON.stringify({ success: true, numPassedTests: 10, numPendingTests: 0 }));
   });
-  assert.equal(result.passedTests, 9);
+  assert.equal(result.passedTests, 10);
   assert(result.widths.includes(320));
+  await rm(join(desktop, 'webProjectFiles.acceptance.test.mjs'));
+  await assert.rejects(browserStage({ directory:root,source:{root},artifacts:{web:{directory:root}},selection:{browserGroups:[]} }), /project management browser scenario/);
+  await writeFile(join(desktop, 'webProjectFiles.acceptance.test.mjs'), 'fixture');
   await rm(join(desktop, 'webInteractionRecovery.acceptance.test.mjs'));
   await assert.rejects(browserStage({ directory: root, source: { root }, artifacts: { web: { directory: root } }, selection: { browserGroups: ['session'] } }), /interaction browser scenario/);
   await writeFile(join(desktop, 'webInteractionRecovery.acceptance.test.mjs'), 'fixture');

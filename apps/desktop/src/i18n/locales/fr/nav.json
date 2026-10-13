@@ -59,7 +59,20 @@
     "discardBody": "Le message non envoyé et les pièces jointes en attente seront abandonnés. Les conversations enregistrées et les fichiers du projet sont conservés.",
     "discardAction": "Abandonner et continuer",
     "entryFailed": "Projet créé, mais la conversation n’a pas pu être ouverte.",
-    "retryOpening": "Réessayer"
+    "retryOpening": "Réessayer",
+    "actionsAria": "Actions du projet : {{name}}",
+    "openFiles": "Ouvrir les fichiers",
+    "trash": "Mettre à la corbeille",
+    "trashTitle": "Mettre {{name}} à la corbeille ?",
+    "trashBody": "Les fichiers et conversations sont conservés. Restaurez le projet pour les utiliser. Les tâches en cours doivent terminer.",
+    "finishDraftBeforeTrash": "Terminez ou abandonnez les messages et transferts en attente de ce projet.",
+    "unavailable": "Projet indisponible.",
+    "trashHeading": "Corbeille",
+    "restore": "Restaurer",
+    "trashEmpty": "Aucun projet supprimé.",
+    "trashLoadFailed": "Impossible de charger la corbeille.",
+    "checkingState": "Vérification du projet…",
+    "trashedConversation": "Ce projet est dans la corbeille. Restaurez-le pour rouvrir cette conversation."
   },
   "history": {
     "heading": "Sessions",

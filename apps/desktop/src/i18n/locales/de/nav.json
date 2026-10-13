@@ -59,7 +59,20 @@
     "discardBody": "Ihre nicht gesendete Nachricht und ausstehenden Anhänge werden verworfen. Gespeicherte Unterhaltungen und Projektdateien bleiben erhalten.",
     "discardAction": "Verwerfen und fortfahren",
     "entryFailed": "Projekt erstellt, aber die Unterhaltung konnte nicht geöffnet werden.",
-    "retryOpening": "Erneut öffnen"
+    "retryOpening": "Erneut öffnen",
+    "actionsAria": "Projektaktionen: {{name}}",
+    "openFiles": "Dateien öffnen",
+    "trash": "In den Papierkorb",
+    "trashTitle": "{{name}} in den Papierkorb verschieben?",
+    "trashBody": "Dateien und Gespräche bleiben erhalten. Stellen Sie das Projekt wieder her, um sie zu verwenden. Laufende Aufgaben müssen zuerst abgeschlossen werden.",
+    "finishDraftBeforeTrash": "Schließen oder verwerfen Sie zuerst ungesendete Nachrichten und Uploads dieses Projekts.",
+    "unavailable": "Projekt ist nicht verfügbar.",
+    "trashHeading": "Papierkorb",
+    "restore": "Wiederherstellen",
+    "trashEmpty": "Keine gelöschten Projekte.",
+    "trashLoadFailed": "Papierkorb konnte nicht geladen werden.",
+    "checkingState": "Projektstatus wird geprüft…",
+    "trashedConversation": "Dieses Projekt ist im Papierkorb. Stellen Sie es wieder her, um das Gespräch zu öffnen."
   },
   "history": {
     "heading": "Sitzungen",

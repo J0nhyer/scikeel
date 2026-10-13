@@ -613,3 +613,15 @@ test("project sessions keep their directory and reject another account workspace
     await assert.rejects(manager.createSession({ userId: "usr_a", workspaceDir: workspace, directory: foreign }), /outside the user workspace/);
   } finally { await manager.close(); }
 });
+test('native runtime lifecycle hides trashed projects and denies owned direct access without deleting history',async()=>{
+ const {manager,root}=await makeManager('codex');
+ const workspace=join(root,'workspace');await mkdir(workspace,{recursive:true});
+ const session=await manager.createSession({userId:'usr_a',workspaceDir:workspace});
+ let trashed=true;
+ manager.workspaceAccess=async(userId,directory)=>{if(trashed && userId==='usr_a' && directory===session.directory)throw Object.assign(new Error('project trashed'),{status:409,code:'project_trashed'});};
+ assert.deepEqual(await manager.listSessions({userId:'usr_a'}),[]);
+ await assert.rejects(manager.getOwnedSession('usr_a',session.id),{code:'project_trashed'});
+ assert.equal((await manager.ensureUser('usr_a')).sessions.has(session.id),true);
+ trashed=false;assert.equal((await manager.getOwnedSession('usr_a',session.id)).session.id,session.id);
+ await manager.close();
+});

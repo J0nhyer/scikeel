@@ -59,7 +59,20 @@
     "discardBody": "未送信のメッセージと添付ファイルは破棄されます。保存済みの会話とプロジェクトファイルは保持されます。",
     "discardAction": "破棄して続行",
     "entryFailed": "プロジェクトを作成しましたが、会話を開けませんでした。",
-    "retryOpening": "もう一度開く"
+    "retryOpening": "もう一度開く",
+    "actionsAria": "プロジェクト操作: {{name}}",
+    "openFiles": "ファイルを開く",
+    "trash": "ゴミ箱に移動",
+    "trashTitle": "{{name}} をゴミ箱に移動しますか？",
+    "trashBody": "ファイルと会話は保持されます。復元すると再び使用できます。実行中のタスクを先に終了してください。",
+    "finishDraftBeforeTrash": "このプロジェクトの未送信メッセージとアップロードを完了または破棄してください。",
+    "unavailable": "プロジェクトを利用できません。",
+    "trashHeading": "ゴミ箱",
+    "restore": "復元",
+    "trashEmpty": "削除されたプロジェクトはありません。",
+    "trashLoadFailed": "ゴミ箱を読み込めませんでした。",
+    "checkingState": "プロジェクトの状態を確認中…",
+    "trashedConversation": "このプロジェクトはゴミ箱にあります。復元すると会話を再び開けます。"
   },
   "history": {
     "heading": "セッション",

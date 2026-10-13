@@ -1,3 +1,6 @@
+import { useInRouterContext, useSearchParams } from "react-router-dom";
+import { workspaceEntries, type WorkspaceScope } from "@/lib/workspaceManagement";
+import { WorkspaceTrashView } from "@/components/files/WorkspaceTrashView";
 import { StateNotice } from "@/components/ui/StateNotice";
 import { useCallback, useRef, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -116,10 +119,24 @@ function FileDownloadButton({ entry, root, directory }: { entry: DirEntry; root:
  * used elsewhere (figures, tables, PDF, molecule, genome tracks, notebooks),
  * so all past work is reachable in one place.
  */
-export function FilesPage({
+interface FilesPageProps {onOpenFile?: (entry: DirEntry) => void; onClose?: () => void; scope?: WorkspaceScope;}
+export function FilesPage(props:FilesPageProps={}) {
+  const routed=useInRouterContext();
+  return routed?<RoutedFilesPage {...props}/>:<FilesExplorer {...props}/>;
+}
+function RoutedFilesPage(props:FilesPageProps) {
+  const [query]=useSearchParams();
+  if(isGatewayWeb && query.get("view")==="trash")return <WorkspaceTrashView/>;
+  const project=query.get("project");
+  const scope=props.scope??(isGatewayWeb && project?{kind:"project" as const,projectId:project}:undefined);
+  return <FilesExplorer key={scope?JSON.stringify(scope):"base"} {...props} scope={scope}/>;
+}
+function FilesExplorer({
   onOpenFile,
   onClose,
+  scope,
 }: {
+  scope?: WorkspaceScope;
   onOpenFile?: (entry: DirEntry) => void;
   /** In a pane: the ✕ goes at the end of the breadcrumb row, since this page
    *  has no title bar of its own and the pane adds none. */
@@ -129,7 +146,9 @@ export function FilesPage({
   const isMobile = useIsMobile();
   // Base-relative; "" = the base folder. Persisted client-side so returning to
   // Files continues from the directory the user was browsing.
-  const [dir, setDirState] = useState(() => rememberedDirectory(GLOBAL_FILES_LOCATION));
+  const locationKey=scope?JSON.stringify(scope):GLOBAL_FILES_LOCATION;
+  const fileRoot=scope && scope.kind!=="account"?"workspace":"base";
+  const [dir, setDirState] = useState(() => rememberedDirectory(locationKey));
   const [entries, setEntries] = useState<DirEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<DirEntry | null>(null);
@@ -140,7 +159,7 @@ export function FilesPage({
   }, []);
 
   const setDir = (next: string) => {
-    rememberDirectory(GLOBAL_FILES_LOCATION, next);
+    rememberDirectory(locationKey, next);
     setDirState(next);
   };
 
@@ -150,19 +169,21 @@ export function FilesPage({
     setEntries(null);
     setError(null);
     try {
-      const next = await listDir(rel, "base");
+      const managed=isGatewayWeb && scope?await workspaceEntries(scope,rel):null;
+      const next=managed?managed.entries:await listDir(rel,"base");
+      if(managed && generation===loadGeneration.current)setBasePath(managed.directory);
       if (generation === loadGeneration.current) setEntries(next);
     } catch (e) {
       if (generation !== loadGeneration.current) return;
       if (rel) {
-        rememberDirectory(GLOBAL_FILES_LOCATION, "");
+        rememberDirectory(locationKey, "");
         setDirState("");
         return;
       }
       setError(e instanceof Error ? e.message : String(e));
       setEntries([]);
     }
-  }, []);
+  }, [locationKey,scope]);
 
   useEffect(() => {
     void load(dir);
@@ -257,7 +278,7 @@ export function FilesPage({
             </div>
           )}
           {entries?.map((entry) => (
-            <FileContextMenu key={entry.path} entry={entry} root="base">
+            <FileContextMenu key={entry.path} entry={entry} root={fileRoot} directory={fileRoot==="workspace"?basePath??undefined:undefined}>
               <div className="flex min-w-0 items-center">
               <button
                 onClick={() => open(entry)}
@@ -271,7 +292,7 @@ export function FilesPage({
                 {!entry.isDir && <span className="shrink-0 text-[11px] text-muted">{humanSize(entry.size)}</span>}
                 {entry.isDir && <ChevronRight size={14} className="shrink-0 text-muted" />}
               </button>
-              <FileDownloadButton entry={entry} root="base" />
+              <FileDownloadButton entry={entry} root={fileRoot} directory={fileRoot==="workspace"?basePath??undefined:undefined} />
               </div>
             </FileContextMenu>
           ))}
@@ -281,7 +302,7 @@ export function FilesPage({
       {!isTree && (
         <div className={cn("min-h-0 flex-1", isMobile && !selected && "hidden")}>
           {selected ? (
-            <FilePreview key={selected.path} entry={selected} root="base" onClose={() => setSelected(null)} />
+            <FilePreview key={selected.path} entry={selected} root={fileRoot} workspaceDirectory={fileRoot==="workspace"?basePath??undefined:undefined} onClose={() => setSelected(null)} />
           ) : (
             <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted">
               {t("files.selectFilePrompt")}

@@ -766,6 +766,7 @@ export class CliRuntimeManager {
     }
     const safeDirectory = resolve(directory);
     if (!isWithin(workspaceDir, safeDirectory)) throw issue("invalid_directory", "session directory is outside the user workspace", 403);
+    await this.workspaceAccess?.(userId,safeDirectory);
     const timestamp = now();
     const id = `ses_cli_${randomUUID().replaceAll("-", "")}`;
     const session = {
@@ -795,6 +796,7 @@ export class CliRuntimeManager {
     if (!session || session.runtime !== this.runtimeForUser(userId)) {
       throw issue("unknown_session", "session not found in the selected runtime", 404);
     }
+    await this.workspaceAccess?.(userId,session.directory);
     return { state, session };
   }
 
@@ -803,7 +805,12 @@ export class CliRuntimeManager {
     const runtime = this.runtimeForUser(userId);
     const query = typeof search === "string" ? search.trim().toLowerCase() : "";
     const max = Math.min(Math.max(Number(limit) || 200, 1), 500);
-    return [...state.sessions.values()]
+    const visible=[];
+    for(const session of state.sessions.values()) {
+      if(session.runtime!==runtime)continue;
+      try{await this.workspaceAccess?.(userId,session.directory);visible.push(session);}catch(error){if(error.code!=="project_trashed")throw error;}
+    }
+    return visible
       .filter((session) => session.runtime === runtime)
       .filter((session) => !query || session.title.toLowerCase().includes(query))
       .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -811,7 +818,14 @@ export class CliRuntimeManager {
       .map(publicSession);
   }
 
-  emit(userId, event) {
+  emit(userId,event) {
+    if(!this.workspaceAccess)return this.emitVisible(userId,event);
+    const id=event.properties?.sessionID??event.properties?.info?.id??event.properties?.part?.sessionID;
+    const session=id?this.userStates.get(userId)?.sessions.get(id):null;
+    if(!session)return this.emitVisible(userId,event);
+    void this.workspaceAccess(userId,session.directory).then(()=>this.emitVisible(userId,event)).catch(()=>{});
+  }
+  emitVisible(userId, event) {
     const subscribers = this.subscribers.get(userId);
     if (!subscribers) return;
     const sessionId = event.properties?.sessionID;
@@ -1307,6 +1321,7 @@ export class CliRuntimeManager {
         const { state, session } = await this.getOwnedSession(userId, body.sessionID);
         const destination = body.destination?.directory;
         if (typeof destination !== "string" || !isWithin(workspaceDir, destination)) throw issue("invalid_directory", "destination is outside the user workspace", 403);
+        await this.workspaceAccess?.(userId,resolve(destination));
         session.directory = resolve(destination);
         session.updatedAt = now();
         await this.persistUser(state);

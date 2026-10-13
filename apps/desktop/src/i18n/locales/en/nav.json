@@ -59,7 +59,20 @@
     "discardBody": "Your unsent message and pending attachments will be discarded. Saved conversations and project files are kept.",
     "discardAction": "Discard and continue",
     "entryFailed": "Project created, but the conversation could not be opened.",
-    "retryOpening": "Retry opening"
+    "retryOpening": "Retry opening",
+    "actionsAria": "Project actions: {{name}}",
+    "openFiles": "Open files",
+    "trash": "Move to trash",
+    "trashTitle": "Move {{name}} to trash?",
+    "trashBody": "Files and conversations are kept. Restore the project to use them again. Running tasks must finish first.",
+    "finishDraftBeforeTrash": "Finish or discard this project’s unsent messages and uploads before moving it to trash.",
+    "unavailable": "Project is unavailable.",
+    "trashHeading": "Trash",
+    "restore": "Restore",
+    "trashEmpty": "No deleted projects.",
+    "trashLoadFailed": "Could not load the trash.",
+    "checkingState": "Checking project status…",
+    "trashedConversation": "This project is in the trash. Restore it to reopen this conversation."
   },
   "history": {
     "heading": "Sessions",

@@ -121,8 +121,10 @@ export async function browserStage(candidate, run = runProcess) {
   if (!await lstat(join(desktop, notificationScenario)).catch(() => null)) throw new Error('Required notification browser scenario is unavailable');
   const projectScenario = 'src/test/webProjects.acceptance.test.mjs';
   if (!await lstat(join(desktop, projectScenario)).catch(() => null)) throw new Error('Required project browser scenario is unavailable');
-  const tests = ['src/test/webRelease.acceptance.test.mjs', notificationScenario, projectScenario];
-  const environment = { OSD_RELEASE_ACCEPTANCE: '1', OSD_NOTIFICATIONS_ACCEPTANCE: '1', OSD_PROJECTS_ACCEPTANCE: '1', OSD_PROJECTS_WEB_ROOT: candidate.artifacts.web.directory, OSD_WEB_CANDIDATE: candidate.artifacts.web.directory };
+  const managementScenario = 'src/test/webProjectFiles.acceptance.test.mjs';
+  if (!await lstat(join(desktop, managementScenario)).catch(() => null)) throw new Error('Required project management browser scenario is unavailable');
+  const tests = ['src/test/webRelease.acceptance.test.mjs', notificationScenario, projectScenario, managementScenario];
+  const environment = { OSD_RELEASE_ACCEPTANCE: '1', OSD_NOTIFICATIONS_ACCEPTANCE: '1', OSD_PROJECTS_ACCEPTANCE: '1', OSD_PROJECT_FILES_ACCEPTANCE: '1', OSD_PROJECTS_WEB_ROOT: candidate.artifacts.web.directory, OSD_WEB_CANDIDATE: candidate.artifacts.web.directory };
   const groups = candidate.selection.browserGroups;
   if (groups.includes('login') || groups.includes('session')) {
     const accountRecovery = 'src/test/webAccountRecovery.acceptance.test.mjs';
@@ -156,7 +158,7 @@ export async function browserStage(candidate, run = runProcess) {
   await run(process.execPath, [join(desktop, 'node_modules/vitest/vitest.mjs'), 'run', '--no-file-parallelism', '--reporter=json', '--outputFile', report, ...tests], desktop, environment);
   const result = JSON.parse(await readFile(report, 'utf8'));
   if (!result.success || result.numPassedTests < tests.length || result.numPendingTests) throw new Error('Required browser acceptance failed or was skipped');
-  return { passedTests: result.numPassedTests, widths: [...new Set([...(process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? [1280] : [1280, 390]), ...(tests.includes('src/test/webAccountRecovery.acceptance.test.mjs') ? [320] : []), ...(tests.includes('src/test/webToolReliability.acceptance.test.mjs') ? [360] : [])])], scenarios: tests };
+  return { passedTests: result.numPassedTests, widths: [...new Set([...(process.env.OSD_DESKTOP_ONLY_ACCEPTANCE === "1" ? [1280] : [1280, 390]), ...(tests.includes('src/test/webAccountRecovery.acceptance.test.mjs') || tests.includes(managementScenario) ? [320] : []), ...(tests.includes('src/test/webToolReliability.acceptance.test.mjs') ? [360] : [])])], scenarios: tests };
 }
 export function assertSelectedSource(selectedFiles, candidateFiles) {
   if (fingerprintFiles(selectedFiles) !== fingerprintFiles(candidateFiles)) throw new Error('Source changed between verification selection and snapshot; prepare again');

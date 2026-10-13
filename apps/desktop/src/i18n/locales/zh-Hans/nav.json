@@ -59,7 +59,20 @@
     "discardBody": "未发送的消息和待发送附件将被丢弃。已保存的会话和项目文件会保留。",
     "discardAction": "丢弃并继续",
     "entryFailed": "项目已创建，但无法打开会话。",
-    "retryOpening": "重新打开"
+    "retryOpening": "重新打开",
+    "actionsAria": "项目操作：{{name}}",
+    "openFiles": "打开文件",
+    "trash": "移入回收站",
+    "trashTitle": "将 {{name}} 移入回收站？",
+    "trashBody": "文件和会话都会保留，恢复项目后可继续使用。请先完成运行中的任务。",
+    "finishDraftBeforeTrash": "请先完成或丢弃该项目未发送的消息和待上传文件。",
+    "unavailable": "项目暂不可用。",
+    "trashHeading": "回收站",
+    "restore": "恢复",
+    "trashEmpty": "没有已删除的项目。",
+    "trashLoadFailed": "无法加载回收站。",
+    "checkingState": "正在检查项目状态…",
+    "trashedConversation": "该项目已在回收站中。恢复项目后可重新打开此会话。"
   },
   "history": {
     "heading": "会话",

@@ -1,3 +1,4 @@
+import { ProjectActions } from "@/components/projects/ProjectActions";
 import { useSessionTitles, editableSessionTitle } from "@/lib/sessionTitle";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -918,6 +919,7 @@ export function Sidebar({ project }: { project: Project }) {
                       )}
                     </button>
                     <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center">
+                      {isGatewayWeb && <ProjectActions project={p}/>}
                       {rows.length > 0 && (
                         <span className="px-1 text-[10px] tabular-nums text-muted group-hover/project:hidden">
                           {rows.length}

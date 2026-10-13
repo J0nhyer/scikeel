@@ -1,3 +1,7 @@
+2026-10-14 00:55 Verified isolated project-management foundation with 2,019 frontend, 20 focused platform, 40 workflow and one 1280/390/320 candidate browser scenario; publication remains pending published-recovery alignment and no-follow lifecycle alias protection, with production unchanged.
+2026-10-13 18:36 Implemented the isolated Web project-management foundation and shared menus: 18 focused platform and 24 frontend checks plus guarded lint/typecheck passed, with full suites and required browser/runtime gates pending and production unchanged.
+2026-10-12 20:45 Published Web project/session fixes as 2026-10-12T12-09-53-262Z-99537e6d after 2,009 frontend, 438 platform, 44 workflow and 11 non-skipped browser checks; real OpenCode project reply/file scope/reload passed at 1280/390/320, while native Codex live acceptance remains blocked by deployed runtime availability and original runtime settings were restored.
+
 # Progress
 
 2026-10-01 17:11 · Published SciKeel to the public J0nhyer/scikeel GitHub repository with main as the default branch, preserved the complete upstream history and upstream remote, and verified the remote commit after a clean scan of 4750 historical file objects.

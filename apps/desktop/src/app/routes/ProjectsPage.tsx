@@ -20,6 +20,7 @@ import { openProjectFolder, renameProject, type ProjectInfo } from "@/lib/tauri"
 import { isGatewayWeb } from "@/lib/webMode";
 import { pathKey } from "@/lib/workspacePath";
 import { useWebDraftTransition } from "@/components/projects/useWebDraftTransition";
+import { ProjectActions } from "@/components/projects/ProjectActions";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 /** The last path segment (folder name) of an absolute workspace path. */
@@ -105,7 +106,7 @@ export function ProjectsPage() {
     <div className="h-full overflow-y-auto">
       {transition.confirmation}
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-8">
-        <h1 className="font-serif text-2xl leading-tight text-text">{t("projects.heading")}</h1>
+        <div className="flex min-w-0 items-center justify-between gap-3"><h1 className="font-serif text-2xl leading-tight text-text">{t("projects.heading")}</h1>{isGatewayWeb && <button type="button" onClick={()=>navigate('/files?view=trash')} className="rounded border border-border px-3 py-2 text-sm">{t('projects.trashHeading')}</button>}</div>
 
         <div className="relative mt-5">
           <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
@@ -193,7 +194,8 @@ export function ProjectsPage() {
                     {/* Updated */}
                     <span className="text-sm tabular-nums text-muted">{timeAgo(p.updated, now)}</span>
 
-                    {isGatewayWeb && (
+                    {isGatewayWeb && <div className="flex items-center justify-end">
+                      <ProjectActions project={p}/>
                       <button aria-label={t("projects.newSessionAria", { name: p.name })}
                         title={t("projects.newSessionAria", { name: p.name })}
                         disabled={webReadOnly || transition.busy}
@@ -201,7 +203,7 @@ export function ProjectsPage() {
                         className="justify-self-end rounded p-1 text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50">
                         <Plus size={15} />
                       </button>
-                    )}
+                    </div>}
                     {/* Actions — rename/remove/pin/open are host-local; hidden in web. */}
                     {!isGatewayWeb && (
                     <div className="flex items-center justify-end gap-0.5">
