@@ -5,6 +5,7 @@ import {workspacePage} from './workspace-pages.mjs';
 
 const PRIVATE='.scikeel/workspace-management';
 const reserved=new Set(['.git','.openscience','.scikeel']);
+const protectedPath=path=>path.split('/').some(part=>reserved.has(part.toLowerCase()));
 export class WorkspaceFiles {
  constructor({management,native,state,tenantPolicy,admission}){Object.assign(this,{management,native,state,tenantPolicy,admission});}
  async scope(context,scope){
@@ -20,8 +21,9 @@ export class WorkspaceFiles {
  async target(context,scope,path,{mutate=true}={}){
   relativeInput(path);
   if(Buffer.byteLength(path)>4096 || Buffer.from(path).toString('utf8')!==path || path.split('/').some(part=>Buffer.byteLength(part)>240 || /[\x00-\x1f\x7f<>:"|?*]/.test(part) || /[. ]$/.test(part) || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part)))throw workspaceError('invalid_name',400);
-  if(path.split('/').some(part=>reserved.has(part)))throw workspaceError('protected_path',403);
+  if(protectedPath(path))throw workspaceError('protected_path',403);
   const owned=await this.scope(context,scope);const relative=owned.prefix?owned.prefix+'/'+path:path;
+  if(protectedPath(relative))throw workspaceError('protected_path',403);
   if(Buffer.byteLength(relative)>4095)throw workspaceError('invalid_name',400);
   await this.management.assertAccessible(context,owned.directory+'/'+path);
   if(mutate){
@@ -199,8 +201,9 @@ export class WorkspaceFiles {
   this.tenantPolicy.account(context);
   return this.admission.mutate(context.userId,async()=>{
    const record=(await this.state.open(context.userId)).operations[operationId];
-   if(!record || record.input?.kind!=='file' || record.input.operation?.kind!=='saveText')throw workspaceError('operation_not_found',404);
-   await this.scope(context,record.input.scope);
+   if(!record || record.input?.kind!=='file' || !['saveText','createFile'].includes(record.input.operation?.kind))throw workspaceError('operation_not_found',404);
+   await this.target(context,record.input.scope,record.input.operation.path);
+   if(record.recovery?.source!==`${PRIVATE}/staging/${workspaceHash({userId:context.userId,operationId}).slice(0,32)}/payload`)throw workspaceError('operation_uncertain',503);
    const receipt=await this.#reconcile(context,operationId,record);
    if(receipt.state==='committed')return receipt;
    if(receipt.state==='failed')throw workspaceError(receipt.error.code,receipt.error.statusCode);
@@ -209,7 +212,7 @@ export class WorkspaceFiles {
    const snapshot=await this.native.call(context,{operation:'readText',root:'workspace',path:recovery.source});
    if(workspaceHash(snapshot.text)!==recovery.contentHash)throw workspaceError('operation_uncertain',503);
    const {kind,path,expectedRevision}=record.input.operation;
-   return this.operate(context,{scope:record.input.scope,operationId,operation:{kind,path,expectedRevision,text:snapshot.text}});
+   return this.operate(context,{scope:record.input.scope,operationId,operation:{kind,path,...(kind==='saveText'?{expectedRevision}:{}),text:snapshot.text}});
   });
  }
  async #saveText(context,{scope,operationId,operation}){
@@ -291,7 +294,7 @@ export class WorkspaceFiles {
     try{await this.target(context,scope,entry.path);if(!context.readOnly)capabilities.push('rename','move','trash');}catch(error){if(error.code!=='protected_path')throw error;}
     entries.push({...entry,revision:stat.revision,capabilities});
    }
-   return {...listed,entries,nextCursor:page.nextCursor,capabilities:{create:!context.readOnly}};
+   return {...listed,entries,nextCursor:page.nextCursor,capabilities:{create:!context.readOnly && !protectedPath(owned.prefix+(path?'/'+path:''))}};
   });
  }
  async pending(context,{limit=100,cursor}={}){
@@ -313,7 +316,7 @@ export class WorkspaceFiles {
      else if(operation?.kind==='createFile' && operation.contentHash===workspaceHash(''))retry={method:'POST',path:'/api/workspace/operations',body:{scope:input.scope,operation:{kind:'createFile',path:operation.path,text:''},operationId}};
      else if(operation?.kind==='restore' && /^[a-f0-9]{32}$/.test(operation.id))retry={method:'POST',path:'/api/workspace/trash/'+operation.id+'/restore',body:{operationId,destinationPath:operation.path}};
      else if(operation?.kind==='upload' && /^[a-f0-9]{32}$/.test(operation.id))retry={method:'POST',path:'/api/workspace/uploads/'+operation.id+'/commit',body:{operationId}};
-     else if(operation?.kind==='saveText' && (await this.state.open(context.userId)).operations[operationId].recovery?.phase==='prepared')retry={method:'POST',path:'/api/workspace/operations/'+operationId+'/resume',body:{operationId}};
+     else if(['saveText','createFile'].includes(operation?.kind) && (await this.state.open(context.userId)).operations[operationId].recovery?.phase==='prepared')retry={method:'POST',path:'/api/workspace/operations/'+operationId+'/resume',body:{operationId}};
     }
     items.push({operationId,receipt,path:operation?.path??input.patch?.name??input.id??operationId,...(input.scope?{scope:input.scope}:{}),retry,...(code?{code}:{})});
    }

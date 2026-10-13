@@ -115,6 +115,30 @@ test('scoped paths include their trusted prefix within native RPC bounds and rej
  const f=await fixture(t),path=Array(16).fill('x'.repeat(240)).join('/')+'/'+ 'y'.repeat(230);assert.ok(Buffer.byteLength(path)<=4096);assert.ok(Buffer.byteLength('projects/study/'+path)>4096);
  await assert.rejects(f.files.target(f.context,f.scope,path),{code:'invalid_name'});await assert.rejects(f.files.target(f.context,f.scope,'\ud800'),{code:'invalid_name'});assert.deepEqual((await f.state.open('a')).operations,{});
 });
+test('reserved roots in trusted project and session prefixes never grant write capabilities',async t=>{
+ const f=await fixture(t),policy=f.management.tenantPolicy;
+ for(const [index,component]of ['.git','.openscience','.scikeel','.GIT'].entries()){
+  const directory='/owned/a/notes/'+component+'/nested';
+  f.management.resolveSession=async()=>({id:'ses-reserved',directory});
+  f.management.gateway=async()=>[{id:'123456789abcdef0',name:'Reserved',path:directory}];
+  policy.registerSession(f.context,{id:'ses-reserved',directory});
+  for(const scope of [{kind:'project',projectId:'123456789abcdef0'},{kind:'session',sessionId:'ses-reserved'}]){
+   await assert.rejects(f.files.target(f.context,scope,'result.txt'),{code:'protected_path'});
+   await assert.rejects(f.files.operate(f.context,{scope,operationId:'reserved-'+index+'-'+scope.kind,operation:{kind:'createFile',path:'result.txt',text:''}}),{code:'protected_path'});
+  }
+ }
+ assert.deepEqual((await f.state.open('a')).operations,{});assert.equal(f.moves(),0);
+});
+test('browsing a reserved folder stays read-only including its create capability',async t=>{
+ const f=await fixture(t),directory='/owned/a/projects/study/.openscience';
+ f.management.resolveSession=async()=>({id:'ses-internal',directory});
+ f.payloads.set('projects/study/.openscience/result.txt',{identity:'metadata',revision:'a'.repeat(64),isDir:false,size:8,text:'original'});
+ const result=await f.files.entries(f.context,{kind:'session',sessionId:'ses-internal'},'');
+ assert.equal(result.capabilities.create,false);assert.deepEqual(result.entries[0].capabilities,['preview','download']);
+ const nested=await f.files.entries(f.context,f.scope,'.openscience');assert.equal(nested.capabilities.create,false);
+ await assert.rejects(f.files.target(f.context,{kind:'account'},'projects/study/.GIT/config'),{code:'protected_path'});
+ const ordinary=await f.files.target(f.context,f.scope,'.git-notes/result.txt');assert.equal(ordinary.path,'projects/study/.git-notes/result.txt');
+});
 test('reconciliation obeys the runner single-file-RPC admission contract',async t=>{
  const f=await fixture(t);const call=f.native.call;let running=false;
  f.native.call=async(...args)=>{
@@ -139,10 +163,42 @@ test('a prepared but unconfirmed native move blocks new execution until its orig
  f.native.call=call;await f.files.operate(f.context,input);await f.files.confirmPending(f.context);
  assert.equal(f.moves(),1);
 });
+test('refresh recovery resumes a staged nonempty Save As with its original ID and never exposes its bytes',async t=>{
+ const f=await fixture(t),call=f.native.call,input={scope:f.scope,operationId:'save-as-refresh',operation:{kind:'createFile',path:'copy.txt',text:'private research draft'}};
+ f.native.call=async(...args)=>{if(args[1].operation==='moveNoReplace')throw new Error('Not dispatched');return call(...args);};
+ await assert.rejects(f.files.operate(f.context,input));f.native.call=call;
+ const restarted=new WorkspaceFiles({...f.files,state:new WorkspaceState({dataDir:f.state.dataDir})}),page=await restarted.pending(f.context);
+ assert.deepEqual(page.items[0].retry,{method:'POST',path:'/api/workspace/operations/save-as-refresh/resume',body:{operationId:input.operationId}});
+ assert.equal(JSON.stringify(page).includes(input.operation.text),false);assert.equal(JSON.stringify(page).includes('.scikeel'),false);
+ const receipt=await restarted.resumeText(f.context,input.operationId);assert.equal(receipt.state,'committed');assert.equal(f.payloads.get('projects/study/copy.txt').text,input.operation.text);assert.equal(f.moves(),1);
+ await restarted.resumeText(f.context,input.operationId);assert.equal(f.moves(),1);assert.equal(JSON.stringify(await f.state.open('a')).includes(input.operation.text),false);
+});
+test('staged create recovery retains the payload on busy, collision or changed staging content',async t=>{
+ for(const scenario of ['busy','collision','changed'])await t.test(scenario,async t=>{
+  const f=await fixture(t),call=f.native.call,id='create-'+scenario;
+  f.native.call=async(...args)=>{if(args[1].operation==='moveNoReplace')throw new Error('Not dispatched');return call(...args);};
+  await assert.rejects(f.files.operate(f.context,{scope:f.scope,operationId:id,operation:{kind:'createFile',path:'copy.txt',text:'owned draft'}}));f.native.call=call;
+  const source=(await f.state.open('a')).operations[id].recovery.source;
+  if(scenario==='busy')f.busy(true);
+  if(scenario==='collision')f.payloads.set('projects/study/copy.txt',{identity:'foreign-inode',revision:'a'.repeat(64),isDir:false,text:'existing file'});
+  if(scenario==='changed')f.payloads.get(source).text='unexpected content';
+  await assert.rejects(f.files.resumeText(f.context,id),{code:scenario==='busy'?'workspace_busy':scenario==='collision'?'name_conflict':'operation_uncertain'});
+  assert.ok(f.payloads.has(source));assert.equal(f.moves(),0);
+ });
+});
 test('missing restore parent retains the payload and does not prepare an unusable receipt',async t=>{
  const f=await fixture(t);const receipt=await f.files.operate(f.context,{scope:f.scope,operationId:'trash-a',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}});
  await assert.rejects(f.files.restore(f.context,receipt.result.trashId,{operationId:'restore-missing',destinationPath:'missing/result.txt'}),{code:'parent_missing',statusCode:409});
  assert.equal(await f.state.receipt('a','restore-missing'),null);assert.equal((await f.files.trash(f.context)).length,1);
+});
+test('alternate restoration stays in the original scope and preserves a colliding replacement',async t=>{
+ const f=await fixture(t),receipt=await f.files.operate(f.context,{scope:f.scope,operationId:'trash-alternate',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}}),id=receipt.result.trashId;
+ f.payloads.set('projects/study/result.txt',{identity:'new-ai-file',revision:'c'.repeat(64),isDir:false,size:7,text:'AI edit'});
+ await assert.rejects(f.files.restore(f.context,id,{operationId:'original-collision'}),{code:'name_conflict'});
+ await assert.rejects(f.files.restore(f.context,id,{operationId:'cross-scope',destinationPath:'../../foreign/result.txt'}));
+ f.payloads.set('projects/study/reports',{identity:'existing-folder',revision:'d'.repeat(64),isDir:true,size:0});
+ const restored=await f.files.restore(f.context,id,{operationId:'restore-alternate',destinationPath:'reports/copy.txt'});
+ assert.equal(restored.state,'committed');assert.equal(restored.result.path,'reports/copy.txt');assert.equal(f.payloads.get('projects/study/reports/copy.txt').text,'original');assert.equal(f.payloads.get('projects/study/reports/copy.txt').identity,'inode-owned');assert.equal(f.payloads.get('projects/study/result.txt').text,'AI edit');
 });
 test('move receipts publish the confirmed identity and revision after a lost response',async t=>{
  const f=await fixture(t);f.loseReply();

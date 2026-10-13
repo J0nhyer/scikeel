@@ -75,6 +75,9 @@
     "trashedConversation": "This project is in the trash. Restore it to reopen this conversation."
   },
   "fileManagement": {
+    "restoreElsewhere": "Restore elsewhere",
+    "restoreTitle": "Restore file or folder",
+    "restoreName": "Name",
     "saveAs": "Save As",
     "savedAs": "Saved as {{path}}",
     "reloadText": "Reload Disk Version",

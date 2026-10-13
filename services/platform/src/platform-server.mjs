@@ -657,7 +657,20 @@ export class PlatformServer {
       headers:{authorization:path.startsWith("/v1/")?`Bearer ${access.token}`:`Basic ${workerBasicToken(access.token)}`,"content-type":"application/json"},
       ...(body?{body:JSON.stringify(body)}:{})});
     if(!response.ok){await response.body?.cancel();throw workspaceError("workspace_operation_failed",response.status);}
-    const value=await response.json();this.tenantPolicy.account(context);return value;
+    const limit=16*1024**2,declared=response.headers.get("content-length");
+    if(declared!==null && (!/^\d+$/.test(declared) || Number(declared)>limit)){
+      await response.body?.cancel();throw workspaceError("workspace_response_limit",503);
+    }
+    if(!response.body)throw workspaceError("workspace_response_invalid",503);
+    const reader=response.body.getReader(),chunks=[];let size=0;
+    try{
+      while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;
+        if(size>limit)throw workspaceError("workspace_response_limit",503);chunks.push(Buffer.from(value));}
+    }catch(error){await reader.cancel().catch(()=>{});throw error;}
+    finally{reader.releaseLock();}
+    this.tenantPolicy.account(context);
+    try{return JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(Buffer.concat(chunks,size)));}
+    catch{throw workspaceError("workspace_response_invalid",503);}
   }
   async #workspaceBusy(userId) {
     const worker=this.workerManager.getWorker(workerIdForUser(userId));
@@ -940,6 +953,7 @@ export class PlatformServer {
       },
     );
     let responded = false;
+    if(request.workspaceAdmitted)upstream.setTimeout(30000,()=>upstream.destroy(new Error("workspace proxy timeout")));
     upstream.on("response", () => {
       responded = true;
     });
@@ -1002,7 +1016,8 @@ export class PlatformServer {
     sendJson(response, 200, result);
   }
   async #workerResearchRequest(task, path, method = "GET", body, admitted=false) {
-    if(this.workspaceAdmission && !["GET","HEAD"].includes(method) && !admitted)
+    const stopping=classifyRuntimeRoute(method,path.split("?")[0])?.operation==="sessionAbort";
+    if(this.workspaceAdmission && !["GET","HEAD"].includes(method) && !stopping && !admitted)
       return this.workspaceAdmission.start(task.userId,()=>this.#workerResearchRequest(task,path,method,body,true));
     const worker = this.workerManager.getWorker(workerIdForUser(task.userId));
     if (task.generation !== undefined && (task.instanceId !== worker?.id || task.generation !== worker?.generation || worker?.status !== "running"))
@@ -1010,7 +1025,7 @@ export class PlatformServer {
     const access = this.workerManager.getWorkerAccess(workerIdForUser(task.userId));
     if (!access) throw new Error("research worker is unavailable");
     await this.workspaceManagement?.assertAccessible({userId:task.userId,instanceId:worker.id,generation:worker.generation},task.directory);
-    if(!["GET","HEAD"].includes(method))await this.workspaceFiles?.confirmPending({userId:task.userId,instanceId:worker.id,generation:worker.generation});
+    if(!["GET","HEAD"].includes(method) && !stopping)await this.workspaceFiles?.confirmPending({userId:task.userId,instanceId:worker.id,generation:worker.generation});
     const url = new URL(path, access.url);
     url.searchParams.set("directory", task.directory);
     const result = await fetch(url, {
@@ -1724,12 +1739,18 @@ export class PlatformServer {
     try {
       const parsed = new URL(request.url ?? "/", "http://platform.invalid");
       const path = parsed.pathname;
-      if(this.workspaceAdmission && !["GET","HEAD"].includes(request.method) && !request.workspaceAdmitted && !path.startsWith("/api/workspace/") && !path.startsWith("/auth/")) {
+      const stopping=classifyRuntimeRoute(request.method,path)?.operation==="sessionAbort";
+      if(this.workspaceAdmission && !["GET","HEAD"].includes(request.method) && !stopping && !request.workspaceAdmitted && !path.startsWith("/api/workspace/") && !path.startsWith("/auth/")) {
         const admittedUser=await this.#currentUser(request);
         if(admittedUser){request.workspaceAdmitted=true;await this.workspaceAdmission.start(admittedUser.id,async()=>{
-          const worker=this.workerManager.getWorker(workerIdForUser(admittedUser.id));
-          if(worker?.status==="running")await this.workspaceFiles?.confirmPending({userId:admittedUser.id,instanceId:worker.id,generation:worker.generation});
-          return this.#handle(request,response);
+          if(request.aborted || response.destroyed || response.writableEnded)return;
+          let complete;const completed=new Promise(done=>{complete=done;response.once("finish",done);response.once("close",done);});
+          try{
+            const worker=this.workerManager.getWorker(workerIdForUser(admittedUser.id));
+            if(worker?.status==="running")await this.workspaceFiles?.confirmPending({userId:admittedUser.id,instanceId:worker.id,generation:worker.generation});
+            // Legacy streaming proxies return before their worker response ends.
+            await this.#handle(request,response);await completed;
+          }finally{response.off("finish",complete);response.off("close",complete);}
         });return;}
       }
 

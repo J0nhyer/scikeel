@@ -75,6 +75,9 @@
     "trashedConversation": "Este proyecto está en la papelera. Restáurelo para abrir esta conversación."
   },
   "fileManagement": {
+    "restoreElsewhere": "Restaurar en otra ubicación",
+    "restoreTitle": "Restaurar archivo o carpeta",
+    "restoreName": "Nombre",
     "saveAs": "Guardar como",
     "savedAs": "Guardado como {{path}}",
     "reloadText": "Recargar versión del disco",

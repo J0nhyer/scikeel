@@ -29,6 +29,12 @@ it('structured permission failures remain errors and never retry mutations',asyn
   await expect(client.trashWorkspaceProject('p1','revision','op-a')).rejects.toMatchObject({code:'read_only'});
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
+it('file restoration submits an optional scope-relative destination and checks the original receipt after response loss',async()=>{
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({operationId:'restore-a',state:'committed',result:{path:'recovered/copy.txt'}})));
+ expect(typeof client.restoreWorkspaceFile).toBe('function');
+ const result=await client.restoreWorkspaceFile('a'.repeat(32),'restore-a','recovered/copy.txt');expect(result.state).toBe('committed');expect(fetchMock).toHaveBeenCalledTimes(2);
+ expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({operationId:'restore-a',destinationPath:'recovered/copy.txt'});expect(String(fetchMock.mock.calls[1][0])).toContain('/operations/restore-a');
+});
 it('sends raw upload bytes and retains uncertainty after looking up a lost chunk response',async()=>{
  const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({id:'upload-a',state:'active',offset:3})));
  expect(typeof client.uploadWorkspaceChunk).toBe('function');

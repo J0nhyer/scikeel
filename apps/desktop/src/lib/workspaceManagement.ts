@@ -38,6 +38,7 @@ export const operateWorkspace=(scope:WorkspaceScope,operation:WorkspaceFileOpera
 export const patchWorkspaceProject=(id:string,patch:{name?:string;pinned?:boolean},operationId:string=workspaceOperationId())=>mutation<{id:string}>('/api/workspace/projects/'+encodeURIComponent(id),'PATCH',patch,operationId);
 export const trashWorkspaceProject=(id:string,expectedRevision:string,operationId:string=workspaceOperationId())=>mutation<OperationReceipt>('/api/workspace/projects/'+encodeURIComponent(id)+'/trash','POST',{expectedRevision},operationId);
 export const restoreWorkspaceProject=(id:string,operationId:string=workspaceOperationId())=>mutation<OperationReceipt>('/api/workspace/trash/'+encodeURIComponent(id)+'/restore','POST',{},operationId);
+export const restoreWorkspaceFile=(id:string,operationId:string=workspaceOperationId(),destinationPath?:string)=>mutation<OperationReceipt>('/api/workspace/trash/'+encodeURIComponent(id)+'/restore','POST',destinationPath===undefined?{}:{destinationPath},operationId);
 
 export const workspaceSessionState=(id:string)=>workspaceRequest<{state:'active'|'trashed';projectId?:string}>('/api/workspace/sessions/'+encodeURIComponent(id)+'/state');
 

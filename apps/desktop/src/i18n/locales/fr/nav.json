@@ -75,6 +75,9 @@
     "trashedConversation": "Ce projet est dans la corbeille. Restaurez-le pour rouvrir cette conversation."
   },
   "fileManagement": {
+    "restoreElsewhere": "Restaurer ailleurs",
+    "restoreTitle": "Restaurer le fichier ou le dossier",
+    "restoreName": "Nom",
     "saveAs": "Enregistrer sous",
     "savedAs": "Enregistré sous {{path}}",
     "reloadText": "Recharger la version du disque",

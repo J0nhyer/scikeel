@@ -75,6 +75,9 @@
     "trashedConversation": "このプロジェクトはゴミ箱にあります。復元すると会話を再び開けます。"
   },
   "fileManagement": {
+    "restoreElsewhere": "別の場所に復元",
+    "restoreTitle": "ファイルまたはフォルダーを復元",
+    "restoreName": "名前",
     "saveAs": "名前を付けて保存",
     "savedAs": "{{path}} として保存しました",
     "reloadText": "ディスクの内容を再読込",

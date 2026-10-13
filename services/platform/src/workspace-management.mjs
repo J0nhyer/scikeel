@@ -21,7 +21,7 @@ export class WorkspaceManagement {
   async allProjects(context) {
     this.tenantPolicy.account(context);
     const values=await this.gateway(context,'/v1/projects');
-    if(!Array.isArray(values))throw workspaceError('projects_unavailable',503);
+    if(!Array.isArray(values) || values.length>10000)throw workspaceError('projects_unavailable',503);
     return values.map(project=>{
       this.tenantPolicy.directory(context,project.path);
       return {...project,revision:workspaceHash(project)};

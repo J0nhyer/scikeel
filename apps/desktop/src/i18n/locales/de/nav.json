@@ -75,6 +75,9 @@
     "trashedConversation": "Dieses Projekt ist im Papierkorb. Stellen Sie es wieder her, um das Gespräch zu öffnen."
   },
   "fileManagement": {
+    "restoreElsewhere": "An anderem Ort wiederherstellen",
+    "restoreTitle": "Datei oder Ordner wiederherstellen",
+    "restoreName": "Name",
     "saveAs": "Speichern unter",
     "savedAs": "Gespeichert als {{path}}",
     "reloadText": "Dateiversion neu laden",

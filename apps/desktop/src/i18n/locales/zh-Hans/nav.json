@@ -75,6 +75,9 @@
     "trashedConversation": "该项目已在回收站中。恢复项目后可重新打开此会话。"
   },
   "fileManagement": {
+    "restoreElsewhere": "恢复到其他位置",
+    "restoreTitle": "恢复文件或文件夹",
+    "restoreName": "名称",
     "saveAs": "另存为",
     "savedAs": "已另存为 {{path}}",
     "reloadText": "重新加载磁盘版本",

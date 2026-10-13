@@ -69,3 +69,7 @@ test('renaming with the same operation ID checks receipt and rejects a different
  await assert.rejects(f.management.patchProject(f.context,f.projects[0].id,{name:'Different',operationId:'op-name'}),{code:'operation_conflict'});
  assert.equal((await f.state.receipt('a','op-name')).state,'committed');
 });
+test('project inventory is bounded before granting project or root authority',async t=>{
+ const f=await fixture(t);f.management.gateway=async()=>Array.from({length:10001},()=>({...f.projects[0]}));
+ await assert.rejects(f.management.allProjects(f.context),{code:'projects_unavailable',statusCode:503});
+});
