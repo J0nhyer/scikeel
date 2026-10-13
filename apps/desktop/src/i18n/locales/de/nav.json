@@ -81,7 +81,13 @@
     "move": "Verschieben",
     "trashTitle": "{{name}} in den Papierkorb verschieben?",
     "trashBody": "Die Datei oder der Ordner bleibt bis zur Wiederherstellung erhalten. Laufende Aufgaben müssen zuerst enden.",
-    "destination": "Ziel"
+    "destination": "Ziel",
+    "upload": "Dateien hochladen",
+    "uploads": "Uploads",
+    "addFiles": "Dateien hinzufügen",
+    "resumeUpload": "Upload fortsetzen: {{name}}",
+    "cancelUpload": "Upload abbrechen: {{name}}",
+    "uploadStatus": {"paused": "Pausiert", "uploading": "Wird hochgeladen", "error": "Prüfung erforderlich", "complete": "Hochgeladen", "cancelling": "Wird abgebrochen", "cancelled": "Abgebrochen"}
   },
   "history": {
     "heading": "Sitzungen",

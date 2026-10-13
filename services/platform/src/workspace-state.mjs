@@ -36,7 +36,8 @@ export class WorkspaceState {
   }
   async #save(userId,value) {
     const serialized=JSON.stringify(value);
-    const reserved=Object.values(value.operations).reduce((sum,operation)=>sum+(operation.reservedBytes??0),0);
+    const reserved=Object.values(value.operations).reduce((sum,operation)=>sum+(operation.reservedBytes??0),0)
+      +Object.values(value.uploads??{}).reduce((sum,upload)=>sum+(upload.reservedMetadataBytes??0),0);
     if(Buffer.byteLength(serialized)+reserved>this.maxStateBytes)throw workspaceError('workspace_metadata_full',507);
     await mkdir(this.dataDir,{recursive:true,mode:0o700});
     const path=join(this.dataDir,`${identifier(userId)}.json`);

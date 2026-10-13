@@ -6,6 +6,7 @@ import {useRuntimeStore} from '@/lib/runtime';
 import type {DirEntry} from '@/lib/artifactFile';
 import {operateWorkspace,workspaceEntries,workspaceOperationId,WorkspaceRequestError,type WorkspaceFileOperation,type WorkspaceScope} from '@/lib/workspaceManagement';
 import {NameProjectDialog} from '@/components/projects/NameProjectDialog';
+import {WorkspaceUploadControls} from './WorkspaceUploadControls';
 
 const parent=(path:string)=>path.split('/').slice(0,-1).join('/');
 const child=(path:string,name:string)=>path?path+'/'+name:name;
@@ -28,14 +29,15 @@ function useFileAction(scope:WorkspaceScope,onChanged:()=>void){
  };
  return {busy,error,uncertain,begin,run};
 }
-export function WorkspaceFileControls({scope,path,onChanged}:{scope:WorkspaceScope;path:string;onChanged:()=>void}){
+export function WorkspaceFileControls({scope,path,onChanged,disabled=false}:{scope:WorkspaceScope;path:string;onChanged:()=>void;disabled?:boolean}){
  const {t}=useTranslation(['nav','common']);const readOnly=useRuntimeStore(state=>state.webReadOnly);
  const [kind,setKind]=useState<'createFile'|'createDirectory'|null>(null);const action=useFileAction(scope,onChanged);
  const open=(kind:'createFile'|'createDirectory')=>{action.begin();setKind(kind);};
  return <>
-  <button type='button' className='flex h-8 w-8 items-center justify-center rounded hover:bg-surface-2 disabled:opacity-40' aria-label={t('fileManagement.newFile')} title={t('fileManagement.newFile')} disabled={readOnly||action.busy} onClick={()=>open('createFile')}><FilePlus size={15}/></button>
-  <button type='button' className='flex h-8 w-8 items-center justify-center rounded hover:bg-surface-2 disabled:opacity-40' aria-label={t('fileManagement.newFolder')} title={t('fileManagement.newFolder')} disabled={readOnly||action.busy} onClick={()=>open('createDirectory')}><FolderPlus size={15}/></button>
-  {kind && <NameProjectDialog defaultName='' title={t(kind==='createFile'?'fileManagement.newFile':'fileManagement.newFolder')} subtitle='' busy={action.busy} inputDisabled={action.uncertain} cancelDisabled={action.uncertain} error={action.error??undefined} onCancel={()=>{if(!action.busy && !action.uncertain)setKind(null);}} onSave={name=>void action.run(kind==='createFile'?{kind,path:child(path,name.trim()),text:''}:{kind,path:child(path,name.trim())},()=>setKind(null))}/>}
+  <button type='button' className='flex h-8 w-8 items-center justify-center rounded hover:bg-surface-2 disabled:opacity-40' aria-label={t('fileManagement.newFile')} title={t('fileManagement.newFile')} disabled={readOnly||action.busy||disabled} onClick={()=>open('createFile')}><FilePlus size={15}/></button>
+  <button type='button' className='flex h-8 w-8 items-center justify-center rounded hover:bg-surface-2 disabled:opacity-40' aria-label={t('fileManagement.newFolder')} title={t('fileManagement.newFolder')} disabled={readOnly||action.busy||disabled} onClick={()=>open('createDirectory')}><FolderPlus size={15}/></button>
+  <WorkspaceUploadControls scope={scope} path={path} onChanged={onChanged} disabled={disabled}/>
+  {kind && <NameProjectDialog defaultName='' title={t(kind==='createFile'?'fileManagement.newFile':'fileManagement.newFolder')} subtitle='' busy={action.busy||disabled} inputDisabled={action.uncertain} cancelDisabled={action.uncertain} error={action.error??undefined} onCancel={()=>{if(!action.busy && !action.uncertain)setKind(null);}} onSave={name=>{if(!disabled)void action.run(kind==='createFile'?{kind,path:child(path,name.trim()),text:''}:{kind,path:child(path,name.trim())},()=>setKind(null));}}/>}
  </>;
 }
 export function WorkspaceFileActions({scope,entry,onChanged}:{scope:WorkspaceScope;entry:DirEntry;onChanged:()=>void}){

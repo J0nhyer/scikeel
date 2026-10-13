@@ -81,7 +81,13 @@
     "move": "Mover",
     "trashTitle": "¿Mover {{name}} a la papelera?",
     "trashBody": "El archivo o carpeta se conserva hasta restaurarlo. Las tareas en curso deben terminar primero.",
-    "destination": "Destino"
+    "destination": "Destino",
+    "upload": "Subir archivos",
+    "uploads": "Cargas",
+    "addFiles": "Añadir archivos",
+    "resumeUpload": "Reanudar carga: {{name}}",
+    "cancelUpload": "Cancelar carga: {{name}}",
+    "uploadStatus": {"paused": "En pausa", "uploading": "Subiendo", "error": "Requiere atención", "complete": "Subido", "cancelling": "Cancelando", "cancelled": "Cancelado"}
   },
   "history": {
     "heading": "Sesiones",

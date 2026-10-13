@@ -256,7 +256,7 @@ function FilesExplorer({
             aria-label={t("files.refresh")} title={t("files.refresh")} disabled={entries === null} onClick={() => void load(dir)}>
             <RefreshCw size={14} />
           </button>
-          {scope && canCreate && <WorkspaceFileControls scope={scope} path={dir} onChanged={changed}/>}
+          {scope && <WorkspaceFileControls scope={scope} path={dir} onChanged={changed} disabled={!canCreate||entries===null}/>}
           {onClose && (
             <>
               <div className="flex-1" />
@@ -448,7 +448,7 @@ export function SessionFilesPane({
           {t("files.pane.subtitle")}
         </span>
         <div className="flex-1" />
-        {isPlatformWeb && canCreate && <WorkspaceFileControls scope={scope} path={dir} onChanged={changed}/>}
+        {isPlatformWeb && <WorkspaceFileControls scope={scope} path={dir} onChanged={changed} disabled={!canCreate||entries===null}/>}
         <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center text-muted hover:text-text"
           aria-label={t("files.refresh")} title={t("files.refresh")} disabled={entries === null} onClick={() => setReload((value) => value + 1)}>
           <RefreshCw size={14} />

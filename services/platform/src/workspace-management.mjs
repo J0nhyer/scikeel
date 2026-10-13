@@ -74,6 +74,8 @@ export class WorkspaceManagement {
         return prior;
       }
       if(input.expectedRevision!==project.revision)throw workspaceError('revision_conflict');
+      const prefix=project.path.slice(this.tenantPolicy.account(context).workspaceDir.length+1);
+      if(Object.values((await this.state.open(context.userId)).uploads??{}).some(upload=>!['cancelled','committed'].includes(upload.state) && (upload.destination===prefix || upload.destination.startsWith(prefix+'/'))))throw workspaceError('upload_pending');
       return this.state.project(context.userId,input.operationId,{kind:'trash',project});
     });
   }

@@ -106,6 +106,7 @@ New endpoints live under authenticated platform `/api` routes; preserve existing
 | `POST /api/workspace/operations` | One typed file mutation with scope, operation ID and expected revision where applicable. |
 | `GET /api/workspace/operations/:id` | Owned durable receipt: pending/committed/failed; reconcile uncertain results before retry. |
 | `POST /api/workspace/uploads` | `{scope,path,size,sha256?,operationId}`; upload receipt, optional declared full-file hash. |
+| `GET /api/workspace/uploads` | At most two active owned receipts, including their original begin operation IDs, for refresh recovery without file bytes in browser storage. |
 | `GET /api/workspace/uploads/:id` | Owned confirmed offset and state. |
 | `PUT /api/workspace/uploads/:id/chunks?offset=N` | Bounded raw binary chunk. |
 | `POST /api/workspace/uploads/:id/commit` | `{operationId}`; idle gate and no-replace commit. |

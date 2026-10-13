@@ -29,3 +29,21 @@ it('structured permission failures remain errors and never retry mutations',asyn
   await expect(client.trashWorkspaceProject('p1','revision','op-a')).rejects.toMatchObject({code:'read_only'});
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
+it('sends raw upload bytes and retains uncertainty after looking up a lost chunk response',async()=>{
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({id:'upload-a',state:'active',offset:3})));
+ expect(typeof client.uploadWorkspaceChunk).toBe('function');
+ await expect(client.uploadWorkspaceChunk('upload-a',0,new Blob(['abc']))).rejects.toMatchObject({code:'upload_uncertain'});
+ expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({'content-type':'application/octet-stream'});
+ expect(fetchMock.mock.calls[0][1]?.body).toBeInstanceOf(Blob);expect(String(fetchMock.mock.calls[1][0])).toContain('/uploads/upload-a');
+});
+it('retries upload initialization with its durable original operation ID',async()=>{
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({operationId:'begin-a',state:'committed',result:{uploadId:'upload-a'}}))).mockResolvedValueOnce(new Response(JSON.stringify({id:'upload-a',offset:0,state:'active'})));
+ expect(typeof client.beginWorkspaceUpload).toBe('function');
+ const result=await client.beginWorkspaceUpload({scope:{kind:'account'},path:'data.bin',size:3,operationId:'begin-a'});expect(result.id).toBe('upload-a');
+ expect(fetchMock.mock.calls.filter(call=>call[1]?.method==='POST')).toHaveLength(1);
+});
+it('does not claim an unacknowledged chunk succeeded or resend it automatically',async()=>{
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({id:'upload-a',state:'active',offset:0})));
+ expect(typeof client.uploadWorkspaceChunk).toBe('function');
+ await expect(client.uploadWorkspaceChunk('upload-a',0,new Blob(['abc']))).rejects.toMatchObject({code:'upload_uncertain'});expect(fetchMock).toHaveBeenCalledTimes(2);
+});

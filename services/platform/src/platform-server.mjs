@@ -4,6 +4,7 @@ import { pipeline } from "node:stream/promises";
 import { WorkspaceState, workspaceError } from "./workspace-state.mjs";
 import { WorkspaceAdmission } from "./workspace-admission.mjs";
 import { WorkspaceFiles } from "./workspace-files.mjs";
+import { WorkspaceUploads } from "./workspace-uploads.mjs";
 import { WorkspaceManagement } from "./workspace-management.mjs";
 import { WorkspaceTickets } from "./workspace-tickets.mjs";
 import { createWorkspaceRoutes } from "./workspace-routes.mjs";
@@ -428,8 +429,15 @@ export class PlatformServer {
         const context=await resolveContext(userId);await this.workspaceManagement.assertAccessible(context,directory);
       };
       if(workspaceFiles)this.workspaceFiles=new WorkspaceFiles({management:this.workspaceManagement,native:workspaceFiles,state:this.workspaceManagement.state,tenantPolicy,admission:this.workspaceAdmission});
+      if(this.workspaceFiles)this.workspaceUploads=new WorkspaceUploads({state:this.workspaceManagement.state,files:this.workspaceFiles,management:this.workspaceManagement,quota:async context=>{
+        tenantPolicy.account(context);
+        const inspected=await workerManager.client?.inspect({instanceId:context.instanceId},{timeoutMs:3000});
+        tenantPolicy.account(context);
+        if(inspected?.instanceId!==context.instanceId || inspected.generation!==context.generation || inspected.status!=="ready")throw workspaceError("quota_unavailable",503);
+        return inspected.quota;
+      }});
       this.workspaceRoutes = createWorkspaceRoutes({management:this.workspaceManagement,secureCookies,
-        files:this.workspaceFiles,
+        files:this.workspaceFiles,uploads:this.workspaceUploads,
         readJson:(request,response)=>this.#readPayload(request,response,16*1024**2),sendJson});
       this.workspaceTickets = new WorkspaceTickets({resolveContext,assertAccessible:(context,path)=>this.workspaceManagement.assertAccessible(context,path),
         issueWorkerTicket:(context,target)=>this.#workspaceGateway(context,"/v1/fs/ticket?"+new URLSearchParams({root:"workspace",dir:target.directory,path:target.path})),

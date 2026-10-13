@@ -81,7 +81,13 @@
     "move": "Déplacer",
     "trashTitle": "Déplacer {{name}} dans la corbeille ?",
     "trashBody": "Le fichier ou dossier est conservé jusqu’à sa restauration. Les tâches en cours doivent d’abord se terminer.",
-    "destination": "Destination"
+    "destination": "Destination",
+    "upload": "Importer des fichiers",
+    "uploads": "Importations",
+    "addFiles": "Ajouter des fichiers",
+    "resumeUpload": "Reprendre : {{name}}",
+    "cancelUpload": "Annuler : {{name}}",
+    "uploadStatus": {"paused": "En pause", "uploading": "Importation en cours", "error": "À vérifier", "complete": "Importé", "cancelling": "Annulation", "cancelled": "Annulé"}
   },
   "history": {
     "heading": "Sessions",

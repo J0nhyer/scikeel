@@ -53,6 +53,7 @@ export class WorkspaceFiles {
   if(!source && destination?.identity===recovery.identity){
    return this.state.completeFile(context.userId,operationId,{...recovery.result,identity:destination.identity,revision:destination.revision},recovery.entry);
   }
+  if(source?.identity===recovery.identity && source.revision===recovery.revision && destination && destination.identity!==recovery.identity)return this.state.fail(context.userId,operationId,'name_conflict',409);
   // A read/receipt never guesses by replaying a native mutation.
   if(source?.identity===recovery.identity && source.revision===recovery.revision && !destination)return record.receipt;
   throw workspaceError('operation_uncertain',503);
@@ -82,7 +83,7 @@ export class WorkspaceFiles {
   if(prepared.state==='failed')throw workspaceError(prepared.error.code,prepared.error.statusCode);
   const record=(await this.state.open(context.userId)).operations[operationId];
   if(record.recovery){
-   const receipt=await this.#reconcile(context,operationId,record);if(receipt.state==='committed')return receipt;
+   const receipt=await this.#reconcile(context,operationId,record);if(receipt.state==='committed')return receipt;if(receipt.state==='failed')throw workspaceError(receipt.error.code,receipt.error.statusCode);
    recovery=(await this.state.open(context.userId)).operations[operationId].recovery;
   }else await this.state.recovery(context.userId,operationId,recovery);
   let result;
@@ -110,6 +111,7 @@ export class WorkspaceFiles {
    const prior=(await this.state.open(context.userId)).operations[operationId];
    if(prior){if(prior.hash!==workspaceHash(normalized))throw workspaceError('operation_conflict');await this.scope(context,scope);return this.#move(context,operationId,normalized,prior.recovery);}
    const source=await this.target(context,scope,operation.path);const stat=await this.stat(context,source.path);
+   if(Object.values((await this.state.open(context.userId)).uploads??{}).some(upload=>!['cancelled','committed'].includes(upload.state) && (upload.destination===source.path || upload.destination.startsWith(source.path+'/'))))throw workspaceError('upload_pending');
    if(!stat)throw workspaceError('entry_not_found',404);if(stat.revision!==operation.expectedRevision)throw workspaceError('revision_conflict');
    if(typeof stat.identity!=='string')throw workspaceError('native_management_unavailable',503);
    let destination,entry,result;
@@ -165,6 +167,24 @@ export class WorkspaceFiles {
     entries.push({...entry,revision:stat.revision,capabilities});
    }
    return {...listed,entries,capabilities:{create:!context.readOnly}};
+  });
+ }
+ async publishUpload(context,{id,operationId,sha256,expectedRevision}){
+  this.tenantPolicy.account(context);
+  return this.admission.mutate(context.userId,async()=>{
+   await this.#pending(context,operationId);
+   const data=await this.state.open(context.userId),upload=data.uploads?.[id];
+   if(!upload || upload.state!=='committing')throw workspaceError('upload_not_found',404);
+   const target=await this.target(context,upload.scope,upload.path);
+   if(target.path!==upload.destination)throw workspaceError('upload_scope_changed',409);
+   const input={kind:'file',scope:upload.scope,operation:{kind:'upload',id,path:upload.path,sha256}};
+   const prior=data.operations[operationId];
+   if(prior){if(prior.hash!==workspaceHash(input))throw workspaceError('operation_conflict');return this.#move(context,operationId,input,prior.recovery);}
+   if(await this.stat(context,target.path))throw workspaceError('name_conflict');
+   await this.parent(context,target.path);
+   const stat=await this.stat(context,upload.payload);
+   if(!stat || stat.isDir || stat.identity!==upload.identity || stat.size!==upload.size || stat.revision!==expectedRevision)throw workspaceError('upload_uncertain',503);
+   return this.#move(context,operationId,input,{source:upload.payload,destination:target.path,identity:stat.identity,revision:stat.revision,result:{path:upload.path,uploadId:id,sha256}});
   });
  }
  async trash(context){

@@ -1,6 +1,7 @@
-import {cleanup,render,screen,waitFor} from '@testing-library/react';
+import {act,cleanup,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
 import {MemoryRouter} from 'react-router-dom';
+import userEvent from '@testing-library/user-event';
 import {FilesPage,SessionFilesPane} from './FilesPage';
 const entries=vi.fn(async()=>({directory:'/ws/project-a',capabilities:{create:true},entries:[{name:'result.txt',path:'result.txt',isDir:false,size:5,modified:1,revision:'a'.repeat(64),capabilities:['rename','move','trash']}]}));
 vi.mock('@/lib/webMode',async original=>({...await original<typeof import('@/lib/webMode')>(),isGatewayWeb:true,isPlatformWeb:true}));
@@ -25,4 +26,11 @@ it('resolves session file actions by session ID instead of a stale focused direc
  await screen.findByText('result.txt');expect(entries).toHaveBeenCalledWith({kind:'session',sessionId:'ses_a'},'');
  expect(screen.getByRole('button',{name:'New file'})).toBeInTheDocument();
  expect(screen.getByRole('button',{name:'File actions: result.txt'})).toBeInTheDocument();
+});
+it('keeps management controls and their open dialogs mounted while a listing refreshes',async()=>{
+ render(<MemoryRouter initialEntries={['/files?project=123456789abcdef0']}><FilesPage/></MemoryRouter>);await screen.findByText('result.txt');
+ await userEvent.click(screen.getByRole('button',{name:'New file'}));expect(screen.getByRole('dialog',{name:'New file'})).toBeInTheDocument();
+ const listed=await entries();let resolve!:(value:typeof listed)=>void;entries.mockReturnValueOnce(new Promise(done=>{resolve=done;}));
+ await userEvent.click(screen.getByRole('button',{name:'Refresh files'}));
+ try{expect(screen.getByRole('dialog',{name:'New file'})).toBeInTheDocument();}finally{await act(async()=>resolve(listed));}
 });

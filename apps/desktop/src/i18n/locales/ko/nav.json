@@ -81,7 +81,13 @@
     "move": "이동",
     "trashTitle": "{{name}}을(를) 휴지통으로 이동할까요?",
     "trashBody": "파일이나 폴더는 복원할 때까지 보존됩니다. 실행 중인 작업이 먼저 끝나야 합니다.",
-    "destination": "대상 폴더"
+    "destination": "대상 폴더",
+    "upload": "파일 업로드",
+    "uploads": "업로드",
+    "addFiles": "파일 추가",
+    "resumeUpload": "업로드 재개: {{name}}",
+    "cancelUpload": "업로드 취소: {{name}}",
+    "uploadStatus": {"paused": "일시 중지", "uploading": "업로드 중", "error": "확인 필요", "complete": "업로드 완료", "cancelling": "취소 중", "cancelled": "취소됨"}
   },
   "history": {
     "heading": "세션",

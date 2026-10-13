@@ -81,7 +81,13 @@
     "move": "Move",
     "trashTitle": "Move {{name}} to trash?",
     "trashBody": "The file or folder is kept until restored. Running tasks must finish first.",
-    "destination": "Destination"
+    "destination": "Destination",
+    "upload": "Upload files",
+    "uploads": "Uploads",
+    "addFiles": "Add files",
+    "resumeUpload": "Resume upload: {{name}}",
+    "cancelUpload": "Cancel upload: {{name}}",
+    "uploadStatus": {"paused": "Paused", "uploading": "Uploading", "error": "Needs attention", "complete": "Uploaded", "cancelling": "Cancelling", "cancelled": "Cancelled"}
   },
   "history": {
     "heading": "Sessions",

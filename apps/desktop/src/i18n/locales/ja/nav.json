@@ -81,7 +81,13 @@
     "move": "移動",
     "trashTitle": "{{name}} をゴミ箱に移動しますか？",
     "trashBody": "ファイルやフォルダーは復元まで保持されます。実行中のタスクを先に終了してください。",
-    "destination": "移動先"
+    "destination": "移動先",
+    "upload": "ファイルをアップロード",
+    "uploads": "アップロード",
+    "addFiles": "ファイルを追加",
+    "resumeUpload": "アップロードを再開：{{name}}",
+    "cancelUpload": "アップロードをキャンセル：{{name}}",
+    "uploadStatus": {"paused": "一時停止", "uploading": "アップロード中", "error": "確認が必要", "complete": "アップロード済み", "cancelling": "キャンセル中", "cancelled": "キャンセル済み"}
   },
   "history": {
     "heading": "セッション",

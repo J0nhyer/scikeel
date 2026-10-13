@@ -15,16 +15,23 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE)('Web project management w
  const module=name=>import(pathToFileURL(resolve(`../../services/platform/src/${name}.mjs`)).href);
  const [{AuthStore},{PlatformServer},{TenantPolicy}]=await Promise.all(['auth-store','platform-server','tenant-policy'].map(module));
  const root=await mkdtemp(join(tmpdir(),'project-files-browser-'));
- let worker;let busy=false;let renameFailure=false;
+ let worker;let busy=false;let renameFailure=false,loseChunkReply=false;
  let revision=0;const payloads=new Map();const nextRevision=()=> (++revision).toString(16).padStart(64,'0');
  const native={call:async(_context,request)=>{
   const entry=payloads.get(request.path),fail=code=>{throw Object.assign(new Error(code),{code,statusCode:code==='entry_not_found'?404:409});};
-  if(request.operation==='stat'){if(!entry)fail('entry_not_found');return {...entry};}
+  if(request.operation==='stat'){if(!entry)fail('entry_not_found');return {identity:entry.identity,revision:entry.revision,isDir:entry.isDir,size:entry.size};}
   if(request.operation==='mkdirAll')return {created:true};
   if(request.operation==='mkdir' || request.operation==='createText'){
    if(entry)fail('name_conflict');const result={identity:'fixture-'+nextRevision(),revision:nextRevision(),isDir:request.operation==='mkdir',size:Buffer.byteLength(request.text??''),text:request.text??''};payloads.set(request.path,result);return {...result};
   }
   if(request.operation==='readText'){if(!entry)fail('entry_not_found');return {text:entry.text,revision:entry.revision};}
+  if(request.operation==='writeChunk'){
+   if((request.offset===0 && entry) || (request.offset>0 && (!entry || entry.size!==request.offset)))fail('offset_conflict');
+   const bytes=Buffer.concat([entry?.bytes??Buffer.alloc(0),Buffer.from(request.bytes)]),result={identity:entry?.identity??'fixture-'+nextRevision(),revision:nextRevision(),isDir:false,size:bytes.length,bytes};payloads.set(request.path,result);
+   if(loseChunkReply){loseChunkReply=false;throw new Error('Fixture lost chunk response');}return {};
+  }
+  if(request.operation==='readChunk'){if(!entry)fail('entry_not_found');const bytes=entry.bytes??Buffer.from(entry.text??'');return {size:entry.size,bytes:[...bytes.subarray(request.offset,request.offset+request.limit)]};}
+  if(request.operation==='remove'){if(!entry)fail('entry_not_found');payloads.delete(request.path);return {};}
   if(request.operation==='moveNoReplace'){
    if(!entry)fail('entry_not_found');if(entry.revision!==request.expectedRevision)fail('revision_conflict');if(payloads.has(request.destinationPath))fail('name_conflict');
    payloads.delete(request.path);entry.revision=nextRevision();payloads.set(request.destinationPath,entry);return {...entry};
@@ -58,6 +65,7 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE)('Web project management w
  const authStore=new AuthStore({filePath:join(root,'auth.json'),bootstrapAdmin:{username:'fixture',password:'fixture-password'}});
  const policy=new TenantPolicy();
  const manager={rootDir:join(root,'workers'),init:async()=>{},getWorker:()=>worker,getWorkerAccess:()=>({url:`http://127.0.0.1:${upstream.address().port}`,token:'internal'}),
+  client:{inspect:async()=>({instanceId:worker.id,generation:worker.generation,status:'ready',quota:{enforced:true,byteLimit:128*1024**2,inodeLimit:1024,bytes:0,inodes:0}})},
   ensureWorker:async({userId})=>{worker={id:'user-'+userId,userId,generation:1,status:'running',workspaceDir:root+'/workspace'};policy.registerAccount({...worker,instanceId:worker.id});},
   retainWorker:()=>({release(){}})};
  const platform=new PlatformServer({authStore,workerManager:manager,tenantPolicy:policy,workspaceFiles:native,enableWorkspaceManagement:true,webRoot,
@@ -86,6 +94,26 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE)('Web project management w
     await page.reload();await menu().waitFor();await menu().click();await page.getByRole('menuitem',{name:'Open files',exact:true}).click();
     await page.getByText('result.txt',{exact:true}).waitFor();expect(page.url()).toContain('project=123456789abcdef0');
     const fileView=origin+'/files?project=123456789abcdef0';
+    const uploadBytes=Buffer.alloc(256*1024+3,17),uploadName='uploaded-'+width+'.bin';loseChunkReply=true;
+    await page.locator('input[aria-label="Upload files"]').setInputFiles({name:uploadName,mimeType:'application/octet-stream',buffer:uploadBytes});
+    const uploads=page.getByRole('dialog',{name:'Uploads',exact:true});await uploads.getByRole('alert').waitFor();
+    expect(payloads.has('projects/a/'+uploadName)).toBe(false);
+    await page.reload();await page.getByRole('dialog',{name:'Uploads',exact:true}).waitFor();
+    await page.locator('input[aria-label="Resume upload: '+uploadName+'"]').setInputFiles({name:uploadName,mimeType:'application/octet-stream',buffer:uploadBytes});
+    try{await page.getByRole('dialog',{name:'Uploads',exact:true}).getByText('Uploaded',{exact:true}).waitFor();}
+    catch(error){console.error('Upload recovery:',await page.locator('body').innerText(),'Browser errors:',errors,'Receipts:',await (await context.request.get(origin+'/api/workspace/uploads')).json());throw error;}
+    expect(payloads.get('projects/a/'+uploadName)?.bytes.equals(uploadBytes)).toBe(true);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1)).toBe(true);
+    const uploadEvidence=resolve('../../.deploy/verification/web-project-management');await mkdir(uploadEvidence,{recursive:true});
+    await page.screenshot({path:join(uploadEvidence,`uploads-${width}.png`),fullPage:true});
+    await page.getByRole('dialog',{name:'Uploads',exact:true}).getByRole('button',{name:'Close details',exact:true}).click();
+    const cancelName='cancelled-'+width+'.bin';loseChunkReply=true;
+    await page.locator('input[aria-label="Upload files"]').setInputFiles({name:cancelName,mimeType:'application/octet-stream',buffer:Buffer.from('cancel')});
+    await page.getByRole('dialog',{name:'Uploads',exact:true}).getByRole('alert').waitFor();
+    await page.getByRole('button',{name:'Cancel upload: '+cancelName,exact:true}).click();
+    await page.getByRole('dialog',{name:'Uploads',exact:true}).getByText('Cancelled',{exact:true}).waitFor();
+    expect(payloads.has('projects/a/'+cancelName)).toBe(false);
+    await page.getByRole('dialog',{name:'Uploads',exact:true}).getByRole('button',{name:'Close details',exact:true}).click();
     await page.getByRole('button',{name:'New folder',exact:true}).click();
     await page.getByRole('dialog',{name:'New folder',exact:true}).getByRole('textbox').fill('reports');
     await page.getByRole('dialog',{name:'New folder',exact:true}).getByRole('button',{name:'Save',exact:true}).click();
