@@ -33,6 +33,10 @@ test.skipIf(!process.env.OSD_PROJECTS_ACCEPTANCE && !process.env.OSD_PROJECTS_LI
       try {
         const login = await context.request.post(`${origin}/auth/login`, { headers: { accept: "application/json" }, data: { username: "fixture", password: "fixture-password" } });
         expect(login.status()).toBe(200); const { user } = await login.json(); await cliRuntime.setUserRuntime(user.id, "codex");
+        const instanceId = `user-${user.id}`;
+        await workerManager.ensureWorker({ instanceId, userId: user.id });
+        // The isolated legacy fake has no launcher; its simulated owned generation is fixed.
+        workerManager.workers.get(instanceId).generation = 1;
         const page = await context.newPage(); const errors = []; let creations = 0; let turns = 0;
         page.on("pageerror", (error) => errors.push(error.message));
         page.on("request", (request) => {

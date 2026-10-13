@@ -31,7 +31,7 @@ test.skipIf(!process.env.OSD_TOOL_BROWSER)('Web tool failures and authenticated 
     if (path === `/session/${session.id}/message`) { json(history()); return; }
     const data = {
       '/v1/whoami': { directory: '/tenant/workspace', mode: 'full' }, '/api/me': { user: { id: 'user_fixture', username: 'fixture', role: 'user' } },
-      '/api/runtime': { runtime: 'opencode', kind: 'opencode', available: [{ runtime: 'opencode', kind: 'opencode', enabled: true }] },
+      '/api/runtime': { runtime: 'opencode', kind: 'opencode', context: { instanceId: 'user-fixture', generation: 1 }, available: [{ runtime: 'opencode', kind: 'opencode', enabled: true }] },
       '/config/providers': { providers: [{ id: 'fixture', name: 'Fixture', models: { model: { id: 'model', name: 'Fixture model' } } }], connected: ['fixture'], default: { fixture: 'model' } },
       '/provider': { all: [], connected: ['fixture'] }, '/config': { model: 'fixture/model' }, '/global/config': { model: 'fixture/model' },
       '/experimental/session': [session], '/session': [session], [`/session/${session.id}`]: session,

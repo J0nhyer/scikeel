@@ -42,7 +42,7 @@ test.skipIf(!process.env.OSD_CONTINUITY_BROWSER)("running Web turns survive conv
     const data = {
       "/v1/whoami": { directory: "/tenant/workspace", mode: "full" },
       "/api/me": { user: { id: "usr_fixture", username: "fixture", role: "user" } },
-      "/api/runtime": { runtime: "opencode", kind: "opencode", available: [{ runtime: "opencode", kind: "opencode", enabled: true }] },
+      "/api/runtime": { runtime: "opencode", kind: "opencode", context: { instanceId: "user-fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true }] },
       "/config/providers": { providers: [{ id: "fixture", name: "Fixture", models: { model: { id: "model", name: "Fixture model" } } }], connected: ["fixture"], default: { fixture: "model" } },
       "/provider": { all: [], connected: ["fixture"] }, "/config": { model: "fixture/model" }, "/global/config": { model: "fixture/model" },
       "/experimental/session": sessions, "/session": sessions, "/session/status": active ? { ses_live: { type: "busy" } } : {},
@@ -194,7 +194,7 @@ test.skipIf(!process.env.OSD_CONTINUITY_BROWSER)("Web Settings saves defaults ac
     const data = {
       "/v1/whoami": { directory: "/tenant/workspace", mode: "full" },
       "/api/me": { user: { id: "usr_fixture", username: "fixture", role: "user" } },
-      "/api/runtime": { runtime: "opencode", kind: "opencode", available: [{ runtime: "opencode", kind: "opencode", enabled: true, models: [], status: "ready" }] },
+      "/api/runtime": { runtime: "opencode", kind: "opencode", context: { instanceId: "user-fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true, models: [], status: "ready" }] },
       "/config": { model: configured }, "/provider": { all: [], connected: ["fixture"] },
       "/session/status": {}, "/session/ses_existing": session, "/session/ses_existing/message": [],
       "/skill": [{ name: "fixture-skill" }], "/agent": [{ name: "build", mode: "primary" }],

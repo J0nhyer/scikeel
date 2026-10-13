@@ -55,7 +55,7 @@ test.skipIf(process.env.OSD_RECOVERY_ACCEPTANCE !== '1')('Web restores models an
     const body = {
       '/v1/whoami': { directory: '/tenant/workspace', mode: 'full' },
       '/api/me': { user: { id: 'usr_fixture', username: 'fixture', role: 'user' } },
-      '/api/runtime': { runtime: 'opencode', kind: 'opencode', available: [{ runtime: 'opencode', kind: 'opencode', enabled: true, models: [], status: 'ready' }] },
+      '/api/runtime': { runtime: 'opencode', kind: 'opencode', context: { instanceId: 'user-fixture', generation: 1 }, available: [{ runtime: 'opencode', kind: 'opencode', enabled: true, models: [], status: 'ready' }] },
       '/config/providers': provider,
       '/global/config': { model: 'fixture/model' },
       '/command': [], '/permission': [], '/question': [], '/session/status': {}, '/v1/projects': [],

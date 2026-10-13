@@ -32,12 +32,18 @@ test.skipIf(!process.env.OSD_RELEASE_ACCEPTANCE)('candidate Web bundle loads wit
         const login = await context.request.post(origin + '/auth/login', { headers: { accept: 'application/json' }, data: { username: 'fixture', password: 'fixture-password' } });
         expect(login.status()).toBe(200);
         const { user } = await login.json(); await runtime.setUserRuntime(user.id, 'codex');
+        const instanceId = `user-${user.id}`;
+        await workerManager.ensureWorker({ instanceId, userId: user.id });
+        // The isolated legacy fake has no launcher; its simulated owned generation is fixed.
+        workerManager.workers.get(instanceId).generation = 1;
         const page = await context.newPage(); const errors = [];
         page.on('pageerror', (error) => errors.push(error.message));
         await page.goto(origin + '/live'); await page.locator('textarea').first().waitFor({ state: 'visible' });
+        await expect.poll(() => page.getByRole('button', { name: /^Model:/ }).first().isEnabled(), { timeout: 15000 }).toBe(true);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         expect(errors).toEqual([]);
         await page.reload(); await page.locator('textarea').first().waitFor({ state: 'visible' });
+        await expect.poll(() => page.getByRole('button', { name: /^Model:/ }).first().isEnabled(), { timeout: 15000 }).toBe(true);
         expect(errors).toEqual([]);
         await context.request.post(origin + '/auth/logout', { headers: { accept: 'application/json' } });
       } finally { await context.close(); }

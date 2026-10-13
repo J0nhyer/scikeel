@@ -50,6 +50,10 @@ test.skipIf(!process.env.OSD_APPEARANCE_ACCEPTANCE)("workbench appearances persi
         const login = await context.request.post(origin + "/auth/login", { headers: { accept: "application/json" }, data: { username: "fixture", password: "fixture-password" } });
         expect(login.status()).toBe(200);
         const { user } = await login.json(); await runtime.setUserRuntime(user.id, "codex");
+        const instanceId = `user-${user.id}`;
+        await workerManager.ensureWorker({ instanceId, userId: user.id });
+        // The isolated legacy fake has no launcher; its simulated owned generation is fixed.
+        workerManager.workers.get(instanceId).generation = 1;
         await page.goto(origin + "/settings/appearance");
         await page.getByRole("radio", { name: "Light", exact: true }).waitFor();
         expect(await page.getByRole("radio").count()).toBe(4);
