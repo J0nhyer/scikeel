@@ -1,11 +1,11 @@
 import { jobRequest } from "../../../runtime/sandbox/cli-jobs.mjs";
-import { fileRequest, environmentRequest } from "../../../runtime/sandbox/file-rpc.mjs";
+import { fileRequest, environmentRequest, managementStatuses } from "../../../runtime/sandbox/file-rpc.mjs";
 
 const denied=(message)=>Object.assign(new Error(message),{statusCode:403});
 export class WorkspaceRpc {
-  constructor({ workerManager, tenantPolicy, fetchImpl=fetch, timeoutMs=20000, maxBytes=4*1024**2 }) {
+  constructor({ workerManager, tenantPolicy, fetchImpl=fetch, timeoutMs=20000, maxBytes=16*1024**2 }) {
     if(!workerManager || !tenantPolicy || typeof fetchImpl!=="function" || !Number.isSafeInteger(timeoutMs) || timeoutMs<1 || timeoutMs>30000 ||
-        !Number.isSafeInteger(maxBytes) || maxBytes<1 || maxBytes>8*1024**2) throw new Error("invalid workspace RPC configuration");
+        !Number.isSafeInteger(maxBytes) || maxBytes<1 || maxBytes>16*1024**2) throw new Error("invalid workspace RPC configuration");
     Object.assign(this,{workerManager,tenantPolicy,fetchImpl,timeoutMs,maxBytes});
   }
   #owned(context) {
@@ -26,7 +26,7 @@ export class WorkspaceRpc {
   async #send(context,request,path,signal) {
     this.#owned(context);
     if(signal?.aborted)throw denied("workspace operation cancelled");
-    const lease=this.workerManager.retainWorker(context.instanceId, { maintenance: path === "/environments", readOnly: ["read", "readChunk", "list", "inspect", "events"].includes(request.operation) });
+    const lease=this.workerManager.retainWorker(context.instanceId, { maintenance: path === "/environments", readOnly: ["read", "readChunk", "list", "stat", "readText", "inspect", "events"].includes(request.operation) });
     try {
       if(lease.generation!==context.generation)throw denied("workspace generation changed");
       const access=this.workerManager.getWorkerAccess(context.instanceId);
@@ -35,7 +35,6 @@ export class WorkspaceRpc {
       const bounded=signal ? AbortSignal.any([signal,AbortSignal.timeout(path === "/environments" ? 300000 : this.timeoutMs)]) : AbortSignal.timeout(path === "/environments" ? 300000 : this.timeoutMs);
       const response=await this.fetchImpl(`${access.runnerUrl}${path}`,{method:"POST",redirect:"error",signal:bounded,headers:{
         authorization:`Bearer ${access.token}`,"content-type":"application/json"},body:JSON.stringify({instanceId:context.instanceId,generation:context.generation,...request})});
-      if(!response.ok){await response.body?.cancel();throw denied("workspace operation denied");}
       const reader=response.body.getReader();const buffers=[];let total=0;
       try {
         while(true){const {done,value}=await reader.read();if(done)break;total+=value.byteLength;
@@ -43,7 +42,13 @@ export class WorkspaceRpc {
       } catch(error){await reader.cancel().catch(()=>{});throw error;}
       finally{reader.releaseLock();}
       this.#owned(context);
-      try{return JSON.parse(Buffer.concat(buffers).toString("utf8"));}catch{throw denied("invalid workspace response");}
+      let value;try{value=JSON.parse(Buffer.concat(buffers).toString("utf8"));}catch{throw denied("invalid workspace response");}
+      if(!response.ok){
+        const code=value?.code;
+        if(path==='/files' && Object.hasOwn(managementStatuses,code))throw Object.assign(new Error(code),{code,statusCode:managementStatuses[code]});
+        throw denied("workspace operation denied");
+      }
+      return value;
     } finally{lease.release();}
   }
 }

@@ -1,15 +1,22 @@
 import { spawn } from "node:child_process";
 import { posix } from "node:path";
+export const managementStatuses={entry_not_found:404,name_conflict:409,revision_conflict:409,entry_unavailable:403};
 
 export function fileRequest(value) {
   const fields = { read:["operation","root","path"], list:["operation","root","path"], mkdir:["operation","root","path"],
     mkdirAll:["operation","root","path"], remove:["operation","root","path"], write:["operation","root","path","text"],
-    readChunk:["operation","root","path","offset","limit"], writeChunk:["operation","root","path","offset","bytes"] };
+    readChunk:["operation","root","path","offset","limit"], writeChunk:["operation","root","path","offset","bytes"],
+    stat:["operation","root","path"],readText:["operation","root","path"],createText:["operation","root","path","text"],
+    moveNoReplace:["operation","root","path","destinationPath","expectedRevision"],
+    saveTextIfRevision:["operation","root","path","text","expectedRevision"] };
   const allowed = fields[value?.operation];
   if (!value || typeof value !== "object" || Array.isArray(value) || !allowed || Object.keys(value).some(key => !allowed.includes(key)) ||
       value.root !== "workspace" || typeof value.path !== "string" || value.path.length > 4096 || /[\0\\]/.test(value.path) ||
       value.path.startsWith("/") || posix.normalize(value.path || ".") !== (value.path || ".") || value.path.split("/").some(part => part === "..") ||
       (value.operation === "write" && (typeof value.text !== "string" || Buffer.byteLength(value.text) > 1024 ** 2)) ||
+      (["createText","saveTextIfRevision"].includes(value.operation) && (typeof value.text!=="string" || value.text.includes('\0') || Buffer.byteLength(value.text)>2*1024**2)) ||
+      (["moveNoReplace","saveTextIfRevision"].includes(value.operation) && !/^[a-f0-9]{64}$/.test(value.expectedRevision??"")) ||
+      (value.operation==="moveNoReplace" && (typeof value.destinationPath!=="string" || !value.destinationPath || value.destinationPath.length>4096 || /[\0\\]/.test(value.destinationPath) || value.destinationPath.startsWith("/") || posix.normalize(value.destinationPath)!==value.destinationPath || value.destinationPath.split("/").some(part=>["",".",".."].includes(part)))) ||
       (["readChunk","writeChunk"].includes(value.operation) && (!Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > 25*1024**2)) ||
       (value.operation === "readChunk" && (!Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 256*1024)) ||
       (value.operation === "writeChunk" && (!Array.isArray(value.bytes) || value.bytes.length > 256*1024 || value.offset+value.bytes.length > 25*1024**2 ||
@@ -17,9 +24,9 @@ export function fileRequest(value) {
   return {...value};
 }
 export class FileRpc {
-  constructor({ spawnImpl = spawn, timeoutMs = 15000, maxOutputBytes = 4 * 1024 ** 2 } = {}) {
+  constructor({ spawnImpl = spawn, timeoutMs = 15000, maxOutputBytes = 16 * 1024 ** 2 } = {}) {
     if (typeof spawnImpl !== "function" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000 ||
-        !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > 8 * 1024 ** 2) throw new Error("invalid file helper configuration");
+        !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > 16 * 1024 ** 2) throw new Error("invalid file helper configuration");
     Object.assign(this, { spawnImpl, timeoutMs, maxOutputBytes });
   }
   call(value, { signal } = {}) {
@@ -52,7 +59,9 @@ export class FileRpc {
       child.once("close", (code) => {
         clearTimeout(timer); signal?.removeEventListener("abort", abort);
         if (reason || code !== 0) { reject(reason ?? new Error("file operation denied")); return; }
-        try { resolve(JSON.parse(Buffer.concat(output).toString("utf8"))); } catch { reject(new Error("invalid file helper response")); }
+        let value;try {value=JSON.parse(Buffer.concat(output).toString("utf8"));}catch {reject(new Error("invalid file helper response"));return;}
+        if(value?.error){const code=value.error.code;reject(Object.assign(new Error(Object.hasOwn(managementStatuses,code)?code:'file operation denied'),Object.hasOwn(managementStatuses,code)?{code,statusCode:managementStatuses[code]}:{}));return;}
+        resolve(value);
       });
       child.stdin.end(JSON.stringify(request));
     });

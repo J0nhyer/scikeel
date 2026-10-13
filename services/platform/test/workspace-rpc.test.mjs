@@ -26,3 +26,16 @@ test("a generation changed during RPC cannot publish stale results and the respo
   generation=1;files.fetchImpl=async()=>new Response("x".repeat(101));
   await assert.rejects(files.call(context,{operation:"read",root:"workspace",path:"paper"}),/limit/);assert.equal(released,2);
 });
+test('native conflict codes reach the platform without leaking helper output',async()=>{
+ const policy=new TenantPolicy();policy.registerAccount(context);
+ const manager={getWorker:()=>({userId:'a',generation:1,status:'running'}),getWorkerAccess:()=>({runnerUrl:'http://172.31.240.2:4791',token:'a'.repeat(64)}),retainWorker:()=>({generation:1,release(){}})};
+ const files=new WorkspaceRpc({workerManager:manager,tenantPolicy:policy,fetchImpl:async()=>new Response(JSON.stringify({error:'runner_operation_denied',code:'revision_conflict',secret:'never expose'}),{status:409})});
+ await assert.rejects(files.call(context,{operation:'stat',root:'workspace',path:'notes.txt'}),error=>error.code==='revision_conflict' && error.statusCode===409 && !error.message.includes('never expose'));
+});
+test('the text snapshot response budget includes JSON escaping without changing content limits',async()=>{
+ const policy=new TenantPolicy();policy.registerAccount(context);
+ const manager={getWorker:()=>({userId:'a',generation:1,status:'running'}),getWorkerAccess:()=>({runnerUrl:'http://172.31.240.2:4791',token:'a'.repeat(64)}),retainWorker:()=>({generation:1,release(){}})};
+ const text='\u0001'.repeat(2*1024**2);
+ const files=new WorkspaceRpc({workerManager:manager,tenantPolicy:policy,fetchImpl:async()=>new Response(JSON.stringify({text,revision:'a'.repeat(64)}))});
+ assert.equal((await files.call(context,{operation:'readText',root:'workspace',path:'a'})).text,text);
+});

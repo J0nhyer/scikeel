@@ -4,7 +4,7 @@ import { readFile, lstat, mkdir, writeFile, rename } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { resolve, posix } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FileRpc, fileRequest, EnvironmentRpc, environmentRequest } from "./file-rpc.mjs";
+import { FileRpc, fileRequest, EnvironmentRpc, environmentRequest, managementStatuses } from "./file-rpc.mjs";
 import { buildJobEnvironment, CliJobs, jobRequest } from "./cli-jobs.mjs";
 
 function validateManifest(value) {
@@ -57,8 +57,9 @@ export class TenantRunner {
     try {
       if (req.headers["content-type"] !== "application/json" || req.headers["content-encoding"]) throw new Error("invalid runner payload");
       let bytes = 0; const chunks = [];
+      const maxBodyBytes=req.url==='/files'?16*1024**2:4*1024**2;
       for await (const chunk of req) {
-        bytes += chunk.length; if (bytes > 4 * 1024 ** 2 || controller.signal.aborted) throw new Error("runner body limit"); chunks.push(chunk);
+        bytes += chunk.length; if (bytes > maxBodyBytes || controller.signal.aborted) throw new Error("runner body limit"); chunks.push(chunk);
       }
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if (body.instanceId !== this.manifest.instanceId || body.generation !== this.manifest.generation) throw new Error("foreign runner context");
@@ -85,7 +86,11 @@ export class TenantRunner {
       }
       else result = await this.files.call(fileRequest(operation), { signal: controller.signal });
       if (!controller.signal.aborted) send(200, result);
-    } catch { if (!controller.signal.aborted) send(403, { error: "runner_operation_denied" }); }
+    } catch(error) { if (!controller.signal.aborted) {
+      const code=error?.code;
+      if(req.url==='/files' && Object.hasOwn(managementStatuses,code))send(managementStatuses[code],{error:'runner_operation_denied',code});
+      else send(403, { error: "runner_operation_denied" });
+    } }
     finally { clearTimeout(timeout); req.off("aborted", cancel); res.off("close", cancel); this.#active.delete(controller); this.#operations.delete(req.url); }
   }
 }

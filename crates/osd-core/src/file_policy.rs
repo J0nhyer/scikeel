@@ -3,6 +3,7 @@ pub const WORKSPACE_ROOT: &str = "workspace";
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use super::WORKSPACE_ROOT;
     use std::collections::HashMap;
     use std::ffi::{CStr, CString};
     use std::fs::File;
@@ -11,6 +12,7 @@ mod linux {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
+    use sha2::{Digest, Sha256};
 
     const RESOLVE_BENEATH: u64 = 0x08;
     const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
@@ -66,6 +68,31 @@ mod linux {
         pub size: u64,
         #[serde(rename = "modifiedAt")]
         pub modified_at: u64,
+    }
+
+    #[derive(serde::Serialize)]
+    pub struct WorkspaceStat {
+        pub identity: String,
+        pub revision: String,
+        #[serde(rename = "isDir")]
+        pub is_dir: bool,
+        pub size: u64,
+    }
+
+    #[derive(serde::Serialize)]
+    pub struct WorkspaceText {
+        pub text: String,
+        pub revision: String,
+    }
+
+    fn revision(meta: &std::fs::Metadata, bytes: Option<&[u8]>) -> String {
+        let mut hash=Sha256::new();
+        hash.update(format!("{}:{}:{}:{}:{}:{}:{}:{}:{}",meta.dev(),meta.ino(),meta.mode(),meta.nlink(),meta.len(),meta.mtime(),meta.mtime_nsec(),meta.ctime(),meta.ctime_nsec()));
+        if let Some(bytes)=bytes {hash.update(bytes);}
+        format!("{:x}",hash.finalize())
+    }
+    fn identity(meta: &std::fs::Metadata) -> String {
+        format!("{:x}",Sha256::digest(format!("{}:{}:{}",meta.dev(),meta.ino(),meta.mode()&libc::S_IFMT)))
     }
 
     impl ManagedFilePolicy {
@@ -162,7 +189,7 @@ mod linux {
                 &name,
                 libc::O_RDONLY,
                 0,
-                false,
+                true,
             )?;
             let meta = file.metadata()?;
             if !meta.is_file() || meta.len() > maximum {
@@ -329,6 +356,80 @@ mod linux {
             let (parent, leaf) = name.rsplit_once('/').unwrap_or(("", name));
             Ok((self.directory(root, parent, true)?, relative(leaf)?))
         }
+        fn workspace_entry(&self, root: &str, name: &str, flags: i32) -> io::Result<File> {
+            if root!=WORKSPACE_ROOT {return Err(denied());}
+            let (parent,leaf)=self.parent(root,name)?;
+            let file=self.open(&parent,&leaf,flags|libc::O_NOFOLLOW,0,true)?;
+            let meta=file.metadata()?;
+            if !(meta.is_file() || meta.is_dir()) || (meta.is_file() && meta.nlink()!=1) {return Err(denied());}
+            Ok(file)
+        }
+        pub fn workspace_stat(&self, root: &str, name: &str) -> io::Result<WorkspaceStat> {
+            let file=self.workspace_entry(root,name,libc::O_PATH)?;
+            let meta=file.metadata()?;
+            Ok(WorkspaceStat {identity:identity(&meta),revision:revision(&meta,None),is_dir:meta.is_dir(),size:meta.len()})
+        }
+        fn text_snapshot(file: &mut File) -> io::Result<WorkspaceText> {
+            let before=file.metadata()?;
+            if !before.is_file() || before.nlink()!=1 || before.len()>2*1024*1024 {return Err(denied());}
+            let mut bytes=Vec::new();
+            file.take(2*1024*1024+1).read_to_end(&mut bytes)?;
+            let after=file.metadata()?;
+            if bytes.len()>2*1024*1024 || bytes.contains(&0) || revision(&before,None)!=revision(&after,None) {return Err(denied());}
+            let token=revision(&after,Some(&bytes));
+            let text=String::from_utf8(bytes).map_err(|_|denied())?;
+            Ok(WorkspaceText {text,revision:token})
+        }
+        pub fn workspace_read_text(&self, root: &str, name: &str) -> io::Result<WorkspaceText> {
+            let mut file=self.workspace_entry(root,name,libc::O_RDONLY)?;
+            Self::text_snapshot(&mut file)
+        }
+        fn publish_text(&self, root: &str, name: &str, text: &str, expected: Option<&str>) -> io::Result<WorkspaceText> {
+            if root!=WORKSPACE_ROOT || text.len()>2*1024*1024 || text.contains('\0') {return Err(denied());}
+            let (parent,leaf)=self.parent(root,name)?;
+            if let Some(expected)=expected {
+                let mut file=self.open(&parent,&leaf,libc::O_RDONLY|libc::O_NOFOLLOW,0,true)?;
+                if Self::text_snapshot(&mut file)?.revision!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            }
+            let temporary=CString::new(format!(".scikeel-{}.tmp",crate::runtime::random_hex(12))).unwrap();
+            let result=(||{
+                let mut file=self.open(&parent,&temporary,libc::O_RDWR|libc::O_CREAT|libc::O_EXCL|libc::O_NOFOLLOW,0o600,true)?;
+                file.write_all(text.as_bytes())?;file.sync_all()?;
+                if let Some(expected)=expected {
+                    // Admission excludes runtime writers. Recheck after staging;
+                    // privileged out-of-band writes are not transactional here.
+                    let mut current=self.open(&parent,&leaf,libc::O_RDONLY|libc::O_NOFOLLOW,0,true)?;
+                    if Self::text_snapshot(&mut current)?.revision!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+                }
+                let flags=if expected.is_none(){libc::RENAME_NOREPLACE}else{0};
+                if unsafe{libc::syscall(libc::SYS_renameat2,parent.as_raw_fd(),temporary.as_ptr(),parent.as_raw_fd(),leaf.as_ptr(),flags)}<0 {return Err(io::Error::last_os_error());}
+                parent.sync_all()?;
+                use std::io::{Seek,SeekFrom};file.seek(SeekFrom::Start(0))?;
+                Self::text_snapshot(&mut file)
+            })();
+            if result.is_err(){unsafe{libc::unlinkat(parent.as_raw_fd(),temporary.as_ptr(),0);}}
+            result
+        }
+        pub fn workspace_create_text(&self, root: &str, name: &str, text: &str) -> io::Result<WorkspaceText> {
+            self.publish_text(root,name,text,None)
+        }
+        pub fn workspace_save_text(&self, root: &str, name: &str, text: &str, expected: &str) -> io::Result<WorkspaceText> {
+            self.publish_text(root,name,text,Some(expected))
+        }
+        pub fn workspace_move(&self, root: &str, name: &str, destination: &str, expected: &str) -> io::Result<WorkspaceStat> {
+            if name==destination || destination.starts_with(&format!("{name}/")) {return Err(denied());}
+            let entry=self.workspace_entry(root,name,libc::O_PATH)?;
+            let before=entry.metadata()?;
+            if revision(&before,None)!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            let (source,leaf)=self.parent(root,name)?;
+            let (target,to)=self.parent(root,destination)?;
+            let current=self.open(&source,&leaf,libc::O_PATH|libc::O_NOFOLLOW,0,true)?;
+            if revision(&current.metadata()?,None)!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            if unsafe{libc::syscall(libc::SYS_renameat2,source.as_raw_fd(),leaf.as_ptr(),target.as_raw_fd(),to.as_ptr(),libc::RENAME_NOREPLACE)}<0 {return Err(io::Error::last_os_error());}
+            source.sync_all()?;target.sync_all()?;
+            let after=entry.metadata()?;
+            Ok(WorkspaceStat {identity:identity(&after),revision:revision(&after,None),is_dir:after.is_dir(),size:after.len()})
+        }
         pub fn mkdir_all(&self, root: &str, name: &str) -> io::Result<()> {
             relative(name)?;
             let mut prefix = String::new();
@@ -451,7 +552,7 @@ mod linux {
             if maximum == 0 || maximum > 10000 {
                 return Err(denied());
             }
-            let directory = self.directory(root, name, false)?;
+            let directory = self.directory(root, name, true)?;
             let fd = directory.into_raw_fd();
             let entries = unsafe { libc::fdopendir(fd) };
             if entries.is_null() {
@@ -575,6 +676,21 @@ mod tests {
             Ok(data)
         }
     }
+
+    #[test]
+    fn workspace_management_preview_rejects_internal_symlink_aliases() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        std::fs::create_dir(f.owned.join("project")).unwrap();
+        std::fs::write(f.owned.join("project/secret.txt"),"retained project bytes").unwrap();
+        symlink("project",f.owned.join("alias")).unwrap();
+        symlink("project/secret.txt",f.owned.join("linked.txt")).unwrap();
+        for name in ["alias/secret.txt","linked.txt"] {
+            assert!(p.open_regular(WORKSPACE_ROOT,name,1024).is_err(),"{name}");
+            assert!(p.ticket(WORKSPACE_ROOT,name,std::time::Duration::from_secs(60)).is_err(),"{name}");
+        }
+        assert!(p.list(WORKSPACE_ROOT,"alias",100).is_err());
+        assert!(p.open_regular(WORKSPACE_ROOT,"project/secret.txt",1024).is_ok());
+    }
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.base);
@@ -588,7 +704,7 @@ mod tests {
         symlink("note.txt", f.owned.join("internal")).unwrap();
         symlink("../peer/secret", f.owned.join("escape")).unwrap();
         symlink(&f.peer, f.owned.join("absolute")).unwrap();
-        assert_eq!(f.read(&policy, "internal").unwrap(), b"owned");
+        assert!(f.read(&policy, "internal").is_err());
         for path in [
             "escape",
             "absolute/secret",

@@ -2822,6 +2822,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "windows-sys 0.60.2",
 ]
 
