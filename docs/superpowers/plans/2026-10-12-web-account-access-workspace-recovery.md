@@ -20,6 +20,7 @@
 - Use TDD for each behavior: establish the intended assertion failure, implement, run the same focused command, then commit only the named task files. Unexpected test/setup failures require systematic debugging, not a reduced assertion. Suggested commit messages appear per task; stage exact named paths with `git add -- <paths>`, inspect `git diff --cached --name-only` and `git diff --cached --check`, then commit. Do not include unrelated files or generated credentials.
 - Never run Vite, Vitest, Cargo, or heavy jobs directly. Use the listed guarded package scripts sequentially. Package script commands below run from the isolated checkout root.
 - Preserve all unrelated main-checkout changes. Do not push, install dependencies without approval, change runtime limits, probe Claude live, or make native desktop UX a deliverable.
+- October 13 execution authorization: the user requested minimal Web-only implementation and basic mobile checks. Work only on this isolated branch, coordinate the shared guarded-test/service maintenance window with the independent project/file-management task, and do not merge or overwrite its work. Keep desktop compatibility but do not build desktop recovery UX. New phone acceptance is limited to representative failure/logout and confirmation reachability/overflow at 390/320; do not multiply every server/concurrency scenario across phone viewports.
 
 ## Remaining Delivery Order
 
@@ -261,6 +262,8 @@ Define `submitSignOut` as the component's event handler: prevent default, set pe
 
 ## Task 4: Add Bounded Liveness and Durable Recovery Windows
 
+**Status:** Complete in `ca02f01`. Effective source/bundle/image inspection matched the intended account/logout-only delta. Guarded red reproduced eight expected failures; guarded green passed all 18 policy/socket checks. Original incident root cause remains unverified. Production source/bundle/image have not changed.
+
 **Files:** Create `services/platform/src/workspace-recovery.mjs`, `services/platform/test/workspace-recovery.test.mjs`; modify `sandbox-client.mjs`, `services/platform/test/sandbox-client.test.mjs`.
 
 - [ ] **Preparation A: Re-identify the effective baseline.** Run `git status --short` and `pnpm web:release inspect --source /opt/open-science-desktop/.worktrees/web-account-workspace-recovery`; inspect `systemctl show osd-platform.service -p WorkingDirectory -p MainPID -p ActiveState`. Compare source/bundle/image fingerprints using the existing release manifest/inventory. Expected: the intended account/logout-only delta is understood, and no unrelated production changes are silently lost. Missing prerequisites or source/image mismatch block preparation, not justify weakening release checks. Do not dump service environment or process arguments.
@@ -315,6 +318,8 @@ if (options.signal?.aborted) throw options.signal.reason;
 
 ## Task 5: Integrate Generation-Scoped Managed Worker Recovery
 
+**Status:** Implemented and deterministically verified. The final guarded 97-check manager/policy/socket/route/session/native scope passed, including the complete initial-identity deadline, serialized replacement, cooldown, old-generation cleanup and denial of writes joining read reconstruction. Research/collaboration interruption also passed their guarded suites. No other branch was merged; no production publication occurred.
+
 **Files:** Modify `managed-worker-manager.mjs`, `services/platform/test/managed-worker-manager.test.mjs`, `sandbox-control-plane.mjs`; test new restart/process-reconciliation cases in `services/platform/test/workspace-recovery.test.mjs`.
 
 - [ ] **1. Upgrade the manager fixture and add red cases.** `fixture` must maintain actual mock lifecycle status: register -> registered, start -> ready, stop -> stopped with advanced generation; inspect returns identity/status and private endpoints only when ready. Inject writable temporary metadata root and fake clock. Test running reuse with stale health, stopped-instance cleanup/reconstruction, alive unhealthy requires confirmation, same-generation concurrent restart, stale late confirmation, maintenance denial, reserve failure, stop uncertainty, and process recreation with a live launcher instance. Add separate cases for verified alive identity with unknown task activity (confirmation eligible after repeated failures), unverifiable launcher identity (never restart eligible), and maintenance (confirmation cannot override the lease). Preserve old startup coalescing/tenant tests.
@@ -363,6 +368,8 @@ On cleanup failure keep authority invalid and lifecycle fenced, retain cooldown,
 - [ ] **6. Run green and commit.** Repeat Step 2, then `pnpm --filter @ai4s/platform test test/sandbox-control-plane.test.mjs test/sandbox-scheduler.test.mjs test/tenant-policy.test.mjs`. Expected: no double generation, stale repeat stop, admission bypass, lost cooldown, or tenant authority reuse. Commit as `fix: recover managed workspaces without duplicate generations`.
 
 ## Task 6: Expose Authenticated Recovery and Reconcile Interrupted Work
+
+**Status:** Implemented and deterministically verified in the final 97-check backend scope. Authentication/origin/ownership, generation-fenced mutation, confirmed restart, independent account routes, interrupted-record preservation and native generation cleanup were checked. Initial route failures were reproduced before implementation. Live runtime interruption acceptance and production publication are not claimed.
 
 **Files:** Modify `platform-server.mjs`, `services/platform/test/platform-server.test.mjs`, `research-tasks.mjs`, `collaboration.mjs`, `cli-runtime.mjs`, and their existing `test/*.test.mjs`; wire hooks in `sandbox-control-plane.mjs`/`main.mjs` only where ownership requires it.
 
@@ -417,6 +424,8 @@ Bind the context using each module's existing owner schema; do not invent a task
 - [ ] **6. Run green and commit.** Repeat Step 2 plus `pnpm --filter @ai4s/platform test test/attachment-turns.test.mjs test/interaction-replies.test.mjs test/sandbox-native-jobs.test.mjs test/managed-worker-manager.test.mjs`. Expected: account routes independent, tenant/cross-origin denial, interrupted not completed, no blind replay, native cleanup cannot stop the new generation, and receipts still work. Commit as `feat: expose controlled account-scoped workspace recovery`.
 
 ## Task 7: Add SDK Recovery Transport and Integrate Browser Ownership
+
+**Status:** Implemented; final focused verification passed 405 checks with zero skips. Review findings were reproduced before fixing response-generation mismatch, missing-context readiness, required-metadata diagnosis and malformed non-2xx status handoff. The store plus actual login-preparation bridge now asserts fallback error without recovery handoff on malformed status. SDK mutations are never replayed; context mismatch closes the old client and uses the existing read-reconnect owner. Latest guarded Web build includes successful TypeScript checking. Final full frontend verification passed 2,058 tests with 33 ordinary opt-in/platform skips. An ACP fixture missing HTTP response headers was reproduced and replaced with a standard Response; desktop behavior was not modified.
 
 **Files:** Create `packages/sdk/src/GatewayWorkspaceClient.ts`, `apps/desktop/src/test/gateway-workspace-client.node.test.ts`; modify SDK `index.ts`, `OpenCodeClient.ts`, `apps/desktop/src/lib/runtime.ts`, `runtime.store.test.ts`, `apps/desktop/src/test/opencode-client.node.test.ts`.
 
@@ -481,6 +490,8 @@ set({ gatewayWorkspaceReport: report });
 
 ## Task 8: Add Actionable Failure and Explicit Restart Confirmation
 
+**Status:** Implemented and checked against `.deploy/web-build-4yoIMZ`. All seven locale files retain key parity. Sixteen non-skipped browser combinations passed at 1280 (English and Chinese), 390 and 320 (Chinese), covering known/unknown account, malformed-status preparation fallback, structured recovery handoff, failed logout retry, independent-session validity, cancellation and captured-generation confirmation. Screenshots were generated and automated bounds/touch-target checks passed; manual screenshot inspection was unavailable because the image-view tool cannot decode local images here.
+
 **Files:** Create `apps/desktop/src/components/session/WorkspaceRecoveryActions.tsx`, `.test.tsx`; modify `SessionView.tsx`, `SessionView.launch.test.tsx`, `apps/desktop/src/lib/loginPreparation.ts`, `.test.ts`, `services/platform/src/login-page.mjs`, `services/platform/test/platform-server.test.mjs`, all supported `session.json` locales, `apps/desktop/src/i18n/parity.test.ts`.
 
 - [ ] **1. Add action-matrix red tests.** Healthy reports omit restart; unknown/unresponsive with verified current context and server `canRestart:true` expose it; maintenance, cooldown, unverifiable identity, unsupported standalone, and context-null disable/hide restart. Confirm dialog retains observed generation even after store generation changes, supports keyboard cancel, states impact on all devices, and requires explicit confirmation. Sign out remains usable during recovery and cooldown. A cold login failure must expose the same React recovery controls despite the initially inert root; no hidden-button acceptance.
@@ -516,6 +527,8 @@ document.addEventListener('scikeel:login-recovery', () => {
 
 ## Task 9: Exact-Bundle Two-Page and Cold-Failure Acceptance
 
+**Status:** Implemented and verified within the user-requested Web/basic-phone scope. Mandatory account-recovery registration passed 40 guarded release-workflow checks; the latest exact bundle passed one non-skipped browser test executing 16 combinations, with zero workspace starts and no page errors. Concurrent replacement/old-generation refusal are established by manager tests, not inferred from the browser fixture. This is not the complete live release gate or a production-runtime recovery test; deeper shared-tab interruption/resource comparison remains unverified under Task 10.
+
 **Files:** Extend `apps/desktop/src/test/webAccountRecovery.acceptance.test.mjs`, already created and exercised during Task 3; modify `scripts/dev/web-release.mjs`, `web-release-policy.mjs`, `web-release.test.mjs`; extend existing service/store tests for spec scenarios not covered yet. Preserve all nine original account/logout browser combinations.
 
 - [ ] **1. Add a release-registration red test.** `browserStage` must include the new scenario for both `login` and `session` groups without duplicate registration, set `OSD_ACCOUNT_RECOVERY_ACCEPTANCE=1`, and fail if its file is missing. Changes to gateway account/recovery SDK/policy must select frontend/platform tests and the new browser group. Its acceptance metadata must include 320 as well as 1280/390 when this scenario runs; desktop-only flags cannot count as full acceptance. Never suppress required existing recovery/tool/notification scenarios or live checks.
@@ -535,7 +548,8 @@ Include cold preparation -> structured failure -> React recovery handoff -> keyb
 
 ```js
 for (const width of [1280, 390, 320]) {
-  for (const locale of ["en", "zh-Hans"]) {
+  // Full behavior matrix runs on desktop; phones get representative smoke checks.
+  for (const locale of width === 1280 ? ["en", "zh-Hans"] : ["zh-Hans"]) {
     const context = await browser.newContext({ viewport: { width, height: 900 } });
     try {
       const page = await context.newPage();
@@ -552,6 +566,8 @@ Reuse the actual Chinese nav label if it differs from this example; test locale 
 - [ ] **4. Register and run green.** Register the scenario once when either group is selected, with mandatory opt-in and zero skipped/pending scenarios during candidate acceptance. Run `pnpm release:test scripts/dev/web-release.test.mjs`, then the focused browser file through `pnpm test src/test/webAccountRecovery.acceptance.test.mjs` only after setting the existing candidate/browser prerequisites and opt-in environment. Ordinary opt-out skip is not acceptance evidence. Commit as `test: verify Web account recovery across tabs and devices`.
 
 ## Task 10: Full Candidate Verification and Publication Gate
+
+**Status:** Deterministic implementation verification complete; release/publication acceptance remains incomplete. The latest local Web bundle is `.deploy/web-build-4yoIMZ`, not a frozen release prepared by the full workflow. Final guarded suites passed 2,058 frontend tests (33 ordinary skips), 467 platform tests (8 ordinary skips), 405 focused frontend checks, 97 focused backend checks and 40 release-workflow checks; lint and Web build with TypeScript checking passed. Account recovery acceptance ran separately without skips against that exact bundle, executing 16 combinations. Full release/browser/runtime gates, bounded one-versus-two-page resource comparison and production publication have not run. The original incident root cause remains unverified. Explicit deployment authorization is still required; preserve both feature worktrees.
 
 **Files:** No additional product scope. Read candidate manifest and update only `PROGRESS.md` with verified milestones.
 
@@ -625,4 +641,6 @@ Checked API names, exact paths against the inspected deployment, unknown-first-c
 
 October 13 self-review additionally checked no polling without callers, account-only route independence, single-failure versus verified-identity restart eligibility, maintenance denial despite confirmation, non-destructive retry, cold-preparation handoff, existing acceptance-file reuse, and coverage of the revised diagnosis criterion. Completed account/logout work is retained; future implementation reviews are internal checks, not redundant permission pauses.
 
-Tasks 1-3 have the recorded October 12 verification. Tasks 4-10 remain pending, including fresh integrated verification and publication. This revision wrote documentation only: no product code, heavy test run, service restart, candidate preparation, or deployment. A later execution request starts at Task 4 preparation and proceeds inline through candidate review; deployment still requires explicit authorization.
+Tasks 1-3 retain the October 12 account/logout verification. Tasks 4-8 are implemented and their final focused checks passed; Task 9 has exact-bundle fixture/browser evidence for the requested desktop/basic-phone scope. Task 10 is explicitly incomplete: no full frozen release, live resource-cause verification or production publication is claimed. All implementation is confined to `fix/web-account-workspace-recovery`; the project/file-management branch is neither edited nor merged. Backend, Web client and browser/workflow changes are committed separately as `8da7702`, `2125339` and `27c85f4`.
+
+At 2026-10-13 22:37 Asia/Shanghai the original platform service was restored and active, with `/health` returning 200. Release inspection verified unchanged platform source fingerprint `0e7eba7d828395e838932fa75303ecac48e79adc06eb3a696c2942e2560d8cbc`, Web entry `99681327a0a94bc006246dd9144fc37ee03222b434af6cc85b0735b226bc6ce5`, Web root `2026-10-12T12-09-53-262Z-99537e6d/web` and installed image `sha256:f92bf410d702689faf6f9879fe68bbaa4446f28ad1fdf26cd0fdc320f1c9431f`. No candidate was published and no user data was deleted.
