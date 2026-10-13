@@ -1,7 +1,8 @@
 # Web Account Access and Workspace Recovery Design
 
 Date: 2026-10-12
-Status: Written spec approved by the user on 2026-10-12 by requesting implementation planning. Implementation and deployment still require subsequent authorization.
+Revised: 2026-10-13
+Status: Revised spec awaiting user review. The October 12 version was approved and its account/logout increment was implemented in isolation; this revision must be reviewed before updating the implementation plan or continuing product changes. Deployment is not authorized.
 Scope: SciKeel public multi-user gateway Web, including phone-width viewports.
 
 ## 1. Problem and Intended Outcome
@@ -29,6 +30,10 @@ The inspected deployment is `.deploy/web-releases/2026-10-11T19-55-20-683Z-4dcfb
 
 The source of memory growth, whether simultaneous pages contributed materially, and the exact request producing the user's 502 are not established. Do not report a memory leak, a multi-login defect, or an OpenCode crash as proven. Diagnostics must identify the unhealthy layer without exposing credentials or research content.
 
+October 13 source review confirms that the proxy returns `502 worker unavailable` on an upstream connection error and that browser recovery repeats the required `/v1/whoami` read. Combined with the reuse-time liveness gap, this explains a possible persistent-failure path, not a proven root cause for the reported incident. A bounded local platform `/health` read returned 200 during this review; it does not verify an account's sandbox, OpenCode, or browser connection.
+
+The account/logout increment exists on `fix/web-account-workspace-recovery` in commits `82f227f` and `746124d`. Its October 12 verification recorded 2,035 frontend checks, 43 scoped platform checks, guarded lint/typecheck/build, and nine browser combinations at 1280/390/320 widths. These are historical results, not fresh tests in this spec turn. The increment is not deployed; controlled server recovery remains unimplemented. Retain this work rather than treating it as a new feature to build again.
+
 ## 3. Decision and Scope
 
 Three approaches were considered:
@@ -38,6 +43,8 @@ Three approaches were considered:
 3. Single-device login enforcement: rejected; it removes legitimate phone/computer use and has no demonstrated connection to this incident's cause.
 
 Deliver in two increments under this spec: independent account/logout behavior first, then server liveness classification and controlled recovery. Both require the acceptance checks below; publishing only the first increment must be described as a partial fix.
+
+The selected approach fixes two distinct defects: workspace failure must not hide account access, and reconnect must not endlessly reuse an instance whose availability has not been checked. Health checks classify the failure; controlled recovery acts only on verified state. They are not a promise to eliminate the underlying resource problem. Logout alone is insufficient for the full reported problem, while blind restart on every 502 risks interrupting healthy shared work.
 
 Non-goals: desktop UX changes, device/session-management screens, per-device workspaces, independent per-device assistants, new collaboration semantics, automatic replay of research execution, a monitoring dashboard, or unrelated model-catalog redesign. Resource diagnosis is required, but a general runtime memory optimization project is not implied.
 
@@ -71,11 +78,15 @@ Use the existing manager, launcher inspection, and scoped runtime reads to class
 
 Return sanitized structured failures with a stable code, failed stage, retryability, current instance/generation when known, and allowed recovery action. Required distinctions are: authentication expired, workspace stopped, workspace unreachable, runtime unresponsive, host capacity unavailable, recovery in progress, and stale recovery context. Raw upstream messages are diagnostic details, not the sole user-facing instruction.
 
+Separate incident diagnosis from automatic recovery. Diagnostic evidence must distinguish account authentication, platform availability, launcher identity/process state, gateway response, and scoped runtime response. Take bounded samples without starting inactive workspaces or terminating a process to make a check pass. Existing trusted diagnostics may provide safe per-instance memory, pressure, and operation counters; do not add a general host-filesystem reader or monitoring service. If the incident is no longer reproducible, preserve the unknown root cause and use deterministic failure cases to verify the repair. Any independently verified resource defect requires its own scoped fix; successful reconstruction is not evidence that memory growth has been fixed.
+
 For managed CLI assistants, include their existing job/execution probe in activity decisions. Do not probe Claude live unless the user confirms restoration. Preserve deterministic adapter compatibility.
 
 ### R4. Bounded, Shared Liveness Checks
 
 Perform checks when reusing an instance without a recent successful liveness result, or when transport failures invalidate that result. Share in-flight probes per account/instance/generation and cache successful checks for at most five seconds during use. Do not create a frequent platform-wide polling loop or start inactive accounts solely to check them.
+
+The five-second TTL is a reuse cache, not a five-second polling schedule. Account-only reads and logout never require a workspace health check. Focus/refresh requests join the existing browser recovery owner rather than each starting another loop. Closing or signing out one page cancels that page's work, not the shared server probe or another device's research.
 
 A liveness cycle has a ten-second total budget, including launcher inspection, runtime read, and body decoding. Clamp individual deadlines to its remaining budget; the server-side recovery owner, not each joining browser request, owns the shared cycle. Losing one browser request must not cancel recovery awaited by other pages.
 
@@ -90,12 +101,15 @@ Cold startup remains under existing bounded startup/admission limits. The browse
 | Verified condition | Permitted behavior |
 | --- | --- |
 | Healthy workspace, browser stream lost | Reconnect the browser; no stop/restart/abort. |
+| One failed liveness cycle or one 502 | Report uncertain availability and allow bounded retry; no restart authority. |
 | Required catalog read fails but runtime responds | Retry catalog reads independently; no instance restart. |
 | Launcher verifies instance stopped/exited and cleanup is complete | Automatically perform one bounded reconstruction through existing admission/startup mechanisms. |
 | Launcher still reports alive; runtime fails repeated liveness checks | Expose a confirmed Restart workspace action; do not automatically terminate the instance. |
 | Task is running, maintenance is active, native execution is running, or task state cannot be established | Do not automatically restart. Explicit confirmation must warn that research may be interrupted; maintenance must finish or be safely reconciled before reset. |
 | Host capacity unavailable | Explain temporary resource unavailability and permit a bounded retry; no limit increases or restart loop. |
 | Cleanup or launcher identity cannot be verified | Fail closed and expose retry/error; no competing replacement or host fallback. |
+
+Unknown task activity and unknown instance identity are different conditions. With verified account/instance/generation and repeated runtime failure, unknown task activity requires an interruption warning before an eligible confirmed restart. If launcher identity or cleanup cannot be verified, confirmation cannot override that safety failure. A maintenance lease blocks replacement even if the user confirms interruption.
 
 Confirmed reconstruction does not mean interrupted work succeeded. Preserve files and history, reconcile research/execution records through their existing transitions, and report interrupted or unknown work truthfully. Do not automatically continue a research task merely because a replacement instance becomes ready.
 
@@ -131,6 +145,8 @@ Different conversations can still compete for the same runtime/resource budget. 
 
 Use the existing failure surface and restrained controls: Retry connection, Sign out, and Restart workspace only when the server allows it. Confirmation names the shared workspace and warns that all devices using it may be affected and current tasks may stop. No new dashboard, explanatory onboarding, or manual console workaround is part of the normal flow.
 
+Retry is non-destructive: it reconnects or requests server-authorized reconstruction of a verified stopped instance, never silently upgrades to terminating a live instance. Restart confirmation is bound to the displayed instance/generation; if another device replaces it while the dialog is open, the old confirmation must return a stale-context outcome rather than target the new instance. Recovery/cooldown keeps signout reachable and never revokes independent device sessions.
+
 Show a finite connecting/recovering state, then actionable failure when the deadline expires. Disable duplicate restart submissions while a shared recovery is active. Never show ready solely from remembered state or treat a successful account read as runtime readiness.
 
 Project files and new source copy remain English, with translations and parity checks for supported locales. Verify English and Chinese at desktop and 390/320-pixel widths, keyboard access, and reachable logout/confirmation without overflow or hidden overlays.
@@ -160,6 +176,7 @@ Retain the host's build guards and managed runtime resource limits. Capture per-
 | Superseded login returns account metadata, or old generation returns runtime/stream results | Authentication lifecycle and generation fences prevent stale state publication without erasing the still-valid account identity. |
 | Catalog outage or external model-provider failure | Correct failure stage; healthy workspace remains running. |
 | Host capacity rejection, maintenance, or cleanup failure | Bounded, truthful error; no limit increases, competing instance, host fallback, or file loss. |
+| Incident no longer reproducible or resource-growth cause unknown | Record the diagnosis as unverified; recovery acceptance does not claim a memory leak or multi-login cause has been fixed. |
 | Confirmed reconstruction after interrupted research | Original files, conversation history, and defaults survive; interrupted/unknown task status is not reported as completed. |
 | Read-only user and cross-account/cross-origin recovery requests | Write restrictions preserved; unauthorized recovery denied without probing another account. |
 | Shared assistant/settings change and stale collaboration operation | Existing sharing and conflict behavior retained; no new device eviction or silent operation replay. |
@@ -171,6 +188,8 @@ Use deterministic service/store/SDK tests for failure classification, concurrent
 
 Spec self-review completed on October 12: checked evidence versus hypotheses, logout lifecycle races, simultaneous recovery ownership, generation fencing, cooldown, interrupted work, unknown mutation outcomes, authorization, scope, and numeric deadlines. Clarified logout-submission suspension and the distinction between explicitly scoped browser restart commands and server-authoritative reconstruction. No unresolved placeholders remain.
 
+October 13 revision self-review separates historical implementation results from current diagnosis, states why logout and runtime recovery are independent, makes on-demand checks explicit, and distinguishes unknown task activity from unverified instance identity. Retry, confirmed restart, maintenance, cooldown, and multi-device effects have explicit boundaries. This revision adds no polling service, device eviction, generic mutation replay, resource-limit increase, or sandbox-image change.
+
 Implementation planning must start from the effective deployed baseline and preserve unrelated checkout changes. Publication uses the existing frozen-source verification/release workflow; a failed bounded build leaves the deployed bundle untouched, and rollback preserves user data and credentials.
 
-This is a design artifact, not a claim that the proposed behavior has been implemented, tested, or deployed. The user approved this written spec on October 12 by requesting a plan. Implementation and deployment require subsequent authorization.
+The latest user instruction is spec first, then plan. This revision is a design artifact awaiting review, not authorization to update the existing plan, continue implementation, or deploy. The earlier account/logout increment and its recorded tests remain intact. After the user approves this revision, update the existing plan to reflect completed work and remaining scope; internal verification checkpoints must not introduce unnecessary approval pauses during authorized implementation. Publication remains a separate approval after verification of a concrete candidate.
