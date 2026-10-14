@@ -153,6 +153,10 @@ test('publication validates stale baseline before mutation and rolls back incorr
   await assert.rejects(publishRelease({}, { ...ops, verifyProduction: async () => { throw new Error('wrong asset'); } }), /previous deployment restored/);
   assert(calls.includes('restorePrevious')); assert(calls.includes('verifyPrevious')); assert(!calls.includes('markPublished'));
   await assert.rejects(publishRelease({}, { ...ops, verifyProduction: async () => { throw new Error('wrong asset'); }, verifyPrevious: async () => { throw new Error('recovery failed'); } }), AggregateError);
+  calls.length=0;
+  await assert.rejects(publishRelease({}, {...ops,verifyProduction:async()=>{throw new Error('wrong asset');},restorePrevious:async()=>{calls.push('rollback-maintenance');throw Object.assign(new Error('unsupported lifecycle'),{code:'WORKSPACE_ROLLBACK_MAINTENANCE'});}}),AggregateError);
+  assert.equal(calls.filter(call=>call==='restartPlatform').length,1);
+  assert(calls.includes('rollback-maintenance'));assert(!calls.includes('verifyPrevious'));assert(!calls.includes('markPublished'));
 });
 test('configuration rewrite preserves unrelated values and rejects duplicates or injection', () => {
   assert.equal(replaceEnvironmentValue('A="secret"\nPLATFORM_WEB_ROOT=/old\nB=keep\n', 'PLATFORM_WEB_ROOT', '/new'), 'A="secret"\nPLATFORM_WEB_ROOT=/new\nB=keep\n');
