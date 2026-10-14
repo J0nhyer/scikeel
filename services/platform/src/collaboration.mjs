@@ -165,7 +165,7 @@ export class CollaborationStore {
     this.leases.get(key).set(page, this.now() + 45000);
     return this.get(o);
   }
-  begin(o, revision) {
+  begin(o, revision, {onStarted} = {}) {
     return this.locked(o, async () => {
       const s = await this.load(o);
       this.revision(s, revision);
@@ -175,7 +175,7 @@ export class CollaborationStore {
         );
       if (s.pending) throw fail("Research decision requires an answer");
       if (s.phase === "running")
-        throw fail("Research execution is already running");
+        throw businessFailure("research_execution_running", "Research execution is already running");
       // Apply only when beginning a new execution; waiting runs retain their mode.
       await this.applyPermissions(o, s.mode);
       Object.assign(s, o);
@@ -185,6 +185,7 @@ export class CollaborationStore {
       delete s.delivery;
       s.phase = "running";
       s.revision++;
+      onStarted?.({owner:{...o},execution:s.execution});
       return this.save(s);
     });
   }
@@ -312,6 +313,23 @@ export class CollaborationStore {
       await this.save(s);
       await this.cancel({...o,cancelReason:o.cancelReason ?? "explicit_pause"});
       return structuredClone(s);
+    });
+  }
+  assertAdmission(o,execution) {
+    return this.locked(o,async()=>{
+      const s=await this.load(o);
+      if(s.instanceId!==o.instanceId || s.generation!==o.generation || s.execution!==execution || s.phase!=="running" || s.pending)
+        throw businessFailure("research_execution_changed","Research execution changed before sending");
+      return structuredClone(s);
+    });
+  }
+  rejectAdmission(o, execution) {
+    return this.locked(o, async () => {
+      const s=await this.load(o);
+      if(s.instanceId!==o.instanceId || s.generation!==o.generation || s.execution!==execution || s.phase!=="running" || s.pending)
+        return structuredClone(s);
+      s.phase="idle";s.revision++;
+      return this.save(s);
     });
   }
   settled(o, execution) {

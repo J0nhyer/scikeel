@@ -3,6 +3,7 @@ import { open, constants } from "node:fs/promises";
 import { posix } from "node:path";
 
 const denied=()=>Object.assign(new Error("attachment copy unavailable"),{status:409});
+const rpcFailures=new Set(["workspace_rpc_busy","workspace_rpc_queue_full","workspace_rpc_timeout","workspace_rpc_cancelled","workspace_rpc_unavailable","workspace_rpc_denied","runtime_context_changed"]);
 const identifier=value=>typeof value==="string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(value);
 // Originals stay in the platform store. Only bounded, owner-authorized working
 // copies cross the runner protocol; no platform path is mounted in a tenant.
@@ -47,8 +48,9 @@ export class ManagedAttachmentCopies {
         if(hash.digest("hex")!==file.sha256)throw denied();
         const {sourcePath:_source,...publicFile}=file;
         result.push({...publicFile,path:`${owner.workspaceDir}/${path}`,workDir:`${owner.workspaceDir}/${directory}`});
-      } catch {
+      } catch(error) {
         await this.files.call(context,{operation:"remove",root:"workspace",path}).catch(()=>{});
+        if(rpcFailures.has(error?.code))throw error;
         throw denied();
       } finally {await source?.close();}
     }

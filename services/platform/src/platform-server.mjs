@@ -17,6 +17,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { URL } from "node:url";
 import { relativeInput } from "./tenant-policy.mjs";
+import { PromptAdmission } from "./prompt-admission.mjs";
 import { InteractionReplies } from "./interaction-replies.mjs";
 import { SessionAuthority } from "./session-authority.mjs";
 import { AutomaticToolPermissions } from "./automatic-tool-permissions.mjs";
@@ -327,13 +328,14 @@ export class PlatformServer {
     this.authStore = authStore;
     this.workerManager = workerManager;
     this.cliRuntime = cliRuntime;
+    this.promptAdmissions=new Map();
     const resolveContext=async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
       if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("managed worker unavailable");
       return {userId,instanceId:worker.id,generation:worker.generation};};
     this.researchTasks = new ResearchTasks({
       rootDir: resolve(workerManager.rootDir, "../research"),
       cancel: (task) => this.#cancelResearch(task),
-      running: (task) => this.#researchRunning(task),
+      running: (task) => this.#admissionRunning("research",task),
       logger,
       workspace:tenantPolicy && workspaceFiles ? new ManagedResearchFiles({files:workspaceFiles,tenantPolicy,resolveContext}) : null,
     });
@@ -346,7 +348,7 @@ export class PlatformServer {
       applyPermissions:async(owner,mode)=>{
         if(owner.runtime !== "opencode")return;
         await this.#workerResearchRequest(owner, `/session/${encodeURIComponent(owner.sessionId)}`, "PATCH", {permission:collaborationPermissions(mode)});
-      }, cancel:(owner)=>this.#cancelResearch(owner), running:(owner)=>this.#researchRunning(owner)});
+      }, cancel:(owner)=>this.#cancelResearch(owner), running:(owner)=>this.#admissionRunning("collaboration",owner)});
     this.attachments = new AttachmentStore({ rootDir: resolve(workerManager.rootDir, "../attachments"),
       materializeCopies:copies ? input=>copies.materialize(input) : null });
     this.attachmentTurns = new AttachmentTurns({ store: this.attachments, readHistory: (user, owner) => this.#attachmentHistory(user, owner.sessionId) });
@@ -418,6 +420,7 @@ export class PlatformServer {
         await this.cliRuntime?.sandboxJobs?.releaseGeneration?.(context);
         await this.researchTasks.interruptGeneration(context);
         await this.collaboration.interruptGeneration(context);
+        for(const [key,held] of this.promptAdmissions)if(held.owner.userId===context.userId && held.owner.instanceId===context.instanceId && held.owner.generation===context.generation)this.promptAdmissions.delete(key);
       },
     });
     this.runtimeCatalog = runtimeCatalog;
@@ -1130,6 +1133,20 @@ export class PlatformServer {
     }
     return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: "opencode", revertMessageID: session.revert?.messageID };
   }
+  #admissionKey(kind,owner) {
+    return JSON.stringify([kind,owner.userId,owner.instanceId,owner.generation,owner.sessionId,owner.execution]);
+  }
+  async #admissionRunning(kind,owner) {
+    const key=this.#admissionKey(kind,owner),held=this.promptAdmissions.get(key);
+    if(held) {
+      if(held.disposition!=="unknown" || !held.messageID)return true;
+      // Absence from history is not proof that a delayed POST was rejected.
+      const history=await this.#workerResearchRequest(owner,`/session/${encodeURIComponent(owner.sessionId)}/message`);
+      if(!Array.isArray(history) || !history.some(message=>(message.info?.id ?? message.id)===held.messageID))return true;
+      if(this.promptAdmissions.get(key)===held)this.promptAdmissions.delete(key);
+    }
+    return this.#researchRunning(owner);
+  }
   async #researchRunning(task) {
     if (task.runtime !== "opencode") {
       const state = await this.cliRuntime.ensureUser(task.userId);
@@ -1150,6 +1167,8 @@ export class PlatformServer {
   async #cancelResearch(task) {
     const workerContext=this.workerManager.getWorker(workerIdForUser(task.userId));
     if (task.generation !== undefined && (task.instanceId !== workerContext?.id || task.generation !== workerContext?.generation)) return;
+    const rootExecution=this.collaboration.records.get(this.collaboration.key(task))?.execution ?? task.execution;
+    for(const [key,held] of this.promptAdmissions)if(held.owner.userId===task.userId && held.rootSessionId===task.sessionId && held.owner.instanceId===task.instanceId && held.owner.generation===task.generation && held.rootExecution===rootExecution)this.promptAdmissions.delete(key);
     this.logger({type:"runtime.cancel",sessionId:task.sessionId,generation:workerContext?.generation,reason:task.cancelReason ?? "explicit_or_server_stop"});
     if (this.network && task.runtime === "opencode") {
       const worker = this.workerManager.getWorker(workerIdForUser(task.userId));
@@ -1415,7 +1434,16 @@ export class PlatformServer {
   }
 
   async #managedRuntimeProxy(request, response, access, user, worker) {
-    let interaction;
+    let interaction,attachmentTurn,collaborationExecution;
+    const admission=new PromptAdmission({collaboration:this.collaboration,researchTasks:this.researchTasks});
+    let executionSend=false;
+    const heldAdmissions=[];
+    const hold=(kind,owner)=>{
+      const root=admission.root ?? admission.inherited;
+      const key=this.#admissionKey(kind,owner),held={owner:{...owner},disposition:"preparing",rootSessionId:root?.owner.sessionId ?? owner.sessionId,rootExecution:root?.execution ?? owner.execution};
+      this.promptAdmissions.set(key,held);heldAdmissions.push({key,held});
+    };
+    const started=ticket=>{admission.started(ticket.owner,ticket.execution);hold("collaboration",{...ticket.owner,execution:ticket.execution});};
     const trace={correlationId:randomUUID()};
     try {
       const context = { userId: user.id, instanceId: workerIdForUser(user.id), generation: worker.generation };
@@ -1426,7 +1454,7 @@ export class PlatformServer {
       response.once("finish",()=>{
         const route=classifyRuntimeRoute(request.method,(request.url??"/").split("?")[0]);
         this.logger({type:"runtime.operation",operation:route?.operation ?? "unknown",status:response.statusCode,
-          sessionId:trace.sessionId ?? route?.identifiers.sessionId,requestId:route?.identifiers.requestId,generation:context.generation,elapsedMs:Date.now()-startedAt,code:trace.code,correlationId:trace.correlationId,replay:interaction?.replay ?? false});
+          sessionId:trace.sessionId ?? route?.identifiers.sessionId,requestId:route?.identifiers.requestId,generation:context.generation,elapsedMs:Date.now()-startedAt,code:trace.code,correlationId:trace.correlationId,replay:interaction?.replay ?? false,stage:executionSend?admission.stage:"validation",disposition:executionSend?admission.disposition:undefined,upstreamStatus:trace.upstreamStatus});
       });
       response.once("close",()=>{
         if(!response.writableFinished)this.logger({type:"runtime.transport_closed",generation:context.generation,sessionId:trace.sessionId,correlationId:trace.correlationId,elapsedMs:Date.now()-startedAt});
@@ -1515,35 +1543,36 @@ export class PlatformServer {
           : { providers: catalog?.providers ?? [], default: catalog?.defaults ?? {} };
         sendJson(response, 200, scrubRuntimeSecrets(safe)); return;
       }
+      executionSend=operation.operation==="sessionCommand" || request.method==="POST"&&["sessionPrompt_async","sessionMessage"].includes(operation.operation);
       if(operation.operation === "sessionCommand" && this.collaborationAvailable(user.id,worker.generation)) {
         const owner=await this.#collaborationOwner(user,sessionId,access,worker);
         const current=await this.collaboration.get(owner);
-        if(owner.sessionId!==sessionId&&current.phase==="running") {const guard=await this.collaboration.guard(owner);if(guard.blocked)throw Object.assign(new Error("Research decision requires an answer"),{statusCode:409});}
-        else await this.collaboration.begin(owner,current.revision);
+        if(owner.sessionId!==sessionId&&current.phase==="running") {const guard=await this.collaboration.guard(owner);if(guard.blocked)throw Object.assign(new Error("Research decision requires an answer"),{statusCode:409});admission.inherited={owner,execution:current.execution};}
+        else await this.collaboration.begin(owner,current.revision,{onStarted:started});
       }
-      let attachmentTurn;
-      let collaborationExecution;
       if(request.method==="POST"&&["sessionPrompt_async","sessionMessage"].includes(operation.operation)) {
         const owner=await this.#collaborationOwner(user,sessionId,access,worker);
+        admission.turn=await this.attachmentTurns.admit(user,owner,body);
+        if(admission.turn?.replayAccepted){admission.accepted();sendJson(response,202,{});return;}
+        admission.stage="preparation";
         const revision=body.collaborationRevision; delete body.collaborationRevision;
         if(revision !== undefined || this.collaborationAvailable(user.id,worker.generation)) {
           if(!this.collaborationAvailable(user.id,worker.generation)) throw Object.assign(new Error("Collaboration runtime is not ready"),{statusCode:409});
           const current=await this.collaboration.get(owner);
           let state;
-          if(owner.sessionId!==sessionId&&current.phase==="running") {const guard=await this.collaboration.guard(owner);if(guard.blocked)throw Object.assign(new Error("Research decision requires an answer"),{statusCode:409});state=current;}
-          else state=await this.collaboration.begin(owner,revision ?? current.revision);
-          if (owner.sessionId === sessionId) collaborationExecution = { owner, execution: state.execution };
+          if(owner.sessionId!==sessionId&&current.phase==="running") {const guard=await this.collaboration.guard(owner);if(guard.blocked)throw Object.assign(new Error("Research decision requires an answer"),{statusCode:409});state=current;admission.inherited={owner,execution:state.execution};}
+          else state=await this.collaboration.begin(owner,revision ?? current.revision,{onStarted:started});
+          if (admission.root) collaborationExecution = admission.root;
           if(body.agent==="plan")delete body.agent;
           body.system=[body.system??"",collaborationPolicy(state),`Confirmed research decisions: ${JSON.stringify(state.decisions)}`,`Delivery verification: ${JSON.stringify(state.delivery ?? null)}`].filter(Boolean).join("\n\n");
         }
         const task=await this.researchTasks.get(user.id,sessionId);
-        if(task)body=await this.researchTasks.prepare(user.id,sessionId,body);
-        attachmentTurn=await this.attachmentTurns.prepare(user,owner,body);
+        if(task)body=await this.researchTasks.prepare(user.id,sessionId,body,owner,{onPrepared:ticket=>{admission.prepared(ticket);hold("research",ticket);}});
+        attachmentTurn=await this.attachmentTurns.prepare(user,owner,body,admission.turn);
         if(attachmentTurn?.replayAccepted){sendJson(response,202,{});return;}
         if(attachmentTurn) {
           body=attachmentTurn.body;
-          response.once("finish",()=>{void attachmentTurn.finish(response.statusCode<400).catch(()=>{});});
-          response.once("close",()=>{if(!response.writableFinished)attachmentTurn.abandon();});
+
         }
         validateRuntimeInput(operation,{query:parsed.searchParams,body,headers:request.headers});
       }
@@ -1602,11 +1631,19 @@ export class PlatformServer {
       const timeout = setTimeout(() => controller.abort(), 30000);
       try {
         this.#requireWriteContext(request, user, worker);
+        if(executionSend) {
+          const root=admission.root ?? admission.inherited;
+          if(root)await this.collaboration.assertAdmission(root.owner,root.execution);
+          if(admission.research)await this.researchTasks.assertAdmission(admission.research);
+          this.#requireWriteContext(request,user,worker);
+          admission.dispatch();
+        }
         const upstream = await fetch(target, { method: operation.method, redirect: "error", signal: controller.signal,
           headers: { authorization: `Basic ${workerBasicToken(access.token)}`, accept: operation.operation === "event"
             ? "text/event-stream" : "application/json", "content-type": "application/json" },
           ...(["POST", "PATCH", "DELETE"].includes(operation.method) ? { body: JSON.stringify(body) } : {}),
         });
+        trace.upstreamStatus=upstream.status;
         if (stopping && upstream.ok) {
           for (const { owner, stopId } of stopping.sessions) await this.toolOutcomes.confirmStop(owner, stopId);
           await this.network?.cancelExecution(context, stopping.owner.sessionId, stopping.state.execution, "stop");
@@ -1640,7 +1677,11 @@ export class PlatformServer {
                   this.tenantPolicy.registerRequest(context, properties);
                 if(this.workspaceManagement){
                   const id=properties?.sessionID??properties?.info?.id??properties?.part?.sessionID;
-                  if(id){try{const owned=await this.sessionAuthority.ensure(context,id);await this.workspaceManagement.assertAccessible(context,owned.directory);}catch{continue;}}
+                  if(id){try{const owned=await this.sessionAuthority.ensure(context,id);await this.workspaceManagement.assertAccessible(context,owned.directory);}catch(error){
+                    // Transient failures must reconnect rather than lose an idle/checkpoint event silently.
+                    if(["project_trashed","protected_path"].includes(error.code) || [403,404].includes(error.statusCode ?? error.status))continue;
+                    throw error;
+                  }}
                 }
                 if (type === "permission.asked" && properties && await this.automaticToolPermissions.answer(context, properties)) continue;
                 if (properties?.sessionID) this.tenantPolicy.session(context, properties.sessionID);
@@ -1671,6 +1712,13 @@ export class PlatformServer {
         let value;
         const text = Buffer.concat(chunks).toString("utf8");
         if (text) { try { value = JSON.parse(text); } catch { throw new Error("invalid runtime response"); } }
+        if(executionSend) {
+          if(!upstream.ok || operation.operation==="sessionPrompt_async" &&
+              (upstream.status!==202 && upstream.status!==204 || upstream.status===202 && (!value || typeof value!=="object" || Array.isArray(value))))
+            throw Object.assign(new Error("Send delivery is not confirmed. Reload the conversation before retrying."),{statusCode:502,code:"prompt_delivery_unknown"});
+          admission.accepted();
+          await attachmentTurn?.finish(true);
+        }
         if (upstream.ok) {
           // A synchronous final reply has already ended the execution. Release
           // its collaboration phase before returning, so the next prompt need
@@ -1735,10 +1783,19 @@ export class PlatformServer {
         if(interaction)interaction.record.complete({status:upstream.status,body:upstream.ok ? true : JSON.stringify(safe).length<=8192 ? safe : {error:"Interaction failed",...(trace.code?{code:trace.code}:{})}});
         if(interaction || operation.operation === "sessionPrompt_async")this.logger({type:"runtime.delivery_completed",operation:operation.operation,
           status:upstream.status,sessionId,requestId:operation.identifiers.requestId,generation:context.generation,
-          correlationId:trace.correlationId,elapsedMs:Date.now()-startedAt,receiverClosed:response.destroyed,code:trace.code});
+          correlationId:trace.correlationId,elapsedMs:Date.now()-startedAt,receiverClosed:response.destroyed,code:trace.code,stage:executionSend?admission.stage:undefined,disposition:executionSend?admission.disposition:undefined,upstreamStatus:trace.upstreamStatus});
         sendJson(response, upstream.status, safe);
       } finally { clearTimeout(timeout); permissionDecision?.release(); }
     } catch (error) {
+      if(executionSend) {
+        if(admission.disposition==="not_dispatched") {
+          try {await admission.rejectBeforeDispatch();}
+          catch(cleanupError){trace.preparationCode=error.code;error=cleanupError;}
+        } else if(admission.disposition==="unknown" || admission.disposition==="accepted") {
+          attachmentTurn?.abandon();
+          error=Object.assign(new Error("Send delivery is not confirmed. Reload the conversation before retrying."),{statusCode:502,code:"prompt_delivery_unknown"});
+        }
+      }
       const status = error.statusCode ?? error.status ?? (error.code === "body_too_large" ? 413 : 502);
       if (status === 502 && !request.aborted && !response.destroyed) this.workerManager.noteTransportFailure?.({ instanceId: worker.id, generation: worker.generation });
       if(typeof error.code==="string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(error.code))trace.code=error.code;
@@ -1746,6 +1803,13 @@ export class PlatformServer {
       if(interaction && !interaction.replay)interaction.record.complete({status:status>=500?503:status,body:status>=500?{error:"Interaction delivery is not confirmed",code:"interaction_delivery_unknown",source:"gateway"}:body});
       if (response.headersSent) { response.destroy(); return; }
       sendJson(response, status, body);
+    } finally {
+      for(const {key,held} of heldAdmissions) {
+        if(this.promptAdmissions.get(key)!==held)continue;
+        if(admission.disposition==="unknown") {
+          held.disposition="unknown";held.messageID=attachmentTurn?.turn?.messageID ?? admission.turn?.turn?.messageID;
+        } else this.promptAdmissions.delete(key);
+      }
     }
   }
 

@@ -254,3 +254,25 @@ test("one unavailable runtime does not cancel another background task", async ()
   assert.equal((await f.store.get("student", "ses_second")).status, "running");
   f.store.cancel = async () => {};
 });
+
+test("rejected preparation retains its brief and prior report without clearing a later execution",async()=>{
+  const f=await fixture();const owner={...f.owner,instanceId:"user-student",generation:1};
+  const initial=await f.store.create(owner,brief);initial.report={status:"completed",execution:0,steps:[]};await f.store.save(initial);
+  let ticket;await f.store.prepare("student","ses_research",{},owner,{onPrepared:t=>{ticket=t;}});
+  assert.equal(ticket.execution,1);assert.deepEqual(ticket.previousReport,initial.report);
+  const rejected=await f.store.rejectAdmission(ticket);
+  assert.equal(rejected.executionActive,false);assert.equal(rejected.status,"paused");assert.equal(rejected.execution,1);
+  assert.equal(rejected.objective,brief.objective);assert.deepEqual(rejected.report,initial.report);
+  await f.store.prepare("student","ses_research",{},owner);
+  await f.store.rejectAdmission(ticket);assert.equal((await f.store.get("student","ses_research")).executionActive,true);
+  await f.store.interruptGeneration({userId:"student",instanceId:"user-student",generation:1});
+  await f.store.prepare("student","ses_research",{},{...owner,generation:2});
+  await f.store.rejectAdmission(ticket);assert.equal((await f.store.get("student","ses_research")).generation,2);
+});
+test("preparation ticket cannot overwrite an explicit Stop",async()=>{
+  const f=await fixture();const owner={...f.owner,instanceId:"user-student",generation:1};await f.store.create(owner,brief);let ticket;
+  await f.store.prepare("student","ses_research",{},owner,{onPrepared:t=>{ticket=t;}});
+  await f.store.stop(await f.store.get("student","ses_research"));
+  await f.store.rejectAdmission(ticket);const current=await f.store.get("student","ses_research");
+  assert.equal(current.executionActive,false);assert.equal(current.stopReason,"user-stopped");
+});

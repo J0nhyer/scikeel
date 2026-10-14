@@ -155,3 +155,58 @@ test("DOCX attachments expose verified file paths in model-visible text and hide
   assert.equal(decorated[0].attachments[0].name, file.name);
   await prepared.finish(true);
 });
+
+test("generated policy and revision changes do not change the accepted client receipt",async()=>{
+  const {user,owner,turns,store}=await turnFixture();
+  const original={parts:[{type:"text",text:"hello"}],model:{providerID:"fixture",modelID:"one"},attachmentTurn:{turnId:"turn_stable",attachmentIds:[]}};
+  const first=await turns.admit(user,owner,original);
+  const prepared=await turns.prepare(user,owner,{...original,system:"execution one policy"},first);
+  await prepared.finish(true);
+  assert.equal((await turns.admit(user,owner,{...original,collaborationRevision:9})).replayAccepted,true);
+  await assert.rejects(turns.admit(user,owner,{...original,parts:[{type:"text",text:"changed"}]}),e=>e.code==="turn_input_changed");
+  await assert.rejects(turns.admit(user,owner,{...original,model:{providerID:"fixture",modelID:"two"}}),e=>e.code==="turn_input_changed");
+  assert.equal((await store.list(user.id,owner.sessionId)).turns.length,1);
+});
+test("reserved admission can be rejected before materialization and deliberately retried",async()=>{
+  const {user,owner,turns,store}=await turnFixture();let copies=0;
+  store.materialize=async()=>{copies++;return [];};
+  const prompt={parts:[{type:"text",text:"hello"}],attachmentTurn:{turnId:"turn_reserved",attachmentIds:[]}};
+  const ticket=await turns.admit(user,owner,prompt);await ticket.finish(false);
+  assert.equal(copies,0);assert.equal((await store.list(user.id,owner.sessionId)).turns[0].status,"rejected");
+  const next=await turns.admit(user,owner,prompt);const prepared=await turns.prepare(user,owner,prompt,next);await prepared.finish(true);
+  assert.equal(copies,1);assert.equal((await store.list(user.id,owner.sessionId)).turns[0].status,"accepted");
+});
+test("unknown admission retains its receipt and never rematerializes on replay",async()=>{
+  const {user,owner,turns,history,store}=await turnFixture();let copies=0;
+  store.materialize=async()=>{copies++;return [];};
+  const prompt={parts:[{type:"text",text:"hello"}],attachmentTurn:{turnId:"turn_unknown",attachmentIds:[]}};
+  const admitted=await turns.admit(user,owner,prompt);const prepared=await turns.prepare(user,owner,prompt,admitted);prepared.abandon();
+  await assert.rejects(turns.admit(user,owner,prompt),e=>e.code==="turn_uncertain");assert.equal(copies,1);
+  history.push({info:{id:prepared.body.messageID,role:"user"}});
+  assert.equal((await turns.admit(user,owner,prompt)).replayAccepted,true);assert.equal(copies,1);
+});
+test("legacy accepted receipt cannot silently allocate a changed execution",async()=>{
+  const {user,owner,turns,store}=await turnFixture();const context={turnId:"turn_legacy",attachmentIds:[]};
+  await store.prepareTurn(user.id,owner.sessionId,context,{parts:[{type:"text",text:"hello"}]});
+  await store.finishTurn(user.id,owner.sessionId,context.turnId,"accepted");
+  await assert.rejects(turns.admit(user,owner,{parts:[{type:"text",text:"hello"}],attachmentTurn:context}),e=>e.code==="turn_legacy_receipt");
+});
+test("concurrent admissions cannot both prepare or mutate an owned receipt",async()=>{
+  const {user,owner,turns}=await turnFixture();const prompt={parts:[{type:"text",text:"hello"}],attachmentTurn:{turnId:"turn_race",attachmentIds:[]}};
+  const results=await Promise.allSettled([turns.admit(user,owner,prompt),turns.admit(user,owner,prompt)]);
+  assert.equal(results.filter(r=>r.status==="fulfilled").length,1);
+  const rejected=results.find(r=>r.status==="rejected");assert.ok(["turn_pending","turn_uncertain"].includes(rejected.reason.code));
+  await results.find(r=>r.status==="fulfilled").value.finish(false);
+});
+
+test("failed receipt persistence stays observable to repeated cleanup without another write",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"scikeel-receipt-failure-"));roots.push(root);
+  const store=new AttachmentStore({rootDir:root});await store.init();
+  const turns=new AttachmentTurns({store,readHistory:async()=>[]});
+  const admitted=await turns.admit({id:"user_a"},{sessionId:"session_a"},{parts:[{type:"text",text:"keep"}],attachmentTurn:{turnId:"turn_failed",attachmentIds:[]}});
+  const failure=new Error("fixture persistence failed");let writes=0;
+  store.finishTurn=async()=>{writes++;throw failure;};
+  await assert.rejects(admitted.finish(false),error=>error===failure);
+  await assert.rejects(admitted.finish(false),error=>error===failure);
+  assert.equal(writes,1);assert.equal(turns.pending.size,0);
+});

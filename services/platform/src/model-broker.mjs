@@ -181,6 +181,7 @@ export class ModelBroker {
     let collaborationCorrelation; let networkCorrelation; let context;
     let modelRequest = false; let streaming = false; let eventBoundary = true; let trailing = Buffer.alloc(0);
     let responseBytes = 0; let forwardedBytes = 0; let firstDataAt; let lastDataAt;
+    let upstreamStatus = null;
     let outcome = "success"; let terminalErrorDelivered = false; let downstreamBlocked = false;
     let firstByteTimer = null; let idleTimer = null; let totalTimer = null; let requestFingerprint;
     const lifecycleTimer = setTimeout(() => controller.abort(failure("model_timeout", 504)), Math.min(this.firstByteTimeoutMs, 120000));
@@ -306,6 +307,7 @@ export class ModelBroker {
       const upstream = await new Promise((resolve, reject) => {
         upstreamRequest.once("response", resolve); upstreamRequest.once("error", reject); upstreamRequest.end(payload);
       });
+      upstreamStatus=Number.isInteger(upstream.statusCode) && upstream.statusCode>=100 && upstream.statusCode<=599 ? upstream.statusCode : null;
       if (upstream.statusCode !== 200) { upstream.destroy(); throw failure("model_upstream_rejected", 502); }
       const contentType = upstream.headers["content-type"] ?? "";
       if (!(body.stream ? /^text\/event-stream(?:;|$)/i : /^application\/json(?:;|$)/i).test(contentType)) {
@@ -378,7 +380,7 @@ export class ModelBroker {
       if (modelRequest) {
         const endedAt = performance.now();
         try { this.logger({ type: "model.operation", correlationId, userId: context?.userId, instanceId: context?.instanceId,
-          generation: context?.generation, route: req.url, provider: operation.provider, model: operation.model, outcome,
+          generation: context?.generation, route: req.url, provider: operation.provider, model: operation.model, outcome, upstreamStatus,
           elapsedMs: Math.round(endedAt - startedAt), firstByteMs: firstDataAt === undefined ? null : Math.round(firstDataAt - startedAt),
           idleMs: lastDataAt === undefined ? null : Math.round(endedAt - lastDataAt), responseBytes, forwardedBytes,
           firstByteTimeoutMs: this.firstByteTimeoutMs, idleTimeoutMs: this.idleTimeoutMs, totalTimeoutMs: this.totalTimeoutMs,

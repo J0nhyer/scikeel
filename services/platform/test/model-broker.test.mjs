@@ -595,3 +595,22 @@ test('authorized renewal extends an active grant expiry without changing the tot
   assert.equal((await active).status, 200);
   assert.throws(() => f.broker.renew(shortGrant, {...context, generation: 2}), /denied/);
 });
+
+for(const status of [403,429,500,302])test(`upstream ${status} logs only bounded rejection status`,async t=>{
+  const records=[];const {fetch}=await fixture(t,(_request,response)=>{
+    response.writeHead(status,{location:"http://private.invalid"});response.end("administrator-secret-canary:synthetic-private-body");
+  },{logger:entry=>records.push(entry)});
+  const result=await fetch();assert.equal(result.status,502);
+  const operation=records.find(entry=>entry.type==="model.operation");
+  assert.equal(operation.outcome,"model_upstream_rejected");assert.equal(operation.upstreamStatus,status);
+  assert.ok(!JSON.stringify(records).includes("administrator-secret-canary"));assert.ok(!JSON.stringify(records).includes("synthetic-private-body"));
+  assert.ok(!result.body.includes("synthetic-private-body"));
+});
+test("successful streaming records upstream 200 and preauthorization has no invented provider status",async t=>{
+  const records=[];let contacted=0;const {fetch}=await fixture(t,(_request,response)=>{
+    contacted++;response.writeHead(200,{"content-type":"text/event-stream"});response.end("data: [DONE]\n\n");
+  },{logger:entry=>records.push(entry)});
+  assert.equal((await fetch({model:"other",max_output_tokens:1})).status,403);assert.equal(contacted,0);
+  assert.equal((await fetch({model:"approved",max_output_tokens:1,stream:true})).status,200);
+  assert.equal(records.find(entry=>entry.type==="model.operation").upstreamStatus,200);
+});

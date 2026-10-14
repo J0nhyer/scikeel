@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,7 @@ import { CliRuntimeManager } from "../src/cli-runtime.mjs";
 import { PlatformServer } from "../src/platform-server.mjs";
 import { WorkerManager } from "../src/worker-manager.mjs";
 import { TenantPolicy } from "../src/tenant-policy.mjs";
+import { WorkspaceRpc } from "../src/workspace-rpc.mjs";
 import { recoveryError } from "../src/workspace-recovery.mjs";
 
 const fakeOsd = fileURLToPath(new URL("../fixtures/fake-osd.mjs", import.meta.url));
@@ -65,7 +67,7 @@ function makeClient(base) {
   };
 }
 
-async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null } = {}) {
+async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null, enableWorkspaceManagement = false, logger = () => {} } = {}) {
   const root = providedRoot ?? (await mkdtemp(join(tmpdir(), "osd-platform-server-")));
   const authStore = new AuthStore({
     filePath: join(root, "platform", "auth.json"),
@@ -78,7 +80,7 @@ async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRo
     startupTimeoutMs: 5_000,
     stopTimeoutMs: 1_000,
   });
-  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles });
+  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles, enableWorkspaceManagement, logger });
   const address = await server.listen();
   const fixture = { root, authStore, manager, server, cliRuntime, base: `http://${address.host}:${address.port}` };
   fixtures.push(fixture);
@@ -1434,4 +1436,155 @@ test("Web permission recovery authorizes task children without an open browser a
   assert.equal(response.status,200,await response.clone().text());assert.deepEqual(await response.json(),[]);
   assert.equal(replied,2);assert.equal(patched,1);
   await f.server.collaboration.settled(owner);
+});
+
+async function managedPromptFixture(t,{workspaceFiles=null,enableWorkspaceManagement=false}={}) {
+  const policy=new TenantPolicy(), records=[];
+  const f=await makeFixture({tenantPolicy:policy,logger:entry=>records.push(entry),workspaceFiles,enableWorkspaceManagement});
+  clearInterval(f.server.researchTimer);
+  const monitor=f.server.collaboration.running;
+  f.server.collaboration.running=async()=>true;f.server.researchTasks.running=async()=>true;
+  f.server.collaboration.cancel=async()=>{};f.server.researchTasks.cancel=async()=>{};
+  const client=makeClient(f.base);const {user}=await login(client,"admin","admin-password");const instanceId=`user-${user.id}`;
+  const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+  f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),userId:user.id,generation:1,status:"running"}))(f.manager.getWorker);
+  const context={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir};policy.registerAccount(context);
+  policy.registerSession(context,{id:"owned",directory:worker.workspaceDir+"/project"});
+  await mkdir(worker.workspaceDir+"/project",{recursive:true});
+  await f.server.runtimeCollaboration(context,{action:"capability",sessionId:"capability"});
+  const post=(path,body)=>client.request(path,{method:"POST",headers:{"content-type":"application/json",origin:f.base},body:JSON.stringify(body)});
+  await post("/api/collaboration/owned",{action:"heartbeat",pageId:"page"});
+  const state=async()=>(await json(await client.request("/api/collaboration/owned"))).state;
+  const access=f.manager.getWorkerAccess(instanceId),nativeFetch=globalThis.fetch;
+  let forwarded=0,behavior=null;const history=[];
+  globalThis.fetch=async(input,init)=>{
+    const url=new URL(String(input));
+    if(url.origin===new URL(access.url).origin){
+      if(["/command","/skill","/permission","/question"].includes(url.pathname))return new Response("[]");
+      if(["/session","/experimental/session"].includes(url.pathname))return new Response(JSON.stringify([{id:"owned",directory:worker.workspaceDir+"/project"}]));
+      if(url.pathname==="/session/status")return new Response("{}");
+      if(url.pathname==="/session/owned/children")return new Response("[]");
+      if(url.pathname==="/session/child")return new Response(JSON.stringify({id:"child",parentID:"owned",directory:worker.workspaceDir+"/project"}));
+      if(["/session/owned/message","/session/child/message"].includes(url.pathname)&&(!init?.method || init.method==="GET"))return new Response(JSON.stringify(history));
+      if(["/session/owned/prompt_async","/session/child/prompt_async","/session/owned/command"].includes(url.pathname)&&init?.method==="POST"){
+        forwarded++;const body=JSON.parse(init.body);if(behavior)return behavior(body,url);
+        history.push({info:{id:body.messageID,role:"user"},parts:body.parts});return new Response("{}",{status:202});
+      }
+    }
+    return nativeFetch(input,init);
+  };
+  t.after(()=>{globalThis.fetch=nativeFetch;});
+  return {...f,policy,client,user,context,post,state,history,records,monitor,forwarded:()=>forwarded,setBehavior:value=>{behavior=value;}};
+}
+function textPrompt(turnId,revision){return {parts:[{type:"text",text:"Reply once"}],attachmentTurn:{turnId,attachmentIds:[]},collaborationRevision:revision};}
+test("managed preparation rejection releases both locks before immediate explicit retry",async t=>{
+  const f=await managedPromptFixture(t);const owner=await f.state();
+  await f.server.researchTasks.create(owner,{objective:"Reply",goal:"thesis",mode:"delegated",inputs:[],deliverables:["report.md"],pageId:"page"});
+  const materialize=f.server.attachments.materializeCopies;
+  f.server.attachments.materializeCopies=async()=>{throw Object.assign(new Error("Workspace access denied."),{statusCode:403,code:"workspace_rpc_denied"});};
+  const failed=await f.post("/session/owned/prompt_async",textPrompt("turn_rejected",owner.revision));
+  assert.equal(failed.status,403);assert.equal((await failed.json()).code,"workspace_rpc_denied");
+  assert.equal((await f.state()).phase,"idle");assert.equal((await f.server.researchTasks.get(f.user.id,"owned")).executionActive,false);
+  assert.equal((await f.server.attachments.list(f.user.id,"owned")).turns[0].status,"rejected");assert.equal(f.forwarded(),0);
+  f.server.attachments.materializeCopies=materialize;
+  const retry=await f.post("/session/owned/prompt_async",textPrompt("turn_rejected",(await f.state()).revision));
+  assert.equal(retry.status,202,await retry.text());assert.equal(f.forwarded(),1);assert.equal((await f.state()).phase,"running");
+});
+test("accepted managed replay precedes begin and does not increment or dispatch",async t=>{
+  const f=await managedPromptFixture(t);const prompt=textPrompt("turn_accepted",(await f.state()).revision);
+  assert.equal((await f.post("/session/owned/prompt_async",prompt)).status,202);
+  const first=await f.state();const replay=await f.post("/session/owned/prompt_async",{...prompt,collaborationRevision:first.revision});
+  assert.equal(replay.status,202,await replay.text());assert.equal((await f.state()).execution,first.execution);assert.equal(f.forwarded(),1);
+  const active=await f.post("/session/owned/prompt_async",textPrompt("turn_different",first.revision));
+  assert.equal(active.status,409);assert.equal((await active.json()).code,"research_execution_running");assert.equal(f.forwarded(),1);
+});
+for(const mode of ["response_lost","non_success","invalid_ack"])test(`managed ${mode} keeps an uncertain receipt without a second dispatch`,async t=>{
+  const f=await managedPromptFixture(t);const prompt=textPrompt("turn_uncertain",(await f.state()).revision);
+  f.setBehavior(async body=>{
+    if(mode==="non_success")return new Response(JSON.stringify({error:"upstream-private-secret"}),{status:403});
+    if(mode==="invalid_ack")return new Response("not-json",{status:202});
+    f.history.push({info:{id:body.messageID,role:"user"},parts:body.parts});throw new Error("synthetic response lost");
+  });
+  const failed=await f.post("/session/owned/prompt_async",prompt);
+  assert.equal(failed.status,502);const failure=await failed.json();assert.equal(failure.code,"prompt_delivery_unknown");assert.ok(!JSON.stringify(failure).includes("secret"));
+  assert.equal((await f.state()).phase,"running");assert.equal((await f.server.attachments.list(f.user.id,"owned")).turns[0].status,"prepared");
+  const replay=await f.post("/session/owned/prompt_async",{...prompt,collaborationRevision:(await f.state()).revision});
+  assert.equal(replay.status,mode==="response_lost"?202:409);assert.equal(f.forwarded(),1);
+});
+test("failed descendant preparation does not settle its inherited parent",async t=>{
+  const f=await managedPromptFixture(t);const owner=await f.state();await f.server.collaboration.begin(owner,owner.revision);
+  f.policy.registerSession(f.context,{id:"child",parentID:"owned",directory:owner.directory});
+  f.server.attachments.materializeCopies=async()=>{throw Object.assign(new Error("synthetic pre-dispatch"),{statusCode:429,code:"workspace_rpc_busy"});};
+  const response=await f.post("/session/child/prompt_async",textPrompt("turn_child",(await f.state()).revision));
+  assert.equal(response.status,429);assert.equal((await f.state()).phase,"running");assert.equal(f.forwarded(),0);
+});
+
+test("transient workspace validation closes SSE for recovery rather than silently dropping idle",async t=>{
+  const f=await managedPromptFixture(t),access=f.manager.getWorkerAccess(f.context.instanceId),nativeFetch=globalThis.fetch;
+  globalThis.fetch=async(input,init)=>{
+    const url=new URL(String(input));
+    if(url.origin===new URL(access.url).origin && url.pathname==="/event")return new Response(
+      `data: ${JSON.stringify({type:"session.status",properties:{sessionID:"owned",status:{type:"idle"}}})}\n\n`,
+      {headers:{"content-type":"text/event-stream"}});
+    return nativeFetch(input,init);
+  };
+  t.after(()=>{globalThis.fetch=nativeFetch;});
+  f.server.workspaceManagement={assertAccessible:async()=>{throw Object.assign(new Error("Workspace is busy."),{statusCode:429,code:"workspace_rpc_busy"});}};
+  await assert.rejects(async()=>{const response=await f.client.request("/event");await response.text();});
+});
+
+test("monitor cannot settle slow preparation and Stop prevents its late dispatch",async t=>{
+  const f=await managedPromptFixture(t);f.server.collaboration.running=f.monitor;
+  let enter,release;const entered=new Promise(resolve=>{enter=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  f.server.attachments.materializeCopies=async()=>{enter();await gate;return [];};
+  const request=f.post("/session/owned/prompt_async",textPrompt("turn_slow",(await f.state()).revision));
+  try {
+    await entered;const owner=await f.state();f.server.collaboration.records.get(f.server.collaboration.key(owner)).startedAt=Date.now()-7000;
+    await f.server.collaboration.tick();assert.equal((await f.state()).phase,"running");
+    await f.server.collaboration.pause(owner,owner.execution);release();
+    const response=await request;assert.equal(response.status,409,await response.text());
+    assert.equal(f.forwarded(),0);assert.equal((await f.state()).phase,"paused");
+  } finally {release();await request;}
+});
+test("unknown delivery stays fenced until its message ID can be reconciled or explicitly stopped",async t=>{
+  const f=await managedPromptFixture(t);f.server.collaboration.running=f.monitor;
+  f.setBehavior(async()=>{throw new Error("synthetic response lost");});
+  assert.equal((await f.post("/session/owned/prompt_async",textPrompt("turn_absent",(await f.state()).revision))).status,502);
+  const owner=await f.state();f.server.collaboration.records.get(f.server.collaboration.key(owner)).startedAt=Date.now()-7000;
+  await f.server.collaboration.tick();assert.equal((await f.state()).phase,"running");
+  const receipt=(await f.server.attachments.list(f.user.id,"owned")).turns[0];f.history.push({info:{id:receipt.messageID,role:"user"}});
+  await f.server.collaboration.tick();assert.equal((await f.state()).phase,"idle");
+});
+
+test("recent no-follow integration serializes project/background reads and an empty send",async t=>{
+  let rpc,active=0,peak=0;const operations=[],writes=new Map();
+  const f=await managedPromptFixture(t,{enableWorkspaceManagement:true,workspaceFiles:{call:(...args)=>rpc ? rpc.call(...args) : Promise.resolve({kind:"directory"})}});
+  const access=f.manager.getWorkerAccess.bind(f.manager);
+  f.manager.getWorkerAccess=id=>({...access(id),runnerUrl:"http://172.31.240.2:4791"});
+  f.manager.retainWorker=()=>({generation:1,release(){}});
+  rpc=new WorkspaceRpc({workerManager:f.manager,tenantPolicy:f.policy,fetchImpl:async(_url,{body})=>{
+    const request=JSON.parse(body);active++;peak=Math.max(peak,active);operations.push(request);
+    await new Promise(resolve=>setImmediate(resolve));
+    if(active>1){active--;return new Response(JSON.stringify({error:"runner_busy"}),{status:429});}
+    if(request.operation==="writeChunk")writes.set(request.path,Buffer.concat([writes.get(request.path)??Buffer.alloc(0),Buffer.from(request.bytes)]));
+    active--;return new Response(JSON.stringify({kind:"directory"}));
+  }});
+  const directory=(await f.state()).directory;
+  const paths=["/command","/skill","/permission"].map(path=>`${path}?directory=${encodeURIComponent(directory)}`);
+  const reads=paths.map(path=>f.client.request(path));
+  const send=f.post("/session/owned/prompt_async",textPrompt("turn_with_reads",(await f.state()).revision));
+  const responses=await Promise.all([...reads,send]);assert.deepEqual(responses.map(r=>r.status),[200,200,200,202]);
+  await Promise.all(responses.map(r=>r.text()));assert.equal(peak,1);assert.equal(f.forwarded(),1);
+  assert.ok(operations.length>=3);assert.ok(operations.every(operation=>operation.operation==="stat"));
+  const before=operations.length;await f.server.workspaceManagement.assertAccessible(f.context,f.context.workspaceDir);
+  assert.equal(operations.length,before);
+  const first=await f.state();await f.server.collaboration.settled(first,first.execution);
+  const draft=await f.server.attachments.createDraft(f.user.id),bytes=Buffer.from("value\n2\n");
+  const file=await f.server.attachments.upload(f.user.id,{draftId:draft.id},"values.csv",Readable.from([bytes]));
+  const second=textPrompt("turn_real_attachment",(await f.state()).revision);
+  second.attachmentTurn={turnId:"turn_real_attachment",draftId:draft.id,attachmentIds:[file.id]};
+  const attachmentResponses=await Promise.all([...paths.map(path=>f.client.request(path)),f.post("/session/owned/prompt_async",second)]);
+  assert.deepEqual(attachmentResponses.map(r=>r.status),[200,200,200,202]);await Promise.all(attachmentResponses.map(r=>r.text()));
+  assert.equal(peak,1);assert.equal(f.forwarded(),2);assert.ok([...writes.values()][0].equals(bytes));
+  assert.equal((await f.server.attachments.list(f.user.id,"owned")).attachments[0].sha256,file.sha256);
 });

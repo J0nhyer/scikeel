@@ -360,3 +360,30 @@ test("checkpoint remains answerable without any page heartbeat", async t => {
   const answered=await f.store.answer(owner,{id:wait.pending.id,execution:wait.execution,revision:wait.revision,answer:"A"});
   assert.equal(answered.phase,"running");assert.deepEqual(f.stopped,[]);
 });
+
+const fencedOwner={...owner,instanceId:"user-student",generation:1};
+test("preparation rejection settles only its exact running admission",async t=>{
+  const {store}=await fixture(t);const first=await store.begin(fencedOwner,0);
+  const rejected=await store.rejectAdmission(fencedOwner,first.execution);
+  assert.equal(rejected.phase,"idle");assert.equal(rejected.execution,first.execution);
+  const next=await store.begin(fencedOwner,rejected.revision);
+  await store.rejectAdmission(fencedOwner,first.execution);
+  assert.equal((await store.get(fencedOwner)).phase,"running");assert.equal((await store.get(fencedOwner)).execution,next.execution);
+});
+test("rejected admission cannot clear a replacement generation or pending decision",async t=>{
+  const {store}=await fixture(t);const first=await store.begin(fencedOwner,0);
+  await store.interruptGeneration({userId:"student",instanceId:"user-student",generation:1});
+  const replacement={...fencedOwner,generation:2};const paused=await store.get(replacement);
+  const next=await store.begin(replacement,paused.revision);
+  await store.rejectAdmission(fencedOwner,first.execution);assert.equal((await store.get(replacement)).phase,"running");
+  const waiting=await store.checkpoint(replacement,{kind:"method",question:"Use A?",suggestedAnswer:"A"});
+  await store.rejectAdmission(replacement,next.execution);
+  assert.equal((await store.get(replacement)).phase,"waiting_input");assert.equal((await store.get(replacement)).pending.id,waiting.pending.id);
+});
+test("begin reports its owned admission before a persistence failure",async t=>{
+  const {store}=await fixture(t);await store.get(fencedOwner);const save=store.save.bind(store);let ticket;
+  store.save=async()=>{throw new Error("synthetic save failure");};
+  await assert.rejects(store.begin(fencedOwner,0,{onStarted:value=>{ticket=value;}}),/synthetic/);
+  assert.equal(ticket.execution,1);assert.equal(ticket.owner.generation,1);
+  store.save=save;assert.equal((await store.rejectAdmission(ticket.owner,ticket.execution)).phase,"idle");
+});

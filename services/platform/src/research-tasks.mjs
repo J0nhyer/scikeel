@@ -261,25 +261,27 @@ export class ResearchTasks {
       return this.save(task);
     });
   }
-  async prepare(userId, sessionId, body, owner) {
+  async prepare(userId, sessionId, body, owner, {onPrepared} = {}) {
     return this.locked(userId, sessionId, async () => {
       const task = await this.load(userId, sessionId);
       if (!task) return null;
       if (task.executionActive) {
         if (this.running && !await this.running(task)) task.executionActive = false;
-        else throw error("research task is already running", 409);
+        else throw Object.assign(error("research task is already running", 409),{code:"research_execution_running"});
       }
       await this.refreshUnlocked(task);
       if (this.pending(task).length) throw error("confirm the pending research decision before continuing", 409);
       for (let index = 0; index < task.inputVersions.length; index++) {
         if (!task.inputVersions[index].exists) task.inputVersions[index] = await this.artifact(task, task.inputVersions[index].path);
       }
+      const previousReport=structuredClone(task.report);
       task.execution++;
       if (owner && Number.isSafeInteger(owner.generation)) { task.instanceId = owner.instanceId; task.generation = owner.generation; }
       task.executionActive = true;
       task.status = "running";
       task.report = null;
       delete task.stopReason;
+      onPrepared?.({userId,sessionId,instanceId:task.instanceId,generation:task.generation,execution:task.execution,previousReport});
       await this.save(task);
       const policy = {
         guided: "Explain the next meaningful step and its purpose. Execute only that step, then record a decision asking the student whether to proceed. Ask about substantive method choices before implementing them.",
@@ -289,6 +291,25 @@ export class ResearchTasks {
       const context = `SciKeel research task (version 1). Use the research-workflow Skill and relevant scientific Skills.\n${JSON.stringify(task)}\nMode policy: ${policy}\nExisting runtime tool permissions still apply; this mode grants no new permissions. Preserve original inputs. Never fabricate data or citations.\nWrite progress atomically to ${task.reportPath} inside this session workspace, using:\n${JSON.stringify({ version: 1, execution: task.execution, status: "running", steps: [{ title: "Actual research step", status: "pending" }], decisions: [], artifacts: [], checks: [], limitations: "" })}\nAllowed report status: running, waiting_input, completed, failed. Decisions: {id,question}; only user confirmations in the task record are confirmed decisions. Artifacts: relative file paths, including every requested deliverable. Checks: {title,status: passed|failed|pending,evidence: relative path to actual check output}. A completed report needs existing outputs and passed checks with evidence. Record missing inputs and limitations explicitly. Write waiting_input before stopping for a research decision; do not execute beyond that decision. Explain the result to the student, never claim publication readiness.\nUser request:\n`;
       const original = Array.isArray(body.parts) ? body.parts : [];
       return { ...body, system: [typeof body.system === "string" ? body.system : "", context].filter(Boolean).join("\n\n"), parts: original };
+    });
+  }
+  assertAdmission(ticket) {
+    return this.locked(ticket.userId,ticket.sessionId,async()=>{
+      const task=await this.load(ticket.userId,ticket.sessionId);
+      if(!task || task.instanceId!==ticket.instanceId || task.generation!==ticket.generation ||
+          task.execution!==ticket.execution || !task.executionActive || task.status!=="running" || this.pending(task).length)
+        throw Object.assign(error("Research execution changed before sending",409),{code:"research_execution_changed"});
+    });
+  }
+  rejectAdmission(ticket) {
+    return this.locked(ticket.userId,ticket.sessionId,async()=>{
+      const task=await this.load(ticket.userId,ticket.sessionId);
+      if(!task || task.instanceId!==ticket.instanceId || task.generation!==ticket.generation ||
+          task.execution!==ticket.execution || !task.executionActive || task.status!=="running" || this.pending(task).length)
+        return task ? structuredClone(task) : null;
+      task.executionActive=false;task.status="paused";task.stopReason="prompt-rejected";
+      task.report=ticket.previousReport;
+      return this.save(task);
     });
   }
   async settled(userId, sessionId) {
