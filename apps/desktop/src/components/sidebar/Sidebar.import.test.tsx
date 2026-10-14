@@ -34,7 +34,7 @@ const EXISTING: ProjectInfo = {
 };
 
 const importProject = vi.fn();
-const startDraftInWorkspace = vi.fn(async () => {});
+const startDraftInWorkspace = vi.fn(async () => true);
 
 /** The user is reading session "A" in the only Screen. */
 function busyScreen() {

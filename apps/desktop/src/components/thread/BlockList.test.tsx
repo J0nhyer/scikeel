@@ -146,3 +146,14 @@ describe("BlockList · a finished turn folds its work", () => {
     expect(screen.queryByRole("button", { name: /Worked/ })).not.toBeInTheDocument();
   });
 });
+
+it("keeps assistant prose and legacy status while compacting typed completion", () => {
+  render(<BlockList blocks={[
+    { kind: "agent", markdown: "Assistant result" },
+    { kind: "status-line", text: "Legacy status", tone: "review" },
+    { kind: "status-line", text: "Completed notice", tone: "done", presentation: { kind: "completion", eventId: "turn" } },
+  ]} />);
+  expect(screen.getByText("Assistant result")).toBeVisible();
+  expect(screen.getByText("Legacy status")).toBeVisible();
+  expect(screen.queryByText("Completed notice")).not.toBeInTheDocument();
+});

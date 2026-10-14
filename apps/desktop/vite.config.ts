@@ -2,13 +2,16 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
 import pkg from "./package.json";
 import { webVendorPlugin } from "./web-vendor";
 
 const r = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
 export default defineConfig({
-  plugins: [react(), webVendorPlugin(r("../../.deploy/vendor"))],
+  // Frozen release sources reuse the installed pnpm store outside their root.
+  server: { fs: { allow: [r("../.."), realpathSync(r("../../node_modules/.pnpm"))] } },
+  plugins: [react(), webVendorPlugin(process.env.OSD_WEB_VENDOR_DIR || r("../../.deploy/vendor"))],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
@@ -24,6 +27,7 @@ export default defineConfig({
       "@ai4s/sdk/acp/serve-stdio": r("../../packages/sdk/src/acp/serve-stdio.ts"),
       "@ai4s/sdk/acp/stdio": r("../../packages/sdk/src/acp/stdio.ts"),
       "@ai4s/sdk/acp": r("../../packages/sdk/src/acp/index.ts"),
+      "@ai4s/sdk/tool-outcome": r("../../packages/sdk/src/tool-outcome.mjs"),
       "@ai4s/sdk": r("../../packages/sdk/src/index.ts"),
     },
   },

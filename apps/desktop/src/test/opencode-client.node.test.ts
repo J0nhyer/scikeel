@@ -26,6 +26,31 @@ async function waitFor(pred: () => boolean, timeout = 3000) {
 }
 
 describe("OpenCodeClient ↔ OpenCode server", () => {
+  it("hands generation mismatch to connection recovery without retargeting the old client", async () => {
+    const changed = vi.fn(); const client = new OpenCodeClient({ baseUrl: "http://gateway.test",
+      fetchImpl: async () => new Response("[]", { headers: { "x-scikeel-runtime-generation": "2" } }) });
+    client.setGatewayGeneration(1); client.setGatewayContextChangedHandler(changed);
+    await expect(client.listSessions()).rejects.toMatchObject({ status: 409, code: "stale_workspace_context" });
+    expect(changed).toHaveBeenCalledOnce(); expect(client.getContextGeneration()).toBe(1);
+  });
+  it("a stale write refusal requests read-only reconnection without replaying the write", async () => {
+    const changed = vi.fn(); const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: "Workspace has changed", code: "stale_workspace_context" }), { status: 409 }));
+    const client = new OpenCodeClient({ baseUrl: "http://gateway.test", fetchImpl });
+    client.setGatewayGeneration(1); client.setGatewayContextChangedHandler(changed);
+    await expect(client.createSession()).rejects.toMatchObject({ status: 409, code: "stale_workspace_context" });
+    expect(changed).toHaveBeenCalledOnce(); expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+  it("fences platform writes with an explicitly selected generation without changing standalone calls", async () => {
+    const calls: Array<RequestInit | undefined> = [];
+    const fetchImpl: typeof fetch = async (_input, init) => { calls.push(init); return new Response(JSON.stringify({ id: "ses_test" })); };
+    const client = new OpenCodeClient({ baseUrl: "http://gateway.test", fetchImpl });
+    await client.createSession();
+    expect(new Headers(calls[0]?.headers).has("x-scikeel-runtime-generation")).toBe(false);
+    client.setGatewayGeneration(3); await client.createSession();
+    expect(new Headers(calls[1]?.headers).get("x-scikeel-runtime-generation")).toBe("3");
+    client.setGatewayGeneration(null); await client.createSession();
+    expect(new Headers(calls[2]?.headers).has("x-scikeel-runtime-generation")).toBe(false);
+  });
   it("connects, creates a session, sends a prompt, and streams normalized events", async () => {
     const events: OpenCodeEvent[] = [];
     const client = new OpenCodeClient({ baseUrl: `http://127.0.0.1:${server.port}` });
@@ -947,5 +972,47 @@ describe("manual compaction (#75)", () => {
     await expect(client.compactSession("ses_1")).rejects.toThrow(/model/i);
     // And never posts a body the server would only reject.
     expect(calls.some((c) => c.url.endsWith("/summarize"))).toBe(false);
+  });
+});
+
+describe("bounded catalog reads", () => {
+  it("bounds headers even when the transport does not settle after abort", async () => {
+    let signal: AbortSignal | undefined;
+    const client = new OpenCodeClient({ fetchImpl: async (_input, init) => {
+      signal = init?.signal as AbortSignal;
+      return new Promise<Response>(() => {});
+    } });
+    await expect(client.listProviders({ timeoutMs: 20 })).rejects.toThrow();
+    expect(signal?.aborted).toBe(true);
+  });
+  it("cancels a body read when its owner is superseded", async () => {
+    const owner = new AbortController();
+    let started!: () => void;
+    const bodyStarted = new Promise<void>(resolve => { started = resolve; });
+    const client = new OpenCodeClient({ fetchImpl: async () => {
+      started();
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("[")); } }));
+    } });
+    const reading = client.listSkills({ signal: owner.signal });
+    await bodyStarted;
+    owner.abort(new Error("Superseded connection"));
+    await expect(reading).rejects.toThrow("Superseded connection");
+  });
+
+  it("bounds a stalled response body and cancels the request", async () => {
+    let signal: AbortSignal | undefined;
+    const client = new OpenCodeClient({ fetchImpl: async (_input, init) => {
+      signal = init?.signal as AbortSignal;
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("[")); } }));
+    } });
+    await expect(client.listAgents({ timeoutMs: 20 })).rejects.toThrow();
+    expect(signal?.aborted).toBe(true);
+  });
+  it("cancels an obsolete catalog read before sending it", async () => {
+    const fetchImpl = vi.fn(async () => new Response("[]"));
+    const client = new OpenCodeClient({ fetchImpl });
+    const controller = new AbortController(); controller.abort();
+    await expect(client.listCommands({ signal: controller.signal })).rejects.toThrow();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

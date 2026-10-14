@@ -20,3 +20,18 @@ export function webModelChoices(
   if (!selected?.enabled) return [];
   return selected.models.map((modelId) => ({ key: `${assistant}/${modelId}`, modelId, label: modelId }));
 }
+
+/** Resolve a supported effort, falling back to the lowest known provider level. */
+export function webReasoningEffort(variants: string[], selected?: string | null): string | undefined {
+  if (selected && variants.includes(selected)) return selected;
+  const levels = ["none", "disabled", "minimal", "min", "low", "medium", "high", "xhigh", "max", "ultra", "enabled"];
+  return levels.find((level) => variants.includes(level)) ?? variants[0];
+}
+
+export function webModelEffort(providers: ProviderInfo[], model: string | null, selected?: string | null): string | undefined {
+  if (!model) return undefined;
+  const separator = model.indexOf("/");
+  const variants = providers.find((provider) => provider.id === model.slice(0, separator))
+    ?.models.find((entry) => entry.id === model.slice(separator + 1))?.variants ?? [];
+  return webReasoningEffort(variants, selected);
+}

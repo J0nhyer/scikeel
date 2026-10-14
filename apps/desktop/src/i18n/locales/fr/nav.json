@@ -8,7 +8,9 @@
     "signOut": "Se déconnecter",
     "account": "Compte de {{username}}",
     "adminBadge": "Admin",
-    "home": "Accueil"
+    "home": "Accueil",
+    "campusName": "Chengdu University of Technology",
+    "campusStudentProject": "Projet de recherche étudiant"
   },
   "items": {
     "new": "Nouveau",
@@ -52,7 +54,58 @@
     "seeAll": "Tous les projets",
     "openFolder": "Ouvrir {{path}}",
     "newSession": "Nouvelle session",
-    "openFolderLabel": "Ouvrir le dossier"
+    "openFolderLabel": "Ouvrir le dossier",
+    "discardTitle": "Démarrer une nouvelle conversation ?",
+    "discardBody": "Le message non envoyé et les pièces jointes en attente seront abandonnés. Les conversations enregistrées et les fichiers du projet sont conservés.",
+    "discardAction": "Abandonner et continuer",
+    "entryFailed": "Projet créé, mais la conversation n’a pas pu être ouverte.",
+    "retryOpening": "Réessayer",
+    "actionsAria": "Actions du projet : {{name}}",
+    "openFiles": "Ouvrir les fichiers",
+    "trash": "Mettre à la corbeille",
+    "trashTitle": "Mettre {{name}} à la corbeille ?",
+    "trashBody": "Les fichiers et conversations sont conservés. Restaurez le projet pour les utiliser. Les tâches en cours doivent terminer.",
+    "finishDraftBeforeTrash": "Terminez ou abandonnez les messages et transferts en attente de ce projet.",
+    "unavailable": "Projet indisponible.",
+    "trashHeading": "Corbeille",
+    "restore": "Restaurer",
+    "trashEmpty": "Aucun élément supprimé.",
+    "trashLoadFailed": "Impossible de charger la corbeille.",
+    "checkingState": "Vérification du projet…",
+    "trashedConversation": "Ce projet est dans la corbeille. Restaurez-le pour rouvrir cette conversation."
+  },
+  "fileManagement": {
+    "restoreElsewhere": "Restaurer ailleurs",
+    "restoreTitle": "Restaurer le fichier ou le dossier",
+    "restoreName": "Nom",
+    "saveAs": "Enregistrer sous",
+    "savedAs": "Enregistré sous {{path}}",
+    "reloadText": "Recharger la version du disque",
+    "textConflict": "Le fichier a changé. Votre brouillon est conservé.",
+    "saveUncertain": "Résultat inconnu. Vérifiez ou réessayez l'enregistrement initial.",
+    "discardDraft": "Abandonner les modifications non enregistrées ?",
+    "draftLimit": "Enregistrez ou abandonnez les modifications d’un autre fichier avant d’ouvrir cet éditeur.",
+    "finishDraft": "Enregistrez ou abandonnez le brouillon avant de déplacer ou supprimer le fichier.",
+    "newFile": "Nouveau fichier",
+    "newFolder": "Nouveau dossier",
+    "actionsAria": "Actions du fichier : {{name}}",
+    "move": "Déplacer",
+    "trashTitle": "Déplacer {{name}} dans la corbeille ?",
+    "trashBody": "Le fichier ou dossier est conservé jusqu’à sa restauration. Les tâches en cours doivent d’abord se terminer.",
+    "destination": "Destination",
+    "pendingOperations": "Opérations en attente",
+    "checkOperation": "Vérifier : {{name}}",
+    "retryOperation": "Réessayer : {{name}}",
+    "moreOperations": "Autres opérations en attente",
+    "loadMore": "Charger la suite",
+    "historyFailed": "Enregistré ; échec de l’historique.",
+    "retryHistory": "Réessayer l’historique : {{name}}",
+    "upload": "Importer des fichiers",
+    "uploads": "Importations",
+    "addFiles": "Ajouter des fichiers",
+    "resumeUpload": "Reprendre : {{name}}",
+    "cancelUpload": "Annuler : {{name}}",
+    "uploadStatus": {"paused": "En pause", "uploading": "Importation en cours", "error": "À vérifier", "complete": "Importé", "cancelling": "Annulation", "cancelled": "Annulé"}
   },
   "history": {
     "heading": "Sessions",
@@ -91,7 +144,9 @@
     "exportDone_one": "{{count}} conversation exportée.",
     "exportDone_other": "{{count}} conversations exportées.",
     "exportDonePartial_one": "{{count}} conversation exportée ; {{failed}} n’a pas pu être lue.",
-    "exportDonePartial_other": "{{count}} conversations exportées ; {{failed}} n’ont pas pu être lues."
+    "exportDonePartial_other": "{{count}} conversations exportées ; {{failed}} n’ont pas pu être lues.",
+    "titleGenerating": "Génération du titre…",
+    "titleUntitled": "Nouvelle conversation"
   },
   "confirmDelete": {
     "sessionTitle": "Supprimer la session ?",
@@ -181,7 +236,7 @@
       "openNotebooks": "Ouvrir les notebooks",
       "manageSkills": "Gérer les compétences",
       "openSettings": "Ouvrir les paramètres",
-      "toggleTheme": "Changer de thème (clair / chaud / sombre)"
+      "toggleTheme": "Changer l’apparence"
     }
   },
   "rowMenu": {

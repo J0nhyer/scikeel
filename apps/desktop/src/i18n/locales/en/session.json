@@ -1,4 +1,74 @@
 {
+  "research": {
+    "issues": {
+      "changed_inputs": "An original input changed or is missing. Inspect the source versions before accepting the results.",
+      "missing_outputs": "Some requested outputs are missing. Continue the task to produce them.",
+      "failed_checks": "Checks failed, lack evidence, or have not been completed. Inspect the check results.",
+      "missing_progress": "Execution ended without a valid final progress record. Inspect the conversation and continue explicitly."
+    },
+    "startFailed": "Could not start research. Please retry.",
+    "title": "Research task",
+    "start": "Start a research task",
+    "intro": "Turn your thesis or research idea into a clear plan, decisions, and checked outputs.",
+    "loading": "Loading research task…",
+    "retry": "Retry",
+    "objective": "Research objective",
+    "goal": "Research goal",
+    "goals": {
+      "thesis": "Undergraduate thesis / graduation design",
+      "publication": "Publication-oriented research"
+    },
+    "mode": "Working mode",
+    "modes": {
+      "guided": "Guided",
+      "collaborative": "Collaborative",
+      "delegated": "Delegated"
+    },
+    "modeHints": {
+      "guided": "Understand and confirm each meaningful research step before moving on.",
+      "collaborative": "Confirm a plan, let the Agent run routine steps, and decide important changes together.",
+      "delegated": "Let the Agent complete and check the confirmed task; it asks when information or a new decision is needed."
+    },
+    "inputs": "Input files (optional, one path per line)",
+    "deliverables": "Expected output files (one path per line)",
+    "pathsHint": "Use paths within this conversation’s workspace. Original inputs are preserved; tool approvals still apply.",
+    "confirmScope": "I confirm this objective, input files, and expected outputs within this conversation's workspace.",
+    "confirmStart": "Confirm scope and start",
+    "yourDecision": "Your decision",
+    "confirmDecision": "Confirm decision",
+    "continue": "Continue research",
+    "stop": "Stop research",
+    "pageBound": "Closing this page stops execution.",
+    "awaitingPlan": "The Agent will record the plan and actual progress here.",
+    "missingArtifact": "Not created: {{path}}",
+    "checkAttribution": "Checks reported by the Agent; file existence verified by SciKeel.",
+    "missingEvidence": "Evidence file missing",
+    "requestedOutputs": "Expected outputs: {{paths}}",
+    "inputFiles": "Inputs: {{paths}}",
+    "noInputs": "Not provided",
+    "states": {
+      "ready": "Ready",
+      "running": "Working",
+      "waiting_input": "Your decision needed",
+      "paused": "Stopped",
+      "completed": "Outputs checked",
+      "failed": "Needs attention",
+      "cancelled": "Cancelled"
+    },
+    "steps": {
+      "pending": "Planned",
+      "running": "Working",
+      "completed": "Done",
+      "failed": "Failed"
+    },
+    "checks": {
+      "passed": "Passed",
+      "failed": "Failed",
+      "pending": "Not checked"
+    },
+    "startPrompt": "Start the confirmed research task. Follow the selected working mode and record the plan, research decisions, outputs and checks.",
+    "continuePrompt": "Continue the confirmed research task using my recorded decisions. Explain the results and update the actual progress and checks."
+  },
   "notFound": {
     "title": "Session not found",
     "hint": "Pick a session from the sidebar."
@@ -45,6 +115,7 @@
     "commandsAria": "Commands",
     "runtime": {
       "aria": "AI assistant",
+      "select": "Select assistant",
       "modelLabel": "Model",
       "title": "AI assistant used for this conversation",
       "unavailable": "This AI assistant is unavailable"
@@ -156,6 +227,17 @@
       "confirmTitle": "Compact the context?",
       "confirmBody": "The earlier turns are replaced with a summary so the next reply runs on a bounded context. The full original conversation is still stored locally.",
       "confirmAction": "Compact"
+    },
+    "attachments": {
+      "add": "Attach files",
+      "preview": "Preview {{name}}",
+      "download": "Download {{name}}",
+      "retry": "Retry {{name}}",
+      "remove": "Remove {{name}}",
+      "close": "Close preview",
+      "imageResized": "Image resized for the model; original retained.",
+      "imageStill": "A still image is sent to the model; original retained.",
+      "unavailable": "Preview unavailable for this file. Download the original to open it."
     }
   },
   "localCommand": {
@@ -164,6 +246,10 @@
     "cleared": "Chat context cleared. Files stay in the same folder."
   },
   "starters": {
+    "research-idea": {
+      "title": "Start from a research idea",
+      "description": "Explore a topic, define a question, and plan your next step."
+    },
     "newSession": "New session",
     "heading": "What should we look into?",
     "subheading": "Describe your analysis below — or start from one of these.",
@@ -188,8 +274,33 @@
     }
   },
   "live": {
+    "recovery": {
+      "title": "Workspace connection",
+      "retry": "Retry connection",
+      "restart": "Restart workspace",
+      "confirmRestart": "Confirm restart",
+      "cancel": "Cancel",
+      "sharedImpact": "This affects all devices using this workspace.",
+      "interruptWarning": "Running research may be interrupted. Conversation history and workspace files are kept.",
+      "cooldown": "Please wait {{seconds}} seconds before restarting again.",
+      "states": {
+        "healthy": "The workspace is available. Retry the connection.",
+        "stopped": "The workspace is stopped. Retry to prepare it.",
+        "starting": "The workspace is starting. Please retry shortly.",
+        "recovering": "The workspace is recovering. Please retry shortly.",
+        "unreachable": "The workspace could not be reached. Retry to check its status.",
+        "unresponsive": "The workspace runtime is not responding.",
+        "unknown": "Workspace status could not be verified. Retry without interrupting running work.",
+        "capacity": "Workspace capacity is temporarily unavailable. Please retry shortly."
+      }
+    },
+    "account": { "signOutFailed": "Could not sign out. Please retry." },
     "starting": {
-      "bodyWeb": "Waiting for the host app to answer. Keep this page open — it connects on its own as soon as the host is reachable.",
+      "titleWeb": "Connecting to your workspace…",
+      "titleSessionsWeb": "Loading conversations…",
+      "bodyWeb": "The server is preparing your workspace. This is taking longer than expected; we are retrying automatically.",
+      "bodySessionsWeb": "Retrieving your conversations from the server. Failed requests will be retried automatically.",
+      "sessionsError": "Could not load your conversations. Please try connecting again.",
       "title": "Starting the local runtime…",
       "body": "The bundled agent runtime is coming up. On a first launch macOS may ask for permission to access your folders — allow it and this finishes on its own."
     },
@@ -287,7 +398,82 @@
         "default_other": "ran {{count}} steps"
       },
       "failedCount": "{{count}} failed"
-    }
+    },
+    "outcome": {
+      "tool_permission_denied": {
+        "message": "Execution was not allowed.",
+        "nextAction": "Review the current tool permission."
+      },
+      "network_admission_denied": {
+        "message": "Network authorization could not be established.",
+        "nextAction": "Check the managed network connection."
+      },
+      "network_destination_denied": {
+        "message": "The destination is outside the allowed scope.",
+        "nextAction": "Choose an allowed public destination."
+      },
+      "network_grant_expired": {
+        "message": "Network authorization expired.",
+        "nextAction": "Start a new authorized call if still needed."
+      },
+      "network_grant_revoked": {
+        "message": "Network authorization was revoked.",
+        "nextAction": "Check whether the execution was stopped."
+      },
+      "network_busy": {
+        "message": "Network capacity is temporarily busy.",
+        "nextAction": "Retry within the current call budget."
+      },
+      "network_timeout": {
+        "message": "The network request timed out.",
+        "nextAction": "Retry within the current call budget."
+      },
+      "network_upstream_refused": {
+        "message": "The remote service rejected the request.",
+        "nextAction": "Check its known status and availability."
+      },
+      "search_unavailable": {
+        "message": "The configured search service is unavailable.",
+        "nextAction": "Check its configuration or use an available capability."
+      },
+      "delivery_missing_input": {
+        "message": "An original input is missing.",
+        "nextAction": "Correct its workspace-relative path."
+      },
+      "delivery_mode_mismatch": {
+        "message": "Delivery is incompatible with the current mode.",
+        "nextAction": "Review the current research mode."
+      },
+      "delivery_execution_paused": {
+        "message": "Research execution is paused.",
+        "nextAction": "Resume the authorized execution if needed."
+      },
+      "edit_ambiguous_match": {
+        "message": "The replacement matches more than one location.",
+        "nextAction": "Read the file and supply unique surrounding text."
+      },
+      "edit_no_change": {
+        "message": "The replacement would make no change.",
+        "nextAction": "Verify whether the requested content already exists."
+      },
+      "tool_unavailable": {
+        "message": "The selected tool is unavailable.",
+        "nextAction": "Use the current available-tool list."
+      },
+      "execution_cancelled": {
+        "message": "The execution was cancelled.",
+        "nextAction": "Review any partial effects before continuing."
+      },
+      "execution_interrupted": {
+        "message": "The execution was interrupted.",
+        "nextAction": "Check its effect before starting another call."
+      },
+      "tool_internal_error": {
+        "message": "The tool could not complete.",
+        "nextAction": "Use its correlation identifier to inspect the failure."
+      }
+    },
+    "outcomeDetails": "Details"
   },
   "artifact": {
     "kind": {
@@ -349,7 +535,20 @@
     "submit": "Submit",
     "reject": "Reject",
     "alwaysAllow": "Always allow",
-    "allowOnce": "Allow once"
+    "allowOnce": "Allow once",
+    "state": {
+      "submitting": "Submitting your answer…",
+      "retryable": "The request failed. Your answer is saved.",
+      "expired": "This request has expired. Your answer is saved.",
+      "unknown": "Delivery is not confirmed. Checking does not resend your answer.",
+      "check": "Check status",
+      "permission": {
+        "submitting": "Submitting your decision…",
+        "retryable": "The request failed. Review it before trying again.",
+        "expired": "This request has expired. No permission is granted.",
+        "unknown": "Delivery is not confirmed. Checking does not grant permission."
+      }
+    }
   },
   "turn": {
     "worked": "Worked",
@@ -528,5 +727,62 @@
     "close": "Close find",
     "none": "no results",
     "find": "Find…"
+  },
+  "environment": {
+    "title": "Python environment",
+    "absent": "Shared science environment",
+    "valid": "Private project environment",
+    "broken": "Private environment needs repair",
+    "explanation": "Common scientific libraries are already available. Extra dependencies use a separate environment for this project.",
+    "lockRequired": "Add requirements.lock with exact package versions and SHA256 hashes to prepare a private environment.",
+    "failed": "The environment could not be prepared. Check the dependency lock and retry; the previous environment is preserved.",
+    "stopFirst": "Finish or stop the active task before installing dependencies.",
+    "confirm": "Approve installation of these locked dependencies for this project?",
+    "approve": "Approve and install",
+    "cancel": "Cancel",
+    "installing": "Installing…",
+    "loading": "Preparing…",
+    "prepare": "Prepare private dependencies"
+  },
+  "collaboration": {
+    "guidedDescription": "Confirm one research step, review its result, then choose the next step.",
+    "stepConfirmation": "Next research step",
+    "label": "Autonomy",
+    "modes": {
+      "guided": "Low",
+      "collaborative": "Medium",
+      "delegated": "High",
+      "autonomous": "Full"
+    },
+    "description": "Agree on a plan; decide important choices together.",
+    "unavailable": "Available in a later stage",
+    "confirmation": "Research decision",
+    "answer": "Your answer or adjustment",
+    "continue": "Continue with the suggestion",
+    "submit": "Confirm answer",
+    "pause": "Pause",
+    "paused": "Execution is paused. Saving an answer does not restart it.",
+    "retry": "Retry",
+    "savedDecisions": "Confirmed research decisions",
+    "suggestion": "Suggestion",
+    "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
+    "delegatedDescription": "Complete the authorized work; ask about unapproved important choices.",
+    "deliveryCompleted": "Delivery files verified",
+    "deliveryFailed": "Delivery verification failed",
+    "deliverySelfCheck": "Files and evidence are checked; scientific conclusions are Agent self-checks.",
+    "deliveryRepairLimit": "The two-repair limit has been reached. Review the partial result.",
+    "deliveryIssues": {
+      "changed_inputs": "An original input is missing or changed.",
+      "missing_progress": "The execution report is missing or invalid.",
+      "pending_decisions": "An unresolved research decision remains in the report.",
+      "incomplete_report": "The execution report is unfinished.",
+      "missing_outputs": "A requested output is missing.",
+      "failed_checks": "A required check failed or its evidence is missing."
+    }
+  },
+  "modelTimeout": {
+    "first_byte": "The model did not start responding within 2 minutes. Try again or choose another model.",
+    "idle": "The model response was interrupted after 2 minutes without data. Your existing work is preserved.",
+    "total": "This model request reached the 1-hour limit. Your existing work is preserved; continue in another turn."
   }
 }

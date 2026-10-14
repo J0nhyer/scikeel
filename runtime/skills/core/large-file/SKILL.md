@@ -19,8 +19,12 @@ the specific rows/columns/ranges you need with the real library.
 The probe ships beside this SKILL.md. Run it on any data file **before** opening
 it:
 
+Replace `<skill-base-directory>` with the absolute base directory returned when
+you load this skill. It is the directory containing this SKILL.md, not a literal
+path or an environment variable. Run the command from the active workspace.
+
 ```bash
-python "$XDG_CONFIG_HOME/opencode/skills/large-file/large_file_probe.py" DATA_FILE [--sample N]
+python "<skill-base-directory>/large_file_probe.py" DATA_FILE [--sample N]
 ```
 
 It prints one compact JSON pointer on stdout — always tiny, regardless of file

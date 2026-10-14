@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "policy": "call-scope-v1",
+  "upstreamCommit": "545f51d26cc39a907d2867492d498d9607ea5fa4",
+  "patchSha256": "36bd9262ef3a39910abac5c43f65a338dea065df09989035168bef7012e634f6",
+  "combinedPatchSha256": "423dcb8bdea200448a8e47745c0e7cbe431313340387f0ad899ce2f23d7f0db6",
+  "outcomeSha256": "1e6cbdd25601d5c266f7398a8962fce675b15a67fa67525510f69bf8db667565"
+}

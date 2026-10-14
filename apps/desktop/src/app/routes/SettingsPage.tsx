@@ -23,6 +23,7 @@ import { OPENCODE_VERSION } from "@ai4s/sdk";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useParams } from "react-router-dom";
+import { AppearancePicker } from "@/components/settings/AppearancePicker";
 import { useUiStore, ZOOM_MAX, ZOOM_MIN } from "@/lib/store";
 import { shippedLocales } from "@/i18n/config";
 import { getClient, useRuntimeStore } from "@/lib/runtime";
@@ -122,8 +123,6 @@ function FieldRow({
 export function SettingsPage() {
   // Which settings section is on screen — the sidebar is the navigation.
   const section = resolveSection(useParams().section);
-  const theme = useUiStore((s) => s.theme);
-  const setTheme = useUiStore((s) => s.setTheme);
   const locale = useUiStore((s) => s.locale);
   const setLocale = useUiStore((s) => s.setLocale);
   const zoom = useUiStore((s) => s.zoom);
@@ -1877,7 +1876,7 @@ export function SettingsPage() {
         )}
 
         {/* ---- Workspace ---- */}
-        {section === "general" && (
+        {section === "general" && !isGatewayWeb && (
         <Section title={t("workspace.title")} hint={t("workspace.hint")}>
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 select-all truncate font-mono text-[13px] leading-9 text-muted">
@@ -1942,7 +1941,7 @@ export function SettingsPage() {
             repeating the same tool call with identical results (Channel B) —
             and offer Keep waiting / Stop. Never auto-interrupts. Available on
             the web too (the warning is inline there; no system notification). */}
-        {section === "general" && runtimeKind === "opencode" && (
+        {section === "general" && (isGatewayWeb || runtimeKind === "opencode") && (
           <Section
             title={t("stall.title")}
             hint={t("stall.hint") + (isGatewayWeb ? ` ${t("stall.webNote")}` : "")}
@@ -2106,25 +2105,7 @@ export function SettingsPage() {
         {section === "appearance" && (
         <Section title={t("appearance.title")} flush>
           <div className="divide-y divide-faint">
-            <Row title={t("appearance.themeLabel")}
-              control={
-                <div className="inline-flex shrink-0 gap-0.5">
-                  {/* eslint-disable-next-line i18next/no-literal-string -- internal theme-mode keys, not display text (the visible label is t(`appearance.theme.${mode}`)) */}
-                  {(["light", "warm", "dark"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      onClick={() => setTheme(mode)}
-                      className={cn(
-                        "rounded-[7px] px-4 py-1.5 text-[13px] transition-colors",
-                        theme === mode ? "bg-surface-2 text-text" : "text-muted hover:text-text",
-                      )}
-                    >
-                      {t(`appearance.theme.${mode}`)}
-                    </button>
-                  ))}
-                </div>
-              }
-            />
+            <AppearancePicker />
             <Row title={t("language.label")}
               control={
                 <select
@@ -2182,7 +2163,7 @@ export function SettingsPage() {
         )}
 
         {/* ---- App updates ---- */}
-        {section === "general" && (
+        {section === "general" && !isGatewayWeb && (
         <Section title={t("updates.title")} hint={t("updates.hint")} flush>
           <div className="divide-y divide-faint">
             <Row

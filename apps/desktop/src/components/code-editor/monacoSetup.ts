@@ -290,8 +290,9 @@ export function mountEditor(options: {
     layout: () => editor.layout(),
     destroy: () => {
       changed.dispose();
-      editor.getModel()?.dispose();
+      const model = editor.getModel();
       editor.dispose();
+      model?.dispose();
     },
   };
 }

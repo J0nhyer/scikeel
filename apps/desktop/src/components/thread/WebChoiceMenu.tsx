@@ -10,6 +10,7 @@ export interface WebChoice {
   label: string;
   disabled?: boolean;
   reason?: string;
+  description?: string;
 }
 
 export function WebChoiceMenu({ label, value, choices, onSelect, busy = false, compact = false, triggerIcon }: {
@@ -61,7 +62,7 @@ export function WebChoiceMenu({ label, value, choices, onSelect, busy = false, c
         <div className="space-y-1">{choices.map((choice, index) => <button key={choice.key} ref={index === choices.findIndex((item) => !item.disabled) ? firstRow : undefined} data-choice-row
           type="button" disabled={choice.disabled} title={choice.reason} onClick={() => { void onSelect(choice.key); close(); }}
           className="flex min-h-10 w-full items-center justify-between gap-2 rounded px-3 text-left text-sm text-text hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:outline-none disabled:opacity-50">
-          <span className="min-w-0 truncate">{choice.label}</span>{choice.key === value && <Check size={15} aria-hidden={true} />}
+          <span className="min-w-0"><span className="block truncate">{choice.label}</span>{(choice.description??choice.reason)&&<span className="block whitespace-normal text-xs text-muted">{choice.description??choice.reason}</span>}</span>{choice.key === value && <Check size={15} aria-hidden={true} />}
         </button>)}</div>
       </Dialog.Content>
     </Dialog.Portal>
@@ -73,7 +74,7 @@ export function WebChoiceMenu({ label, value, choices, onSelect, busy = false, c
       {choices.map((choice) => <DropdownMenu.Item key={choice.key} disabled={choice.disabled}
         title={choice.reason} onSelect={() => void onSelect(choice.key)}
         className="flex min-h-10 cursor-pointer items-center justify-between gap-2 rounded px-3 text-sm text-text outline-none data-[highlighted]:bg-surface-2 data-[disabled]:opacity-50">
-        <span className="truncate">{choice.label}</span>{choice.key === value && <Check size={15} aria-hidden={true} />}
+        <span className="min-w-0"><span className="block truncate">{choice.label}</span>{(choice.description??choice.reason)&&<span className="block max-w-64 whitespace-normal text-xs text-muted">{choice.description??choice.reason}</span>}</span>{choice.key === value && <Check size={15} aria-hidden={true} />}
       </DropdownMenu.Item>)}
     </DropdownMenu.Content></DropdownMenu.Portal>
   </DropdownMenu.Root>;

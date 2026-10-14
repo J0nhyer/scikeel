@@ -9,12 +9,16 @@ import { ZoomProvider } from "./app/providers/ZoomProvider";
 import { router } from "./app/router";
 import { consumeUrlToken, installGatewayAuthGuard } from "./lib/webMode";
 import "./index.css";
+import { installLoginPreparation } from "./lib/loginPreparation";
+import { installPlatformAccountLifecycle, signOutPlatformBrowser, useRuntimeStore } from "./lib/runtime";
 
 // Web client: adopt a token from the opened link (so a copied URL just works),
 // then catch gateway 401s (rotated/revoked token) → re-auth. Both before any
 // OpenCodeClient binds fetch or the app reads the stored token.
 consumeUrlToken();
 installGatewayAuthGuard();
+installPlatformAccountLifecycle();
+installLoginPreparation(useRuntimeStore, signOutPlatformBrowser);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

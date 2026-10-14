@@ -177,8 +177,12 @@ the helper pins whatever you pass:
 - `--session-id` from the workspace marker, so the run attaches to this session
   (not just the global Runs view). Pass it verbatim as shown; it's empty-safe.
 
+Replace `<skill-base-directory>` with the absolute base directory returned when
+you load this skill. It is the directory containing this SKILL.md, not a literal
+path or an environment variable. Run the command from the active workspace.
+
 ```bash
-python "$XDG_CONFIG_HOME/opencode/skills/remote-compute/record_run.py" \
+python "<skill-base-directory>/record_run.py" \
   --surface ssh --command "bash run.sh" --status <ok|failed> --host <host> \
   --hardware "<hardware the job used>" \
   --code run.sh --code <each other script> \

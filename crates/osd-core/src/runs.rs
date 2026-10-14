@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use crate::file_policy::WORKSPACE_ROOT;
+
 // Run provenance (reproducibility recipe): every agent experiment execution —
 // a bash command that runs code — appends a run record to
 // <workspace>/.openscience/runs.jsonl: the command, code version (entry scripts
@@ -372,11 +375,32 @@ pub fn record_run_inner(
 
 /// Every run recorded in the active workspace, newest first.
 pub fn list_runs(env: &Env) -> Result<Vec<RunRecord>, String> {
+    #[cfg(target_os = "linux")]
+    if env.managed_files().is_some() {
+        let mut records: Vec<_> = crate::runs_index::managed_records(env)?.into_iter().map(|(_, record)| record).collect();
+        records.sort_by_key(|record| std::cmp::Reverse(record.ts));
+        return Ok(records);
+    }
     Ok(read_runs(&workspace_dir(env)?))
 }
 
 /// Read a run's captured stdout/stderr by its log hash.
 pub fn read_run_log(env: &Env, hash: &str) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(policy) = env.managed_files() {
+        if hash.is_empty() || hash.len() > 128 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("invalid log id".into());
+        }
+        for (directory, record) in crate::runs_index::managed_records(env)? {
+            if record.log_hash.as_deref() != Some(hash) { continue; }
+            let path = if directory.is_empty() { format!(".openscience/logs/{hash}.txt") }
+                else { format!("{directory}/.openscience/logs/{hash}.txt") };
+            let bytes = policy.read(WORKSPACE_ROOT, &path, LOG_CAP as u64 + 64)
+                .map_err(|_| "managed log unavailable")?;
+            return String::from_utf8(bytes).map_err(|_| "managed log unavailable".into());
+        }
+        return Err("managed log not found".into());
+    }
     read_log(&workspace_dir(env)?, hash)
 }
 

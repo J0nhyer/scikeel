@@ -10,5 +10,14 @@
       "error": "Could not compress the context.",
       "done": "Context compressed. The next reply uses the compacted conversation."
     }
+  },
+  "notification": {
+    "close": "Close notification",
+    "region": "Notifications",
+    "details": "Details",
+    "closeDetails": "Close details",
+    "retry": "Retry",
+    "actionFailed": "Action failed",
+    "problem": "Attention needed"
   }
 }

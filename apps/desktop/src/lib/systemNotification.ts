@@ -3,6 +3,7 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
+import { isTauri } from "./tauri";
 
 export interface PermissionNotificationInput {
   action: string;
@@ -25,9 +26,9 @@ async function ensureNotificationPermission(): Promise<boolean> {
 }
 
 export async function notifyPermissionRequest(input: PermissionNotificationInput): Promise<boolean> {
-  if (!(await ensureNotificationPermission())) return false;
-
+  if (!isTauri) return false;
   try {
+    if (!(await ensureNotificationPermission())) return false;
     sendNotification({
       title: "Open Science needs your approval",
       body: permissionBody(input),
@@ -50,9 +51,9 @@ export interface TurnCompleteNotificationInput {
 }
 
 export async function notifyTurnComplete(input: TurnCompleteNotificationInput): Promise<boolean> {
-  if (!(await ensureNotificationPermission())) return false;
-
+  if (!isTauri) return false;
   try {
+    if (!(await ensureNotificationPermission())) return false;
     sendNotification({ title: input.title, body: input.body });
     return true;
   } catch {

@@ -1,4 +1,14 @@
 {
+  "managedAgents": {
+    "title": "Agent access management",
+    "hint": "Applies to all users. Turning an Agent off hides it from assistant lists, lets running tasks finish and blocks subsequent calls. Turning it on restores it when the server configuration is available.",
+    "allow": "Allow {{runtime}}",
+    "saving": "Saving…",
+    "saved": "{{runtime}} saved.",
+    "failed": "Could not save {{runtime}}. Try again.",
+    "loadFailed": "Could not load Agent access settings.",
+    "retry": "Retry"
+  },
   "nav": {
     "back": "Zurück zur App",
     "general": "Allgemein",
@@ -20,7 +30,9 @@
     "theme": {
       "light": "Hell",
       "warm": "Warm",
-      "dark": "Dunkel"
+      "dark": "Dunkel",
+      "system": "System",
+      "cdut": "CDUT"
     },
     "zoom": {
       "label": "Zoom",
@@ -28,6 +40,17 @@
       "in": "Vergrößern",
       "out": "Verkleinern",
       "reset": "Zurücksetzen"
+    },
+    "summary": {
+      "light": "Ein klarer, heller Forschungsarbeitsbereich.",
+      "dark": "Ruhige dunkle Oberflächen für konzentrierte Forschung.",
+      "system": "Dem hellen oder dunklen Erscheinungsbild Ihres Geräts folgen.",
+      "cdut": "Blau-weißes Campus-Design mit Hochschulzeichen und dezenter Dekoration.",
+      "warm": "Ihre bisherige warme Darstellung bleibt erhalten. Wählen Sie eine Karte zum Wechseln."
+    },
+    "campusDecoration": {
+      "label": "Campus-Dekoration",
+      "hint": "Schulmotto und Linien nur in leeren Gesprächen anzeigen."
     }
   },
   "language": {
@@ -107,6 +130,10 @@
     "privacy": "Es wird nur die öffentliche GitHub-Releases-API kontaktiert. Workspace-Dateien und API-Schlüssel werden nicht gesendet."
   },
   "model": {
+    "defaultTitle": "Standardmodell",
+    "defaultDescription": "Neue Unterhaltungen verwenden dieses Modell für dein Konto und den aktuellen Assistenten. Die Modellauswahl bestehender Unterhaltungen bleibt erhalten.",
+    "defaultSaveProblem": "Das Standardmodell konnte nicht vollständig geändert werden",
+    "defaultRecoveryFailed": "Das Standardmodell wurde gespeichert, aber der Assistent konnte sich nicht erneut verbinden: {{detail}}",
     "catalogLimited": "Der Server konnte nur einige Modelle dieses Assistenten ermitteln.",
     "title": "Modell",
     "hint": "Das Modell, mit dem jedes neue Gespräch startet. Die Auswahl liefern die Provider unten.",

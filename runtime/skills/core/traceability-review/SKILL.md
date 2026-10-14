@@ -16,8 +16,12 @@ Run the bundled extractor first — it pulls the text plus the concrete citation
 identifiers and quantitative claims deterministically, so you audit real
 identifiers, not ones recalled from memory:
 
+Replace `<skill-base-directory>` with the absolute base directory returned when
+you load this skill. It is the directory containing this SKILL.md, not a literal
+path or an environment variable. Run the command from the active workspace.
+
 ```bash
-python "$XDG_CONFIG_HOME/opencode/skills/traceability-review/pdf_extract.py" MANUSCRIPT.pdf
+python "<skill-base-directory>/pdf_extract.py" MANUSCRIPT.pdf
 ```
 
 It prints JSON: `{backend, pages, chars, citations:{dois,arxiv,pmids},

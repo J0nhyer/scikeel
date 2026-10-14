@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, HelpCircle, Pencil, ShieldQuestion } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PermissionAskedEvent, PermissionReply, QuestionAskedEvent } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
+import { loadInteractionDraft, saveInteractionDraft, type InteractionStatus } from "@/lib/interactionState";
 
 /**
  * The answerable surface for an agent request that blocks the run — a
@@ -17,7 +18,13 @@ export function InteractionPrompt({
   onAnswer,
   onReject,
   onPermission,
+  status = "pending",
+  draftIdentity,
+  onCheck,
 }: {
+  status?: InteractionStatus;
+  draftIdentity?: string;
+  onCheck?: () => void;
   question?: QuestionAskedEvent;
   permission?: PermissionAskedEvent;
   /** Who is asking, when it isn't the main agent — a subagent session's title. */
@@ -29,9 +36,12 @@ export function InteractionPrompt({
   if (question) {
     return (
       <QuestionCard
-        key={question.requestId}
+        key={draftIdentity ?? question.requestId}
         question={question}
         origin={origin}
+        status={status}
+        draftIdentity={draftIdentity}
+        onCheck={onCheck}
         onAnswer={onAnswer}
         onReject={onReject}
       />
@@ -43,6 +53,8 @@ export function InteractionPrompt({
         key={permission.requestId}
         permission={permission}
         origin={origin}
+        status={status}
+        onCheck={onCheck}
         onReply={onPermission}
       />
     );
@@ -58,7 +70,13 @@ function QuestionCard({
   origin,
   onAnswer,
   onReject,
+  status,
+  draftIdentity,
+  onCheck,
 }: {
+  status: InteractionStatus;
+  draftIdentity?: string;
+  onCheck?: () => void;
   question: QuestionAskedEvent;
   origin?: string;
   onAnswer: (requestId: string, answers: string[][]) => void;
@@ -66,13 +84,18 @@ function QuestionCard({
 }) {
   const { t } = useTranslation(["session", "common"]);
   // One selection set + one custom string per question.
-  const [selected, setSelected] = useState<Record<number, Set<string>>>({});
-  const [custom, setCustom] = useState<Record<number, string>>({});
+  const [draft] = useState(() => draftIdentity ? loadInteractionDraft(draftIdentity) : undefined);
+  const [selected, setSelected] = useState<Record<number, Set<string>>>(() => Object.fromEntries(Object.entries(draft?.selected ?? {}).map(([key,value])=>[key,new Set(value)])));
+  const [custom, setCustom] = useState<Record<number, string>>(draft?.custom ?? {});
+  const disabled = ["submitting", "unknown", "expired"].includes(status);
+  useEffect(() => {
+    if (draftIdentity) saveInteractionDraft(draftIdentity, {selected:Object.fromEntries(Object.entries(selected).map(([key,value])=>[key,[...value]])),custom},question);
+  }, [draftIdentity, selected, custom, question]);
   // Which questions have their own-words field open. Every question can always
   // be answered in the user's own words: a model that offers an "Other" option
   // but forgets `custom` used to leave nowhere to say WHAT — and in quick-pick
   // that answered the whole question with the bare word "Other".
-  const [ownWords, setOwnWords] = useState<Record<number, boolean>>({});
+  const [ownWords, setOwnWords] = useState<Record<number, boolean>>(() => Object.fromEntries(Object.keys(draft?.custom ?? {}).map(key=>[key,true])));
 
   const items = question.questions;
   const toggle = (qi: number, label: string, multiple: boolean) =>
@@ -107,12 +130,14 @@ function QuestionCard({
 
   return (
     <div className="rounded-card border border-accent/40 bg-surface shadow-card">
+      <InteractionNotice status={status} onCheck={onCheck} />
       <header className="border-b border-border px-4 py-2.5">
         <div className="flex items-center gap-2">
           <HelpCircle size={15} className="text-accent" />
           <span className="text-sm font-medium text-text">{t("interaction.question.heading")}</span>
           <button
             className="ml-auto text-xs text-muted hover:text-text"
+            disabled={status === "submitting" || status === "unknown"}
             onClick={() => onReject(question.requestId)}
           >
             {t("interaction.skip")}
@@ -139,7 +164,8 @@ function QuestionCard({
                   return (
                     <button
                       key={opt.label}
-                      onClick={act}
+                      disabled={disabled}
+                      onClick={() => { if(isQuickPick) setSelected({0:new Set([opt.label])}); act(); }}
                       className={cn(
                         "flex items-start gap-2.5 rounded-input border px-3 py-2 text-left transition-colors",
                         on
@@ -184,6 +210,7 @@ function QuestionCard({
               {(it.custom || ownWords[qi]) && (
                 <input
                   autoFocus={!!ownWords[qi]}
+                  readOnly={disabled}
                   value={custom[qi] ?? ""}
                   onChange={(e) => setCustom((c) => ({ ...c, [qi]: e.target.value }))}
                   placeholder={t("interaction.question.customPlaceholder")}
@@ -204,7 +231,7 @@ function QuestionCard({
             {t("interaction.skip")}
           </button>
           <button
-            disabled={!ready}
+            disabled={!ready || disabled}
             onClick={() => onAnswer(question.requestId, items.map((_, qi) => answerFor(qi)))}
             className="rounded-input bg-accent px-3.5 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90 disabled:opacity-40"
           >
@@ -220,7 +247,11 @@ function PermissionCard({
   permission,
   origin,
   onReply,
+  status,
+  onCheck,
 }: {
+  status: InteractionStatus;
+  onCheck?: () => void;
   permission: PermissionAskedEvent;
   origin?: string;
   onReply: (requestId: string, reply: PermissionReply) => void;
@@ -228,6 +259,7 @@ function PermissionCard({
   const { t } = useTranslation(["session", "common"]);
   return (
     <div className="rounded-card border border-warn/40 bg-surface shadow-card">
+      <InteractionNotice status={status} onCheck={onCheck} permission />
       <header className="border-b border-border px-4 py-2.5">
         <div className="flex items-center gap-2">
           <ShieldQuestion size={15} className="text-warn" />
@@ -250,6 +282,7 @@ function PermissionCard({
       <footer className="flex items-center gap-2 border-t border-border px-4 py-2.5">
         <button
           className="rounded-input px-3 py-1.5 text-xs text-error hover:bg-error/10"
+          disabled={["submitting", "unknown"].includes(status)}
           onClick={() => onReply(permission.requestId, "reject")}
         >
           {t("interaction.reject")}
@@ -257,12 +290,14 @@ function PermissionCard({
         <div className="flex-1" />
         <button
           className="rounded-input border border-border px-3 py-1.5 text-xs text-text hover:bg-surface-2"
+          disabled={["submitting", "unknown", "expired"].includes(status)}
           onClick={() => onReply(permission.requestId, "always")}
         >
           {t("interaction.alwaysAllow")}
         </button>
         <button
           className="rounded-input bg-accent px-3.5 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90"
+          disabled={["submitting", "unknown", "expired"].includes(status)}
           onClick={() => onReply(permission.requestId, "once")}
         >
           {t("interaction.allowOnce")}
@@ -270,4 +305,13 @@ function PermissionCard({
       </footer>
     </div>
   );
+}
+
+function InteractionNotice({status,onCheck,permission=false}:{status:InteractionStatus;onCheck?:()=>void;permission?:boolean}) {
+  const {t}=useTranslation("session");
+  if(status === "pending")return null;
+  return <div role="status" className="flex flex-wrap items-center gap-2 px-4 py-2 text-xs text-muted">
+    <span>{t(`interaction.state.${permission ? "permission." : ""}${status}`)}</span>
+    {onCheck && status !== "submitting" && <button className="underline" onClick={onCheck}>{t("interaction.state.check")}</button>}
+  </div>;
 }
