@@ -184,7 +184,17 @@
     "error": {
       "paste": "No se pudo guardar el contenido pegado: {{message}}",
       "addFiles": "No se pudieron añadir los archivos: {{message}}",
-      "imageNotSent": "No se pudo leer {{names}}: el mensaje se envió sin la imagen."
+      "imageNotSent": "No se pudo leer {{names}}: el mensaje se envió sin la imagen.",
+      "workspaceBusy": "El espacio de trabajo está ocupado. Tu mensaje no se envió. Inténtalo de nuevo más tarde.",
+      "workspaceTimeout": "La preparación del espacio de trabajo agotó el tiempo. Recarga la conversación antes de volver a intentarlo.",
+      "workspaceUnavailable": "El espacio de trabajo no está disponible. Recarga la conversación antes de volver a intentarlo.",
+      "workspaceDenied": "La operación fue denegada. Se conservan tu borrador y tus archivos adjuntos.",
+      "executionRunning": "La investigación ya está en curso. Espera a que termine o detenla antes de enviar otro mensaje.",
+      "deliveryUnconfirmed": "La recepción del mensaje no está confirmada. Recarga la conversación para comprobarla antes de volver a intentarlo.",
+      "sendIdChanged": "Este identificador de envío pertenece a otro mensaje. Recarga la conversación antes de enviar de nuevo.",
+      "recoveryUnconfirmed": "La recuperación del estado del envío no está confirmada. Recarga la conversación antes de volver a intentarlo.",
+      "providerRejected": "El proveedor del modelo rechazó la solicitud. Se conservan la conversación y los archivos adjuntos.",
+      "sendFailed": "Error al enviar: {{message}}"
     },
     "model": {
       "aria": "Cambiar de modelo",

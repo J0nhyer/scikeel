@@ -184,7 +184,17 @@
     "error": {
       "paste": "붙여넣기를 저장할 수 없습니다: {{message}}",
       "addFiles": "파일을 추가할 수 없습니다: {{message}}",
-      "imageNotSent": "{{names}}을(를) 읽지 못해 이미지 없이 전송했습니다."
+      "imageNotSent": "{{names}}을(를) 읽지 못해 이미지 없이 전송했습니다.",
+      "workspaceBusy": "작업 공간이 혼잡합니다. 메시지는 전송되지 않았습니다. 잠시 후 다시 시도하세요.",
+      "workspaceTimeout": "작업 공간 준비 시간이 초과되었습니다. 대화를 새로고침한 후 다시 시도하세요.",
+      "workspaceUnavailable": "작업 공간을 사용할 수 없습니다. 대화를 새로고침한 후 다시 시도하세요.",
+      "workspaceDenied": "작업이 거부되었습니다. 초안과 첨부 파일은 보존됩니다.",
+      "executionRunning": "연구가 이미 진행 중입니다. 완료를 기다리거나 중지한 후 다른 메시지를 보내세요.",
+      "deliveryUnconfirmed": "메시지 수신 여부가 확인되지 않았습니다. 대화를 새로고침하여 확인한 후 다시 시도하세요.",
+      "sendIdChanged": "이 전송 ID는 다른 메시지에 사용되었습니다. 대화를 새로고침한 후 다시 전송하세요.",
+      "recoveryUnconfirmed": "전송 상태 복구가 확인되지 않았습니다. 대화를 새로고침한 후 다시 시도하세요.",
+      "providerRejected": "모델 제공자가 요청을 거부했습니다. 대화와 첨부 파일은 보존됩니다.",
+      "sendFailed": "전송 실패: {{message}}"
     },
     "model": {
       "aria": "모델 전환",

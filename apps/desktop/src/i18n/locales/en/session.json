@@ -184,7 +184,17 @@
     "error": {
       "paste": "Could not save paste: {{message}}",
       "addFiles": "Could not add files: {{message}}",
-      "imageNotSent": "Couldn't read {{names}} — the message was sent without the image."
+      "imageNotSent": "Couldn't read {{names}} — the message was sent without the image.",
+      "workspaceBusy": "The workspace is busy. Your message was not sent. Try again shortly.",
+      "workspaceTimeout": "Workspace preparation timed out. Reload the conversation before retrying.",
+      "workspaceUnavailable": "The workspace is unavailable. Reload the conversation before retrying.",
+      "workspaceDenied": "This operation was denied. Your draft and attachments are retained.",
+      "executionRunning": "Research is already running. Wait for it to finish or stop it before sending another message.",
+      "deliveryUnconfirmed": "Send delivery is not confirmed. Reload the conversation to check it before retrying.",
+      "sendIdChanged": "This send ID belongs to a different message. Reload the conversation before sending again.",
+      "recoveryUnconfirmed": "Send recovery is not confirmed. Reload the conversation before retrying.",
+      "providerRejected": "The model provider rejected the request. Your conversation and attachments are retained.",
+      "sendFailed": "Send failed: {{message}}"
     },
     "model": {
       "aria": "Switch model",

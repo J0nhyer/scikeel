@@ -120,3 +120,14 @@ it("fences platform mutations without sending workspace identity to other origin
     expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).has("x-scikeel-runtime-generation")).toBe(false);
   }
 });
+
+it("XHR generation metadata is present only for the current platform workspace",async()=>{
+  let {mode}=await setup(true,200);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({});
+  mode.setPlatformWorkspaceGeneration(7);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({"x-scikeel-runtime-generation":"7"});
+  mode.setPlatformWorkspaceGeneration(null);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({});
+  ({mode}=await setup(false,200));mode.setPlatformWorkspaceGeneration(7);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({});
+});

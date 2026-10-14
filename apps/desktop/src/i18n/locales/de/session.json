@@ -184,7 +184,17 @@
     "error": {
       "paste": "Einfügen konnte nicht gespeichert werden: {{message}}",
       "addFiles": "Dateien konnten nicht hinzugefügt werden: {{message}}",
-      "imageNotSent": "{{names}} ließ sich nicht lesen — die Nachricht wurde ohne das Bild gesendet."
+      "imageNotSent": "{{names}} ließ sich nicht lesen — die Nachricht wurde ohne das Bild gesendet.",
+      "workspaceBusy": "Der Arbeitsbereich ist ausgelastet. Ihre Nachricht wurde nicht gesendet. Versuchen Sie es später erneut.",
+      "workspaceTimeout": "Die Vorbereitung des Arbeitsbereichs dauerte zu lange. Laden Sie die Unterhaltung vor einem neuen Versuch neu.",
+      "workspaceUnavailable": "Der Arbeitsbereich ist nicht verfügbar. Laden Sie die Unterhaltung vor einem neuen Versuch neu.",
+      "workspaceDenied": "Der Vorgang wurde abgelehnt. Entwurf und Anhänge bleiben erhalten.",
+      "executionRunning": "Die Forschung läuft bereits. Warten Sie auf den Abschluss oder stoppen Sie sie vor einer weiteren Nachricht.",
+      "deliveryUnconfirmed": "Die Zustellung ist nicht bestätigt. Laden Sie die Unterhaltung neu und prüfen Sie sie vor einem neuen Versuch.",
+      "sendIdChanged": "Diese Sende-ID gehört zu einer anderen Nachricht. Laden Sie die Unterhaltung vor dem Senden neu.",
+      "recoveryUnconfirmed": "Die Wiederherstellung des Sendestatus ist nicht bestätigt. Laden Sie die Unterhaltung vor einem neuen Versuch neu.",
+      "providerRejected": "Der Modellanbieter hat die Anfrage abgelehnt. Unterhaltung und Anhänge bleiben erhalten.",
+      "sendFailed": "Senden fehlgeschlagen: {{message}}"
     },
     "model": {
       "aria": "Modell wechseln",

@@ -1,3 +1,4 @@
+import { gatewayPromptFailureKey } from "./gatewayPromptFailure";
 import { interactionDraftIdentity, loadInteractionDraft, saveInteractionDraft, savedQuestionDrafts, questionReceipt, interactionFailure, transitionInteraction, type InteractionEntry } from "./interactionState";
 import { normalizeToolResult, makeToolOutcome } from "@ai4s/sdk/tool-outcome";
 import { prepareCollaborationSend, type CollaborationMode } from "./collaboration";
@@ -1212,6 +1213,10 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
     return await fn();
   }
 }
+/** A Web prompt may be accepted before its acknowledgement is lost. Never replay it implicitly. */
+async function sendPromptOnceOnWeb<T>(fn: () => Promise<T>): Promise<T> {
+  return isGatewayWeb ? fn() : withRetry(fn);
+}
 /** Dedup Sets below hold completed callIds/requestIds that never recur, but a
  *  long, tool-heavy session keeps adding to them forever (issue #34: unbounded
  *  frontend state → multi-GB WebContent). Cap each with FIFO eviction of the
@@ -2159,7 +2164,10 @@ async function performTurn(
     void logDebug("turn OK");
     return sid;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const failureKey = isGatewayWeb ? gatewayPromptFailureKey(err) : null;
+    const msg = failureKey ? i18n.t(failureKey) : err instanceof Error ? err.message : String(err);
+    // Discover accepted work with reads only. The retained draft/turn ID owns any explicit retry.
+    if (isGatewayWeb) void get().refreshSessions();
     void logDebug(`turn FAILED: ${msg}`);
     // The failure belongs next to the message that caused it.
     const key = lockKey;
@@ -2172,7 +2180,7 @@ async function performTurn(
           [key]: {
             ...cur,
             loaded: true,
-            blocks: [...cur.blocks, { kind: "status-line", text: `Send failed: ${msg}`, tone: "error", presentation: { kind: "failure", eventId: `send:${cur.blocks.length}` } }],
+            blocks: [...cur.blocks, { kind: "status-line", text: i18n.t("session:composer.error.sendFailed", {message: msg}), tone: "error", presentation: { kind: "failure", eventId: `send:${cur.blocks.length}` } }],
           },
         },
       };
@@ -5121,7 +5129,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // Attachment bytes are read INSIDE the send, not before performTurn: the
       // echo and the spinner must appear on click, not after a multi-MB read.
       (sid) =>
-        withRetry(async () => {
+        sendPromptOnceOnWeb(async () => {
           const { parts, dropped } = isGatewayWeb ? { parts: [], dropped: [] } : await imageAttachmentParts(attachments ?? []);
           // A picture that could not be read is NOT sent, and the prompt still
           // names the file — so without this the model answers about a figure
@@ -5555,13 +5563,17 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         : isGatewayWeb && get().gatewayRuntime === "codex" ? ".agents/skills" : ".opencode/skills";
       const prompt = i18n.t(isGatewayWeb ? "pages:skills.install.agentPromptWorkspace" : "pages:skills.install.agentPrompt", { input: text, skillsDirectory });
       const model = modelForSession(get(), id).model;
+      const installTurn = isGatewayWeb ? {turnId: attachmentRequestKey(), attachmentIds: []} : undefined;
       // Deliberately not awaited: the caller opens the new pane immediately and
       // watches the turn there (performTurn reports failures into the thread).
       void performTurn(
         set,
         get,
         echo,
-        (sid) => withRetry(() => client!.sendPrompt(sid, prompt, undefined, model)),
+        (sid) => sendPromptOnceOnWeb(async () => {
+          const revision = isGatewayWeb ? await prepareCollaborationSend(sid) : undefined;
+          await client!.sendPrompt(sid, prompt, undefined, model, undefined, undefined, installTurn, revision);
+        }),
         // Same reason as the composer's send: an ACP `session/prompt` answers
         // when the turn is OVER, so its lock has to be taken before the call.
         get().runtimeKind === "acp" || get().runtimeKind === "server",

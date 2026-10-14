@@ -75,6 +75,11 @@ let platformWorkspaceGeneration: number | null = null;
 export function setPlatformWorkspaceGeneration(generation: number | null): void {
   platformWorkspaceGeneration = generation;
 }
+/** XHR mutations share the same generation fence as same-origin fetch. */
+export function platformWorkspaceMutationHeaders(): Record<string, string> {
+  return isPlatformWeb && platformWorkspaceGeneration !== null
+    ? { "x-scikeel-runtime-generation": String(platformWorkspaceGeneration) } : {};
+}
 
 export function setPlatformSessionExpiryHandler(fn: (() => void) | null): void {
   platformSessionExpiryHandler = fn;

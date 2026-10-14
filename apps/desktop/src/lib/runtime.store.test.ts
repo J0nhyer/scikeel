@@ -65,6 +65,7 @@ const mocks = vi.hoisted(() => ({
   sendPromptFullSpy: vi.fn(),
   prepareCollaborationSend: vi.fn(),
   collaborationRevisionSpy: vi.fn(),
+  attachmentContextSpy: vi.fn(),
   runCommand: vi.fn(),
   replyPermission: vi.fn(),
   answerQuestion: vi.fn(),
@@ -304,6 +305,7 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
       _attachments?: unknown,
       collaborationRevision?: number,
     ) {
+      mocks.attachmentContextSpy(_attachments);
       mocks.sendPromptSpy(sid, text, agent);
       mocks.sendPromptFullSpy(sid, text, agent, model, variant);
       mocks.collaborationRevisionSpy(collaborationRevision);
@@ -408,6 +410,7 @@ import { leaves, makeLeaf, useLayoutStore } from "./layout";
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.sendPromptSpy.mockReset();
   mocks.prepareCollaborationSend.mockReset().mockResolvedValue(0);
   mocks.isTauri = true;
   mocks.isGatewayWeb = false;
@@ -5278,5 +5281,35 @@ describe("Web project directory ownership", () => {
       expect(useRuntimeStore.getState().currentId).toBe("ses_saved");
       expect(useRuntimeStore.getState().projects.some(p => p.id === "p_a")).toBe(true);
     } finally { useRuntimeStore.setState({ refreshProjects: original }); }
+  });
+});
+
+describe("Web prompt sends once",()=>{
+  it.each([
+    [403,"workspace_rpc_denied"],[429,"workspace_rpc_busy"],[409,"research_execution_running"],
+    [502,"prompt_delivery_unknown"],[504,"workspace_rpc_timeout"],
+  ])("never automatically repeats %s/%s and retains the draft",async(status,code)=>{
+    mocks.isGatewayWeb=true;mocks.isTauri=false;
+    useRuntimeStore.setState({gatewayRuntime:"opencode",gatewayCatalogState:"ready",defaultModel:"fixture/model",
+      providers:[{id:"fixture",name:"Fixture",models:[{id:"model",name:"Model"}]}]});
+    const {ApiError}=await import("@ai4s/sdk");
+    mocks.sendPromptSpy.mockImplementation(()=>{throw new ApiError("synthetic",status,{code,source:"gateway"});});
+    const result=await useRuntimeStore.getState().sendPrompt("Keep my text","ses_a",undefined,undefined,undefined,{turnId:"turn_once",attachmentIds:[]});
+    expect(result).toBeNull();expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(1);
+    expect(useRuntimeStore.getState().sendingSessions).toEqual({});
+  });
+  it("does not repeat an uncertain Skill-install prompt and supplies a stable receipt",async()=>{
+    mocks.isGatewayWeb=true;mocks.isTauri=false;useRuntimeStore.setState({gatewayRuntime:"opencode"});
+    mocks.sendPromptSpy.mockImplementation(()=>{throw new TypeError("synthetic transport loss");});
+    await useRuntimeStore.getState().installSkill("Install a statistics skill");
+    await vi.waitFor(()=>expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(1));
+    await new Promise(resolve=>setTimeout(resolve,700));
+    expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(1);
+    expect(mocks.attachmentContextSpy).toHaveBeenCalledWith(expect.objectContaining({turnId:expect.any(String),attachmentIds:[]}));
+  });
+  it("preserves one bounded desktop retry",async()=>{
+    mocks.sendPromptSpy.mockImplementationOnce(()=>{throw new TypeError("synthetic restart handshake");});
+    await useRuntimeStore.getState().sendPrompt("Desktop hello","ses_a");
+    expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(2);
   });
 });
