@@ -17,7 +17,9 @@ export async function verifyLiveProjectFiles(){
  try{
   expect((await context.request.post(origin+'/auth/login',{headers:{accept:'application/json'},data:{username:'admin',password}})).status()).toBe(200);
   await context.addInitScript(()=>localStorage.setItem('ai4s.locale','en'));
+  expect((await context.request.get(origin+'/v1/whoami')).status()).toBe(200);
   const runtime=await (await context.request.get(origin+'/api/runtime')).json();expect(runtime.runtime).toBe('opencode');
+  expect(runtime.context?.generation).toBeGreaterThan(0);
   const headers={'x-scikeel-runtime-generation':String(runtime.context.generation)};
   const request=async(path,method='GET',data,status=200)=>{
    const response=await context.request.fetch(origin+path,{method,headers,...(data!==undefined?{data}:{})});

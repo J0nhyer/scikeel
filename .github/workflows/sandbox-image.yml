@@ -138,6 +138,7 @@ jobs:
         run: |
           mkdir -p .deploy/runner-fixture/{workspace,state,home,codex-home,scratch,config}
           chmod 777 .deploy/runner-fixture/{workspace,state,home,codex-home,scratch}
+          sudo chown 1000:1000 .deploy/runner-fixture/{workspace,state,home,codex-home,scratch}
           node --input-type=module -e 'import {writeFileSync} from "node:fs"; const dir=".deploy/runner-fixture/config/"; writeFileSync(dir+"tenant.json",JSON.stringify({schema:1,instanceId:"sandbox-test-ci",generation:1,workspaceDir:"/fixture/workspace",stateDir:"/fixture/state",home:"/fixture/home",scratchDir:"/fixture/scratch"})); writeFileSync(dir+"runner-auth.json",JSON.stringify({schema:1,token:"a".repeat(64)}));'
           sudo chown root:root .deploy/runner-fixture/config/*.json
           cp scripts/dev/probe-production-runner.mjs .deploy/science-test/

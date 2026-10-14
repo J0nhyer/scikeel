@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
-import { readFile, writeFile, readdir, unlink, symlink } from "node:fs/promises";
+import { readFile, writeFile, readdir, unlink, symlink, stat } from "node:fs/promises";
 import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
 
 // CI-only acceptance driver; never copied into an installed scientific image.
@@ -39,7 +39,13 @@ try {
   if (!read.ok || (await read.json()).text !== value.text) throw new Error("real managed read failed");
   const managed=async body=>{
     const response=await request('/files',{root:'workspace',...body});
-    if(!response.ok)throw new Error('real management helper failed: '+body.operation);
+    if(!response.ok){
+      if(body.operation==='snapshot'){
+        console.error('Snapshot fixture ownership:',{processUid:process.getuid(),workspaceUid:(await stat('/fixture/workspace')).uid});
+        const diagnostic=spawn('git',['status','--porcelain'],{cwd:'/fixture/workspace',stdio:['ignore','ignore','inherit']});await new Promise(done=>diagnostic.once('close',done));
+      }
+      throw new Error('real management helper failed: '+body.operation);
+    }
     return response.json();
   };
   const original=await managed({operation:'readText',path:value.path});
