@@ -104,6 +104,7 @@ export class ManagedWorkerManager {
         const report = await this.recovery.check(this.#context(record), { timeoutMs: Math.max(1, deadline - this.now()) });
         const retryAfterMs = await this.recovery.cooldown(this.#context(record));
         controller.signal.throwIfAborted();
+        if(await this.recoveryFence?.(this.#context(record)))return {...report,state:"unresponsive",activity:"unknown",retryAfterMs,canRestart:!retryAfterMs && !record.maintenance};
         return { ...report, retryAfterMs, canRestart: report.canRestart && !retryAfterMs && !record.maintenance };
       })()]);
     } finally { clearTimeout(timer); }
@@ -113,6 +114,7 @@ export class ManagedWorkerManager {
     if (record?.generation === generation) this.recovery.invalidate(this.#context(record));
   }
   setRecoveryHooks(hooks) { this.recoveryHooks = hooks; }
+  setRecoveryFence(probe) { this.recoveryFence=probe; }
   #failure(report) {
     const code = { stopped: "workspace_stopped", unresponsive: "runtime_unresponsive", unknown: "workspace_status_unknown", starting: "workspace_recovery_in_progress", recovering: "workspace_recovery_in_progress" }[report.state] ?? "workspace_unreachable";
     return recoveryError(code, { context: report.context, action: report.canRestart ? "confirm_restart" : "retry" });

@@ -282,7 +282,7 @@ function FilesExplorer({
             <>
               <div className="flex-1" />
               <button
-                onClick={onClose}
+                onClick={()=>{if(!scope || confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope))onClose();}}
                 aria-label={t("files.pane.closeAria")}
                 className="rounded p-1 text-muted hover:bg-border hover:text-error"
               >
@@ -417,6 +417,7 @@ function SessionFilesExplorer({
   const [nextCursor,setNextCursor]=useState<string|null>(null),[loadingMore,setLoadingMore]=useState(false);const pageLock=useRef(false),listingGeneration=useRef(0);
 
   const setDir = (next: string) => {
+    if(isPlatformWeb && !confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope))return;
     setSelected(null);
     rememberDirectory(locationKey, next);
     setDirState(next);
@@ -500,7 +501,7 @@ function SessionFilesExplorer({
           <RefreshCw size={14} />
         </button>
         {controls}
-        <button className="text-text hover:opacity-60" aria-label={t("files.pane.closeAria")} onClick={onClose}>
+        <button className="text-text hover:opacity-60" aria-label={t("files.pane.closeAria")} onClick={()=>{if(!isPlatformWeb || confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope))onClose();}}>
           <X size={14} strokeWidth={1.5} />
         </button>
       </div>

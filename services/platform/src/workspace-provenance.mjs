@@ -39,13 +39,14 @@ export class WorkspaceProvenance {
   carry+=decoder.end();if(carry.length)throw workspaceError('history_unavailable',503);
   const after=await this.files.stat(context,path);
   if(before && (after?.identity!==before.identity || after.revision!==before.revision) || !before && after)throw workspaceError('history_unavailable',503);
-  if(duplicate)return {recorded:true};
+  if(duplicate){await this.files.native.call(context,{operation:'snapshot',root:'workspace',path:prefix});return {recorded:true};}
   if(version>=0xffffffff)throw workspaceError('history_full',507);
   const log={source:'scikeel-workspace',schema:1,operationId,requestHash,action:operation.kind,sourcePath:operation.path,...(operation.destinationPath?{destinationPath:operation.destinationPath}:{}),...(record.receipt.result?.revision?{revision:record.receipt.result.revision}:{}),...(operation.sha256?{sha256:operation.sha256}:{}),...(operation.contentHash?{contentHash:operation.contentHash}:{})};
   const line=Buffer.from(JSON.stringify({path:artifact,version:version+1,ts:Math.floor(this.clock()/1000),tool:'manual:'+operation.kind,log:JSON.stringify(log)})+'\n');
   if(offset+line.length>MAX_HISTORY)throw workspaceError('history_full',507);
   await this.files.native.call(context,{operation:'mkdirAll',root:'workspace',path:directory});
   await this.files.native.call(context,{operation:'writeChunk',root:'workspace',path,offset,bytes:[...line]});
+  await this.files.native.call(context,{operation:'snapshot',root:'workspace',path:prefix});
   return {recorded:true};
  }
 }

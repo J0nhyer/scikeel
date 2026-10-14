@@ -6,7 +6,22 @@ import {join} from 'node:path';
 import {WorkspaceState} from '../src/workspace-state.mjs';
 import {WorkspaceAdmission} from '../src/workspace-admission.mjs';
 import {TenantPolicy} from '../src/tenant-policy.mjs';
-const {WorkspaceManagement}=await import('../src/workspace-management.mjs').catch(()=>({}));
+const {WorkspaceManagement,historicalSessionRoots}=await import('../src/workspace-management.mjs').catch(()=>({}));
+test('historical roots inventory includes archived sessions and children across all projects',async()=>{
+  const calls=[];const context={userId:'a',instanceId:'user-a',generation:1};
+  const roots=await historicalSessionRoots(context,async(owner,path)=>{
+    assert.equal(owner,context);calls.push(path);const url=new URL(path,'http://worker');
+    assert.equal(url.pathname,'/experimental/session');assert.equal(url.searchParams.get('limit'),'10001');
+    assert.equal(url.searchParams.has('directory'),false);assert.equal(url.searchParams.has('roots'),false);
+    return url.searchParams.get('archived')==='true'?[{directory:'/owned/a/old',parentID:'ses_parent'}]:[{directory:'/owned/a/current'},{directory:'/owned/a/old'}];
+  });
+  assert.deepEqual(new Set(roots),new Set(['/owned/a/current','/owned/a/old']));assert.equal(calls.length,2);
+});
+test('a truncated, malformed or unavailable historical inventory never grants mutation capability',async()=>{
+  for(const values of [null,[{}],Array.from({length:10001},()=>({directory:'/owned/a/same'}))])
+    await assert.rejects(historicalSessionRoots({},async()=>values),{code:'session_inventory_unavailable',statusCode:503});
+  await assert.rejects(historicalSessionRoots({},async()=>{throw new Error('offline');}),{code:'session_inventory_unavailable',statusCode:503});
+});
 async function fixture(t){
   const dataDir=await mkdtemp(join(tmpdir(),'workspace-management-'));t.after(()=>rm(dataDir,{recursive:true,force:true}));
   const context={userId:'a',instanceId:'user-a',generation:1};

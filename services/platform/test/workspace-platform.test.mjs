@@ -87,6 +87,17 @@ test('actual platform routes retain project payload, hide archived runtime lists
     finally{releaseCreate();responses=await Promise.all([creating,renaming]);}
     assert.equal(responses[0].status,200);assert.equal(responses[1].status,200);assert.equal(project.name,'After create');
   });
+  await t.test('disconnect does not release admission while a legacy worker mutation continues',async()=>{
+    let started;const ready=new Promise(done=>{started=done;});createStarted=started;
+    const controller=new AbortController();
+    const creating=fetch(base+'/v1/projects',{method:'POST',signal:controller.signal,headers:{cookie,origin:base,'content-type':'application/json','x-scikeel-runtime-generation':'1'},body:JSON.stringify({name:'Disconnected'})}).catch(error=>error);
+    await ready;controller.abort();await creating;
+    let renamed=false;const originalName=project.name;
+    const renaming=request('/api/workspace/projects/'+project.id,'PATCH',{name:'After disconnect',operationId:'after-disconnect'}).then(response=>{renamed=true;return response;});
+    try{await new Promise(done=>setTimeout(done,50));assert.equal(renamed,false);assert.equal(project.name,originalName);}
+    finally{releaseCreate();await renaming;}
+    assert.equal(project.name,'After disconnect');
+  });
   await t.test('pending file recovery blocks new work but never blocks an authorized stop',async()=>{
     server.workspaceFiles={confirmPending:async()=>{throw workspaceError('operation_pending');}};
     const starting=await request('/session','POST',{});assert.equal(starting.status,409);assert.equal((await starting.json()).code,'operation_pending');

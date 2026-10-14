@@ -1,8 +1,22 @@
 import {workspaceError,workspaceHash} from './workspace-state.mjs';
 import {relativeInput} from './tenant-policy.mjs';
 
+/** Pinned OpenCode 1.18.32 exposes a global, unscoped inventory here.
+ * Query both archive states and one extra row so truncation fails closed.
+ */
+export async function historicalSessionRoots(context,gateway) {
+  let pages;
+  try {pages=await Promise.all(['false','true'].map(archived=>gateway(context,'/experimental/session?limit=10001&archived='+archived)));}
+  catch {throw workspaceError('session_inventory_unavailable',503);}
+  if(pages.some(page=>!Array.isArray(page) || page.length>10000 || page.some(session=>typeof session?.directory!=='string' || !session.directory.startsWith('/') || session.directory.length>4096)))
+    throw workspaceError('session_inventory_unavailable',503);
+  const roots=[...new Set(pages.flatMap(page=>page.map(session=>session.directory)))];
+  if(roots.length>10000)throw workspaceError('session_inventory_unavailable',503);
+  return roots;
+}
+
 export class WorkspaceManagement {
-  constructor({state,tenantPolicy,gateway,admission,resolveSession,sessionRoots=async()=>[]}) {Object.assign(this,{state,tenantPolicy,gateway,admission,resolveSession,sessionRoots});}
+  constructor({state,tenantPolicy,gateway,admission,resolveSession,sessionRoots=async()=>[],assertNoFollow=async()=>{}}) {Object.assign(this,{state,tenantPolicy,gateway,admission,resolveSession,sessionRoots,assertNoFollow});}
   async roots(context) {
     const roots=[...(await this.allProjects(context)).map(project=>project.path),
       ...this.tenantPolicy.sessions(context).map(session=>session.directory),...await this.sessionRoots(context)];
@@ -17,6 +31,7 @@ export class WorkspaceManagement {
       if(entry.state==='trashed' && (directory===entry.project.path || directory.startsWith(entry.project.path+'/')))
         throw workspaceError('project_trashed');
     }
+    await this.assertNoFollow(context,directory);
   }
   async allProjects(context) {
     this.tenantPolicy.account(context);

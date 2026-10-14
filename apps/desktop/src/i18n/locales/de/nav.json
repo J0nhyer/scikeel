@@ -84,6 +84,7 @@
     "textConflict": "Die Datei wurde geändert. Ihr Entwurf bleibt erhalten.",
     "saveUncertain": "Speicherergebnis unbekannt. Prüfen oder wiederholen Sie den ursprünglichen Vorgang.",
     "discardDraft": "Ungespeicherte Dateiänderungen verwerfen?",
+    "draftLimit": "Speichere oder verwirf Änderungen in einer anderen Datei, bevor du diesen Editor öffnest.",
     "finishDraft": "Speichern oder verwerfen Sie den Entwurf vor dem Verschieben oder Löschen.",
     "newFile": "Neue Datei",
     "newFolder": "Neuer Ordner",

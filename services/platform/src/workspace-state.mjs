@@ -2,6 +2,8 @@ import {createHash,randomUUID} from 'node:crypto';
 import {mkdir,open,rename,unlink} from 'node:fs/promises';
 import {join} from 'node:path';
 
+export const WORKSPACE_LIFECYCLE_SCHEMA = 1;
+
 export function workspaceError(code,statusCode=409) {
   return Object.assign(new Error(code.replaceAll('_',' ')),{code,statusCode});
 }
@@ -62,6 +64,28 @@ export class WorkspaceState {
   }
   async receipt(userId,operationId) {
     identifier(operationId);return (await this.open(userId)).operations[operationId]?.receipt??null;
+  }
+  async runtimeMutation(context) {
+    identifier(context.userId);identifier(context.instanceId);
+    if(!Number.isSafeInteger(context.generation) || context.generation<1)throw workspaceError('invalid_workspace_context',400);
+    const pending=(await this.open(context.userId)).runtimeMutation;
+    return pending?.instanceId===context.instanceId && pending.generation===context.generation?pending:null;
+  }
+  beginRuntimeMutation(context,requestId) {
+    identifier(context.instanceId);identifier(requestId);
+    if(!Number.isSafeInteger(context.generation) || context.generation<1)throw workspaceError('invalid_workspace_context',400);
+    return this.update(context.userId,data=>{
+      const prior=data.runtimeMutation;
+      if(prior?.instanceId===context.instanceId && prior.generation===context.generation)throw workspaceError('runtime_mutation_uncertain',503);
+      data.runtimeMutation={instanceId:context.instanceId,generation:context.generation,requestId};
+    });
+  }
+  finishRuntimeMutation(context,requestId) {
+    identifier(context.instanceId);identifier(requestId);
+    return this.update(context.userId,data=>{
+      const pending=data.runtimeMutation;
+      if(pending?.instanceId===context.instanceId && pending.generation===context.generation && pending.requestId===requestId)delete data.runtimeMutation;
+    });
   }
   async prepare(userId,operationId,input,recovery) {
     identifier(operationId);

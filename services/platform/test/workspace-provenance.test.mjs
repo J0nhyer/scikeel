@@ -5,10 +5,11 @@ const {WorkspaceProvenance}=await import('../src/workspace-provenance.mjs').catc
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function fixture(){
  assert.equal(typeof WorkspaceProvenance,'function','Manual workspace mutations require bounded idempotent provenance');
- const payloads=new Map();let writes=0,loseReply=false;
+ const payloads=new Map();let writes=0,snapshots=0,loseReply=false;
  const native={call:async(_context,request)=>{
   const entry=payloads.get(request.path);
   if(request.operation==='mkdirAll')return {};
+  if(request.operation==='snapshot'){snapshots++;assert.equal(request.path,'projects/study');return {committed:true};}
   if(request.operation==='readChunk')return {bytes:[...entry.subarray(request.offset,request.offset+request.limit)],size:entry.length};
   if(request.operation==='writeChunk'){
    if((entry?.length??0)!==request.offset || (request.offset===0 && entry))throw new Error('concurrent append');
@@ -20,17 +21,19 @@ function fixture(){
  const files={native,stat};const history=new WorkspaceProvenance({files,clock:()=>1000000});
  const context={userId:'a',instanceId:'user-a',generation:1};
  const record={input:{kind:'file',scope:{kind:'project',projectId:'123456789abcdef0'},operation:{kind:'rename',path:'source.txt',destinationPath:'renamed.txt',expectedRevision:'a'.repeat(64)}},receipt:{operationId:'rename-a',state:'committed',result:{path:'renamed.txt',identity:'owned',revision:'b'.repeat(64)}},recovery:{source:'projects/study/source.txt',destination:'projects/study/renamed.txt'}};
- return {history,context,record,payloads,files,writes:()=>writes,lose:()=>loseReply=true};
+ return {history,context,record,payloads,files,writes:()=>writes,snapshots:()=>snapshots,lose:()=>loseReply=true};
 }
 test('manual changes append the existing versioned schema without file contents or credentials',async()=>{
  const f=fixture();await f.history.record(f.context,'rename-a',f.record);
  const text=f.payloads.get('projects/study/.openscience/provenance.jsonl').toString(),record=JSON.parse(text);
  assert.equal(record.path,'renamed.txt');assert.equal(record.version,1);assert.equal(record.ts,1000);assert.equal(record.tool,'manual:rename');assert.equal(record.content,undefined);
  const log=JSON.parse(record.log);assert.equal(log.operationId,'rename-a');assert.equal(log.sourcePath,'source.txt');assert.equal(log.destinationPath,'renamed.txt');assert.equal(log.revision,'b'.repeat(64));assert.equal(text.includes('/owned'),false);
+ assert.equal(f.snapshots(),1);
 });
 test('a lost history append response retries only history and does not duplicate a version',async()=>{
  const f=fixture();f.lose();await assert.rejects(f.history.record(f.context,'rename-a',f.record));
  await f.history.record(f.context,'rename-a',f.record);assert.equal(f.writes(),1);
+ assert.equal(f.snapshots(),1);
  f.record.receipt.operationId='rename-b';await f.history.record(f.context,'rename-b',f.record);assert.equal(f.writes(),2);
  const lines=f.payloads.get('projects/study/.openscience/provenance.jsonl').toString().trim().split('\n').map(line=>JSON.parse(line));assert.deepEqual(lines.map(line=>line.version),[1,2]);
 });

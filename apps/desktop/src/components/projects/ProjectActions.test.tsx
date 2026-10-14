@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {MemoryRouter} from 'react-router-dom';
 import {useRuntimeStore} from '@/lib/runtime';
+import {makeLeaf,useLayoutStore} from '@/lib/layout';
 import {WorkspaceRequestError} from '@/lib/workspaceManagement';
 const patch=vi.fn(),trash=vi.fn(),projects=vi.fn();
 vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),patchWorkspaceProject:(...args:unknown[])=>patch(...args),trashWorkspaceProject:(...args:unknown[])=>trash(...args),listWorkspaceProjects:()=>projects()}));
@@ -45,4 +46,18 @@ it('uses a fresh operation ID after correcting a rejected project name',async()=
  fireEvent.change(screen.getByRole('textbox'),{target:{value:'Rejected'}});await userEvent.click(screen.getByRole('button',{name:'Save'}));
  await screen.findByRole('alert');fireEvent.change(screen.getByRole('textbox'),{target:{value:'Corrected'}});await userEvent.click(screen.getByRole('button',{name:'Save'}));
  expect(patch.mock.calls[0][2]).not.toBe(patch.mock.calls[1][2]);
+});
+it('confirmed project trash removes its background draft panes while preserving another project draft',async()=>{
+ const mine=makeLeaf(null),other=makeLeaf(null);
+ const groups=[mine,other].map((tree,index)=>({id:'trash-group-'+index,name:'Draft',tree,focusedLeafId:tree.id,zoomedLeafId:null}));
+ useLayoutStore.setState({groups,activeGroupId:groups[1].id,tree:other,focusedLeafId:other.id});
+ useRuntimeStore.setState({draftWorkspaces:{['draft:'+mine.id]:project.path,['draft:'+other.id]:'/ws/b'}});
+ trash.mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce({state:'committed'});
+ render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
+ await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));await userEvent.click(screen.getByRole('menuitem',{name:'Move to trash'}));
+ await userEvent.click(screen.getByRole('button',{name:'Move to trash'}));expect(await screen.findByRole('alert')).toHaveTextContent('Offline');
+ expect(useLayoutStore.getState().groups[0].tree).toEqual(mine);
+ await userEvent.click(screen.getByRole('button',{name:'Move to trash'}));
+ expect(useLayoutStore.getState().groups.flatMap(group=>group.tree?[group.tree]:[])).toEqual([other]);
+ expect(useRuntimeStore.getState().draftWorkspaces).toEqual({['draft:'+other.id]:'/ws/b'});
 });

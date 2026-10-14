@@ -241,6 +241,7 @@ fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
     };
     if object.keys().any(|key| !allowed.contains(&key.as_str())) {return Err("invalid file fields".into());}
     let result=match value["operation"].as_str() {
+        Some("snapshot") => json!({"committed":policy.workspace_snapshot("workspace",path).map_err(management_error)?}),
         Some("stat") => serde_json::to_value(policy.workspace_stat("workspace",path).map_err(management_error)?).map_err(|_|"invalid stat response")?,
         Some("readText") => serde_json::to_value(policy.workspace_read_text("workspace",path).map_err(management_error)?).map_err(|_|"invalid text response")?,
         Some("createText") => serde_json::to_value(policy.workspace_create_text("workspace",path,value["text"].as_str().ok_or("invalid file content")?).map_err(management_error)?).map_err(|_|"invalid text response")?,

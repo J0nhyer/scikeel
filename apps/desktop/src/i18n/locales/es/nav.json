@@ -84,6 +84,7 @@
     "textConflict": "El archivo ha cambiado. Se conserva su borrador.",
     "saveUncertain": "Resultado desconocido. Compruebe o reintente el guardado original.",
     "discardDraft": "¿Descartar cambios sin guardar?",
+    "draftLimit": "Guarda o descarta los cambios en otro archivo antes de abrir este editor.",
     "finishDraft": "Guarde o descarte el borrador antes de mover o eliminar el archivo.",
     "newFile": "Nuevo archivo",
     "newFolder": "Nueva carpeta",

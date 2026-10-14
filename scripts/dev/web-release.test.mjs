@@ -127,7 +127,20 @@ test('preparation checks once, follows stage order, and never publishes failed c
   await assert.rejects(prepareRelease({}, selection, { ...ops, stage: async (name) => { calls.push(name); if (name === 'typecheck') throw new Error('fixture'); } }));
   assert(!calls.includes('web-bundle')); assert(!calls.includes('prepared'));
 });
-import { publishRelease, replaceEnvironmentValue, transformServedIndex, validateRecoveryConfiguration } from './web-release-deploy.mjs';
+import { publishRelease, replaceEnvironmentValue, transformServedIndex, validateRecoveryConfiguration, lifecycleRollbackPolicy } from './web-release-deploy.mjs';
+test('rollback requires lifecycle-compatible sources after private workspace state exists',async t=>{
+  const root=await fixture(t),source=join(root,'source'),data=join(root,'data');
+  await mkdir(source,{recursive:true});
+  assert.equal((await lifecycleRollbackPolicy(source,data)).compatible,true);
+  await mkdir(join(data,'workspace-management'),{recursive:true});
+  await writeFile(join(data,'workspace-management','user-a.json'),JSON.stringify({schema:1,projects:{a:{state:'trashed'}},operations:{}}));
+  assert.equal((await lifecycleRollbackPolicy(source,data)).compatible,false);
+  await mkdir(join(source,'services/platform/src'),{recursive:true});
+  await writeFile(join(source,'services/platform/src/workspace-state.mjs'),'export const WORKSPACE_LIFECYCLE_SCHEMA = 1;\n');
+  assert.equal((await lifecycleRollbackPolicy(source,data)).compatible,true);
+  await writeFile(join(data,'workspace-management','user-a.json'),JSON.stringify({schema:2}));
+  assert.equal((await lifecycleRollbackPolicy(source,data)).compatible,false);
+});
 test('publication validates stale baseline before mutation and rolls back incorrect delivery', async () => {
   const calls = []; const ops = Object.fromEntries(['validatePrepared','compareBaseline','saveRecovery','switchConfiguration','restartPlatform','verifyProduction','requiredLiveAcceptance','markPublished','restorePrevious','verifyPrevious'].map((name) => [name, async () => calls.push(name)]));
   ops.capturePrevious = async () => { calls.push('capturePrevious'); return { old: true }; };

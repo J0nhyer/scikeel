@@ -6,7 +6,7 @@ import { WorkspaceAdmission } from "./workspace-admission.mjs";
 import { WorkspaceFiles } from "./workspace-files.mjs";
 import { WorkspaceUploads } from "./workspace-uploads.mjs";
 import { WorkspaceProvenance } from "./workspace-provenance.mjs";
-import { WorkspaceManagement } from "./workspace-management.mjs";
+import { WorkspaceManagement, historicalSessionRoots } from "./workspace-management.mjs";
 import { WorkspaceTickets } from "./workspace-tickets.mjs";
 import { createWorkspaceRoutes } from "./workspace-routes.mjs";
 import { NetworkOperations } from "./network-operations.mjs";
@@ -402,6 +402,7 @@ export class PlatformServer {
     this.interactionReplies = new InteractionReplies();
     if (networkEgress) this.configureNetwork(networkEgress);
     workerManager.setExecutionProbe?.(async(context)=>{
+      if(await this.workspaceManagement?.state.runtimeMutation(context))return true;
       for(const state of this.collaboration.records.values()) {
         if(state.userId!==context.userId || !["running","waiting_input"].includes(state.phase))continue;
         if(state.pending || await this.#researchRunning(state))return true;
@@ -425,7 +426,21 @@ export class PlatformServer {
     if (enableWorkspaceManagement && tenantPolicy) {
       this.workspaceAdmission = new WorkspaceAdmission({resolveExecution: userId => this.#workspaceBusy(userId)});
       this.workspaceManagement = new WorkspaceManagement({state:new WorkspaceState({dataDir:resolve(workerManager.rootDir,"../workspace-management")}),
-        tenantPolicy,admission:this.workspaceAdmission,sessionRoots:async context=>cliRuntime?[...(await cliRuntime.ensureUser(context.userId)).sessions.values()].map(session=>session.directory):[],resolveSession:async(context,id)=>id.startsWith("ses_cli_") && cliRuntime?(await cliRuntime.ensureUser(context.userId)).sessions.get(id)??Promise.reject(workspaceError("session_not_found",404)):this.sessionAuthority.ensure(context,id),gateway:(context,path,method,body)=>this.#workspaceGateway(context,path,method,body)});
+        tenantPolicy,admission:this.workspaceAdmission,sessionRoots:async context=>[
+          ...await historicalSessionRoots(context,(owner,path)=>this.#workspaceGateway(owner,path)),
+          ...(cliRuntime?[...(await cliRuntime.ensureUser(context.userId)).sessions.values()].map(session=>session.directory):[])
+        ],resolveSession:async(context,id)=>id.startsWith("ses_cli_") && cliRuntime?(await cliRuntime.ensureUser(context.userId)).sessions.get(id)??Promise.reject(workspaceError("session_not_found",404)):this.sessionAuthority.ensure(context,id),gateway:(context,path,method,body)=>this.#workspaceGateway(context,path,method,body)});
+      this.workspaceProxyRequests=new Set();
+      if(workspaceFiles)this.workspaceManagement.assertNoFollow=async(context,directory)=>{
+        const path=directory.slice(tenantPolicy.account(context).workspaceDir.length+1);
+        if(!path)return;
+        try{await workspaceFiles.call(context,{operation:"stat",root:"workspace",path});}
+        catch(error){if(error.code!=="entry_not_found")throw error;}
+      };
+      workerManager.setRecoveryFence?.(async context=>{
+        const pending=await this.workspaceManagement.state.runtimeMutation(context);
+        return Boolean(pending && !this.workspaceProxyRequests.has(pending.requestId));
+      });
       if(cliRuntime)cliRuntime.workspaceAccess=async(userId,directory)=>{
         const context=await resolveContext(userId);await this.workspaceManagement.assertAccessible(context,directory);
       };
@@ -649,14 +664,30 @@ export class PlatformServer {
     return true;
   }
 
-  async #workspaceGateway(context,path,method="GET",body) {
+  async #assertRuntimeMutation(context) {
+    const pending=await this.workspaceManagement?.state.runtimeMutation(context);
+    if(pending && !this.workspaceProxyRequests.has(pending.requestId))throw recoveryError("runtime_unresponsive",{context,action:"confirm_restart"});
+  }
+  async #runtimeWrite(context,run) {
+    await this.#assertRuntimeMutation(context);
+    const requestId=randomUUID();await this.workspaceManagement.state.beginRuntimeMutation(context,requestId);
+    this.workspaceProxyRequests.add(requestId);
+    let complete=false;
+    try{
+      return await run(()=>{complete=true;});
+    }finally{
+      try{if(complete)await this.workspaceManagement.state.finishRuntimeMutation(context,requestId);}
+      finally{this.workspaceProxyRequests.delete(requestId);this.workerManager.noteTransportFailure?.({instanceId:context.instanceId,generation:context.generation});}
+    }
+  }
+  async #workspaceGateway(context,path,method="GET",body,completed) {
     this.tenantPolicy.account(context);
+    if(this.workspaceManagement && !completed && !["GET","HEAD"].includes(method))return this.#runtimeWrite(context,finish=>this.#workspaceGateway(context,path,method,body,finish));
     const access=this.workerManager.getWorkerAccess(context.instanceId);
     if(!access)throw workspaceError("workspace_unavailable",503);
     const response=await fetch(new URL(path,access.url),{method,redirect:"error",signal:AbortSignal.timeout(15000),
       headers:{authorization:path.startsWith("/v1/")?`Bearer ${access.token}`:`Basic ${workerBasicToken(access.token)}`,"content-type":"application/json"},
       ...(body?{body:JSON.stringify(body)}:{})});
-    if(!response.ok){await response.body?.cancel();throw workspaceError("workspace_operation_failed",response.status);}
     const limit=16*1024**2,declared=response.headers.get("content-length");
     if(declared!==null && (!/^\d+$/.test(declared) || Number(declared)>limit)){
       await response.body?.cancel();throw workspaceError("workspace_response_limit",503);
@@ -668,6 +699,8 @@ export class PlatformServer {
         if(size>limit)throw workspaceError("workspace_response_limit",503);chunks.push(Buffer.from(value));}
     }catch(error){await reader.cancel().catch(()=>{});throw error;}
     finally{reader.releaseLock();}
+    completed?.();
+    if(!response.ok)throw workspaceError("workspace_operation_failed",response.status);
     this.tenantPolicy.account(context);
     try{return JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(Buffer.concat(chunks,size)));}
     catch{throw workspaceError("workspace_response_invalid",503);}
@@ -677,6 +710,7 @@ export class PlatformServer {
     if(!worker || worker.status!=="running")throw workspaceError("runtime_state_unknown",503);
     if(worker.maintenance || worker.activeMutations>0)return true;
     const context={userId,instanceId:worker.id,generation:worker.generation};
+    await this.#assertRuntimeMutation(context);
     const directories=new Set([worker.workspaceDir,...await this.workspaceManagement.roots(context)]);
     for(const directory of directories){
       const query="?"+new URLSearchParams({directory});
@@ -926,7 +960,13 @@ export class PlatformServer {
     delete headers["x-forwarded-proto"];
     headers.host = workerUrl.host;
     headers.authorization = token;
-    const upstream = httpRequest(
+    const fenced=Boolean(request.workspaceAdmitted && this.workspaceManagement);
+    const mutationContext={userId:user.id,instanceId:worker.id,generation:worker.generation};
+    const requestId=fenced?randomUUID():null;
+    let finish;const completed=fenced?new Promise(done=>{finish=done;}):null;
+    if(fenced){await this.workspaceManagement.state.beginRuntimeMutation(mutationContext,requestId);this.workspaceProxyRequests.add(requestId);}
+    let upstream;
+    try { upstream = httpRequest(
       {
         protocol: workerUrl.protocol,
         hostname: workerUrl.hostname,
@@ -936,6 +976,14 @@ export class PlatformServer {
         headers,
       },
       (upstreamResponse) => {
+        upstreamResponse.once("end",()=>finish?.(true));
+        upstreamResponse.once("aborted",()=>finish?.(false));
+        upstreamResponse.once("error",()=>finish?.(false));
+        if(fenced){
+          const drain=()=>{upstreamResponse.unpipe(response);upstreamResponse.resume();};
+          response.once("close",drain);upstreamResponse.once("end",()=>response.off("close",drain));
+          if(response.destroyed){upstreamResponse.resume();return;}
+        }
         const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
         const download = parsed.pathname === "/v1/fs/read" && request.method === "GET"
           ? parsed.searchParams.get("download") : null;
@@ -951,13 +999,18 @@ export class PlatformServer {
         );
         upstreamResponse.pipe(response);
       },
-    );
+    ); } catch(error) {
+      if(fenced)this.workspaceProxyRequests.delete(requestId);
+      this.workerManager.noteTransportFailure?.({instanceId:worker.id,generation:worker.generation});
+      throw error;
+    }
     let responded = false;
-    if(request.workspaceAdmitted)upstream.setTimeout(30000,()=>upstream.destroy(new Error("workspace proxy timeout")));
+    if(fenced)upstream.setTimeout(180000,()=>upstream.destroy(new Error("workspace proxy timeout")));
     upstream.on("response", () => {
       responded = true;
     });
     upstream.on("error", (error) => {
+      finish?.(false);
       this.workerManager.noteTransportFailure?.({ instanceId: worker.id, generation: worker.generation });
       if (response.headersSent || responded) {
         response.destroy(error);
@@ -968,10 +1021,14 @@ export class PlatformServer {
     });
     request.on("aborted", () => upstream.destroy());
     response.on("close", () => {
-      if (!response.writableEnded) upstream.destroy();
+      if (!response.writableEnded && !fenced) upstream.destroy();
     });
     if (serializedBody !== undefined) upstream.end(serializedBody);
     else request.pipe(upstream);
+    if(fenced){
+      try{if(await completed)await this.workspaceManagement.state.finishRuntimeMutation(mutationContext,requestId);}
+      finally{this.workspaceProxyRequests.delete(requestId);this.workerManager.noteTransportFailure?.({instanceId:worker.id,generation:worker.generation});}
+    }
   }
 
   async #attachmentHistory(user, sessionId, access) {
@@ -1025,16 +1082,24 @@ export class PlatformServer {
     const access = this.workerManager.getWorkerAccess(workerIdForUser(task.userId));
     if (!access) throw new Error("research worker is unavailable");
     await this.workspaceManagement?.assertAccessible({userId:task.userId,instanceId:worker.id,generation:worker.generation},task.directory);
-    if(!["GET","HEAD"].includes(method) && !stopping)await this.workspaceFiles?.confirmPending({userId:task.userId,instanceId:worker.id,generation:worker.generation});
+    if(!["GET","HEAD"].includes(method) && !stopping){
+      const context={userId:task.userId,instanceId:worker.id,generation:worker.generation};
+      await this.#assertRuntimeMutation(context);await this.workspaceFiles?.confirmPending(context);
+    }
     const url = new URL(path, access.url);
     url.searchParams.set("directory", task.directory);
+    const run=async completed=>{
     const result = await fetch(url, {
       method, headers: { authorization: `Basic ${workerBasicToken(access.token)}`, "content-type": "application/json" },
       ...(body === undefined ? {} : {body:JSON.stringify(body)}),
       signal: AbortSignal.timeout(5000),
     });
+    const text=await result.text();completed?.();
     if (!result.ok) throw Object.assign(new Error("research session is unavailable"), { status: result.status });
-    return result.json();
+    return JSON.parse(text);
+    };
+    return this.workspaceManagement && !["GET","HEAD"].includes(method) && !stopping
+      ?this.#runtimeWrite({userId:task.userId,instanceId:worker.id,generation:worker.generation},run):run();
   }
   async #researchOwner(user, sessionId, access, worker) {
     if (this.cliRuntime?.isManaged(user.id)) {
@@ -1747,7 +1812,10 @@ export class PlatformServer {
           let complete;const completed=new Promise(done=>{complete=done;response.once("finish",done);response.once("close",done);});
           try{
             const worker=this.workerManager.getWorker(workerIdForUser(admittedUser.id));
-            if(worker?.status==="running")await this.workspaceFiles?.confirmPending({userId:admittedUser.id,instanceId:worker.id,generation:worker.generation});
+            if(worker?.status==="running"){
+              const context={userId:admittedUser.id,instanceId:worker.id,generation:worker.generation};
+              await this.#assertRuntimeMutation(context);await this.workspaceFiles?.confirmPending(context);
+            }
             // Legacy streaming proxies return before their worker response ends.
             await this.#handle(request,response);await completed;
           }finally{response.off("finish",complete);response.off("close",complete);}
@@ -1883,6 +1951,7 @@ export class PlatformServer {
         if(this.workspaceRoutes && path.startsWith("/api/workspace/")) {
           const {worker}=await this.#ensureWorker(user, {allowRecovery:["GET","HEAD"].includes(request.method)});
           this.#requireWriteContext(request,user,worker);
+          if(!["GET","HEAD"].includes(request.method))await this.#assertRuntimeMutation({userId:user.id,instanceId:worker.id,generation:worker.generation});
           await this.workspaceRoutes.handle(request,response,{userId:user.id,instanceId:worker.id,generation:worker.generation});return;
         }
         if (path.startsWith("/api/environments/")) {

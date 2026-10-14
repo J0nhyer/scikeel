@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
-import { readFile, writeFile, readdir, unlink } from "node:fs/promises";
+import { readFile, writeFile, readdir, unlink, symlink } from "node:fs/promises";
 import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
 
 // CI-only acceptance driver; never copied into an installed scientific image.
@@ -37,6 +37,27 @@ try {
   if (!(await request("/files", value)).ok) throw new Error("real managed write failed");
   const read = await request("/files", { operation: "read", root: "workspace", path: value.path });
   if (!read.ok || (await read.json()).text !== value.text) throw new Error("real managed read failed");
+  const managed=async body=>{
+    const response=await request('/files',{root:'workspace',...body});
+    if(!response.ok)throw new Error('real management helper failed: '+body.operation);
+    return response.json();
+  };
+  const original=await managed({operation:'readText',path:value.path});
+  await managed({operation:'saveTextIfRevision',path:value.path,expectedRevision:original.revision,text:value.text});
+  if((await request('/files',{operation:'saveTextIfRevision',root:'workspace',path:value.path,expectedRevision:'f'.repeat(64),text:'must not overwrite'})).status!==409)throw new Error('stale revision accepted');
+  await managed({operation:'mkdirAll',path:'.scikeel/workspace-management/uploads/probe'});
+  await managed({operation:'createText',path:'.scikeel/workspace-management/uploads/probe/payload',text:'private staging'});
+  await managed({operation:'createText',path:'.env.fixture',text:'fixture secret'});
+  if(!(await managed({operation:'snapshot',path:''})).committed)throw new Error('real local snapshot missing');
+  const refs=execFileSync('git',['for-each-ref','--format=%(refname)','refs/openscience/snapshots/'],{cwd:'/fixture/workspace',encoding:'utf8',timeout:5000}).trim().split('\n');
+  if(refs.length!==1 || !refs[0].startsWith('refs/openscience/snapshots/'))throw new Error('snapshot ref missing');
+  const committed=execFileSync('git',['show',refs[0]+':'+value.path],{cwd:'/fixture/workspace',encoding:'utf8',timeout:5000});
+  if(committed!==value.text)throw new Error('snapshot lost workspace content');
+  const indexed=execFileSync('git',['ls-tree','-r','--name-only',refs[0]],{cwd:'/fixture/workspace',encoding:'utf8',timeout:5000});
+  if(indexed.includes('.scikeel/workspace-management/') || indexed.includes('.env.fixture'))throw new Error('snapshot contains private payload');
+  await symlink(value.path,'/fixture/workspace/management-link');
+  if((await request('/files',{operation:'stat',root:'workspace',path:'management-link'})).ok)throw new Error('management followed a linked alias');
+  await unlink('/fixture/workspace/management-link');
   if ((await request("/files", { operation: "read", root: "workspace", path: "../state/private" })).status !== 403)
     throw new Error("workspace escape accepted");
   const profile = { model: "fixture/approved", enabled_providers: ["fixture"], provider: { fixture: {
@@ -131,7 +152,7 @@ try {
   if(!output.env.PATH.startsWith("/opt/scikeel/science/bin:"))throw new Error("shared science shell environment missing");
   console.log(JSON.stringify({ assignedAddress:address,scienceShellEnvironment:true,productionRunner: true, realGateway: true, realFileHelper: true,
     workspaceInventory: true, artifactPreview: true, skillResources: true, sharedSkillLocations: true, sharedWriteDenied, privateSkillCopies: false, localSkillHelper: true, offlineRipgrep: true, projectInventory: true, runInventory: true,
-    authentication: true, generationBinding: true, workspaceEscapeDenied: true, profileRestart: true }));
+    authentication: true, generationBinding: true, workspaceEscapeDenied: true, profileRestart: true, conditionalSave: true, privateSnapshotExcluded: true, noFollowManagement: true }));
 } finally {
   const closed = new Promise((done) => child.once("close", done));
   if (child.exitCode === null && child.signalCode === null && child.pid) {

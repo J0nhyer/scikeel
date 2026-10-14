@@ -105,7 +105,7 @@ export function FilePreviewInspector({
   const { t } = useTranslation(["inspector", "common"]);
   const activeWorkspace = useRuntimeStore((s) => s.workspace);
   const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
-  const [gatewayEditing, setGatewayEditing] = useState(false);
+  const [gatewayEditing, setGatewayEditing] = useState(()=>Boolean(startEditing && isPlatformWeb && workspaceScope && ['text','markdown','html','table'].includes(previewKindForName(data.filename))));
   // Desktop file commands are intentionally scoped to the active workspace.
   // Focusing another split pane changes that workspace asynchronously; do not
   // issue a read against the old root, and do not reload a background preview

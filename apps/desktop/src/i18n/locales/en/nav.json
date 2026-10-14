@@ -84,6 +84,7 @@
     "textConflict": "The file changed on disk. Your draft is retained.",
     "saveUncertain": "Save result is unknown. Check or retry the original save.",
     "discardDraft": "Discard unsaved file edits?",
+    "draftLimit": "Save or discard edits in another file before opening this editor.",
     "finishDraft": "Save or discard this file's draft before moving or deleting it.",
     "newFile": "New file",
     "newFolder": "New folder",

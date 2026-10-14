@@ -138,6 +138,35 @@ mod linux {
         pub fn root_path(&self, id: &str) -> io::Result<PathBuf> {
             Ok(self.root(id)?.path.clone())
         }
+        pub fn workspace_snapshot(&self, id: &str, name: &str) -> io::Result<bool> {
+            if name.split('/').any(|part|matches!(part.to_ascii_lowercase().as_str(),".git"|".scikeel"|".openscience")){return Err(denied());}
+            let root=self.root(id)?;
+            let directory=if name.is_empty(){root.descriptor.try_clone()?}else{self.open(&root.descriptor,&relative(name)?,libc::O_RDONLY|libc::O_DIRECTORY,0,true)?};
+            let mut pending=vec![".git".to_string()];let mut count=0;
+            while let Some(path)=pending.pop(){
+                let file=match self.open(&directory,&relative(&path)?,libc::O_RDONLY|libc::O_NONBLOCK,0,true){
+                    Ok(file)=>file,Err(error) if path==".git" && error.kind()==io::ErrorKind::NotFound=>break,Err(error)=>return Err(error)
+                };
+                count+=1;if count>10000{return Err(denied());}
+                let metadata=file.metadata()?;
+                if path==".git" && !metadata.is_dir(){return Err(denied());}
+                if metadata.is_dir(){
+                    for entry in std::fs::read_dir(format!("/proc/self/fd/{}",file.as_raw_fd()))?{
+                        let entry=entry?;let name=entry.file_name();let name=name.to_str().ok_or_else(denied)?;
+                        pending.push(format!("{path}/{name}"));if pending.len()+count>10000{return Err(denied());}
+                    }
+                }else if !metadata.is_file() || metadata.nlink()!=1 {return Err(denied());}
+                else if [".git/commondir",".git/objects/info/alternates",".git/objects/info/http-alternates",".git/config.worktree"].contains(&path.as_str()) && metadata.len()>0{return Err(denied());}
+                else if path==".git/config"{
+                    if metadata.len()>1024*1024{return Err(denied());}
+                    let mut config=String::new();file.take(1024*1024+1).read_to_string(&mut config)?;
+                    let compact=config.chars().filter(|ch|!ch.is_whitespace()).collect::<String>().to_ascii_lowercase();
+                    if compact.contains("[filter") || compact.contains("[include") || compact.contains("worktree="){return Err(denied());}
+                }
+            }
+            let anchored=PathBuf::from(format!("/proc/{}/fd/{}",std::process::id(),directory.as_raw_fd()));
+            crate::git_snapshot::commit(&anchored,"Manual workspace file change").map_err(|_|denied())
+        }
         fn root(&self, id: &str) -> io::Result<&Root> {
             self.roots.get(id).ok_or_else(denied)
         }
@@ -752,6 +781,29 @@ mod tests {
             assert!(p.workspace_replace_text(root,source,destination,&original.revision,&staged.revision).is_err());
         }
         assert_eq!(f.read(&p,"note.txt").unwrap(),b"owned");assert_eq!(f.read(&p,stage).unwrap(),b"draft");
+    }
+    #[test]
+    fn workspace_snapshot_rejects_linked_roots_and_git_metadata() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        symlink(&f.peer,f.owned.join("linked")).unwrap();
+        assert!(p.workspace_snapshot(WORKSPACE_ROOT,"linked").is_err());
+        symlink(&f.peer,f.owned.join(".git")).unwrap();
+        assert!(p.workspace_snapshot(WORKSPACE_ROOT,"").is_err());
+        assert_eq!(std::fs::read(f.peer.join("secret")).unwrap(),b"peer-canary");
+    }
+    #[test]
+    fn workspace_snapshot_never_records_private_payloads_or_secrets() {
+        if !crate::git_snapshot::git_available(){return;}
+        let f=Fixture::new();let p=f.policy("a",1);
+        p.mkdir_all(WORKSPACE_ROOT,".scikeel/workspace-management/trash/a").unwrap();
+        std::fs::write(f.owned.join(".scikeel/workspace-management/trash/a/payload"),"private payload").unwrap();
+        std::fs::write(f.owned.join(".env"),"secret-canary").unwrap();
+        assert!(p.workspace_snapshot(WORKSPACE_ROOT,"").unwrap());
+        let output=crate::runtime::quiet_command("git").current_dir(&f.owned).args(["ls-tree","-r","--name-only","refs/openscience/snapshots/master"]).output().unwrap();
+        assert!(output.status.success());let files=String::from_utf8(output.stdout).unwrap();
+        assert!(files.lines().any(|path|path=="note.txt"));
+        assert!(!files.contains("payload"));assert!(!files.contains(".env"));
+        assert!(!p.workspace_snapshot(WORKSPACE_ROOT,"").unwrap());
     }
     #[test]
     fn workspace_text_primitives_bound_utf8_and_never_replace_colliding_creates() {

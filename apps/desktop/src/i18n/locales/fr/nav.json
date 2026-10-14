@@ -84,6 +84,7 @@
     "textConflict": "Le fichier a changé. Votre brouillon est conservé.",
     "saveUncertain": "Résultat inconnu. Vérifiez ou réessayez l'enregistrement initial.",
     "discardDraft": "Abandonner les modifications non enregistrées ?",
+    "draftLimit": "Enregistrez ou abandonnez les modifications d’un autre fichier avant d’ouvrir cet éditeur.",
     "finishDraft": "Enregistrez ou abandonnez le brouillon avant de déplacer ou supprimer le fichier.",
     "newFile": "Nouveau fichier",
     "newFolder": "Nouveau dossier",

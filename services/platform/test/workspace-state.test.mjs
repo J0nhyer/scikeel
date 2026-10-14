@@ -10,6 +10,19 @@ async function fixture(t) {
   t.after(()=>rm(dataDir,{recursive:true,force:true}));
   return {dataDir,state:new WorkspaceState({dataDir})};
 }
+test('a dispatched legacy mutation survives platform restart until completion or a verified new worker generation',async t=>{
+  const {state,dataDir}=await fixture(t),context={userId:'user-a',instanceId:'user-a',generation:1};
+  await state.beginRuntimeMutation(context,'request-a');
+  const restarted=new WorkspaceState({dataDir});
+  assert.equal((await restarted.runtimeMutation(context)).requestId,'request-a');
+  assert.equal(await restarted.runtimeMutation({...context,generation:2}),null);
+  await state.beginRuntimeMutation({...context,generation:2},'request-b');
+  await state.finishRuntimeMutation(context,'request-a');
+  assert.equal((await state.runtimeMutation({...context,generation:2})).requestId,'request-b');
+  await state.finishRuntimeMutation({...context,generation:2},'request-b');
+  assert.equal(await restarted.runtimeMutation({...context,generation:2}),null);
+  assert.equal(await restarted.runtimeMutation({...context,userId:'user-b'}),null);
+});
 test('project trash preserves identity across restart and isolates users',async t=>{
   const {state,dataDir}=await fixture(t);
   const project={id:'project-a',path:'/owned/a/project',name:'A'};

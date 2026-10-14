@@ -6,7 +6,7 @@ export function fileRequest(value) {
   const fields = { read:["operation","root","path"], list:["operation","root","path"], mkdir:["operation","root","path"],
     mkdirAll:["operation","root","path"], remove:["operation","root","path"], write:["operation","root","path","text"],
     readChunk:["operation","root","path","offset","limit"], writeChunk:["operation","root","path","offset","bytes"],
-    stat:["operation","root","path"],readText:["operation","root","path"],createText:["operation","root","path","text"],
+    stat:["operation","root","path"],snapshot:["operation","root","path"],readText:["operation","root","path"],createText:["operation","root","path","text"],
     moveNoReplace:["operation","root","path","destinationPath","expectedRevision"],
     replaceTextFromStaging:["operation","root","path","destinationPath","expectedRevision","expectedSourceRevision"],
     saveTextIfRevision:["operation","root","path","text","expectedRevision"] };

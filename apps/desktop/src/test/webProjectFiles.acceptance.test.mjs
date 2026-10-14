@@ -8,7 +8,8 @@ import {createRequire} from 'node:module';
 import {posix} from 'node:path';
 import {expect,test} from 'vitest';
 
-test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE)('Web project management works at desktop and phone widths with actual platform lifecycle routes',async()=>{
+test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE && !process.env.OSD_PROJECT_FILES_LIVE_ACCEPTANCE)('Web project management works at desktop and phone widths with actual platform lifecycle routes',async()=>{
+ if(process.env.OSD_PROJECT_FILES_LIVE_ACCEPTANCE){const {verifyLiveProjectFiles}=await import('./webProjectFiles.live.mjs');return verifyLiveProjectFiles();}
  const webRoot=process.env.OSD_WEB_CANDIDATE;
  if(!webRoot)throw new Error('OSD_WEB_CANDIDATE must identify the guarded candidate Web build');
  await access(join(webRoot,'index.html'));
@@ -21,6 +22,7 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE)('Web project management w
   const entry=payloads.get(request.path),fail=code=>{throw Object.assign(new Error(code),{code,statusCode:code==='entry_not_found'?404:409});};
   if(request.operation==='stat'){if(!entry)fail('entry_not_found');return {identity:entry.identity,revision:entry.revision,isDir:entry.isDir,size:entry.size};}
   if(request.operation==='mkdirAll')return {created:true};
+  if(request.operation==='snapshot')return {committed:false};
   if(request.operation==='mkdir' || request.operation==='createText'){
    if(entry)fail('name_conflict');const result={identity:'fixture-'+nextRevision(),revision:nextRevision(),isDir:request.operation==='mkdir',size:Buffer.byteLength(request.text??''),text:request.text??''};payloads.set(request.path,result);return {...result};
   }

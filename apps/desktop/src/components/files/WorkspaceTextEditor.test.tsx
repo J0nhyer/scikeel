@@ -5,6 +5,8 @@ import {useRuntimeStore} from '@/lib/runtime';
 import {WorkspaceRequestError} from '@/lib/workspaceManagement';
 import {clearWorkspaceTextDrafts} from '@/lib/workspaceDrafts';
 import {WorkspaceTextEditor} from './WorkspaceTextEditor';
+import {acquireWorkspaceTextDraft} from '@/lib/workspaceDrafts';
+import {WorkspaceTextDraft} from '@/lib/workspaceTextDraft';
 const api=vi.hoisted(()=>({read:vi.fn(),write:vi.fn(),receipt:vi.fn()}));
 vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),workspaceText:api.read,writeWorkspaceText:api.write,workspaceOperationReceipt:api.receipt}));
 vi.mock('@/components/code-editor/monacoSetup',()=>import('@/test/monacoStub'));
@@ -14,6 +16,17 @@ beforeEach(()=>{
  useRuntimeStore.setState({gatewayUser:{id:'alice',username:'alice',role:'user'},gatewayContext:{instanceId:'worker-a',generation:1},webReadOnly:false});
 });
 describe('web text editor',()=>{
+ it('draft capacity displays a recoverable notice instead of crashing or dropping another draft',async()=>{
+  const owner=JSON.stringify(['alice','worker-a',1]),models=[];
+  for(let i=0;i<8;i++){
+   const model=acquireWorkspaceTextDraft(owner,scope,'draft-'+i+'.md',undefined,()=>new WorkspaceTextDraft({read:api.read,write:api.write,receipt:api.receipt,current:()=>true},'draft-'+i+'.md'));
+   await model.load();model.edit('kept-'+i);models.push(model);
+  }
+  render(<WorkspaceTextEditor scope={scope} path='notes.md' filename='notes.md' onClose={()=>{}}/>);
+  expect(screen.getByRole('alert')).toHaveTextContent(/save or discard/i);expect(models[0].getSnapshot().draft).toBe('kept-0');
+  models[0].discard();await userEvent.click(screen.getByRole('button',{name:'Retry'}));
+  expect(await screen.findByRole('textbox',{name:'notes.md'})).toHaveValue('original');expect(models[1].getSnapshot().draft).toBe('kept-1');
+ });
  it('uses its explicit project scope and requires manual save',async()=>{
   const user=userEvent.setup();render(<WorkspaceTextEditor scope={scope} path='notes.md' filename='notes.md' onClose={()=>{}}/>);
   const editor=await screen.findByRole('textbox',{name:'notes.md'});await user.clear(editor);await user.type(editor,'mine');expect(api.write).not.toHaveBeenCalled();

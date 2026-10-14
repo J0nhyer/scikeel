@@ -84,6 +84,7 @@
     "textConflict": "磁盘文件已改变，您的草稿已保留。",
     "saveUncertain": "保存结果尚未确认，请检查或重试原保存操作。",
     "discardDraft": "放弃未保存的文件修改？",
+    "draftLimit": "请先保存或放弃另一文件的修改，再打开此编辑器。",
     "finishDraft": "移动或删除前，请先保存或放弃该文件的草稿。",
     "newFile": "新建文件",
     "newFolder": "新建文件夹",

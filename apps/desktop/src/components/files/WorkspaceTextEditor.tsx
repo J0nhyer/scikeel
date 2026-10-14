@@ -4,7 +4,7 @@ import {useTranslation} from 'react-i18next';
 import {useRuntimeStore} from '@/lib/runtime';
 import {workspaceOperationReceipt,workspaceText,writeWorkspaceText,type WorkspaceScope} from '@/lib/workspaceManagement';
 import {WorkspaceTextDraft} from '@/lib/workspaceTextDraft';
-import {acquireWorkspaceTextDraft,confirmWorkspaceDraftLeave,retainWorkspaceTextDraft} from '@/lib/workspaceDrafts';
+import {acquireWorkspaceTextDraft,confirmWorkspaceDraftLeave,retainWorkspaceTextDraft,WorkspaceDraftLimitError} from '@/lib/workspaceDrafts';
 import {FileEditor} from '@/components/code-editor/FileEditor';
 import {NameProjectDialog} from '@/components/projects/NameProjectDialog';
 
@@ -15,10 +15,19 @@ export function WorkspaceTextEditor({scope,path,filename,language,directory,onCl
 function OwnedTextEditor({scope,path,filename,language,directory,onClose,controls,owner}:{scope:WorkspaceScope;path:string;filename:string;language?:string;directory?:string;onClose:()=>void;controls?:React.ReactNode;owner:string}){
  const {t}=useTranslation(['nav','inspector','common']);
  const readOnly=useRuntimeStore(state=>state.webReadOnly);
+ const [attempt,setAttempt]=useState(0);
  const model=useMemo(()=>{
   const current=()=>{const state=useRuntimeStore.getState();return owner===JSON.stringify([state.gatewayUser?.id,state.gatewayContext?.instanceId,state.gatewayContext?.generation]);};
-  return acquireWorkspaceTextDraft(owner,scope,path,directory,()=>new WorkspaceTextDraft({read:()=>workspaceText(scope,path),write:(operation,id)=>writeWorkspaceText(scope,operation,id,()=>current() && !useRuntimeStore.getState().webReadOnly),receipt:workspaceOperationReceipt,current},path));
- },[owner,scope,path,directory]);
+  try{return acquireWorkspaceTextDraft(owner,scope,path,directory,()=>new WorkspaceTextDraft({read:()=>workspaceText(scope,path),write:(operation,id)=>writeWorkspaceText(scope,operation,id,()=>current() && !useRuntimeStore.getState().webReadOnly),receipt:workspaceOperationReceipt,current},path));}
+  catch(error){if(error instanceof WorkspaceDraftLimitError)return null;throw error;}
+ // Retry deliberately rechecks capacity without changing the file identity.
+ // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[owner,scope,path,directory,attempt]);
+ if(!model)return <div className='flex min-w-0 flex-col gap-3 p-4'><p role='alert' className='break-words text-sm'>{t('fileManagement.draftLimit')}</p><div className='flex gap-3'><button type='button' className='min-h-11 px-3' onClick={()=>setAttempt(value=>value+1)}>{t('common:notification.retry')}</button><button type='button' className='min-h-11 px-3' onClick={onClose}>{t('inspector:shell.closeInspector')}</button></div></div>;
+ return <DraftEditor {...{scope,path,filename,language,directory,onClose,controls,model,readOnly}}/>;
+}
+function DraftEditor({scope,path,filename,language,onClose,controls,model,readOnly}:{scope:WorkspaceScope;path:string;filename:string;language?:string;directory?:string;onClose:()=>void;controls?:React.ReactNode;model:WorkspaceTextDraft;readOnly:boolean}){
+ const {t}=useTranslation(['nav','inspector','common']);
  const state=useSyncExternalStore(model.subscribe,model.getSnapshot),[saveAs,setSaveAs]=useState(false);
  useEffect(()=>{const release=retainWorkspaceTextDraft(model);void model.load();return release;},[model]);
  const blocked=readOnly || state.status==='saving' || state.status==='uncertain';

@@ -50,8 +50,9 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
     if(!current)throw new Error(t('projects.unavailable'));
     await trashWorkspaceProject(project.id,current.revision,operation.current);
     if(state.gatewayUser?.id!==useRuntimeStore.getState().gatewayUser?.id || !mounted.current)return;
-    useLayoutStore.getState().pruneSessions(new Set([...state.sessions.map(session=>session.id),...useLayoutStore.getState().groups.flatMap(group=>group.tree?leaves(group.tree):[]).map(leaf=>leaf.sessionId).filter((id):id is string=>!!id)].filter(id=>!sessionIds.has(id))));
-    useRuntimeStore.setState(latest=>({sessions:latest.sessions.filter(session=>!sessionIds.has(session.id))}));
+    const removedDrafts=new Set(affected.filter(leaf=>!leaf.sessionId).map(leaf=>leaf.id));
+    useLayoutStore.getState().pruneSessions(new Set([...state.sessions.map(session=>session.id),...useLayoutStore.getState().groups.flatMap(group=>group.tree?leaves(group.tree):[]).map(leaf=>leaf.sessionId).filter((id):id is string=>!!id)].filter(id=>!sessionIds.has(id))),removedDrafts);
+    useRuntimeStore.setState(latest=>({sessions:latest.sessions.filter(session=>!sessionIds.has(session.id)),draftWorkspaces:Object.fromEntries(Object.entries(latest.draftWorkspaces).filter(([,directory])=>!belongs(directory)))}));
     navigate('/projects');
   };
   const item='cursor-pointer rounded-input px-3 py-2 text-sm outline-none data-[highlighted]:bg-surface-2 data-[disabled]:opacity-40';

@@ -235,7 +235,12 @@ tmp/
 
 fn git(root: &Path) -> std::process::Command {
     let mut cmd = quiet_command("git");
+    #[cfg(target_os = "linux")]
+    cmd.args(["-c","core.hooksPath=/dev/null","-c","core.fsmonitor=false","-c","commit.gpgsign=false"]);
     cmd.current_dir(root)
+        .env("GIT_CONFIG_NOSYSTEM","1")
+        .env("GIT_CONFIG_GLOBAL",if cfg!(windows){"NUL"}else{"/dev/null"})
+        .env("GIT_TERMINAL_PROMPT","0")
         .env("GIT_AUTHOR_NAME", AUTHOR_NAME)
         .env("GIT_AUTHOR_EMAIL", AUTHOR_EMAIL)
         .env("GIT_COMMITTER_NAME", AUTHOR_NAME)
@@ -587,6 +592,19 @@ pub fn commit(root: &Path, message: &str) -> Result<bool, String> {
 
     // Stage the whole working tree into the DEDICATED index (never the user's).
     stage_all(root, &index)?;
+    // Exclude private recovery payloads and credentials even from an old index.
+    let listed=capture_indexed(root,&index,&["ls-files","-z"])?;
+    let mut remove=vec!["update-index","--force-remove","--"];
+    let text=std::str::from_utf8(&listed).map_err(|_|"invalid snapshot paths")?;
+    for path in text.split('\0').filter(|path|!path.is_empty()){
+        let parts=path.split('/').collect::<Vec<_>>();
+        if parts.windows(2).any(|parts|parts==[".scikeel","workspace-management"]) || parts.iter().any(|part|{
+            *part==".env" || part.starts_with(".env.") && ![".env.example",".env.sample",".env.template"].contains(part) ||
+            [".netrc","credentials.json","secrets.json",".aws",".gcloud","id_rsa","id_dsa","id_ecdsa","id_ed25519"].contains(part) ||
+            [".pem",".key",".p12",".pfx"].iter().any(|extension|part.ends_with(extension)) || part.starts_with("service-account") && part.ends_with(".json")
+        }){remove.push(path);}
+    }
+    if remove.len()>3{run_indexed(root,&index,&remove)?;}
     unstage_oversized(root, &index)?;
     unstage_bulk_dirs(root, &index)?;
     let tree = String::from_utf8_lossy(&capture_indexed(root, &index, &["write-tree"])?)
@@ -646,7 +664,8 @@ pub fn commit(root: &Path, message: &str) -> Result<bool, String> {
 /// let git name them and retry once without them. The excluded folder is not
 /// lost: it is a repository, so it keeps its own history.
 fn stage_all(root: &Path, index: &Path) -> Result<(), String> {
-    let Err(first) = run_indexed(root, index, &["add", "-A", "--", "."]) else {
+    let exclusions=[":(exclude)**/.scikeel/workspace-management/**",":(exclude).scikeel/workspace-management/**"];
+    let Err(first) = run_indexed(root, index, &["add", "-A", "--", ".",exclusions[0],exclusions[1]]) else {
         return Ok(());
     };
     let skip = commitless_repos(&first);
@@ -654,6 +673,7 @@ fn stage_all(root: &Path, index: &Path) -> Result<(), String> {
         return Err(first);
     }
     let mut args: Vec<String> = vec!["add".into(), "-A".into(), "--".into(), ".".into()];
+    args.extend(exclusions.iter().map(|value|value.to_string()));
     args.extend(skip.iter().map(|p| format!(":(exclude){p}")));
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     run_indexed(root, index, &argrefs)
