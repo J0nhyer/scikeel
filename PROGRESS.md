@@ -1,3 +1,7 @@
+2026-10-14 23:11 Implemented admin-only Agent analytics on its isolated feature branch with passive private metadata collection and four platform-themed views covering five dimensions; the current production baseline was retained, guarded full frontend tests/typecheck/lint/build/release checks passed, final platform tests passed 611 with 8 optional skips and candidate login/authorization/theme/1440-390-320 browser acceptance passed without runtime starts, while a bounded loopback preview uses separate empty test state and production cd4c7c5e remains unchanged and healthy; real-runtime analytics, minimum-Node CI and frozen release/publication remain pending.
+2026-10-14 21:48 Published Web project/file management release cd4c7c5e with independently attested image f28f552b after 2,149 frontend, 591 platform, 47 release and 13 non-skipped frozen browser checks; exact served assets and a real OpenCode reply passed, production native file/save/upload/trash/restore/session-history acceptance passed at 1280/390/320, and public health returned 200 with prior release retained behind lifecycle-compatible rollback protection.
+2026-10-14 21:09 Fixed malformed pending-operation responses without losing the chat surface and updated legacy browser contracts/selectors; the new seven-case regression and all eight previously failing browser scenarios passed, while a fresh frozen release is preparing against verified image f28f552b and production 1ebde999 remains unchanged.
+2026-10-14 20:00 Installed independently verified CI image f28f552b with all 104 candidate image inputs matching; real isolated OpenCode acceptance passed native file/save/upload/alternate restore, local history, project conversations and 1280/390/320 browsers, then a platform/worker restart preserved trash access fences, file bytes and conversation history while production 1ebde999 remained unchanged.
 2026-10-14 18:23 Added complete historical-root inventory, durable disconnected-write recovery fences, no-follow lifecycle checks, secret-excluding local Git snapshots, dirty-pane protection and compatible rollback maintenance; guarded verification passed 589 platform, 2,148 frontend, 252 Core, 19 CLI and 47 release tests plus typecheck/lint/build, with candidate browsers, a source-matched CI image and real managed acceptance still pending.
 2026-10-14 18:12 Finalized the accepted admin Agent analytics spec and self-reviewed a 12-task plan covering all ten acceptance requirements and nine browser scenarios, including passive metadata collection, bounded SQLite, independent admin identity, all five analysis dimensions and existing release gates; this milestone delivers documents only.
 2026-10-14 17:25 Published a persistent, admin-only Agent analytics prototype at /preview/agent-analytics with platform logo/fonts/light-warm-dark themes and simulated task/process/tool-skill/model-subagent/human-intervention analysis; four guarded fixture/browser checks and public real-admin verification passed at 1440/390/320 widths, logout revocation passed, the preview is bounded to 128 MiB, and prototype publication did not change the production source/bundle.
@@ -34,20 +38,14 @@
 2026-10-12 15:58 Web project investigation reproduced two failures with guarded store diagnostics: sending a project draft after visiting another session uses the other directory, and switching projects retains the old pane draft; the new-project header is also hidden in Web mode, with no production changes deployed.
 2026-10-12 04:12 Web title recovery deployed as 2026-10-11T19-55-20-683Z-4dcfb43d; frozen-source checks passed (1976 frontend, 437 platform, 11 browser scenarios), and two non-Claude live title/reload/message-read checks passed on desktop and mobile.
 2026-10-12 03:03 · Published Web attachment text requirement 2026-10-11T18-55-28-154Z-e4208121: attachment-only and whitespace-only drafts disable Send and Enter without clearing files, typed text enables submission and avoids new Attached files placeholder turns; guarded lint/typecheck/build, 1,961 frontend tests and three browser scenarios with 1280/390/320 text-gating and right-alignment checks passed, served assets verified and rollback retained.
-
 2026-10-12 02:57 · Traced transient archive titles to persisted default titles, background title generation, and unfiltered history visibility; title-first session admission requires a coordinated runtime and Web lifecycle change.
 2026-10-12 02:53 · Published the standalone minimal research prototype at /preview/research-minimal with only a heading, composer and guide link in the main welcome area; JavaScript syntax, Nginx configuration and public byte comparison passed, with production application code unchanged.
 2026-10-12 01:50 · Published isolated sent-attachment right-alignment release 2026-10-11T17-42-34-962Z-2a8d197c from the deployed source baseline: compact attachment rows stay above the matching user bubble and align to its right edge; guarded lint/typecheck/build, 1,960 frontend tests and three browser scenarios including 1280/390/320 geometry passed, served asset identity verified and previous Web bundle retained for rollback.
-
 2026-10-12 01:47 · Published an isolated research-onboarding prototype at /preview/research-start with one primary entry, progressive sample guidance, collapsed examples and browser-local file selection; JavaScript syntax and public content checks passed, browser acceptance is pending the occupied release lock, and production health is OK.
 2026-10-12 01:36 · Corrected attachment scope after user confirmation: sent cards remain separate above the user bubble and every wrapped row aligns to its right edge; reverted the earlier composer layout changes; 13 focused tests, guarded lint/typecheck/build and HTTP browser geometry plus single/multiple/long-text/attachment-only checks at 1280/390/320 widths passed, with the candidate staged and production unchanged.
-
 2026-10-12 00:44 · Fixed Web attachment placement: composer cards align with text and wrap within a bounded scroll area, sent cards share the user message bubble without an empty attachment-only bubble; 25 focused tests, guarded lint/typecheck/build and HTTP browser layout/upload/preview/download acceptance at 1280/390/320 widths passed; staged bundle is not published.
-
 2026-10-11 23:09 · Published Web automatic tool permission repair 2026-10-11T14-54-05-586Z-7e308734: owned task children inherit automatic execution with workspace/child denies retained, headless recovery polls active project directories, and sandbox Codex approvals are automatic; 436 platform tests, 10 browser assertions, guarded lint/typecheck/build and live OpenCode transport passed, with the previous release retained for rollback.
-
 2026-10-11 22:58 · Confirmed the live Full-autonomy stall came from an explore child omitting root allow rules; the final Web fix passes real task-child execution, workspace-denial, headless approval recovery and Codex ownership checks, with bounded release verification in progress.
-
 2026-10-11 21:22 · Exposed the standalone CDUT glass preview at /preview/cdut-glass through an exact Nginx route with embedded public artwork; local byte comparison and public HTTP 200 passed, and the existing production health remains OK.
 2026-10-11 19:20 · Prepared an isolated CDUT glass homepage preview with translucent shortcut tiles and an unobstructed 12%-opacity official motto; guarded browser geometry and interaction checks passed at 1440/390/320/1024 widths, screenshots await user visual review, and the unchanged production service was restored healthy after the test window.
 2026-10-11 18:56 · Published attachment-context release 2026-10-11T10-45-21-428Z-1f98fa2a: deliver verified file paths in model-visible turn context and hide durable internal markers; 428 platform checks and pinned OpenCode image/document transport passed, and live mimo-v2.6-flash-free read a DOCX after a greeting and re-read it without another upload (17 + 29 = 46), with original research files and conversation retained.
@@ -55,126 +53,67 @@
 2026-10-11 17:04 · Published browser-icon compatibility release 2026-10-11T08-50-52-771Z-48766796: fixed anonymous root favicon requests returning login redirects, added versioned PNG/ICO and Apple touch references without changing the product mark; red/green regression and all guarded gates plus 11 browser scenarios passed, and 14 local/public icon requests matched the deployed bytes without redirects; actual user Safari display remains unverified.
 2026-10-11 15:47 · Published 2026-10-11T07-33-10-323Z-8bac9c98: original SciKeel favicon, complete CDUT sidebar school-signature removal, and centered empty-chat motto above the composer; all guarded gates and 11 browser scenarios passed, motto center offsets are below 0.01 px at 1440/390/320 widths, and live favicon/health checks passed.
 2026-10-11 14:24 · Published complete default-model release 2026-10-11T06-04-04-295Z-c82d78f1; all bounded gates and 10 browser assertions passed, live desktop/phone saves and reloads plus actual service-restart persistence passed, and the original default was restored without Settings model turns.
-
 2026-10-11 14:08 · Added private per-account managed default persistence and enabled-model validation during worker profile regeneration; 55 focused platform tests passed, and the final bounded release candidate includes restart-persistence verification.
-
 2026-10-11 13:55 · Live default-model acceptance exposed managed gateway PATCH /global/config returning 404; added catalog-validated model-only tenant writes and sanitized responses, with 38 focused platform tests passing; complete gateway candidate verification is running.
-
 2026-10-11 13:45 · Prepared default-model release 2026-10-11T05-32-11-746Z-c7d4feed; guarded lint/typecheck, 1,961 frontend tests, 420 platform tests, Web build and all 10 browser assertions passed, including desktop/phone default persistence and both response orders.
-
 2026-10-11 13:06 · Implemented the Web default-model race fix, stale-read protection, localized default semantics and save/recovery feedback; 360 focused frontend tests and 55 deterministic platform tests passed, and bounded release preparation has started.
-
 2026-10-11 12:53 · Established an isolated default-model worktree with exact current production source/dependency identity and zero release-inspection differences; initial guarded tests are waiting on the shared resource lock.
-
 2026-10-11 04:15 · Restored the original geometric SciKeel product logo in login, sidebar and canonical artwork while retaining only the new browser favicon and centered branding; release 2026-10-10T20-01-44-593Z-1fce341f is published, all guarded gates and 10 browser scenarios passed, center offset is 0 px, and live login/icons/health checks passed.
 2026-10-11 03:57 · Published isolated customize-opencode catalog localization release 2026-10-10T19-50-08-668Z-27fe7d44 with seven locale descriptions; guarded lint/typecheck, 1,940 frontend tests and two browser scenarios passed, live health and served Chinese translation are verified, and the prior Web release remains available for rollback.
-
 2026-10-11 03:55 · Wrote the reviewed six-task Web default-model implementation plan against the current deployed source, covering catalog race regression, save/recovery feedback, model inheritance, persisted user isolation, and bounded candidate verification; implementation has not started.
-
 2026-10-11 03:38 · Published SciKeel icon/alignment release 2026-10-10T19-23-38-323Z-ba133012 with a shared navy/white S vector mark, versioned public SVG/PNG favicons and centered sidebar branding; guarded gates and 10 browser scenarios passed, measured center offset is 0 px, anonymous icon requests and health are HTTP 200, and the prior release remains available for rollback.
-
 2026-10-11 03:23 · Diagnosed the deployed Web default-model catalog/switch race with two guarded deterministic probes and wrote the default-model Settings spec; production behavior is unchanged and the spec awaits user review.
-
 2026-10-11 03:14 · Added localized customize-opencode catalog descriptions in all seven locales and regression coverage for both built-in location formats and language switching; JSON validation passed, guarded tests are blocked by the occupied shared resource lock, and the change is not deployed.
-
 2026-10-11 02:18 · Published minimal centered SciKeel login release 2026-10-10T18-04-19-460Z-4fe1363a with only logo/account/password/submit and a fixed white palette independent of workbench choices; guarded suites, 10 candidate browser scenarios and desktop/phone login checks passed, live health is HTTP 200, screenshots are retained, and the previous release remains available for rollback.
-
 2026-10-11 00:37 · Published SciKeel/CDUT appearance release 2026-10-10T16-27-17-677Z-37068b8c with four peer choices, official optional campus artwork, unified login and font license; guarded suites and three-width browser checks passed, live resources/service are healthy, screenshots are retained for visual review, and the prior release remains available for rollback.
-
 2026-10-11 00:11 · Implemented four peer appearances, SciKeel/CDUT artwork and real login/preparation styling on the production-compatible appearance branch; targeted tests, guarded build and three-width browser checks passed, including the competing-system-listener regression, while full release verification remains in progress and production is unchanged.
-
 2026-10-10 22:49 · Completed and self-reviewed the requested Superpowers implementation plan for four peer SciKeel/CDUT appearances, including legacy-theme compatibility, official artwork, login/preparation continuity, mobile acceptance and guarded reversible publication; application code and production remain unchanged.
-
 2026-10-10 22:34 · Applied the Superpowers brainstorming workflow to the approved four-choice appearance direction and created a responsive four-scene SciKeel/CDUT interactive concept using supplied official artwork; source checks passed, browser acceptance is blocked by the occupied shared task lock, and production is unchanged.
-
 2026-10-10 21:16 · Resolved CDUT A1-08 clearance from original AI vector geometry: four safety bands each measure one fifth of the mark diameter, consistent with diameter 5x and clearance x; recorded the user-supplied 12 mm minimum and updated the standalone SciKeel concept without changing production.
-
 2026-10-10 19:16 · Published file-reference dedup release 2026-10-10T10-43-11-026Z-83d9d992 with signed image f92bf410 after all release gates passed; live full/bare file paths resolve identically with readable previews, temporary fixtures removed, and prior deployment retained for rollback.
-
 2026-10-10 18:22 · Aligned the SciKeel visual proposal with confirmed lasting CDUT attribution and the user-supplied 2026 campus AI competition notice, recommending the research innovation track and an inspectable data-to-report demo; isolated the two VI measurements needing review and recorded open-source originality eligibility as unspecified.
-
 2026-10-10 18:17 · Inventoried 12 CDUT PNGs and 53 outlined AI source files, prepared review-only derivatives and a four-screen light/dark SciKeel concept covering login, workspace, outputs and project context; exact VI clearance and minimum size remain unverified, and production was unchanged.
-
 2026-10-10 18:16 · Prepared production-baseline file-reference dedup patch cd7691d; 14 frontend and two managed gateway tests passed, hash-verified source tree uploaded for signed image CI 38044190032, and deployment remains unchanged.
-
 2026-10-10 17:54 · Fixed duplicate Web conversation file references by returning resolved workspace paths in file tickets; 14 frontend tests, typecheck and the backend alias/distinct-file regression passed, and the platform service was restored; not deployed.
-
 2026-10-10 17:44 · Located conversation artifact references, workspace @ selection and uploaded attachments; verified test1’s latest session has no user file attachments and identified its referenced dose-response outputs from the live sandbox database.
-
 2026-10-10 17:44 · Audited SciKeel Web branding: identified inherited public names, inconsistent marks, an unmounted research task panel and desktop-only provenance; created a standalone responsive blue-and-white concept without changing application code or deployment.
-
 2026-10-09 21:29 · Removed the persistent completed-delivery check control and published Web release 2026-10-09T13-22-04-332Z-275caa69; 1,927 frontend tests, lint/typecheck, bounded build and two mandatory browser scenarios passed, including absent success controls after completion/reload at phone and desktop widths; service health HTTP 200.
-
 2026-10-09 19:03 · Published Web notification lifecycle release 2026-10-09T10-45-54-186Z-69d8a690: 1,928 frontend, 415 platform, 43 release checks and nine mandatory browser scenarios passed; served bundle identity, HTTP 200 health and real OpenCode reply verified; previous release retained for rollback.
-
 2026-10-09 17:47 · Implemented Web notification lifecycle in isolated production-matched worktree (7470179): 1,928 frontend and 43 release checks passed, ten browser scenarios passed with zero skips, bounded Web build/lint/typecheck passed, and original platform service/health restored; candidate is not published.
-
 2026-10-09 16:53 · Authored and self-reviewed the Web notification lifecycle implementation plan (e382cb5), with ten tasks covering bounded feedback, scoped state, delivery-message provenance, and guarded zero-skip browser acceptance; no feature code changed.
-
 2026-10-09 16:32 · Authored and self-reviewed Web notification lifecycle spec (8f8bead): bounded dismissible feedback, compact unresolved states, and an explicit delivery-verification source/acceptance gate; spec review precedes implementation.
-
 2026-10-08 20:20 UTC · Published model timeout repair 2026-10-08T20-06-36-502Z-bca68870 after 1,911 frontend, 415 platform and seven zero-skip browser checks; installed OpenCode protocol fixtures and a 122-second active stream passed, live big-pickle completed with 120s first-byte/idle and 1h total limits, and prior release remains available for rollback.
-
 2026-10-08 20:06 UTC · Passed timeout candidate gates (1,911 frontend, 415 platform, seven browser scenarios); publication rolled back before model dispatch because scheduled fstrim broke the tenant backing reservation, then restored allocated backing blocks and excluded the reserved tenant volume from scheduled trimming.
-
 2026-10-09 02:24 · Implemented model broker timeout repair in isolated full-source worktree: active streams now use 120s first-byte/idle deadlines plus a 1-hour total ceiling, with regression tests; guarded test execution remains blocked by the active shared resource lock.
-
 2026-10-08 21:42 · Authored and self-reviewed Web model stream timeout spec (e216709): 120-second initial/inactivity deadlines, 20-minute per-request ceiling, adapter-verified errors, bounded cleanup and regression gates; implementation and deployment await user review.
-
 2026-10-08 21:10 · Traced latest dose-response session ECONNRESET to the deployed model broker's 120-second total streaming deadline: six attempts ended at 20:49 CST, final attempt lasted 120.020 seconds, and runtime stayed on generation 167; isolated reproduction was blocked by the active runtime resource lock.
-
 2026-10-08 18:09 · Published namespaced tool repair 2026-10-08T09-52-25-045Z-9c181780 with CI-attested de73e308 image after 1,908 frontend/400 platform/eight browser checks; all three zero-skip installed checks passed, including real Fledge checkpoint/delivery-prepare/fetch/search, 1280/360px question reply/revert recovery and confirmed Stop; previous question release retained as rollback.
-
 2026-10-08 17:51 · Native image CI 37755966551 and 1,908 frontend/400 platform/eight zero-skip browser gates passed; post-switch title fixture hit a logged 30,467ms synchronous-message 502 and publication auto-restored the previous release; async title transport repair passed 40 guarded regression checks.
-
 2026-10-08 17:21 · Remaining namespaced network/research/outcome/Stop repair passed 80 focused checks and seven publication checks; exact frozen candidate efb50e87 uploaded through hash-verified API fallback and CI 37755966551 is building the required native image, with production unchanged.
-
 2026-10-08 16:39 · Published question-ID repair 2026-10-08T08-22-59-264Z-9c21cfda after 1,908 frontend/397 platform/seven browser checks; both zero-skip live checks passed and Fledge emitted functions.question:0 at 1280/360px with successful recovery/reply/revert and no 400/502; previous Full-autonomy release retained as rollback.
-
 2026-10-08 16:31 · Reproduced the reported questionList 400 from native Fledge call ID functions.question:0 being validated as a route identifier; isolated metadata validation and namespaced question/permission regressions are in bounded candidate preparation, with separate network/research correlation compatibility risks recorded.
-
 2026-10-08 15:20 · Published Web Full autonomy defaults and hid the composer autonomy/agent-mode controls on the latest session-continuity baseline; full guarded checks and browser acceptance passed, and live API verification confirmed legacy migration plus idle Full defaults for new sessions.
-
 2026-10-08 14:27 · Published Web continuity release 2026-10-08T05-40-09-458Z-c4c108b2; full bounded preparation and both zero-skip Big Pickle live browser checks passed, including refresh/Stop and isolated 1280/360px question draft/navigation/46-second page absence/reply/revert persistence; rollback retained.
-
 2026-10-08 13:40 · Authorized continuity publication rolled back automatically after the synchronous real-model gate hit the gateway 30-second deadline; 43 workflow regressions now validate bounded asynchronous acceptance, and a replacement candidate plus isolated-account live question/revert browser acceptance are being prepared.
-
 2026-10-07 21:44 UTC · Prepared unpublished Web continuity candidate 2026-10-07T21-32-04-409Z-81c03ee0: lint/typecheck/build, 42 workflow, 1,906 frontend, 392 platform and eight required browser checks passed, including current-image question/fetch/four-mode research acceptance; production and rollback identities remain unchanged and publication/live-provider lifecycle approval is pending.
-
 2026-10-08 05:33 · Red/green gateway testing fixed first-prompt delivery being cut off before acknowledgement; 38 composer checks and bilingual 1280/390/320px research browser acceptance pass, with current-image native collaboration included in the new unpublished candidate verification.
-
 2026-10-08 04:56 · Implemented isolated Web continuity fixes; 314 focused frontend checks, 10 reply/session boundary checks and pinned OpenCode question/answer/revert acceptance passed, with desktop/phone starter recovery verified and final candidate preparation pending.
-
 2026-10-08 03:20 · Wrote and self-reviewed the user-approved Web session continuity implementation plan with 12 tasks covering browser-independent execution, session authority, question/permission recovery, verified revert, tool acceptance and bounded release preparation; implementation and deployment remain pending.
-
 2026-10-08 03:19 · Published Web chat defaults as 2026-10-07T19-01-38-837Z-4b8c2d9c (index-BtLqGU0l.js): full session tool permissions, hidden approval/assistant controls, lowest supported reasoning and clipboard fallback; 1,893 frontend, 371 platform and seven browser checks passed, real HTTP clipboard passed at 1280/390px, and Big Pickle live acceptance passed after restoring tenant backing-volume reservation without changing user data.
-
 2026-10-07 18:48 UTC · Recorded user-confirmed browser-close policy A in the Web session continuity spec: accepted execution survives browser absence, and complete-spec approval remains required before planning.
-
 2026-10-07 18:34 UTC · Drafted the Web session continuity spec after guarded diagnostics reproduced generation-related session 404 and lease-expiry cancellation and disproved a 30-second SSE cutoff; browser-close policy and user review remain pending, with no implementation or plan.
-
 2026-10-08 02:19 · Added a browser clipboard fallback for unavailable or rejected writeText, preserving selection and focus; 25 clipboard/message/selection tests, typecheck and lint passed; project service restored and batch deployment pending.
-
 2026-10-07 18:04 UTC · Reclaimed approximately 8.4 GiB of server disk space by trimming unused SciKeel volume blocks and clearing inactive package caches/debug dependencies; root usage fell from 98% to 76%, daily bounded trim is enabled, and deployed services, source, sessions, credentials and all image/recovery records remain intact.
-
 2026-10-08 01:36 · Hid the AI assistant selector in the Web chat composer; model and reasoning selectors remain available, lint passed, and batch deployment is pending.
-
 2026-10-08 00:34 · Prepared Web chat defaults in fix/web-chat-defaults-2026-10-08: automatic workspace tool permissions, hidden approval control, and lowest supported reasoning effort without Model default; 278 frontend and 39 backend checks, typecheck and lint passed; project service restored and batch deployment pending.
-
 2026-10-07 23:18 · Published Web tool reliability as release 2026-10-07T15-01-18-055Z-76b5c71c with CI-attested image f667376 and enabled administrator-selected Parallel search; real-model phone approval/search/fetch/denial/history, two-model title checks, five reloads and Stop all passed, with the previous release retained for rollback.
-
 2026-10-07 23:03 · Verified and installed CI-attested tool runtime f667376 after resumable artifact download and root-owned archive-helper synchronization; the coherent Web candidate is passing guarded publication checks with rollback data preserved.
-
 2026-10-07 22:37 · Preserved the deployed attachment fix, repaired profile-free runner startup with a red/green regression, and passed full dedicated CI (run 37636386366) for immutable Web tool source 736780c; the attested image is downloading through the existing publication pipeline.
-
 2026-10-07 21:56 Published Web empty-attachment-marker release 2026-10-07T13-26-33-747Z-de33e447 with 344 platform checks passing (six opt-in skips), three test1 Big Pickle greetings producing zero markers/tools at desktop/phone widths, and successful retained CSV reads and refreshed history; original conversations and credential records are preserved.
 2026-10-07 21:15 Implemented empty-turn marker suppression (5a36e6f) with 37 targeted and 344 platform checks passing (six opt-in skips); native greeting verification is blocked by the existing fixture startup timeout, the unchanged gateway service is restored, and publication remains pending.
 2026-10-07 20:01 · Enabled administrator-selected key-free Parallel search in the isolated Web candidate, repaired query-only approval metadata, and verified real native search/fetch through scoped EgressBroker grants plus 366 platform tests and native title/network regression; production is unchanged and CI authentication/attested-image publication remain pending.
-
 2026-10-07 17:32 · The isolated Web tool-reliability implementation passes 1,883 frontend tests, 363 platform tests, 41 release checks, pinned native title/network acceptance, bounded build/typecheck/lint and repeated 1280px/360px browser acceptance; publication remains gated on the CI-attested image and installed-stack acceptance.
-
 2026-10-07 16:39 · The isolated Web tool-reliability candidate passes native permission/proxy/TLS/retry acceptance, bounded Web build, and 1280px/360px live-history/Stop browser checks; production remains unchanged and the combined CI-attested runtime image is still required.
-
 2026-10-07 16:11 Wrote and self-reviewed the Web empty-attachment-marker spec and plan, covering validated marker generation, safe retries, retained files, legacy forks, native provider input and same-model greeting acceptance; implementation and publication remain pending user approval.
 2026-10-06 20:21 UTC Completed reasoning controls beyond Fledge with attested image 94c56012: Big Pickle and MiMo low/medium/high, Nemotron medium/high, and LongCat enabled/disabled appear in the public catalog and all return OK in live acceptance (Nemotron high passed after an upstream-overload retry); 339 platform tests and real wide/phone title checks pass, Space Bunny is unchanged.
 2026-10-06 20:04 UTC Wrote and self-reviewed the approved Web tool reliability implementation plan (f3bc595): 12 ordered tasks cover authorization, safe errors, pinned runtime/image identity, bounded recovery and live Web acceptance; only documentation was committed and implementation remains pending user approval.
@@ -186,71 +125,41 @@
 2026-10-06 23:32 Verified all 13 enabled Web models with real OpenCode prompts: six answered, six reproduced model_upstream_rejected, and Nemotron 3.5 Lightning produced no text within a 65-second recheck; confirmed broker error masking and missing reasoning metadata in managed profiles, with sanitized diagnostic evidence retained.
 2026-10-06 22:31 Published Web runtime recovery release 2026-10-06T14-15-30-645Z-55c2dfe7: 1,879 frontend, 334 platform, 40 workflow and five desktop browser checks pass; five live reloads restore models/history at 1.024/1.029 s median and 1.459/1.463 s maximum, ongoing OpenCode continuity and Stop pass, and original data plus verification conversation are retained.
 2026-10-06 16:17 · Completed and self-reviewed the Web refresh recovery/model-loading spec and plan, covering validated context, independent catalogs/history, bounded SDK reads, public advisory caching and mandatory staged-browser acceptance; implementation and deployment await user approval.
-
 2026-10-06 14:41 · Completed and self-reviewed the session-title spec and implementation plan: first-message model selection, authorized catalogs, durable retries, manual-rename protection, and coordinated patched-runtime release are specified; no implementation or deployment was performed.
-
 2026-10-06 14:41 · Published the bounded resumable Web workflow; verified 37 workflow/cache, 1,844 frontend, 332 platform and four browser checks, 122-second registered UI updates, stopped-service rollback, and unchanged tenant data.
 2026-10-05 22:05 UTC · Verified real failed-publication recovery to the original Web assets; fixed private drop-in inspection and startup readiness races with 36 passing bounded workflow/cache regressions.
 2026-10-05 19:53 UTC · Completed and self-reviewed the bounded Web update workflow spec and plan; implementation is authorized, with production source identity, conservative verification, vendor integrity, host limits and recovery requirements explicit.
-
 2026-10-05 19:38 UTC · Deployed both OpenCode continuous-use and Web interruption requirements with verified index-B76ghCzJ.js; guarded frontend baseline 1840/22 skips, final runtime follow-up 327 and platform follow-up 66 passed, lint/typecheck/build passed, and real test1 cross-model replies, 55-second switch/reload continuity plus Stop/reload passed with zero page errors and original user data preserved.
-
 2026-10-05 18:33 UTC · Restored managed worker startup after reboot by verifying tenant-data.img on /dev/loop6 and replacing stale /dev/loop11 configuration; installed trusted atomic device sync and volume-before-launcher/platform service ordering, with regression checks passing and user storage preserved.
-
 2026-10-05 17:51 UTC · Audited both October 5 requirements with Superpowers: 20 deployed-worktree broker checks and 310 runtime checks pass (309 in the main checkout); cumulative quota removal is deployed with prior admin continuation evidence but test1 acceptance remains incomplete, while the currently served index-JXHIAs-l.js still marks frozen live steps interrupted despite the source fix, so the Web correction is not deployed.
-
 2026-10-05 23:50 · Restored the public gateway (was 502 since the 23:23 reboot): scikeel-sandbox-host.service was dead, so its 172.31.240.1 bridge was absent and sandbox-control-plane.mjs:121 threw "managed brokers unavailable", crash-looping osd-platform 187 times; starting and enabling the sandbox host brought /health to 200 and the public entry to 303. Also closed a permission hole: ~/.claude/settings.json now denies bare find, direct vite/vitest/cargo and power commands (verified live).
-
 2026-10-05 23:15 · Blocker: the host hard-reset at 23:23:44 after total log silence from 23:13:01 (no OOM, no panic, no hung task). Cause not established from inside the guest — a guarded Vite build ran at 23:06 and Codex was active until 23:11; title summarization itself shows 12/12 sessions titled across both active workers, so it is not implicated.
-
 2026-10-05 19:57 · Removed and deployed hidden cumulative model-broker limits (8d2bc46); 20 broker tests and 312 platform tests pass with three existing skips, production OpenCode Big Pickle completes two gateway turns, resource guards/model access remain intact, and test1-specific continuation is unverified without its login credentials.
-
 2026-10-05 16:20 · Created and self-reviewed implementation plan (pending execution choice) to remove hidden cumulative model-broker limits while preserving per-request and concurrency protections.
-
 2026-10-05 19:14 · Stage 3 is deployed with verified source and Web bundle; real Big Pickle passed artifact/input/hash checks, but later live acceptance hit account budget limits. Temporary resources were removed and original files, sessions and messages preserved.
-
 2026-10-05 17:45 UTC · Stage 3 candidate image da0d7f0c is installed and attested, but live release acceptance was blocked by host_reserve_insufficient; restored Guided production source, image and Web entry, verified original files/sessions/messages unchanged, and revoked temporary verification logins.
-
 2026-10-05 16:12 · Revised and self-reviewed the OpenCode spec (4aa3114) after user clarification that SciKeel has no product quota concept; remove hidden cumulative broker restrictions directly, preserve instantaneous resource guards, and exclude future native-runtime quota policy.
-
 2026-10-05 16:08 · Wrote, self-reviewed and committed (e802ef5) the proposed OpenCode runtime usage-policy spec: unlimited cumulative usage through trusted runtime capabilities, preserved instantaneous resource guards and disabled native runtimes, with account-isolation and production continuation acceptance criteria.
-
 2026-10-05 15:33 · Confirmed three test1 conversations contain model_account_budget HTTP 429 responses from the deployed local ModelBroker; account counters accumulate request counts, maximum output-token reservations and bytes without a reset window or token reconciliation, while two October 5 conversations have successful replies.
-
 2026-10-04 20:27 UTC · Deployed Stage 2 Guided composer mode with signed image a75f591d (CI 37231291524); 286 platform and 267 focused Web tests, lint/guarded staged build and eight browser scenarios pass, real Big Pickle waits at two separately answered outcome checkpoints then handles an explicit single operation directly, and original files/conversations/messages remain preserved with temporary verification resources removed.
-
 2026-10-05 03:12 · Deployed Stage 1 Collaborative composer decisions against current shared-skills production with signed image 9a700fe5 (CI 37226319359); 281 platform checks, 273 focused Web checks, 17 image/runner regressions, lint/staged build and four browser scenarios pass, real Big Pickle waits and continues in one turn after an exact answer, and original files/sessions/messages plus old assets remain preserved.
-
 2026-10-05 00:00 · Published the catalog-only Web update for bundled-source classification and Chinese descriptions of nine skills/eight agents; bounded build and four controlled desktop/phone English/Chinese browser scenarios pass, production and reverse-proxy assets match the candidate, old assets remain available, and no runtime restart occurred.
 2026-10-04 23:49 · Added display-only Chinese descriptions for nine bundled skills and eight agents, filled empty descriptions and enabled localized search without changing runtime metadata; 31 catalog/locale tests, typecheck and lint pass, with the production bundle unchanged.
 2026-10-04 23:34 · Audited all nine repository and deployed-image skills as bundled, fixed gateway skills-core source classification in the project and collaboration worktree, and passed eight Web catalog tests plus lint; production bundle remains unchanged.
 2026-10-04 18:22 · Implemented Collaborative conversation checkpoints in the isolated conversation-collaboration-stage-1 worktree; pinned OpenCode suspension/manual-permission proof, 58 final platform checks, 242 frontend checks, four Web browser scenarios, lint and staged build pass, while an inherited Skills classification test and CI image/production activation remain pending.
 2026-10-04 16:25 · Released the user-authorized live lock holder and passed 20 history-plugin plus 15 research-task baseline checks; Stage 1 bridge integration is blocked by the deployed tenant runner’s fixed environment and strict profile allowlist, requiring an approved sandbox-runtime plan revision before product edits.
-
 2026-10-04 16:13 · Stage 1 implementation baseline is blocked before product edits: the guarded history-plugin test cannot acquire desktop-task.lock, held by a live osd-platform.service process; the resource guard remains intact and no live process was stopped.
-
 2026-10-04 15:46 · Recorded user approval of the collaboration-mode spec and locally committed the Stage 1 Collaborative implementation plan with six sequential tasks, reused composer/question UI and a pinned-runtime checkpoint capability gate; source-reference and whitespace checks pass, with product code unchanged.
-
 2026-10-04 14:55 · Wrote and locally committed the reviewed-for-consistency conversation collaboration modes draft spec covering composer selection, durable checkpoints and four delivery stages through full delegated autonomy; source references and whitespace checks pass, and user spec review precedes Stage 1 planning.
-
 2026-10-04 13:32 · Deployed the attested scientific image with offline ripgrep and tenant-scoped skill-directory permission rules; 258 platform checks and 17 focused checks pass, a real Big Pickle turn loads publication-figures/large-file/domain-check and reads both bundled resources while rejecting an ordinary state file, original file hashes/session IDs are preserved, and the verification conversation was removed with scoped manual approval.
-
 2026-10-04 12:54 · Fixed tenant skill-directory permission ordering and included measured offline ripgrep in the scientific image; policy and archive regressions fail on the old implementations and pass with the fixes, 258 platform checks plus 17 focused checks pass, and signed-image rebuilding remains pending after scoping the real runner acceptance to its workspace.
-
 2026-10-04 12:28 · Confirmed four publication-figures skill failures in the live user runtime with ripgrep execution errors and an empty managed binary cache; direct skill-file reads are separately blocked by the profile external_directory deny overriding earlier skill allow rules, while both shipped files exist and remain readable to the worker account; no runtime configuration or deployment changes made.
-
 2026-10-04 03:22 · Restored the original model.name display behavior and complete current OpenCode free catalog through startup metadata discovery; 257 platform tests pass (3 skipped), 1280px/390px browser checks render all 12 live models with exact official labels, and a newly restored MiMo-V2.6-Flash Free turn succeeds.
-
 2026-10-04 03:49 · Deployed one continuous login-button wait until workspace connection, session list and model choice are usable; public client assets preload on login, authenticated workspace startup begins at sign-in, metadata and session/catalog reads run concurrently, failure supports retry, and ordinary reload bypasses the login gate; 262 focused Web checks, 258 platform checks (three skipped), typecheck/lint/bounded build, 1280px/390px browser recovery/retry acceptance and live preload/bundle/access verification passed.
-
 2026-10-04 02:40 · Restored desktop OpenCode free-provider routing in Web, retaining bounded runtime attribution through the model broker; 252 platform tests pass (3 skipped), live catalog excludes GPT, and a real Big Pickle turn returns SCIKEEL_FREE_OK with Codex/Claude disabled.
-
 2026-10-04 02:50 · Deployed clear Web workspace/conversation loading messages, automatic retries after initial session-list failures, a bounded Web retry window and usable reconnect controls after failure; 256 focused tests, typecheck/lint/bounded build, 1280px/390px browser failure-recovery acceptance and authenticated live asset/access checks passed, with Claude/Codex disabled and rollback bundle/config retained.
-
 2026-10-04 02:16 · Deployed tenant-bound live OpenCode model catalogs with broker allowlist filtering, safe metadata and no static fallback; 251 platform tests pass (3 skipped), live APIs confirm OpenCode with Codex/Claude disabled, while the configured scikeel upstream still serves only five GPT models.
-
 2026-10-04 01:45 · Traced the deployed Web GPT-only model list to the managed gateway catalog and root-owned broker allowlist; Codex and Claude are disabled, and the same allowlist is injected into OpenCode worker profiles.
-
 2026-10-04 01:56 · Deployed a localized login-button spinner with duplicate-submit protection, reduced-motion support and page-return reset; confirmed Claude/Codex access disabled and skipped disabled catalog discovery and pre-rejection profile reads, with 43 workspace and 48 deployed-platform checks plus 1280px/390px/320px and no-JavaScript browser acceptance passing and live health/access verified.
 
 # Progress

@@ -25,6 +25,8 @@ import { WebTokenGate } from "@/components/web/WebTokenGate";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { findLeaf, leaves, useLayoutStore, type SplitDir } from "@/lib/layout";
 import { useNativeContextMenuGuard } from "@/lib/nativeMenu";
+import { WorkspacePendingActions } from "@/components/files/WorkspacePendingActions";
+import { WorkspaceDraftNavigation } from "@/components/files/WorkspaceDraftNavigation";
 
 export function AppShell() {
   useNotificationScope();
@@ -256,6 +258,8 @@ export function AppShell() {
               )}
             </div>
           )}
+          <WorkspacePendingActions />
+          {isPlatformWeb && <WorkspaceDraftNavigation />}
           <div className="min-h-0 flex-1">
             <Outlet />
           </div>

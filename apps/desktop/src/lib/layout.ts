@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import type { ArtifactBlock, FileRoot } from "@ai4s/shared";
 import type { ArtifactPanelPlacement, ArtifactPanelTarget } from "./artifacts";
+import { isPlatformWeb } from "./webMode";
+import { confirmWorkspaceDraftTargets } from "./workspaceDrafts";
+import type { WorkspaceScope } from "./workspaceManagement";
+import i18n from "@/i18n";
 
 /**
  * Ghostty/tmux-style recursive tiling layout. Each leaf holds one session; a
@@ -71,6 +75,17 @@ export interface PaneSplit {
 }
 
 export type PaneNode = PaneLeaf | PaneSplit;
+
+function canCloseLeaves(items:PaneLeaf[]) {
+  if(!isPlatformWeb)return true;
+  const targets:Array<{scope:WorkspaceScope;path?:string}>=[];
+  for(const leaf of items){
+    if(leaf.content?.kind==='editor')targets.push({scope:{kind:'account'},path:leaf.content.path});
+    else if(leaf.content?.kind==='files')targets.push({scope:{kind:'account'}});
+    else if(leaf.sessionId)targets.push({scope:{kind:'session',sessionId:leaf.sessionId}});
+  }
+  return confirmWorkspaceDraftTargets(i18n.t('nav:fileManagement.discardDraft'),targets);
+}
 
 /** A child may never be squeezed below this fraction of its split's axis. */
 export const MIN_SIZE = 0.1;
@@ -562,7 +577,7 @@ interface LayoutState {
   reset: (sessionId: string | null) => void;
   /** Drop leaves whose session vanished (deleted / not in `valid`), collapsing
    *  toward a single pane. A null-session (draft) leaf is always kept. */
-  pruneSessions: (valid: Set<string>) => void;
+  pruneSessions: (valid: Set<string>, removedDrafts?: Set<string>) => void;
 }
 
 export const useLayoutStore = create<LayoutState>((set, get) => {
@@ -723,6 +738,8 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     },
 
     closeGroup: (groupId) => {
+      const group=get().groups.find(item=>item.id===groupId);
+      if(!group || !canCloseLeaves(group.tree?leaves(group.tree):[]))return;
       set((s) => {
         const ephemeralGroupId = s.ephemeralGroupId === groupId ? null : s.ephemeralGroupId;
         if (s.groups.length <= 1) {
@@ -784,6 +801,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
         ? leaves(tree).find((leaf) => leaf.content && isDocument(leaf.content))
         : undefined;
       if (!existing) return get().openContentPane(content);
+      if(JSON.stringify(existing.content)!==JSON.stringify(content) && !canCloseLeaves([existing]))return existing.id;
       const swap = (node: PaneNode): PaneNode =>
         node.kind === "leaf"
           ? node.id === existing.id
@@ -1001,6 +1019,8 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
     closePane: (leafId) => {
       const { tree, focusedLeafId } = get();
       if (!tree) return;
+      const leaf=findLeaf(tree,leafId);
+      if(!leaf || !canCloseLeaves([leaf]))return;
       // Closing the last pane empties the group (shows onboarding) rather than
       // being disallowed — a group is allowed to be empty.
       if (leaves(tree).length <= 1) {
@@ -1046,15 +1066,17 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       commitActive({ zoomedLeafId: get().zoomedLeafId === target ? null : target });
     },
     reset: (sessionId) => {
+      const tree=get().tree;
+      if(tree && !canCloseLeaves(leaves(tree)))return;
       const r = makeLeaf(sessionId);
       commitActive({ tree: r, focusedLeafId: r.id, zoomedLeafId: null });
     },
-    pruneSessions: (valid) =>
+    pruneSessions: (valid, removedDrafts) =>
       // Prune EVERY group, not just the active one — a deleted session must not
       // linger in a background group's pane. A still-valid zoomed/focused leaf
       // is preserved; only removed leaves reset those.
       set((s) => {
-        const live = (l: { sessionId: string | null }) => l.sessionId === null || valid.has(l.sessionId);
+        const live = (l: { id:string;sessionId: string | null }) => !removedDrafts?.has(l.id) && (l.sessionId === null || valid.has(l.sessionId));
         let changed = false;
         const groups = s.groups.map((g) => {
           if (!g.tree) return g;

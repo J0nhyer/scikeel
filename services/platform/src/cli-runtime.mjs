@@ -766,6 +766,7 @@ export class CliRuntimeManager {
     }
     const safeDirectory = resolve(directory);
     if (!isWithin(workspaceDir, safeDirectory)) throw issue("invalid_directory", "session directory is outside the user workspace", 403);
+    await this.workspaceAccess?.(userId,safeDirectory);
     const timestamp = now();
     const id = `ses_cli_${randomUUID().replaceAll("-", "")}`;
     const session = {
@@ -795,6 +796,7 @@ export class CliRuntimeManager {
     if (!session || session.runtime !== this.runtimeForUser(userId)) {
       throw issue("unknown_session", "session not found in the selected runtime", 404);
     }
+    await this.workspaceAccess?.(userId,session.directory);
     return { state, session };
   }
 
@@ -803,7 +805,12 @@ export class CliRuntimeManager {
     const runtime = this.runtimeForUser(userId);
     const query = typeof search === "string" ? search.trim().toLowerCase() : "";
     const max = Math.min(Math.max(Number(limit) || 200, 1), 500);
-    return [...state.sessions.values()]
+    const visible=[];
+    for(const session of state.sessions.values()) {
+      if(session.runtime!==runtime)continue;
+      try{await this.workspaceAccess?.(userId,session.directory);visible.push(session);}catch(error){if(error.code!=="project_trashed")throw error;}
+    }
+    return visible
       .filter((session) => session.runtime === runtime)
       .filter((session) => !query || session.title.toLowerCase().includes(query))
       .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -811,7 +818,14 @@ export class CliRuntimeManager {
       .map(publicSession);
   }
 
-  emit(userId, event) {
+  emit(userId,event) {
+    if(!this.workspaceAccess)return this.emitVisible(userId,event);
+    const id=event.properties?.sessionID??event.properties?.info?.id??event.properties?.part?.sessionID;
+    const session=id?this.userStates.get(userId)?.sessions.get(id):null;
+    if(!session)return this.emitVisible(userId,event);
+    void this.workspaceAccess(userId,session.directory).then(()=>this.emitVisible(userId,event)).catch(()=>{});
+  }
+  emitVisible(userId, event) {
     const subscribers = this.subscribers.get(userId);
     if (!subscribers) return;
     const sessionId = event.properties?.sessionID;
@@ -1307,6 +1321,7 @@ export class CliRuntimeManager {
         const { state, session } = await this.getOwnedSession(userId, body.sessionID);
         const destination = body.destination?.directory;
         if (typeof destination !== "string" || !isWithin(workspaceDir, destination)) throw issue("invalid_directory", "destination is outside the user workspace", 403);
+        await this.workspaceAccess?.(userId,resolve(destination));
         session.directory = resolve(destination);
         session.updatedAt = now();
         await this.persistUser(state);
@@ -1465,31 +1480,33 @@ export class CliRuntimeManager {
       return true;
     }
     if(this.sandboxJobs && path==="/permission" && request.method==="GET") {
-      sendJson(response,200,[...this.nativeApprovals.values()].filter(value=>value.userId===userId).map(({userId:_owner,...value})=>value));return true;
+      sendJson(response,200,await this.visibleInteractions(userId,this.nativeApprovals));return true;
     }
     const nativeReply=this.sandboxJobs && /^\/permission\/([a-f0-9]{64})\/reply$/.exec(path);
     if(nativeReply && request.method==="POST") {
       try {
         const value=await jsonBody(request);const pending=this.nativeApprovals.get(nativeReply[1]);
         if(!pending || pending.userId!==userId || !["once","reject"].includes(value.reply))throw issue("permission_unavailable","permission unavailable",403);
+        await this.getOwnedSession(userId,pending.sessionID);
         await this.sandboxJobs.approve({userId,sessionId:pending.sessionID,id:pending.id,decision:value.reply==="once"?"accept":"decline"});
         this.nativeApprovals.delete(pending.id);this.emit(userId,{type:"permission.replied",properties:{sessionID:pending.sessionID,requestID:pending.id,reply:value.reply}});
         sendJson(response,200,true);
-      }catch(error){sendJson(response,error.status??403,{error:"permission unavailable"});}
+      }catch(error){sendJson(response,error.statusCode??error.status??403,{error:"permission unavailable"});}
       return true;
     }
     if(this.sandboxJobs && path==="/question" && request.method==="GET") {
-      sendJson(response,200,[...this.nativeQuestions.values()].filter(value=>value.userId===userId).map(({userId:_owner,...value})=>value));return true;
+      sendJson(response,200,await this.visibleInteractions(userId,this.nativeQuestions));return true;
     }
     const questionReply=this.sandboxJobs && /^\/question\/([a-f0-9]{64})\/(reply|reject)$/.exec(path);
     if(questionReply && request.method==="POST") {
       try {
         const value=await jsonBody(request);const pending=this.nativeQuestions.get(questionReply[1]);const reject=questionReply[2]==="reject";
         if(!pending || pending.userId!==userId || Object.keys(value).some(key=>key!=="answers"))throw issue("question_unavailable","question unavailable",403);
+        await this.getOwnedSession(userId,pending.sessionID);
         await this.sandboxJobs.answer({userId,sessionId:pending.sessionID,id:pending.id,...(reject?{reject:true}:{answers:value.answers})});
         this.nativeQuestions.delete(pending.id);this.emit(userId,{type:reject?"question.rejected":"question.replied",properties:{sessionID:pending.sessionID,requestID:pending.id}});
         sendJson(response,200,true);
-      }catch(error){sendJson(response,error.status??403,{error:"question unavailable"});}
+      }catch(error){sendJson(response,error.statusCode??error.status??403,{error:"question unavailable"});}
       return true;
     }
     if ((path === "/question" || path === "/permission") && request.method === "GET") {
@@ -1501,6 +1518,16 @@ export class CliRuntimeManager {
       return true;
     }
     return false;
+  }
+
+  async visibleInteractions(userId,requests) {
+    const visible=[];
+    for(const {userId:owner,...value}of requests.values()){
+      if(owner!==userId)continue;
+      try{await this.getOwnedSession(userId,value.sessionID);visible.push(value);}
+      catch(error){if(!["project_trashed","unknown_session"].includes(error.code))throw error;}
+    }
+    return visible;
   }
 
   async close() {

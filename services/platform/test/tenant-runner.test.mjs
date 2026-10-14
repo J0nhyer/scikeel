@@ -10,6 +10,12 @@ import { fileURLToPath } from "node:url";
 
 const manifest = { schema: 1, instanceId: "user-a", generation: 1, workspaceDir: "/tenant/workspace", stateDir: "/tenant/state", home: "/tenant/home", scratchDir: "/tenant/scratch" };
 const token = "a".repeat(64);
+test('managed text accepts two MiB of escaped UTF-8 while other request budgets stay unchanged',async t=>{
+ const runner=new TenantRunner({manifest,token,files:{call:async request=>({size:Buffer.byteLength(request.text)})}});
+ await runner.listen({host:'127.0.0.1',port:0});t.after(()=>runner.close());
+ const response=await fetch(`http://127.0.0.1:${runner.server.address().port}/files`,{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({instanceId:'user-a',generation:1,operation:'createText',root:'workspace',path:'a',text:'\u0001'.repeat(2*1024**2)})});
+ assert.equal(response.status,200);assert.equal((await response.json()).size,2*1024**2);
+});
 test("runner listens on the assigned alternate address used by production acceptance", async (t) => {
   const runner = new TenantRunner({manifest,token});t.after(()=>runner.close());
   await runner.listen({host:"127.0.0.2",port:0});

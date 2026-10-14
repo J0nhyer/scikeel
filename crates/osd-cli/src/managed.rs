@@ -128,6 +128,49 @@ mod tests {
         assert!(dispatch(&policy,serde_json::json!({"operation":"remove","root":"workspace","path":"binary"})).is_ok());
         std::fs::remove_file(root.join("escape")).unwrap();std::fs::remove_file(root.join("owned.txt")).unwrap();std::fs::remove_dir(root).unwrap();
     }
+
+    #[test]
+    fn workspace_management_no_replace_move_and_conditional_save() {
+        let fixture=ManagedFixture::new();
+        let policy=osd_core::file_policy::ManagedFilePolicy::new("a".into(),1,vec![("workspace".into(),fixture.workspace.clone())]).unwrap();
+        assert!(dispatch(&policy,serde_json::json!({"operation":"createText","root":"workspace","path":"notes.txt","text":"original"})).is_ok());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"createText","root":"workspace","path":"notes.txt","text":"overwrite"})).is_err());
+        let text=dispatch(&policy,serde_json::json!({"operation":"readText","root":"workspace","path":"notes.txt"})).unwrap();
+        assert_eq!(text["text"],"original");assert_eq!(text["revision"].as_str().unwrap().len(),64);
+        std::fs::write(fixture.workspace.join("notes.txt"),"AI changed").unwrap();
+        assert!(dispatch(&policy,serde_json::json!({"operation":"saveTextIfRevision","root":"workspace","path":"notes.txt","text":"lost edit","expectedRevision":text["revision"]})).is_err());
+        assert_eq!(std::fs::read_to_string(fixture.workspace.join("notes.txt")).unwrap(),"AI changed");
+        let current=dispatch(&policy,serde_json::json!({"operation":"readText","root":"workspace","path":"notes.txt"})).unwrap();
+        assert!(dispatch(&policy,serde_json::json!({"operation":"saveTextIfRevision","root":"workspace","path":"notes.txt","text":"saved edit","expectedRevision":current["revision"]})).is_ok());
+        let stat=dispatch(&policy,serde_json::json!({"operation":"stat","root":"workspace","path":"notes.txt"})).unwrap();
+        assert_eq!(stat["identity"].as_str().unwrap().len(),64);
+        std::fs::write(fixture.workspace.join("collision.txt"),"keep me").unwrap();
+        assert!(dispatch(&policy,serde_json::json!({"operation":"moveNoReplace","root":"workspace","path":"notes.txt","destinationPath":"collision.txt","expectedRevision":stat["revision"]})).is_err());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"moveNoReplace","root":"workspace","path":"notes.txt","destinationPath":"renamed.txt","expectedRevision":stat["revision"]})).is_ok());
+        let moved=dispatch(&policy,serde_json::json!({"operation":"stat","root":"workspace","path":"renamed.txt"})).unwrap();
+        assert_eq!(moved["identity"],stat["identity"]);
+        assert_eq!(std::fs::read_to_string(fixture.workspace.join("renamed.txt")).unwrap(),"saved edit");
+        assert_eq!(std::fs::read_to_string(fixture.workspace.join("collision.txt")).unwrap(),"keep me");
+        assert!(!fixture.workspace.join("notes.txt").exists());
+    }
+    #[test]
+    fn workspace_management_rejects_linked_parents_special_files_and_descendant_moves() {
+        let fixture=ManagedFixture::new();
+        let policy=osd_core::file_policy::ManagedFilePolicy::new("a".into(),1,vec![("workspace".into(),fixture.workspace.clone())]).unwrap();
+        std::fs::create_dir(fixture.workspace.join("folder")).unwrap();
+        std::fs::write(fixture.workspace.join("folder/notes.txt"),"owned").unwrap();
+        std::os::unix::fs::symlink("folder",fixture.workspace.join("alias")).unwrap();
+        std::os::unix::fs::symlink("folder/notes.txt",fixture.workspace.join("linked.txt")).unwrap();
+        assert!(dispatch(&policy,serde_json::json!({"operation":"stat","root":"workspace","path":"alias/notes.txt"})).is_err());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"readText","root":"workspace","path":"linked.txt"})).is_err());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"createText","root":"workspace","path":"alias/new.txt","text":"bad"})).is_err());
+        let stat=dispatch(&policy,serde_json::json!({"operation":"stat","root":"workspace","path":"folder"})).unwrap();
+        assert!(dispatch(&policy,serde_json::json!({"operation":"moveNoReplace","root":"workspace","path":"folder","destinationPath":"folder/child","expectedRevision":stat["revision"]})).is_err());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"readText","root":"state","path":"folder/notes.txt"})).is_err());
+        assert!(dispatch(&policy,serde_json::json!({"operation":"stat","root":"workspace","path":"folder","extra":true})).is_err());
+        std::fs::write(fixture.workspace.join("binary"),[0xff,0xfe]).unwrap();
+        assert!(dispatch(&policy,serde_json::json!({"operation":"readText","root":"workspace","path":"binary"})).is_err());
+    }
 }
 use std::{fs::File,io::{Read,Write},os::{fd::{AsRawFd,FromRawFd},unix::fs::MetadataExt},path::{Component,Path,PathBuf}};
 use osd_core::file_policy::{ManagedFilePolicy, WORKSPACE_ROOT};
@@ -183,18 +226,28 @@ pub fn policy(value:&Value)->Result<ManagedFilePolicy,String> {
 }
 fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
     let object=value.as_object().ok_or("invalid file operation")?;
-    if object.keys().any(|key|!["operation","root","path","text","offset","limit","bytes"].contains(&key.as_str())) || value["root"]!=WORKSPACE_ROOT {
+    if object.keys().any(|key|!["operation","root","path","text","offset","limit","bytes","expectedRevision","destinationPath","expectedSourceRevision"].contains(&key.as_str())) || value["root"]!=WORKSPACE_ROOT {
         return Err("invalid file operation".into());
     }
     let path=value["path"].as_str().ok_or("invalid file path")?;
     let allowed: &[&str] = match value["operation"].as_str() {
         Some("readChunk") => &["operation","root","path","offset","limit"],
         Some("writeChunk") => &["operation","root","path","offset","bytes"],
-        Some("write") => &["operation","root","path","text"],
+        Some("write"|"createText") => &["operation","root","path","text"],
+        Some("saveTextIfRevision") => &["operation","root","path","text","expectedRevision"],
+        Some("moveNoReplace") => &["operation","root","path","destinationPath","expectedRevision"],
+        Some("replaceTextFromStaging") => &["operation","root","path","destinationPath","expectedRevision","expectedSourceRevision"],
         _ => &["operation","root","path"],
     };
     if object.keys().any(|key| !allowed.contains(&key.as_str())) {return Err("invalid file fields".into());}
     let result=match value["operation"].as_str() {
+        Some("snapshot") => json!({"committed":policy.workspace_snapshot("workspace",path).map_err(management_error)?}),
+        Some("stat") => serde_json::to_value(policy.workspace_stat("workspace",path).map_err(management_error)?).map_err(|_|"invalid stat response")?,
+        Some("readText") => serde_json::to_value(policy.workspace_read_text("workspace",path).map_err(management_error)?).map_err(|_|"invalid text response")?,
+        Some("createText") => serde_json::to_value(policy.workspace_create_text("workspace",path,value["text"].as_str().ok_or("invalid file content")?).map_err(management_error)?).map_err(|_|"invalid text response")?,
+        Some("saveTextIfRevision") => serde_json::to_value(policy.workspace_save_text("workspace",path,value["text"].as_str().ok_or("invalid file content")?,value["expectedRevision"].as_str().ok_or("missing revision")?).map_err(management_error)?).map_err(|_|"invalid text response")?,
+        Some("replaceTextFromStaging") => serde_json::to_value(policy.workspace_replace_text("workspace",path,value["destinationPath"].as_str().ok_or("missing destination")?,value["expectedRevision"].as_str().ok_or("missing revision")?,value["expectedSourceRevision"].as_str().ok_or("missing source revision")?).map_err(management_error)?).map_err(|_|"invalid text response")?,
+        Some("moveNoReplace") => serde_json::to_value(policy.workspace_move("workspace",path,value["destinationPath"].as_str().ok_or("missing destination")?,value["expectedRevision"].as_str().ok_or("missing revision")?).map_err(management_error)?).map_err(|_|"invalid stat response")?,
         Some("readChunk") => {
             let offset=value["offset"].as_u64().ok_or("invalid chunk offset")?;
             let limit=value["limit"].as_u64().filter(|value|*value>0 && *value<=256*1024).ok_or("invalid chunk size")?;
@@ -224,11 +277,23 @@ fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
         _=>return Err("unsupported file operation".into()),
     };Ok(result)
 }
+fn management_error(error:std::io::Error)->String {
+    match error.kind(){
+        std::io::ErrorKind::NotFound=>"entry_not_found",
+        std::io::ErrorKind::AlreadyExists=>"name_conflict",
+        std::io::ErrorKind::InvalidData if error.to_string()=="revision_conflict"=>"revision_conflict",
+        _=>"entry_unavailable",
+    }.into()
+}
 pub fn file_rpc()->Result<(),String> {
     let trusted=manifest()?;let policy=policy(&trusted)?;
-    let mut bytes=Vec::new();std::io::stdin().take(4*1024*1024+1).read_to_end(&mut bytes).map_err(|_|"file input unavailable")?;
-    if bytes.len()>4*1024*1024 {return Err("file input too large".into());}
+    let mut bytes=Vec::new();std::io::stdin().take(16*1024*1024+1).read_to_end(&mut bytes).map_err(|_|"file input unavailable")?;
+    if bytes.len()>16*1024*1024 {return Err("file input too large".into());}
     let request=serde_json::from_slice(&bytes).map_err(|_|"invalid file request")?;
-    let response=dispatch(&policy,request)?;
+    let response=match dispatch(&policy,request){
+        Ok(value)=>value,
+        Err(code) if ["entry_not_found","name_conflict","revision_conflict","entry_unavailable"].contains(&code.as_str())=>json!({"error":{"code":code}}),
+        Err(error)=>return Err(error),
+    };
     std::io::stdout().write_all(&serde_json::to_vec(&response).map_err(|_|"invalid file response")?).map_err(|_|"file output unavailable".into())
 }

@@ -102,7 +102,7 @@ export function installGatewayAuthGuard(): void {
     const parsed = new URL(url, origin);
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     if (isPlatformWeb && parsed.origin === origin && platformWorkspaceGeneration !== null && !["GET", "HEAD"].includes(method) &&
-        !parsed.pathname.startsWith("/auth/") && !parsed.pathname.startsWith("/api/workspace/") && !parsed.pathname.startsWith("/api/admin/")) {
+        !parsed.pathname.startsWith("/auth/") && parsed.pathname!=="/api/workspace/recover" && !parsed.pathname.startsWith("/api/admin/")) {
       const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
       if (!headers.has("x-scikeel-runtime-generation")) headers.set("x-scikeel-runtime-generation", String(platformWorkspaceGeneration));
       init = { ...init, headers };

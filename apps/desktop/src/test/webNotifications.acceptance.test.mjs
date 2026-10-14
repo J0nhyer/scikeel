@@ -38,6 +38,7 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
         json({ available: true, state: { version: 1, mode: 'autonomous', phase: pending ? 'waiting_input' : 'idle', revision, execution: 1, decisions: [], pending, delivery } }); return;
       }
       const data = {
+        '/api/workspace/operations': {items:[],resolved:[],nextCursor:null},
         '/v1/whoami': { directory: '/tenant/workspace', mode: 'full' }, '/api/me': { user: { id: 'user_fixture', username: 'fixture', role: 'admin' } },
         '/api/runtime': { runtime: 'opencode', kind: 'opencode', context: { instanceId: 'user-fixture', generation: 1 }, available: [{ runtime: 'opencode', kind: 'opencode', enabled: true }] },
         '/config/providers': { providers: [{ id: 'fixture', name: 'Fixture', models: { model: { id: 'model', name: 'Fixture model' } } }], connected: ['fixture'], default: { fixture: 'model' } },
@@ -59,7 +60,7 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
         await context.addInitScript(() => localStorage.setItem('ai4s.locale', 'en'));
         const page = await context.newPage(); await page.clock.install(); const errors = []; page.on('pageerror', error => errors.push(error.message));
         await page.goto(`${origin}/live/${session.id}`);
-        await page.getByText('Original assistant result remains available.', { exact: true }).waitFor();
+        await page.getByText('Original assistant result remains available.', { exact: true }).waitFor().catch(async error=>{console.error('Notification candidate diagnostics:',await page.locator('body').innerText(),errors);throw error;});
         await page.locator('textarea').first().waitFor({ state: 'visible' });
         const composer = page.locator('[data-notification-avoid]');
         const originalComposer = await composer.boundingBox();

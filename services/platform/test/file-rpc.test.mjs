@@ -29,3 +29,31 @@ test("binary chunks and private working-copy cleanup have bounded fixed contract
     {operation:"readChunk",offset:-1,limit:1},{operation:"readChunk",offset:0,limit:256*1024+1},
     {operation:"remove",text:"extra"}])assert.throws(()=>fileRequest({root:"workspace",path:"attachments/owned",...value}));
 });
+
+test('workspace management RPC has strict revision-bound no-replace contracts',()=>{
+ const revision='a'.repeat(64);
+ for(const request of [{operation:'stat',root:'workspace',path:'notes.txt'},{operation:'readText',root:'workspace',path:'notes.txt'},
+  {operation:'createText',root:'workspace',path:'notes.txt',text:'new'},
+  {operation:'moveNoReplace',root:'workspace',path:'notes.txt',destinationPath:'reports/notes.txt',expectedRevision:revision},
+  {operation:'saveTextIfRevision',root:'workspace',path:'notes.txt',text:'saved',expectedRevision:revision}])assert.deepEqual(fileRequest(request),request);
+ for(const request of [{operation:'moveNoReplace',root:'workspace',path:'a',destinationPath:'../peer',expectedRevision:revision},
+  {operation:'moveNoReplace',root:'workspace',path:'a',destinationPath:'b'},
+  {operation:'saveTextIfRevision',root:'workspace',path:'a',text:'saved',expectedRevision:'bad'},
+  {operation:'createText',root:'workspace',path:'a',text:'x'.repeat(2*1024**2+1)},
+  {operation:'stat',root:'workspace',path:'a',destinationPath:'b'},
+  {operation:'readText',root:'state',path:'a'}])assert.throws(()=>fileRequest(request));
+});
+test('native management errors retain only approved public codes',async()=>{
+ const helper=new FileRpc({spawnImpl:()=>spawn(process.execPath,['-e','process.stdout.write(JSON.stringify({error:{code:"revision_conflict"}}))'],{detached:true,stdio:['pipe','pipe','pipe']})});
+ await assert.rejects(helper.call({operation:'stat',root:'workspace',path:'a'}),{code:'revision_conflict',statusCode:409});
+});
+test('a two-MiB UTF-8 snapshot remains bounded after worst-case JSON escaping',async()=>{
+ const helper=new FileRpc({spawnImpl:()=>spawn(process.execPath,['-e','process.stdout.write(JSON.stringify({text:"\\u0001".repeat(2*1024**2),revision:"a".repeat(64)}))'],{detached:true,stdio:['pipe','pipe','pipe']})});
+ const result=await helper.call({operation:'readText',root:'workspace',path:'a'});
+ assert.equal(result.text.length,2*1024**2);
+});
+test('staged text replacement binds both source and destination revisions',()=>{
+ const request={operation:'replaceTextFromStaging',root:'workspace',path:'.scikeel/workspace-management/staging/save-a/payload',destinationPath:'notes.md',expectedRevision:'a'.repeat(64),expectedSourceRevision:'b'.repeat(64)};
+ assert.deepEqual(fileRequest(request),request);
+ for(const change of [{expectedSourceRevision:undefined},{expectedRevision:'invalid'},{destinationPath:'../peer'},{path:'unrelated.txt'}])assert.throws(()=>fileRequest({...request,...change}));
+});

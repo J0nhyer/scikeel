@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { mkdir, readFile, writeFile, lstat, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, lstat, unlink, readdir, open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
@@ -12,6 +13,29 @@ import { verifyTaskLocks } from './web-build.mjs';
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dropIn = '/etc/systemd/system/osd-platform.service.d/zz-scikeel-web-release.conf';
 const marker = '# SciKeel managed Web release';
+export async function lifecycleRollbackPolicy(sourceRoot,dataDir) {
+  const stateDirectory=join(dataDir,'workspace-management');
+  const info=await lstat(stateDirectory).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+  if(!info)return {compatible:true,requiredSchema:0,supportedSchema:0};
+  if(!info.isDirectory() || info.isSymbolicLink())return {compatible:false,reason:'invalid_workspace_state'};
+  const files=await readdir(stateDirectory,{withFileTypes:true});
+  if(files.length>10000)return {compatible:false,reason:'workspace_state_inventory_limit'};
+  let requiredSchema=0;
+  for(const entry of files)if(entry.name.endsWith('.json')){
+    if(!entry.isFile())return {compatible:false,reason:'invalid_workspace_state'};
+    const file=await open(join(stateDirectory,entry.name),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    try{
+      const metadata=await file.stat();
+      if(!metadata.isFile() || metadata.nlink!==1 || metadata.size>8*1024**2)return {compatible:false,reason:'invalid_workspace_state'};
+      let value;try{value=JSON.parse(await file.readFile('utf8'));}catch{return {compatible:false,reason:'invalid_workspace_state'};}
+      if(!Number.isSafeInteger(value.schema) || value.schema<1)return {compatible:false,reason:'invalid_workspace_state'};
+      requiredSchema=Math.max(requiredSchema,value.schema);
+    }finally{await file.close();}
+  }
+  const source=await readFile(join(sourceRoot,'services/platform/src/workspace-state.mjs'),'utf8').catch(error=>{if(error.code==='ENOENT')return '';throw error;});
+  const supportedSchema=Number(/export const WORKSPACE_LIFECYCLE_SCHEMA\s*=\s*(\d+)\s*;/.exec(source)?.[1]??0);
+  return {compatible:supportedSchema>=requiredSchema,requiredSchema,supportedSchema};
+}
 export function replaceEnvironmentValue(text, key, value) {
   if (!['PLATFORM_WEB_ROOT', 'PLATFORM_SANDBOX_IMAGE_DIGEST'].includes(key) || /[\r\n\0%\s'"\\]/.test(value)) throw new Error('Unsafe managed configuration value');
   const lines = text.split('\n'); const matches = lines.filter((line) => line.startsWith(key + '='));
@@ -225,7 +249,17 @@ async function deploymentOperations(candidate, store) {
     restorePrevious: async (value) => {
       if (value.production.managedEnv !== '/etc/scikeel/platform-sandbox.env') throw new Error('Unsafe recovery configuration path');
       candidate.status = 'recovering'; await writeManifest(path, candidate);
+      // Freeze lifecycle metadata before deciding whether an old backend may serve it.
+      command('sudo',['-n','systemctl','stop','osd-platform.service']);
       let environment = await privateRead(value.production.managedEnv);
+      const dataDir=environmentValue(environment,'PLATFORM_DATA_DIR')??'/srv/osd/platform';
+      if(!dataDir.startsWith('/') || resolve(dataDir)!==dataDir)throw new Error('Unsafe workspace lifecycle state path');
+      const policy=await lifecycleRollbackPolicy(value.sourceBackup?.root??value.production.source,dataDir).catch(()=>({compatible:false,reason:'workspace_state_unverified'}));
+      if(!policy.compatible){
+        candidate.status='rollback-maintenance';candidate.rollback.lifecyclePolicy=policy;
+        await writeManifest(path,candidate);
+        throw Object.assign(new Error('Rollback held in maintenance: previous source cannot enforce workspace lifecycle state'),{code:'WORKSPACE_ROLLBACK_MAINTENANCE'});
+      }
       environment = replaceEnvironmentValue(environment, 'PLATFORM_WEB_ROOT', value.production.webRoot);
       if (value.production.imageDigest) environment = replaceEnvironmentValue(environment, 'PLATFORM_SANDBOX_IMAGE_DIGEST', value.production.imageDigest);
       else environment = environment.split('\n').filter((line) => !line.startsWith('PLATFORM_SANDBOX_IMAGE_DIGEST=')).join('\n');
@@ -301,7 +335,7 @@ export async function deploymentCommand(operation, id, { store, locked = false }
     const matchesCandidate = actual && actual.source === expectedSource && actual.webRoot === expectedWebRoot && actual.imageDigest === candidate.artifacts.image.imageDigest && actual.platformFingerprint === (candidate.selection.deployPlatform ? fingerprintFiles(candidatePlatform) : candidate.production.platformFingerprint) && actual.webFingerprint === (candidate.artifacts.web?.fingerprint ?? candidate.production.webFingerprint);
     const matchesRecovery = actual && previous.sourceBackup && actual.source === previous.sourceBackup.root && actual.webRoot === previous.production.webRoot && actual.imageDigest === previous.production.imageDigest && actual.platformFingerprint === previous.production.platformFingerprint && actual.webFingerprint === previous.production.webFingerprint;
     if (actual && !matchesCandidate && !matchesRecovery && productionFingerprint(actual) !== productionFingerprint(previous.production)) throw new Error('Recovery target does not match the running deployment');
-    if (pointer?.id !== id && (!['publishing', 'published', 'recovering'].includes(candidate.status) || (pointer && pointer.id !== previous.pointer?.id))) throw new Error('Rollback must reference the current publication or incomplete transaction');
+    if (pointer?.id !== id && (!['publishing', 'published', 'recovering','rollback-maintenance'].includes(candidate.status) || (pointer && pointer.id !== previous.pointer?.id))) throw new Error('Rollback must reference the current publication or incomplete transaction');
     await ops.restorePrevious(previous); await ops.restartPlatform(); await ops.verifyPrevious(previous);
   }
   console.log(JSON.stringify({ release: id, status: candidate.status, deployment: candidate.deployment?.production, rollback: candidate.rollback?.production }));

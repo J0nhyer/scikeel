@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-14-admin-agent-analytics-design.md`.
 **Design reference:** `examples/agent-analytics-preview/`, published at `/preview/agent-analytics`.
-**Status:** Implementation in progress on `feat/admin-agent-analytics-20261014`, isolated at `.worktrees/admin-agent-analytics-20261014`. The effective production baseline was materialized and hash-checked before edits. An earlier focused run passed 8 backend and 51 frontend tests; subsequent review fixes require fresh verification. Typecheck, lint, candidate build, browser acceptance and real-runtime acceptance are not yet signed off. Product deployment is not authorized or attempted by this branch.
+**Status:** Product implementation is committed on `feat/admin-agent-analytics-20261014`, isolated at `.worktrees/admin-agent-analytics-20261014`. The initial effective production baseline was materialized and hash-checked; the subsequent production project/file-management branch (`4028c68`, deployed code `cd4c7c5e`) was merged without publishing analytics. On the merged source, guarded typecheck, lint, full frontend/platform suites, release/dependency checks and Web build passed. Lint retains two inherited `WorkspaceTrashView.tsx` hook warnings. Candidate `.deploy/web-build-Kc32He` passed the explicit non-skipped analytics browser test across three themes and 1440/390/320 widths. Real-runtime analytics acceptance, minimum-Node CI execution and a frozen product release remain pending. Deployment is not authorized or attempted by this branch.
 
 ### Execution Notes
 
@@ -18,7 +18,32 @@
 - Related view components are consolidated in `AgentAnalyticsViews.tsx`; the observer and metrics tests live in the platform collector/contract suites. This avoids adding separate wrappers solely to match the original file list.
 - Models distinguish linked assistant-message metadata in the run-start cohort from unlinked broker attempts in a separately labeled attempt-start cohort. Missing retries, usage and latency remain unavailable. No inference-based run attribution was added.
 - Research analytics bookkeeping remains private to the durable authority record and is excluded from public task responses and agent prompts. Analytics-disabled configurations do not install the research callback.
-- Shared-resource verification is queued behind another branch's release maintenance. Do not stop its processes, restart the platform or bypass either lock/cgroup guard. The task checkboxes below remain execution/acceptance requirements, not blanket completion claims.
+- Shared-resource verification waited for the project/file-management release to finish and release its locks. Current production remains `2026-10-14T13-10-17-696Z-cd4c7c5e`; its approved source was merged into this feature to avoid removing newly deployed behavior. No production restart or publication was performed for analytics.
+- The native browser `fetch` binding was corrected after candidate acceptance exposed an illegal invocation; the SDK regression and rebuilt candidate browser check passed. Metrics/collector review also fixed late child linking, private research bookkeeping, explicit stop authority, detail pagination and interrupted timing coverage.
+- Screenshots were captured for all nine theme/width combinations, including overview and drawer. Browser DOM/style assertions passed; screenshots were not manually inspected because the available image viewer cannot read images in this environment.
+- Browser login coverage exposed the shared unauthenticated redirect dropping analytics filters. A failing route regression reproduced it; a narrowly scoped analytics destination fix passed that regression, the full platform suite (611 passed, 8 optional skips, zero failures), and the browser login/authorization/theme/width test (one passed, zero skips).
+- A bounded, loopback-only developer preview runs the exact candidate bundle on `http://127.0.0.1:4797/admin/agent-analytics`, with a separate local account and empty analytics database. It cannot start runtimes and has no production data. The private test credentials are in `.deploy/verification/local-analytics-state/credentials.json`; nothing in that ignored directory belongs in Git. The `scikeel-admin-analytics-dev.service` user unit is limited to 256 MiB memory and 64 MiB swap. Local login/page/API checks passed; this is not a frozen release or public deployment.
+
+### Execution Tracking
+
+The original steps below remain the acceptance checklist, not a claim that every planned stress/live scenario ran. Consolidated implementation commit: `aebfd39`.
+
+| Task | Actual status | Evidence or remaining work |
+| --- | --- | --- |
+| 1 | Implemented; CI target pending | Fixed guarded lock/install modes, exact 12.9.0 lock and host native smoke passed; Node 20 CI execution not observed. |
+| 2 | Implemented and tested | Trusted identity, allowlisted metadata and canary exclusion fixtures passed. |
+| 3 | Implemented and tested | SQLite worker, private file modes, bounded queue/read/storage, replay, restart and failure fixtures passed; no broad host pressure test attempted. |
+| 4 | Implemented and tested | Outcome denominator, union waits, unknown usage and linked-child/cohort regression fixtures passed. |
+| 5 | Implemented and tested | Accepted-turn/research bindings and passive collector fixtures passed; actual OpenCode traffic correlation pending. |
+| 6 | Implemented and tested | Metadata-only SDK event observer and registered-worker lifecycle hooks passed deterministic tests. |
+| 7 | Implemented and tested | Broker terminal metadata and durable research delivery/action hooks passed; adapter compatibility tests are deterministic, not live Claude probes. |
+| 8 | Implemented and tested | Admin page/API guards, strict filters, unavailable storage, login destination and revocation fixtures passed. |
+| 9 | Implemented and tested | Admin-only account menu, independent account identity, typed client and stale-account response fencing passed. |
+| 10 | Implemented and tested | Four views, five dimensions, definitions, gaps, detail drawer and pagination; candidate browser passed all themes/widths. |
+| 11 | Required gate added; partially verified | Full suites and explicit candidate analytics browser passed. B01-B09 are not blanket signed off: exhaustive filter/focus/second-device/stress scenarios remain release work. |
+| 12 | Pending; no product publication | Exact-candidate real-runtime acceptance, frozen release/source-image gates and publication require separate release work. |
+
+Verified merged-source command sequence: `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm platform:test`, `pnpm release:test scripts/dev/web-release.test.mjs scripts/dev/analytics-dependency.test.mjs`, then `pnpm web:build`. The analytics browser command supplied `OSD_AGENT_ANALYTICS_ACCEPTANCE=1`, the installed Playwright/Chromium paths and `OSD_WEB_CANDIDATE` pointing to `web-build-Kc32He`; it was not an optional skipped test. Its synthetic metadata never came from production conversations.
 
 ---
 
@@ -662,9 +687,9 @@ The helper belongs in the acceptance file and is used after filters, menus and d
 - [ ] Run the following commands sequentially from the isolated checkout; expected focused suites, full existing suites, typecheck/lint and bounded Web build pass. Required browser flags/prerequisites are supplied by the release runner rather than marking skipped optional tests as acceptance.
 
 ```bash
-pnpm platform:test test/agent-analytics-contract.test.mjs test/agent-analytics-store.test.mjs test/agent-analytics-metrics.test.mjs test/agent-analytics-collector.test.mjs test/agent-analytics-routes.test.mjs
-pnpm release:test packages/sdk/test/agent-analytics-observer.test.mjs scripts/dev/web-release.test.mjs
-pnpm test src/lib/adminAnalytics.test.ts src/app/layout/AdminAnalyticsLayout.web.test.tsx src/app/routes/AdminAnalyticsPage.web.test.tsx src/components/admin/AgentAnalyticsViews.web.test.tsx src/components/sidebar/GatewayAccountMenu.test.tsx src/lib/loginPreparation.test.ts src/lib/gatewayAccount.test.ts src/i18n/parity.test.ts
+pnpm platform:test test/agent-analytics-contract.test.mjs test/agent-analytics-store.test.mjs test/agent-analytics-collector.test.mjs test/agent-analytics-routes.test.mjs test/research-tasks.test.mjs test/model-broker.test.mjs test/managed-worker-manager.test.mjs
+pnpm release:test scripts/dev/web-release.test.mjs scripts/dev/analytics-dependency.test.mjs
+pnpm test src/lib/adminAnalytics.test.ts src/app/layout/AdminAnalyticsLayout.web.test.tsx src/app/routes/AdminAnalyticsPage.web.test.tsx src/components/sidebar/GatewayAccountMenu.test.tsx src/lib/loginPreparation.test.ts src/lib/gatewayAccount.test.ts src/i18n/parity.test.ts
 pnpm platform:test
 pnpm test
 pnpm typecheck

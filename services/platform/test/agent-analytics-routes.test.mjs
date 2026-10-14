@@ -17,6 +17,10 @@ test('admin endpoints authenticate before reads and never start a worker', async
     const platform = new PlatformServer({ authStore,tenantPolicy:{}, workerManager: { rootDir: join(dir, 'workers'), init: async () => { }, ensureWorker: () => { starts++; throw Error('no worker'); } }, analyticsRoutes: createAnalyticsRoutes({ store, authStore }) });
     const a = await platform.listen(), origin = `http://127.0.0.1:${a.port}`;
     try {
+        const destination = '/admin/agent-analytics?view=runs&window=30d';
+        const navigation = await fetch(`${origin}${destination}`, { redirect: 'manual' });
+        assert.equal(navigation.status, 303);
+        assert.equal(new URL(navigation.headers.get('location'), origin).searchParams.get('next'), destination);
         for (const [owner, status] of [[null, 401], [user, 403], [admin, 200]]) {
             const session = owner ? await authStore.createSession(owner.id) : null;
             const res = await fetch(`${origin}/api/admin/agent-analytics/runs`, { headers: session ? { cookie: `osd_session=${session.token}` } : {} });

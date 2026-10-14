@@ -10,6 +10,9 @@ import { InlineName } from "@/components/ui/InlineName";
 import { NotebookEditor } from "@/components/notebook/NotebookEditor";
 import { FilesPage } from "@/app/routes/FilesPage";
 import { FilePreviewInspector } from "@/components/inspector/FilePreviewInspector";
+import { isPlatformWeb } from "@/lib/webMode";
+import { confirmWorkspaceDraftLeave } from "@/lib/workspaceDrafts";
+const accountScope = {kind:"account"} as const;
 
 /**
  * A pane holding something that is not a conversation: a terminal, the file
@@ -36,6 +39,7 @@ export function ContentPane({
   const renamePane = useLayoutStore((s) => s.renamePane);
   const dockSession = useLayoutStore((s) => s.dockSession);
   const aimDraft = useRuntimeStore((s) => s.aimDraft);
+  const gatewayWorkspace = useRuntimeStore((s) => s.gatewayWorkspace);
   const [renaming, setRenaming] = useState(false);
 
   /** Split into a CONVERSATION, aimed at the folder the pane works in — the
@@ -160,7 +164,9 @@ export function ContentPane({
             artifact: "report",
             root: content.root,
           }}
-          onClose={onClose}
+          workspaceScope={isPlatformWeb?accountScope:undefined}
+          workspaceDirectory={isPlatformWeb?gatewayWorkspace??undefined:undefined}
+          onClose={()=>{if(!isPlatformWeb || confirmWorkspaceDraftLeave(t("nav:fileManagement.discardDraft"),accountScope,content.path))onClose();}}
           compactHeader
           // An editor pane opens IN edit mode. Arriving read-only with a pencil
           // to hunt for made it read as a preview that happens to be editable,

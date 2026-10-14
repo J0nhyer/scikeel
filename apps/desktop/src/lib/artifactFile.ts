@@ -209,6 +209,8 @@ export interface DirEntry {
   size: number;
   /** Seconds since the epoch. */
   modified: number;
+  revision?: string;
+  capabilities?: string[];
 }
 
 /** List one directory under the root (non-recursive; "" = the root). Desktop only. */

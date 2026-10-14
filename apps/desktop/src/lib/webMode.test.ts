@@ -100,6 +100,14 @@ it("forwards cancellation without changing gateway authentication", async () => 
   expect(fetch).toHaveBeenCalledWith("http://localhost/v1/zen-models", expect.objectContaining({ signal: controller.signal, headers: { Authorization: "Bearer standalone-token" } }));
 });
 
+it('fences workspace management mutations while leaving explicit recovery available',async()=>{
+  const {mode,fetch}=await setup(true,200);mode.setPlatformWorkspaceGeneration(7);
+  await window.fetch('/api/workspace/projects/123456789abcdef0',{method:'PATCH'});
+  expect(new Headers(fetch.mock.calls[fetch.mock.calls.length-1]?.[1]?.headers).get('x-scikeel-runtime-generation')).toBe('7');
+  await window.fetch('/api/workspace/recover',{method:'POST'});
+  expect(new Headers(fetch.mock.calls[fetch.mock.calls.length-1]?.[1]?.headers).has('x-scikeel-runtime-generation')).toBe(false);
+});
+
 it("fences platform mutations without sending workspace identity to other origins or authentication", async () => {
   const { mode, fetch } = await setup(true, 200);
   mode.setPlatformWorkspaceGeneration(3);

@@ -30,6 +30,19 @@ test.skipIf(!process.env.OSD_AGENT_ANALYTICS_ACCEPTANCE)('protected analytics us
     const screenshots = resolve('../../.deploy/verification/agent-analytics');
     await mkdir(screenshots, { recursive: true });
     try {
+        const loginContext = await browser.newContext();
+        await loginContext.addInitScript(() => localStorage.setItem('ai4s.locale', 'en'));
+        const loginPage = await loginContext.newPage();
+        await loginPage.goto(`${origin}/admin/agent-analytics?view=runs`);
+        expect(new URL(loginPage.url()).pathname).toBe('/login');
+        await loginPage.locator('#username').fill('fixture');
+        await loginPage.locator('#password').fill('fixture-password');
+        await loginPage.locator('button[type="submit"]').click();
+        await loginPage.getByRole('tab', { name: 'Task runs', exact: true }).waitFor();
+        expect(new URL(loginPage.url()).pathname).toBe('/admin/agent-analytics');
+        expect(new URL(loginPage.url()).searchParams.get('view')).toBe('runs');
+        expect(starts).toBe(0);
+        await loginContext.close();
         const ordinary = await authStore.createUser({ username: 'ordinary', password: 'fixture-password', role: 'user' });
         const ordinarySession = await authStore.createSession(ordinary.id);
         for (const [token, status] of [[null, 401], [ordinarySession.token, 403]]) {

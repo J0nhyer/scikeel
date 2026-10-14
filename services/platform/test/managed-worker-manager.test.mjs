@@ -137,6 +137,17 @@ test("a durable pending execution blocks eviction even when native status is idl
  pending=false;await manager.ensureWorker({instanceId:"user-b",userId:"b"});
  assert.equal(manager.getWorker("user-a").status,"stopped");
 });
+test("an uncertain mutation exposes confirmed recovery despite healthy native probes",async t=>{
+ const {manager,calls}=fixture();t.after(()=>manager.close());
+ const owner={instanceId:"user-a",userId:"a"};const worker=await manager.ensureWorker(owner);
+ const generation=worker.generation;manager.setRecoveryFence(async context=>context.generation===generation);
+ const report=await manager.workspaceStatus(owner);assert.equal(report.state,"unresponsive");assert.equal(report.canRestart,true);
+ await assert.rejects(manager.ensureWorker({...owner,allowRecovery:false}),{code:"workspace_recovery_required"});
+ await assert.rejects(manager.ensureWorker(owner),{code:"runtime_unresponsive"});
+ assert.equal(calls.filter(([operation])=>operation==="stop").length,0);
+ const restarted=await manager.recoverWorker({...owner,generation,action:"restart",confirmed:true});
+ assert.equal(restarted.state,"healthy");assert.equal(restarted.context.generation,generation+1);
+});
 
 test("expired running health is checked without restart and repeated failure requires confirmation", async t => {
   let now = 1000; let unhealthy = false;

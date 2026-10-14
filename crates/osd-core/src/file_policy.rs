@@ -3,6 +3,7 @@ pub const WORKSPACE_ROOT: &str = "workspace";
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use super::WORKSPACE_ROOT;
     use std::collections::HashMap;
     use std::ffi::{CStr, CString};
     use std::fs::File;
@@ -11,6 +12,7 @@ mod linux {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
+    use sha2::{Digest, Sha256};
 
     const RESOLVE_BENEATH: u64 = 0x08;
     const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
@@ -68,6 +70,31 @@ mod linux {
         pub modified_at: u64,
     }
 
+    #[derive(serde::Serialize)]
+    pub struct WorkspaceStat {
+        pub identity: String,
+        pub revision: String,
+        #[serde(rename = "isDir")]
+        pub is_dir: bool,
+        pub size: u64,
+    }
+
+    #[derive(serde::Serialize)]
+    pub struct WorkspaceText {
+        pub text: String,
+        pub revision: String,
+    }
+
+    fn revision(meta: &std::fs::Metadata, bytes: Option<&[u8]>) -> String {
+        let mut hash=Sha256::new();
+        hash.update(format!("{}:{}:{}:{}:{}:{}:{}:{}:{}",meta.dev(),meta.ino(),meta.mode(),meta.nlink(),meta.len(),meta.mtime(),meta.mtime_nsec(),meta.ctime(),meta.ctime_nsec()));
+        if let Some(bytes)=bytes {hash.update(bytes);}
+        format!("{:x}",hash.finalize())
+    }
+    fn identity(meta: &std::fs::Metadata) -> String {
+        format!("{:x}",Sha256::digest(format!("{}:{}:{}",meta.dev(),meta.ino(),meta.mode()&libc::S_IFMT)))
+    }
+
     impl ManagedFilePolicy {
         pub fn new(
             account: String,
@@ -110,6 +137,35 @@ mod linux {
         }
         pub fn root_path(&self, id: &str) -> io::Result<PathBuf> {
             Ok(self.root(id)?.path.clone())
+        }
+        pub fn workspace_snapshot(&self, id: &str, name: &str) -> io::Result<bool> {
+            if name.split('/').any(|part|matches!(part.to_ascii_lowercase().as_str(),".git"|".scikeel"|".openscience")){return Err(denied());}
+            let root=self.root(id)?;
+            let directory=if name.is_empty(){root.descriptor.try_clone()?}else{self.open(&root.descriptor,&relative(name)?,libc::O_RDONLY|libc::O_DIRECTORY,0,true)?};
+            let mut pending=vec![".git".to_string()];let mut count=0;
+            while let Some(path)=pending.pop(){
+                let file=match self.open(&directory,&relative(&path)?,libc::O_RDONLY|libc::O_NONBLOCK,0,true){
+                    Ok(file)=>file,Err(error) if path==".git" && error.kind()==io::ErrorKind::NotFound=>break,Err(error)=>return Err(error)
+                };
+                count+=1;if count>10000{return Err(denied());}
+                let metadata=file.metadata()?;
+                if path==".git" && !metadata.is_dir(){return Err(denied());}
+                if metadata.is_dir(){
+                    for entry in std::fs::read_dir(format!("/proc/self/fd/{}",file.as_raw_fd()))?{
+                        let entry=entry?;let name=entry.file_name();let name=name.to_str().ok_or_else(denied)?;
+                        pending.push(format!("{path}/{name}"));if pending.len()+count>10000{return Err(denied());}
+                    }
+                }else if !metadata.is_file() || metadata.nlink()!=1 {return Err(denied());}
+                else if [".git/commondir",".git/objects/info/alternates",".git/objects/info/http-alternates",".git/config.worktree"].contains(&path.as_str()) && metadata.len()>0{return Err(denied());}
+                else if path==".git/config"{
+                    if metadata.len()>1024*1024{return Err(denied());}
+                    let mut config=String::new();file.take(1024*1024+1).read_to_string(&mut config)?;
+                    let compact=config.chars().filter(|ch|!ch.is_whitespace()).collect::<String>().to_ascii_lowercase();
+                    if compact.contains("[filter") || compact.contains("[include") || compact.contains("worktree="){return Err(denied());}
+                }
+            }
+            let anchored=PathBuf::from(format!("/proc/{}/fd/{}",std::process::id(),directory.as_raw_fd()));
+            crate::git_snapshot::commit(&anchored,"Manual workspace file change").map_err(|_|denied())
         }
         fn root(&self, id: &str) -> io::Result<&Root> {
             self.roots.get(id).ok_or_else(denied)
@@ -162,7 +218,7 @@ mod linux {
                 &name,
                 libc::O_RDONLY,
                 0,
-                false,
+                true,
             )?;
             let meta = file.metadata()?;
             if !meta.is_file() || meta.len() > maximum {
@@ -329,6 +385,99 @@ mod linux {
             let (parent, leaf) = name.rsplit_once('/').unwrap_or(("", name));
             Ok((self.directory(root, parent, true)?, relative(leaf)?))
         }
+        fn workspace_entry(&self, root: &str, name: &str, flags: i32) -> io::Result<File> {
+            if root!=WORKSPACE_ROOT {return Err(denied());}
+            let (parent,leaf)=self.parent(root,name)?;
+            let file=self.open(&parent,&leaf,flags|libc::O_NOFOLLOW,0,true)?;
+            let meta=file.metadata()?;
+            if !(meta.is_file() || meta.is_dir()) || (meta.is_file() && meta.nlink()!=1) {return Err(denied());}
+            Ok(file)
+        }
+        pub fn workspace_stat(&self, root: &str, name: &str) -> io::Result<WorkspaceStat> {
+            let file=self.workspace_entry(root,name,libc::O_PATH)?;
+            let meta=file.metadata()?;
+            Ok(WorkspaceStat {identity:identity(&meta),revision:revision(&meta,None),is_dir:meta.is_dir(),size:meta.len()})
+        }
+        fn text_snapshot(file: &mut File) -> io::Result<WorkspaceText> {
+            let before=file.metadata()?;
+            if !before.is_file() || before.nlink()!=1 || before.len()>2*1024*1024 {return Err(denied());}
+            let mut bytes=Vec::new();
+            file.take(2*1024*1024+1).read_to_end(&mut bytes)?;
+            let after=file.metadata()?;
+            if bytes.len()>2*1024*1024 || bytes.contains(&0) || revision(&before,None)!=revision(&after,None) {return Err(denied());}
+            let token=revision(&after,Some(&bytes));
+            let text=String::from_utf8(bytes).map_err(|_|denied())?;
+            Ok(WorkspaceText {text,revision:token})
+        }
+        pub fn workspace_read_text(&self, root: &str, name: &str) -> io::Result<WorkspaceText> {
+            let mut file=self.workspace_entry(root,name,libc::O_RDONLY)?;
+            Self::text_snapshot(&mut file)
+        }
+        fn publish_text(&self, root: &str, name: &str, text: &str, expected: Option<&str>) -> io::Result<WorkspaceText> {
+            if root!=WORKSPACE_ROOT || text.len()>2*1024*1024 || text.contains('\0') {return Err(denied());}
+            let (parent,leaf)=self.parent(root,name)?;
+            if let Some(expected)=expected {
+                let mut file=self.open(&parent,&leaf,libc::O_RDONLY|libc::O_NOFOLLOW,0,true)?;
+                if Self::text_snapshot(&mut file)?.revision!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            }
+            let temporary=CString::new(format!(".scikeel-{}.tmp",crate::runtime::random_hex(12))).unwrap();
+            let result=(||{
+                let mut file=self.open(&parent,&temporary,libc::O_RDWR|libc::O_CREAT|libc::O_EXCL|libc::O_NOFOLLOW,0o600,true)?;
+                file.write_all(text.as_bytes())?;file.sync_all()?;
+                if let Some(expected)=expected {
+                    // Admission excludes runtime writers. Recheck after staging;
+                    // privileged out-of-band writes are not transactional here.
+                    let mut current=self.open(&parent,&leaf,libc::O_RDONLY|libc::O_NOFOLLOW,0,true)?;
+                    if Self::text_snapshot(&mut current)?.revision!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+                }
+                let flags=if expected.is_none(){libc::RENAME_NOREPLACE}else{0};
+                if unsafe{libc::syscall(libc::SYS_renameat2,parent.as_raw_fd(),temporary.as_ptr(),parent.as_raw_fd(),leaf.as_ptr(),flags)}<0 {return Err(io::Error::last_os_error());}
+                parent.sync_all()?;
+                use std::io::{Seek,SeekFrom};file.seek(SeekFrom::Start(0))?;
+                Self::text_snapshot(&mut file)
+            })();
+            if result.is_err(){unsafe{libc::unlinkat(parent.as_raw_fd(),temporary.as_ptr(),0);}}
+            result
+        }
+        pub fn workspace_create_text(&self, root: &str, name: &str, text: &str) -> io::Result<WorkspaceText> {
+            self.publish_text(root,name,text,None)
+        }
+        pub fn workspace_save_text(&self, root: &str, name: &str, text: &str, expected: &str) -> io::Result<WorkspaceText> {
+            self.publish_text(root,name,text,Some(expected))
+        }
+        pub fn workspace_replace_text(&self, root: &str, staged: &str, name: &str, expected: &str, expected_source: &str) -> io::Result<WorkspaceText> {
+            if root!=WORKSPACE_ROOT || !staged.starts_with(".scikeel/workspace-management/staging/") || !staged.ends_with("/payload") || staged==name {return Err(denied());}
+            let mut source=self.workspace_entry(root,staged,libc::O_RDONLY)?;
+            let source_meta=source.metadata()?;
+            if revision(&source_meta,None)!=expected_source {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            Self::text_snapshot(&mut source)?;
+            let (source_parent,from)=self.parent(root,staged)?;
+            let (target_parent,to)=self.parent(root,name)?;
+            let mut current=self.open(&target_parent,&to,libc::O_RDONLY|libc::O_NOFOLLOW,0,true)?;
+            if Self::text_snapshot(&mut current)?.revision!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            let source_now=self.open(&source_parent,&from,libc::O_PATH|libc::O_NOFOLLOW,0,true)?;
+            if revision(&source_now.metadata()?,None)!=expected_source {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            // Account admission excludes runtime writers; privileged out-of-band
+            // writes are not an OS-level compare-and-swap transaction.
+            if unsafe{libc::syscall(libc::SYS_renameat2,source_parent.as_raw_fd(),from.as_ptr(),target_parent.as_raw_fd(),to.as_ptr(),0)}<0 {return Err(io::Error::last_os_error());}
+            source_parent.sync_all()?;target_parent.sync_all()?;
+            use std::io::{Seek,SeekFrom};source.seek(SeekFrom::Start(0))?;
+            Self::text_snapshot(&mut source)
+        }
+        pub fn workspace_move(&self, root: &str, name: &str, destination: &str, expected: &str) -> io::Result<WorkspaceStat> {
+            if name==destination || destination.starts_with(&format!("{name}/")) {return Err(denied());}
+            let entry=self.workspace_entry(root,name,libc::O_PATH)?;
+            let before=entry.metadata()?;
+            if revision(&before,None)!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            let (source,leaf)=self.parent(root,name)?;
+            let (target,to)=self.parent(root,destination)?;
+            let current=self.open(&source,&leaf,libc::O_PATH|libc::O_NOFOLLOW,0,true)?;
+            if revision(&current.metadata()?,None)!=expected {return Err(io::Error::new(io::ErrorKind::InvalidData,"revision_conflict"));}
+            if unsafe{libc::syscall(libc::SYS_renameat2,source.as_raw_fd(),leaf.as_ptr(),target.as_raw_fd(),to.as_ptr(),libc::RENAME_NOREPLACE)}<0 {return Err(io::Error::last_os_error());}
+            source.sync_all()?;target.sync_all()?;
+            let after=entry.metadata()?;
+            Ok(WorkspaceStat {identity:identity(&after),revision:revision(&after,None),is_dir:after.is_dir(),size:after.len()})
+        }
         pub fn mkdir_all(&self, root: &str, name: &str) -> io::Result<()> {
             relative(name)?;
             let mut prefix = String::new();
@@ -451,7 +600,7 @@ mod linux {
             if maximum == 0 || maximum > 10000 {
                 return Err(denied());
             }
-            let directory = self.directory(root, name, false)?;
+            let directory = self.directory(root, name, true)?;
             let fd = directory.into_raw_fd();
             let entries = unsafe { libc::fdopendir(fd) };
             if entries.is_null() {
@@ -575,6 +724,99 @@ mod tests {
             Ok(data)
         }
     }
+
+    #[test]
+    fn workspace_management_preview_rejects_internal_symlink_aliases() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        std::fs::create_dir(f.owned.join("project")).unwrap();
+        std::fs::write(f.owned.join("project/secret.txt"),"retained project bytes").unwrap();
+        symlink("project",f.owned.join("alias")).unwrap();
+        symlink("project/secret.txt",f.owned.join("linked.txt")).unwrap();
+        for name in ["alias/secret.txt","linked.txt"] {
+            assert!(p.open_regular(WORKSPACE_ROOT,name,1024).is_err(),"{name}");
+            assert!(p.ticket(WORKSPACE_ROOT,name,std::time::Duration::from_secs(60)).is_err(),"{name}");
+        }
+        assert!(p.list(WORKSPACE_ROOT,"alias",100).is_err());
+        assert!(p.open_regular(WORKSPACE_ROOT,"project/secret.txt",1024).is_ok());
+    }
+    #[test]
+    fn workspace_staged_text_replacement_preserves_journaled_identity() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        p.mkdir_all(WORKSPACE_ROOT,".scikeel/workspace-management/staging/save-a").unwrap();
+        let stage=".scikeel/workspace-management/staging/save-a/payload";
+        let original=p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap();
+        p.workspace_create_text(WORKSPACE_ROOT,stage,"new draft").unwrap();
+        let staged=p.workspace_stat(WORKSPACE_ROOT,stage).unwrap();
+        let saved=p.workspace_replace_text(WORKSPACE_ROOT,stage,"note.txt",&original.revision,&staged.revision).unwrap();
+        assert_eq!(saved.text,"new draft");
+        assert_eq!(p.workspace_stat(WORKSPACE_ROOT,"note.txt").unwrap().identity,staged.identity);
+        assert!(p.workspace_stat(WORKSPACE_ROOT,stage).is_err());
+        assert_eq!(p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap().revision,saved.revision);
+    }
+    #[test]
+    fn workspace_staged_text_conflicts_retain_both_draft_and_external_edit() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        p.mkdir_all(WORKSPACE_ROOT,".scikeel/workspace-management/staging/save-a").unwrap();
+        let stage=".scikeel/workspace-management/staging/save-a/payload";
+        let original=p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap();
+        p.workspace_create_text(WORKSPACE_ROOT,stage,"new draft").unwrap();
+        let staged=p.workspace_stat(WORKSPACE_ROOT,stage).unwrap();
+        std::fs::write(f.owned.join("note.txt"),"external edit").unwrap();
+        assert!(p.workspace_replace_text(WORKSPACE_ROOT,stage,"note.txt",&original.revision,&staged.revision).is_err());
+        assert_eq!(f.read(&p,"note.txt").unwrap(),b"external edit");assert_eq!(f.read(&p,stage).unwrap(),b"new draft");
+        let latest=p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap();
+        std::fs::write(f.owned.join(stage),"tampered staging").unwrap();
+        assert!(p.workspace_replace_text(WORKSPACE_ROOT,stage,"note.txt",&latest.revision,&staged.revision).is_err());
+        assert_eq!(f.read(&p,"note.txt").unwrap(),b"external edit");
+    }
+    #[test]
+    fn workspace_staged_text_replacement_refuses_links_foreign_roots_and_public_sources() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        p.mkdir_all(WORKSPACE_ROOT,".scikeel/workspace-management/staging/save-a").unwrap();
+        let stage=".scikeel/workspace-management/staging/save-a/payload";
+        let original=p.workspace_read_text(WORKSPACE_ROOT,"note.txt").unwrap();p.workspace_create_text(WORKSPACE_ROOT,stage,"draft").unwrap();
+        let staged=p.workspace_stat(WORKSPACE_ROOT,stage).unwrap();
+        symlink("note.txt",f.owned.join("alias.txt")).unwrap();
+        for (root,source,destination) in [(WORKSPACE_ROOT,stage,"alias.txt"),("foreign",stage,"note.txt"),(WORKSPACE_ROOT,"note.txt","note.txt")] {
+            assert!(p.workspace_replace_text(root,source,destination,&original.revision,&staged.revision).is_err());
+        }
+        assert_eq!(f.read(&p,"note.txt").unwrap(),b"owned");assert_eq!(f.read(&p,stage).unwrap(),b"draft");
+    }
+    #[test]
+    fn workspace_snapshot_rejects_linked_roots_and_git_metadata() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        symlink(&f.peer,f.owned.join("linked")).unwrap();
+        assert!(p.workspace_snapshot(WORKSPACE_ROOT,"linked").is_err());
+        symlink(&f.peer,f.owned.join(".git")).unwrap();
+        assert!(p.workspace_snapshot(WORKSPACE_ROOT,"").is_err());
+        assert_eq!(std::fs::read(f.peer.join("secret")).unwrap(),b"peer-canary");
+    }
+    #[test]
+    fn workspace_snapshot_never_records_private_payloads_or_secrets() {
+        if !crate::git_snapshot::git_available(){return;}
+        let f=Fixture::new();let p=f.policy("a",1);
+        p.mkdir_all(WORKSPACE_ROOT,".scikeel/workspace-management/trash/a").unwrap();
+        std::fs::write(f.owned.join(".scikeel/workspace-management/trash/a/payload"),"private payload").unwrap();
+        std::fs::write(f.owned.join(".env"),"secret-canary").unwrap();
+        assert!(p.workspace_snapshot(WORKSPACE_ROOT,"").unwrap());
+        let output=crate::runtime::quiet_command("git").current_dir(&f.owned).args(["ls-tree","-r","--name-only","refs/openscience/snapshots/master"]).output().unwrap();
+        assert!(output.status.success());let files=String::from_utf8(output.stdout).unwrap();
+        assert!(files.lines().any(|path|path=="note.txt"));
+        assert!(!files.contains("payload"));assert!(!files.contains(".env"));
+        assert!(!p.workspace_snapshot(WORKSPACE_ROOT,"").unwrap());
+    }
+    #[test]
+    fn workspace_text_primitives_bound_utf8_and_never_replace_colliding_creates() {
+        let f=Fixture::new();let p=f.policy("a",1);
+        assert!(p.workspace_create_text(WORKSPACE_ROOT,"note.txt","replacement").is_err());
+        assert!(p.workspace_create_text(WORKSPACE_ROOT,"large.txt",&"x".repeat(2*1024*1024+1)).is_err());
+        assert!(p.workspace_create_text(WORKSPACE_ROOT,"nul.txt","a\0b").is_err());
+        std::fs::write(f.owned.join("binary.txt"),[0xff,0xfe]).unwrap();assert!(p.workspace_read_text(WORKSPACE_ROOT,"binary.txt").is_err());
+        let created=p.workspace_create_text(WORKSPACE_ROOT,"unicode.txt","研究 draft").unwrap();
+        assert_eq!(p.workspace_read_text(WORKSPACE_ROOT,"unicode.txt").unwrap().revision,created.revision);
+        assert!(p.workspace_save_text(WORKSPACE_ROOT,"unicode.txt","changed",&"0".repeat(64)).is_err());
+        assert_eq!(f.read(&p,"unicode.txt").unwrap(),"研究 draft".as_bytes());
+    }
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.base);
@@ -588,7 +830,7 @@ mod tests {
         symlink("note.txt", f.owned.join("internal")).unwrap();
         symlink("../peer/secret", f.owned.join("escape")).unwrap();
         symlink(&f.peer, f.owned.join("absolute")).unwrap();
-        assert_eq!(f.read(&policy, "internal").unwrap(), b"owned");
+        assert!(f.read(&policy, "internal").is_err());
         for path in [
             "escape",
             "absolute/secret",

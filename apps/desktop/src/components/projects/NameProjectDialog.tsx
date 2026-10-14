@@ -15,6 +15,8 @@ export function NameProjectDialog({
   onCancel,
   error,
   created = false,
+  inputDisabled = false,
+  cancelDisabled = false,
 }: {
   defaultName: string;
   title: string;
@@ -25,6 +27,8 @@ export function NameProjectDialog({
   onCancel: () => void;
   error?: string;
   created?: boolean;
+  inputDisabled?: boolean;
+  cancelDisabled?: boolean;
 }) {
   const { t } = useTranslation(["common", "nav"]);
   const [name, setName] = useState(defaultName);
@@ -40,7 +44,7 @@ export function NameProjectDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={() => !busy && onCancel()}
+      onClick={() => !busy && !cancelDisabled && onCancel()}
       role="presentation"
     >
       <div
@@ -56,10 +60,10 @@ export function NameProjectDialog({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={placeholder}
-          disabled={busy || created}
+          disabled={busy || created || inputDisabled}
           onKeyDown={(e) => {
             if (e.key === "Enter") save();
-            else if (e.key === "Escape" && !busy) onCancel();
+            else if (e.key === "Escape" && !busy && !cancelDisabled) onCancel();
           }}
           className={cn(
             "mt-4 w-full rounded-input border border-border bg-surface px-3 py-2 text-sm text-text outline-none placeholder:text-muted focus:border-accent",
@@ -71,7 +75,7 @@ export function NameProjectDialog({
           <button
             className="rounded-input border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-2 disabled:opacity-50"
             onClick={onCancel}
-            disabled={busy}
+            disabled={busy || cancelDisabled}
           >
             {t("actions.cancel")}
           </button>

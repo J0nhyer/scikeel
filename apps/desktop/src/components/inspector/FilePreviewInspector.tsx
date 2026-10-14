@@ -24,7 +24,9 @@ import {
   writeWorkspaceFile,
   type LargeFilePointer,
 } from "@/lib/artifactFile";
-import { isGatewayWeb } from "@/lib/webMode";
+import { isGatewayWeb, isPlatformWeb } from "@/lib/webMode";
+import { workspaceText, type WorkspaceScope } from "@/lib/workspaceManagement";
+import { WorkspaceTextEditor } from "@/components/files/WorkspaceTextEditor";
 import { isTauri } from "@/lib/tauri";
 import { useRuntimeStore } from "@/lib/runtime";
 import { parseTableFile } from "@/lib/csv";
@@ -66,6 +68,7 @@ import { PdfPreview } from "./PdfPreview";
 export function FilePreviewInspector({
   data,
   workspaceDirectory,
+  workspaceScope,
   onClose,
   controls,
   collapsed = false,
@@ -79,6 +82,7 @@ export function FilePreviewInspector({
   /** Directory that owns this file. Keeps split-pane previews bound to their
    *  session instead of following whichever session is focused globally. */
   workspaceDirectory?: string;
+  workspaceScope?: WorkspaceScope;
   onClose?: () => void;
   /** Pane-level header buttons (e.g. maximize), rendered before Close. */
   controls?: React.ReactNode;
@@ -100,6 +104,8 @@ export function FilePreviewInspector({
 }) {
   const { t } = useTranslation(["inspector", "common"]);
   const activeWorkspace = useRuntimeStore((s) => s.workspace);
+  const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
+  const [gatewayEditing, setGatewayEditing] = useState(()=>Boolean(startEditing && isPlatformWeb && workspaceScope && ['text','markdown','html','table'].includes(previewKindForName(data.filename))));
   // Desktop file commands are intentionally scoped to the active workspace.
   // Focusing another split pane changes that workspace asynchronously; do not
   // issue a read against the old root, and do not reload a background preview
@@ -179,10 +185,16 @@ export function FilePreviewInspector({
         // <img>/<iframe>, text/bytes fetched from it, and it doubles as the
         // open/download link. (readArtifact/preview_url are Tauri-only.)
         if (isGatewayWeb) {
+          if (isPlatformWeb && workspaceScope && needsText && data.content === undefined) {
+            const snapshot = await workspaceText(workspaceScope, data.path);
+            if (cancelled) return;
+            setText(snapshot.text);
+            if (!needsUrl && !needsBytes) return;
+          }
           const u = await previewUrl(data.path, data.root, workspaceDirectory);
           if (cancelled) return;
           if (needsUrl) setUrl(u);
-          if (needsText && data.content === undefined) {
+          if (needsText && data.content === undefined && !(isPlatformWeb && workspaceScope)) {
             const r = u ? await fetch(u) : null;
             if (cancelled) return;
             if (r && r.ok) setText(await r.text());
@@ -245,6 +257,7 @@ export function FilePreviewInspector({
     needsBytes,
     waitingForWorkspace,
     workspaceDirectory,
+    workspaceScope,
   ]);
 
   // An editor pane starts editing the moment its text has loaded. Guarded on
@@ -257,6 +270,7 @@ export function FilePreviewInspector({
   // Editing is a desktop, local-file affair: the web client has no path to
   // write back, and a file with no text was never opened as text.
   const canEdit = isTauri && !isGatewayWeb && text !== null && !showHistory;
+  const canEditGateway = isPlatformWeb && workspaceScope !== undefined && !webReadOnly && ['text','markdown','html','table'].includes(kind) && text !== null && !showHistory;
   const editing = draft !== null;
   const dirty = editing && draft !== text;
 
@@ -342,6 +356,8 @@ export function FilePreviewInspector({
   // trackpad swipe over one moves nothing at all.
   useWheelChain(scrollRef);
 
+  if (gatewayEditing && workspaceScope) return <WorkspaceTextEditor scope={workspaceScope} path={data.path} filename={data.filename} language={data.language} directory={workspaceDirectory} controls={controls} onClose={onClose ?? (() => setGatewayEditing(false))}/>;
+
   return (
     <div className={cn("flex h-full flex-col", embedded && "overflow-hidden rounded-card border border-border bg-surface")}>
       <header
@@ -413,12 +429,12 @@ export function FilePreviewInspector({
             {t("filePreview.changedOnDisk")}
           </button>
         )}
-        {canEdit && !editing && (
+        {(canEdit || canEditGateway) && !editing && (
           <button
             className="shrink-0 text-text hover:opacity-60"
             aria-label={t("filePreview.editAria")}
             title={t("filePreview.editTitle")}
-            onClick={() => setDraft(text ?? "")}
+            onClick={() => { if (canEditGateway) setGatewayEditing(true); else setDraft(text ?? ""); }}
           >
             <Pencil size={14} strokeWidth={1.5} />
           </button>

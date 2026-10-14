@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { LiveSessionPage } from "./LiveSessionPage";
 import { useRuntimeStore } from "@/lib/runtime";
 import { useLayoutStore } from "@/lib/layout";
-vi.mock("@/lib/webMode", () => ({ isGatewayWeb: true }));
+vi.mock("@/lib/webMode", () => ({ isGatewayWeb: true, isPlatformWeb: false }));
 vi.mock("@/components/session/SessionView", () => ({ SessionView: ({ sessionId }: { sessionId: string }) => <div>Session {sessionId}</div> }));
 const original = useRuntimeStore.getState();
 afterEach(() => { cleanup(); useRuntimeStore.setState(original); });
