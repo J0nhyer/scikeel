@@ -31,7 +31,7 @@ const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
 if (!["web-projects-live", "web-recovery-live", "platform-title-live", "opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
-  "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install", "sandbox-migrate"].includes(mode)) {
+  "platform-deps-lock", "platform-deps-install", "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install", "sandbox-migrate"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
 }
@@ -134,6 +134,11 @@ if (liveRecovery) {
 } else if (liveVerification) {
   process.env.SCIKEEL_TITLE_LIVE_ACCEPTANCE = "1";
   run(process.execPath, ["--test", "--test-concurrency=1", "test/session-title.live.acceptance.mjs"], join(root, "services/platform"));
+} else if (mode === "platform-deps-lock" || mode === "platform-deps-install") {
+  if (args.length) throw new Error("Dependency installation has fixed inputs");
+  process.env.MAKEFLAGS = "-j1";
+  process.env.npm_config_jobs = "1";
+  run("pnpm", mode === "platform-deps-lock" ? ["install", "--lockfile-only", "--ignore-scripts"] : ["install", "--frozen-lockfile"], root);
 } else if (mode === "release-test") {
   run(process.execPath, ["--test", "--test-concurrency=1", ...args], root);
 } else if (mode === "probe") {

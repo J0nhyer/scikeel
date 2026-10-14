@@ -27,6 +27,23 @@ async function fixture() {
 }
 const brief = { objective: "Compare two baseline methods", goal: "thesis", mode: "collaborative", inputs: ["data.csv"], deliverables: ["report.md"], pageId: "page-student" };
 
+test('analytics decisions and explicit stops are metadata-only and cannot break task authority',async()=>{
+  const f=await fixture(),facts=[];
+  f.store.onAnalyticsFact=(scope,fact)=>{facts.push(fact);if(fact.kind==='intervention')throw Error('storage unavailable');};
+  await f.store.create({...f.owner,instanceId:'worker',generation:1},brief);
+  const prepared=await f.store.prepare('student','ses_research',{});
+  assert.ok(!prepared.system.includes('analyticsSnapshot'));
+  assert.ok(!JSON.stringify(await f.store.get('student','ses_research')).includes('analyticsSnapshot'));
+  await report(f,{status:'waiting_input',decisions:[{id:'method',question:'PRIVATE_QUESTION'}]});
+  await f.store.refresh('student','ses_research');f.advance(50);
+  await f.store.action('student','ses_research',{action:'decide',id:'method',answer:'PRIVATE_ANSWER'});
+  await f.store.action('student','ses_research',{action:'stop'});
+  assert.ok(facts.some(x=>x.kind==='intervention'&&x.code==='clarification'&&x.outcome==='answered'));
+  assert.ok(facts.some(x=>x.kind==='intervention'&&x.code==='takeover'));
+  assert.ok(!JSON.stringify(facts).includes('PRIVATE_'));
+  assert.equal((await f.store.get('student','ses_research')).status,'paused');
+});
+
 test("verified workspace interruption pauses durable matching tasks without contacting the failed runtime", async () => {
   const f = await fixture();
   const context = { userId: "student", instanceId: "user-student", generation: 1 };

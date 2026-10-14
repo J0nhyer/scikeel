@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {
+    "./agent-analytics-observer": "./src/agent-analytics-observer.mjs",
     ".": "./src/index.ts",
     "./mock-server": "./src/mockServer.ts",
     "./acp": "./src/acp/index.ts",

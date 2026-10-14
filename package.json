@@ -5,6 +5,8 @@
   "description": "Open Science Desktop \u2014 local-first, model-agnostic AI research workbench for macOS, Windows and Linux.",
   "license": "MIT",
   "scripts": {
+    "platform:deps-lock": "node scripts/dev/safe-desktop-task.mjs platform-deps-lock",
+    "platform:deps-install": "node scripts/dev/safe-desktop-task.mjs platform-deps-install",
     "dev": "pnpm --filter @ai4s/desktop dev",
     "build": "pnpm --filter @ai4s/desktop build",
     "test": "pnpm --filter @ai4s/desktop test",

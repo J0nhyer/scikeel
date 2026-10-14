@@ -77,6 +77,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify metadata database on minimum supported Node
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: pnpm platform:test test/agent-analytics-contract.test.mjs test/agent-analytics-store.test.mjs
+
       - name: Fetch bundled OpenCode sidecar
         shell: bash
         run: bash scripts/dev/fetch-opencode.sh ${{ matrix.target }}

@@ -147,6 +147,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       defaultModel:enabled?config.defaultModel:null,status:enabled?"ready":"unavailable",enabledByProfile:enabled,files:{}};
   }};
   plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, searchProvider: config.searchProvider, nativeJobs, nativeProfileResolver,
+    analyticsRegistry:{providers:new Set(Object.keys(config.providers)),models:new Set(Object.values(config.providers).flatMap(p=>p.enabledModels)),skills:new Set(['research-workflow'])},
     runtimeCatalog: (context, { access }) => readManagedModelCatalog({ config, context, access }),
     saveRuntimeDefaultModel: (context, model) => saveManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId, model }),
     async close() {

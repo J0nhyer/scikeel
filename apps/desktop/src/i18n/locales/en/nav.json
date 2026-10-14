@@ -1,5 +1,6 @@
 {
   "sidebar": {
+    "agentAnalytics": "Agent analytics",
     "collapse": "Collapse sidebar",
     "collapseTitle": "Collapse sidebar ({{shortcut}})",
     "expand": "Expand sidebar",

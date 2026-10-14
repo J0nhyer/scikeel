@@ -17,6 +17,9 @@ export function selectVerification(paths, baseline, { full = false } = {}) {
   if (!source.length) { result.reasons.push('No source changes: no build or deployment'); return result; }
   const frontend = new Set(); const browser = new Set(['app']);
   for (const path of source) {
+    if (/agent-analytics|admin-analytics|AdminAnalytics|AgentAnalytics|GatewayAccountMenu/.test(path)) {
+      browser.add('agent-analytics');result.buildWeb=result.typecheck=result.lint=true;
+    }
     if (/^(?:apps\/desktop\/(?:public\/assets\/brand\/|src\/(?:lib\/(?:appearance|store)\.|index\.css|app\/providers\/ThemeProvider|components\/(?:settings\/AppearancePicker|brand\/|session\/(?:EmptySessionDecoration|SessionView))|test\/webAppearance))|services\/platform\/src\/login-(?:appearance|page))/.test(path)) {
       browser.add('appearance'); result.buildWeb = result.typecheck = result.lint = true;
     }
@@ -47,6 +50,7 @@ export function selectVerification(paths, baseline, { full = false } = {}) {
     result.full = result.frontendFull = result.platformFull = result.buildWeb = result.typecheck = result.lint = true;
     if (!baseline.known) result.deployPlatform = true;
     browser.add('login'); browser.add('session'); browser.add('attachments'); browser.add('appearance');
+    browser.add('agent-analytics');
     result.reasons.push(full ? 'Full verification explicitly requested' : 'Incomplete deployed source baseline: full bootstrap verification');
   } else result.full = result.frontendFull && result.platformFull;
   if (result.liveOpenCode) result.platformFull = true;

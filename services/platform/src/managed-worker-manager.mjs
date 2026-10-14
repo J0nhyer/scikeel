@@ -171,6 +171,7 @@ export class ManagedWorkerManager {
         const response = await this.fetchImpl(`${record.url}/v1/health`, { headers: { authorization: `Bearer ${record.token}` }, signal: AbortSignal.timeout(5000) });
         if (!response.ok) throw unavailable("managed worker health unavailable");
         this.tenantPolicy.registerAccount(context); record.status = "running";
+        try { this.onWorkerReady?.({ context, access: { url:record.url, token:record.token } }); } catch { /* Passive observation is optional. */ }
         return this.getWorker(instanceId);
       } catch (error) {
         record.status = "unavailable";
@@ -259,6 +260,7 @@ export class ManagedWorkerManager {
     await this.#admissions.get(record.id)?.release(); this.#admissions.delete(record.id);
     this.tenantPolicy.registerAccount({ ...context, generation: registered.generation, workspaceDir: record.workspaceDir });
     await this.revokeWorker?.(context);
+    try { this.onWorkerRevoked?.(context); } catch { /* Observation cannot block revocation. */ }
     this.recovery.invalidate(context);
     record.generation = registered.generation; record.status = "stopped"; record.cleanupUnverified = false;
     record.stoppedGeneration = registered.generation;

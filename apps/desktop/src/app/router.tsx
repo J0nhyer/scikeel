@@ -10,8 +10,11 @@ import { ProjectsPage } from "./routes/ProjectsPage";
 import { HistoryPage } from "./routes/HistoryPage";
 import { SettingsPage } from "./routes/SettingsPage";
 import { NotFound } from "./routes/NotFound";
+import { AdminAnalyticsLayout } from './layout/AdminAnalyticsLayout';
+import { AdminAnalyticsPage } from './routes/AdminAnalyticsPage';
 
 export const routes: RouteObject[] = [
+  {path:'/admin/agent-analytics',element:<AdminAnalyticsLayout/>,children:[{index:true,element:<AdminAnalyticsPage/>}]},
   {
     path: "/",
     element: <AppShell />,

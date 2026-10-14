@@ -17,6 +17,22 @@ vi.mock("react-router-dom", async () => ({
 }));
 
 describe("GatewayAccountMenu", () => {
+  it('opens administrator analytics without a runtime refresh in passive mode',async()=>{
+    useRuntimeStore.setState({gatewayIdentityState:'ready'});
+    const user=userEvent.setup();
+    render(<MemoryRouter><GatewayAccountMenu passive user={{id:'admin',username:'admin',role:'admin'}}/></MemoryRouter>);
+    await user.click(screen.getByRole('button',{name:'admin account'}));
+    await user.click(screen.getByRole('menuitem',{name:'Agent analytics'}));
+    expect(navigate).toHaveBeenCalledWith('/admin/agent-analytics');
+  });
+  it('hides analytics when administrator identity cannot be revalidated',async()=>{
+    useRuntimeStore.setState({gatewayIdentityState:'unavailable'});
+    const user=userEvent.setup();
+    render(<MemoryRouter><GatewayAccountMenu passive user={{id:'admin',username:'admin',role:'admin'}}/></MemoryRouter>);
+    await user.click(screen.getByRole('button',{name:'admin account'}));
+    expect(screen.queryByRole('menuitem',{name:'Agent analytics'})).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem',{name:'Sign out'})).toBeInTheDocument();
+  });
   it.each(["connecting", "error", "offline"] as const)("keeps logout available with unknown identity while %s", status => {
     useRuntimeStore.setState({ status, gatewayUser: null });
     render(<MemoryRouter><GatewayAccountMenu user={null} /></MemoryRouter>);

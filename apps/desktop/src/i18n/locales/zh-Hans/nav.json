@@ -10,7 +10,8 @@
     "adminBadge": "管理员",
     "home": "回到首页",
     "campusName": "成都理工大学",
-    "campusStudentProject": "学生科研项目"
+    "campusStudentProject": "学生科研项目",
+    "agentAnalytics": "Agent analytics"
   },
   "items": {
     "new": "新建",

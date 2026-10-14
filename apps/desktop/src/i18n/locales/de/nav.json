@@ -10,7 +10,8 @@
     "adminBadge": "Admin",
     "home": "Startseite",
     "campusName": "Chengdu University of Technology",
-    "campusStudentProject": "Studentisches Forschungsprojekt"
+    "campusStudentProject": "Studentisches Forschungsprojekt",
+    "agentAnalytics": "Agent analytics"
   },
   "items": {
     "new": "Neu",

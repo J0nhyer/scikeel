@@ -40,6 +40,20 @@ test("quota tenant directories remain separate from writable platform metadata",
   assert.equal(worker.workspaceDir, "/var/lib/scikeel/tenant-data/instances/user-a/workspace");
   assert.ok(manager.rootDir.includes("scikeel-manager-"));
 });
+test('passive analytics registration follows verified lifecycle without extra starts or authority',async(t)=>{
+  const {manager,calls,policy}=fixture();t.after(()=>manager.close());const observed=[];
+  manager.onWorkerReady=({context,access})=>{
+    assert.equal(policy.account(context).userId,context.userId);
+    observed.push({kind:'ready',generation:context.generation,url:access.url});throw Error('observer failed');
+  };
+  manager.onWorkerRevoked=context=>{
+    assert.throws(()=>policy.account(context));observed.push({kind:'revoked',generation:context.generation});throw Error('observer failed');
+  };
+  await manager.ensureWorker({instanceId:'user-a',userId:'a'});
+  await manager.ensureWorker({instanceId:'user-a',userId:'a'});
+  assert.equal(calls.filter(([op])=>op==='start').length,1);assert.equal(observed.filter(e=>e.kind==='ready').length,1);
+  await manager.stopWorker('user-a');assert.equal(observed.at(-1).kind,'revoked');
+});
 test("managed workers use launcher endpoints, generations and private internal credentials", async (t) => {
   const { manager, calls, policy } = fixture(); t.after(() => manager.close());
   const worker = await manager.ensureWorker({ instanceId: "user-a", userId: "a" });

@@ -177,6 +177,7 @@ export class ModelBroker {
   }
   async #handle(req, res) {
     const startedAt = performance.now(); const correlationId = randomBytes(16).toString("hex");
+    const operationStartedAt=this.now(); let analyticsTrustedContext=null;
     const controller = new AbortController(); const operation = { controller };
     let collaborationCorrelation; let networkCorrelation; let context;
     let modelRequest = false; let streaming = false; let eventBoundary = true; let trailing = Buffer.alloc(0);
@@ -220,6 +221,7 @@ export class ModelBroker {
       operation.grantKey = grantKey;
       context = await wait(() => this.identify(req), controller.signal);
       if (identity(context) !== identity(capability) || capability.expiresAt <= this.now()) throw failure("model_grant_denied");
+      analyticsTrustedContext=context;
       operation.armExpiry = expiresAt => {
         clearTimeout(operation.expiration);
         operation.expiration = setTimeout(() => controller.abort(failure("model_grant_expired")), Math.max(1, expiresAt - this.now()));
@@ -383,6 +385,12 @@ export class ModelBroker {
           idleMs: lastDataAt === undefined ? null : Math.round(endedAt - lastDataAt), responseBytes, forwardedBytes,
           firstByteTimeoutMs: this.firstByteTimeoutMs, idleTimeoutMs: this.idleTimeoutMs, totalTimeoutMs: this.totalTimeoutMs,
           headersSent: res.headersSent, downstreamBlocked, terminalErrorDelivered }); } catch { /* Logging must not retain a slot. */ }
+      }
+      if (ROUTES.has(req.url) && req.method === 'POST') {
+        try { this.onAnalyticsAttempt?.(analyticsTrustedContext, {kind:'model_attempt',entityId:correlationId,
+          startedAt:operationStartedAt,endedAt:this.now(),providerId:operation.provider,modelId:operation.model,
+          outcome:outcome==='success'?'completed':'failed',code:outcome==='success'?null:outcome,
+          firstByteMs:firstDataAt===undefined?null:Math.round(firstDataAt-startedAt)}); } catch { /* Never delay model streaming. */ }
       }
     }
   }

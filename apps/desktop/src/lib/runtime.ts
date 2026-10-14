@@ -297,6 +297,7 @@ interface RuntimeState {
   gatewayRuntime: GatewayRuntimeId | null;
   gatewayRuntimes: GatewayRuntimeOption[];
   gatewayUser: GatewayUser | null;
+  gatewayIdentityState: 'unknown'|'ready'|'unavailable';
   gatewayCatalogState: "loading" | "ready" | "limited" | "unavailable";
   refreshGatewayRuntimes: () => Promise<void>;
   gatewayUserRole: GatewayUserRole | null;
@@ -691,6 +692,7 @@ export function installPlatformAccountLifecycle(): () => void {
     suspend: () => useRuntimeStore.getState().suspendPlatformBrowser(),
     clear: () => useRuntimeStore.getState().clearPlatformPresentation(),
     navigate: () => window.location.replace("/login"),
+    onIdentityState: gatewayIdentityState => useRuntimeStore.setState({gatewayIdentityState}),
   });
   platformAccount = account;
   setPlatformSessionExpiryHandler(account.suspend);
@@ -709,6 +711,11 @@ function loadPlatformAccount() {
   if (platformAccountStarted) return;
   platformAccountStarted = true;
   void platformAccount?.load();
+}
+export async function refreshPlatformAccountIdentity():Promise<void>{
+  if(!isPlatformWeb||platformBrowserSuspended)return;
+  if(!platformAccount)installPlatformAccountLifecycle();
+  await platformAccount?.load();
 }
 
 export function signOutPlatformBrowser(): Promise<void> {
@@ -3741,6 +3748,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   gatewayRuntime: null,
   gatewayRuntimes: [],
   gatewayUser: null,
+  gatewayIdentityState: 'unknown',
   gatewayCatalogState: "loading",
   refreshGatewayRuntimes: async () => {
     if (!isGatewayWeb) return;
@@ -4577,7 +4585,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   clearPlatformPresentation: () => {
     if (!isPlatformWeb) return;
     useToastStore.getState().reset();
-    set({ gatewayUser: null, gatewayUserRole: null, gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
+    set({ gatewayUser: null, gatewayUserRole: null, gatewayIdentityState:'unknown', gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
       workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [],
       sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
       runningSessions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},

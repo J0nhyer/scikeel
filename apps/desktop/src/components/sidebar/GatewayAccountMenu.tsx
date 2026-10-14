@@ -1,20 +1,23 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useEffect } from "react";
-import { ChevronUp, Settings } from "lucide-react";
+import { ChevronUp, Settings, ChartNoAxesCombined } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import type { GatewayUser } from "@/lib/runtime";
 import { useRuntimeStore } from "@/lib/runtime";
+import {isPlatformWeb} from '@/lib/webMode';
 import { GatewaySignOut } from "./GatewaySignOut";
 
-export function GatewayAccountMenu({ user }: {
+export function GatewayAccountMenu({ user, passive = false }: {
   user: GatewayUser | null;
+  passive?: boolean;
 }) {
   const { t } = useTranslation("nav");
   const navigate = useNavigate();
+  const identity=useRuntimeStore(state=>state.gatewayIdentityState);
   const userId = user?.id;
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || passive) return;
     const refresh = () => {
       const state = useRuntimeStore.getState();
       if (state.status === "ready" && !state.gatewayRuntimeSwitching && !state.modelSwitching) void state.refreshGatewayRuntimes();
@@ -25,7 +28,7 @@ export function GatewayAccountMenu({ user }: {
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
     };
-  }, [userId]);
+  }, [userId, passive]);
   if (!user) return <div className="border-t border-border p-1"><GatewaySignOut /></div>;
   return <DropdownMenu.Root>
     <DropdownMenu.Trigger className="flex min-h-12 w-full items-center gap-3 border-t border-border px-3 text-left text-sm text-text hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-accent"
@@ -42,6 +45,10 @@ export function GatewayAccountMenu({ user }: {
         className="flex min-h-10 cursor-pointer items-center gap-2 rounded px-3 text-sm text-text outline-none data-[highlighted]:bg-surface-2">
         <Settings size={15} /> {t("sidebar.settings")}
       </DropdownMenu.Item>
+      {isPlatformWeb && identity==='ready' && user.role==='admin' && <DropdownMenu.Item onSelect={()=>navigate('/admin/agent-analytics')}
+        className="flex min-h-10 cursor-pointer items-center gap-2 rounded px-3 text-sm text-text outline-none data-[highlighted]:bg-surface-2">
+        <ChartNoAxesCombined size={15}/>{t('sidebar.agentAnalytics')}
+      </DropdownMenu.Item>}
       <GatewaySignOut inMenu />
     </DropdownMenu.Content></DropdownMenu.Portal>
   </DropdownMenu.Root>;

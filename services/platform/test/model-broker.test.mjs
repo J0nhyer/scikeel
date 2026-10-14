@@ -52,6 +52,17 @@ async function fixture(t, handler, options = {}) {
   });
   return { broker, token, fetch };
 }
+test('analytics observes trusted terminal attempts without affecting SSE or retaining request content',async(t)=>{
+  const seen=[];
+  const {broker,fetch}=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: {"text":"PRIVATE_OUTPUT"}\n\ndata: [DONE]\n\n');});
+  broker.onAnalyticsAttempt=(owner,fact)=>{seen.push({owner,fact});throw Error('analytics failure');};
+  const response=await fetch({model:'approved',input:'PRIVATE_INPUT',stream:true,max_output_tokens:16});
+  assert.equal(response.status,200);assert.match(response.body,/PRIVATE_OUTPUT/);
+  assert.deepEqual(seen[0].owner,context);assert.equal(seen[0].fact.outcome,'completed');
+  await fetch(undefined,{grant:'invalid'});
+  assert.equal(seen.at(-1).owner,null);assert.equal(seen.at(-1).fact.outcome,'failed');
+  assert.ok(!JSON.stringify(seen).includes('PRIVATE_'));assert.ok(!JSON.stringify(seen).includes('secret-canary'));
+});
 test("a fixed upstream receives only the platform credential and preserves model SSE", async (t) => {
   const { fetch } = await fixture(t, (req, res) => {
     assert.equal(req.url, "/v1/responses"); assert.equal(req.headers.authorization, "Bearer administrator-secret-canary");

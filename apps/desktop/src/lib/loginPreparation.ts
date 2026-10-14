@@ -15,6 +15,7 @@ type PreparationSource = {
 /** Keep the existing login screen until the authenticated app can be used.
  * The server owns its markup; no credentials are stored or copied into the app. */
 export function installLoginPreparation(source: PreparationSource, signOut?: () => Promise<void>): () => void {
+  if(window.location.pathname==='/admin/agent-analytics')return ()=>{};
   if (!document.documentElement.hasAttribute("data-scikeel-login-preparing")) return () => {};
   let finished = false;
   let disposed = false;

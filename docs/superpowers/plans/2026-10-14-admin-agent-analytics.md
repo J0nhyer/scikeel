@@ -10,7 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-14-admin-agent-analytics-design.md`.
 **Design reference:** `examples/agent-analytics-preview/`, published at `/preview/agent-analytics`.
-**Status:** Spec and plan only. The user accepted the prototype and requested these documents on October 14, 2026; product implementation and product deployment have not started.
+**Status:** Implementation in progress on `feat/admin-agent-analytics-20261014`, isolated at `.worktrees/admin-agent-analytics-20261014`. The effective production baseline was materialized and hash-checked before edits. An earlier focused run passed 8 backend and 51 frontend tests; subsequent review fixes require fresh verification. Typecheck, lint, candidate build, browser acceptance and real-runtime acceptance are not yet signed off. Product deployment is not authorized or attempted by this branch.
+
+### Execution Notes
+
+- The proposed `better-sqlite3@12.9.1` was not available from the package registry. The implementation pins the published `12.9.0`, whose installed package declares Node 20 and 24 compatibility. Lock generation, frozen installation and native compilation ran through fixed guarded scripts. Minimum-Node CI execution remains unverified.
+- Related view components are consolidated in `AgentAnalyticsViews.tsx`; the observer and metrics tests live in the platform collector/contract suites. This avoids adding separate wrappers solely to match the original file list.
+- Models distinguish linked assistant-message metadata in the run-start cohort from unlinked broker attempts in a separately labeled attempt-start cohort. Missing retries, usage and latency remain unavailable. No inference-based run attribution was added.
+- Research analytics bookkeeping remains private to the durable authority record and is excluded from public task responses and agent prompts. Analytics-disabled configurations do not install the research callback.
+- Shared-resource verification is queued behind another branch's release maintenance. Do not stop its processes, restart the platform or bypass either lock/cgroup guard. The task checkboxes below remain execution/acceptance requirements, not blanket completion claims.
 
 ---
 
@@ -172,7 +180,7 @@ if (mode === "platform-deps-lock") {
 
 Root scripts: `platform:deps-lock` and `platform:deps-install` call `node scripts/dev/safe-desktop-task.mjs` with their matching fixed mode. Install into this isolated checkout's own dependency roots; do not mutate dependencies shared with the running release. Record the new installed-lock identity so release freezing validates it. Verify the SDK observer resolves from the frozen candidate source/dependency view, not from a mutable worktree symlink; add a release regression asserting the existing workspace dependency view resolves the new Node SDK subpath inside the frozen source.
 
-- [ ] Pin `better-sqlite3` to `12.9.1` in the platform package and add `@ai4s/sdk: workspace:*` for the Node observer subpath. This is a Node-20/current-Node-24 compatibility baseline, not a claim of the newest available version. Check upstream advisories and engine support at execution; a changed compatible patch needs a reviewed lockfile and the same smoke tests. Never silently raise the project's Node floor.
+- [ ] Pin `better-sqlite3` to the verified published `12.9.0` in the platform package and add `@ai4s/sdk: workspace:*` for the Node observer subpath. This is a Node-20/current-Node-24 compatibility baseline, not a claim of the newest available version. Check upstream advisories and engine support at execution; a changed compatible patch needs a reviewed lockfile and the same smoke tests. Never silently raise the project's Node floor.
 - [ ] Run `pnpm platform:deps-lock`, then `pnpm platform:deps-install` serially. Expected: exact lock/install match and a native binding usable on the current host; failure does not change deployed dependencies or bundle. Verify minimum Node 20 and the actual deployment Node in existing CI with equivalent job resource limits; if a declared target is unsupported, report the incompatibility rather than silently dropping it.
 - [ ] Add and run the database smoke test through `pnpm platform:test test/agent-analytics-store.test.mjs`:
 
@@ -192,7 +200,7 @@ test("the pinned binding opens and executes on the supported server Node", () =>
 
 - [ ] Run `pnpm release:test scripts/dev/web-release.test.mjs`; expected existing guard/release checks and added fixed-mode cases pass. Commit only these feature-scoped files as `build: guard analytics database dependency installation`.
 
-Primary implementation references: upstream versioned package metadata at `https://raw.githubusercontent.com/WiseLibs/better-sqlite3/v12.9.1/package.json`, binding API at `https://github.com/WiseLibs/better-sqlite3/blob/v12.9.1/docs/api.md`, and SQLite WAL guidance at `https://www.sqlite.org/wal.html`. These document compatibility and checkpoint behavior; they do not establish a security audit.
+Primary implementation references: upstream versioned package metadata at `https://raw.githubusercontent.com/WiseLibs/better-sqlite3/v12.9.0/package.json`, binding API at `https://github.com/WiseLibs/better-sqlite3/blob/v12.9.0/docs/api.md`, and SQLite WAL guidance at `https://www.sqlite.org/wal.html`. These document compatibility and checkpoint behavior; they do not establish a security audit.
 
 ## Task 2: Freeze Safe Metadata, Identity and Validation
 

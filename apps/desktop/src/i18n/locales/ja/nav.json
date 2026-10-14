@@ -10,7 +10,8 @@
     "adminBadge": "管理者",
     "home": "ホームへ戻る",
     "campusName": "Chengdu University of Technology",
-    "campusStudentProject": "学生研究プロジェクト"
+    "campusStudentProject": "学生研究プロジェクト",
+    "agentAnalytics": "Agent analytics"
   },
   "items": {
     "new": "新規",

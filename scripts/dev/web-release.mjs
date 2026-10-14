@@ -124,6 +124,11 @@ export async function browserStage(candidate, run = runProcess) {
   const tests = ['src/test/webRelease.acceptance.test.mjs', notificationScenario, projectScenario];
   const environment = { OSD_RELEASE_ACCEPTANCE: '1', OSD_NOTIFICATIONS_ACCEPTANCE: '1', OSD_PROJECTS_ACCEPTANCE: '1', OSD_PROJECTS_WEB_ROOT: candidate.artifacts.web.directory, OSD_WEB_CANDIDATE: candidate.artifacts.web.directory };
   const groups = candidate.selection.browserGroups;
+  if (groups.includes('agent-analytics')) {
+    const scenario='src/test/webAgentAnalytics.acceptance.test.mjs';
+    if (!await lstat(join(desktop,scenario)).catch(()=>null)) throw new Error('Required agent analytics browser scenario is unavailable');
+    tests.push(scenario);environment.OSD_AGENT_ANALYTICS_ACCEPTANCE='1';
+  }
   if (groups.includes('login') || groups.includes('session')) {
     const accountRecovery = 'src/test/webAccountRecovery.acceptance.test.mjs';
     if (!await lstat(join(desktop, accountRecovery)).catch(() => null)) throw new Error('Required account recovery browser scenario is unavailable');

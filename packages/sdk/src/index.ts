@@ -1,4 +1,5 @@
 export type { AttachmentPromptContext } from "@ai4s/shared";
+export * from './admin-analytics';
 export { OpenCodeClient, ApiError, isApiStatus } from "./OpenCodeClient";
 export { GatewayWorkspaceClient, GatewayWorkspaceError, isWorkspaceReport } from "./GatewayWorkspaceClient";
 export type { WorkspaceContext, WorkspaceReport, WorkspaceFailure, WorkspaceRecoveryCommand } from "./GatewayWorkspaceClient";

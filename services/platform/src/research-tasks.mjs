@@ -6,6 +6,7 @@ const MODES = new Set(["guided", "collaborative", "delegated"]);
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/;
 const LEASE_MS = 45_000;
 const error = (message, status = 400) => Object.assign(new Error(message), { status });
+const publicTask=task=>task?structuredClone(Object.fromEntries(Object.entries(task).filter(([key])=>!key.startsWith('analytics')))):task;
 const inside = (root, file) => {
   const rel = relative(root, file);
   return !isAbsolute(rel) && rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\");
@@ -52,13 +53,14 @@ async function artifact(directory, path) {
 
 /** One durable brief per conversation. Page leases are deliberately ephemeral. */
 export class ResearchTasks {
-  constructor({ rootDir, cancel = async () => {}, running = null, now = Date.now, logger = () => {}, workspace = null } = {}) {
+  constructor({ rootDir, cancel = async () => {}, running = null, now = Date.now, logger = () => {}, workspace = null, onAnalyticsFact = null } = {}) {
     this.rootDir = resolve(rootDir);
     this.workspace = workspace;
     this.cancel = cancel;
     this.running = running;
     this.logger = logger;
     this.now = now;
+    this.onAnalyticsFact = onAnalyticsFact;
     this.records = new Map();
     this.leases = new Map();
     this.queues = new Map();
@@ -75,6 +77,22 @@ export class ResearchTasks {
     finally { if (this.queues.get(key) === work) this.queues.delete(key); }
   }
   async save(task) {
+    if (task.execution > 0 && this.onAnalyticsFact) {
+      const snapshot = JSON.stringify([task.execution,task.status,task.issue??null]);
+      if (snapshot !== task.analyticsSnapshot) {
+        task.analyticsRevision=(task.analyticsRevision??0)+1;task.analyticsSnapshot=snapshot;
+        if(task.analyticsExecution!==task.execution){task.analyticsExecution=task.execution;task.analyticsStartedAt=this.now();task.analyticsDecisions={};}
+      }
+      task.analyticsDecisions??={};
+      for(const decision of this.pending(task)){
+        const key=createHash('sha256').update(JSON.stringify([decision.id,decision.question])).digest('hex');
+        task.analyticsDecisions[key]??={startedAt:this.now()};
+      }
+      for(const decision of task.decisions.filter(d=>d.execution===task.execution)){
+        const key=createHash('sha256').update(JSON.stringify([decision.id,decision.question])).digest('hex');
+        if(task.analyticsDecisions[key])task.analyticsDecisions[key].endedAt=decision.confirmedAt;
+      }
+    }
     const folder = join(this.rootDir, id(task.userId));
     await fs.mkdir(folder, { recursive: true, mode: 0o700 });
     const file = join(folder, `${id(task.sessionId)}.json`);
@@ -82,7 +100,20 @@ export class ResearchTasks {
     await fs.writeFile(temp, JSON.stringify(task), { mode: 0o600 });
     await fs.rename(temp, file);
     this.records.set(this.key(task.userId, task.sessionId), task);
-    return structuredClone(task);
+    if (task.execution > 0 && this.onAnalyticsFact) {
+      const outcome=['completed','failed','cancelled','paused','waiting_input','running'].includes(task.status)?task.status:'paused';
+      try { this.onAnalyticsFact({accountId:task.userId,runtime:task.runtime,instanceId:task.instanceId,generation:task.generation},
+        {sessionId:task.sessionId,execution:task.execution,sourceVersion:task.analyticsRevision,startedAt:task.analyticsStartedAt,
+          endedAt:['completed','failed','cancelled'].includes(outcome)?task.updatedAt:null,outcome,code:task.issue,
+          delivery:{outputs:outcome==='completed'?'passed':task.issue==='missing_outputs'?'failed':'unknown',
+            evidence:outcome==='completed'?'passed':task.issue==='failed_checks'?'failed':'unknown',inputsPreserved:outcome==='completed'?'passed':task.issue==='changed_inputs'?'failed':'unknown'}}); } catch { /* Metadata cannot change task authority. */ }
+      for(const [entityId,timing]of Object.entries(task.analyticsDecisions??{})){
+        try{this.onAnalyticsFact({accountId:task.userId,runtime:task.runtime,instanceId:task.instanceId,generation:task.generation},
+          {kind:'intervention',entityId:`decision:${task.execution}:${entityId}`,sessionId:task.sessionId,execution:task.execution,code:'clarification',
+            startedAt:timing.startedAt,endedAt:timing.endedAt??null,outcome:timing.endedAt?'answered':'pending'});}catch{/* Optional observer. */}
+      }
+    }
+    return publicTask(task);
   }
   async load(userId, sessionId) {
     const key = this.key(userId, sessionId);
@@ -102,7 +133,7 @@ export class ResearchTasks {
     return task;
   }
   async get(userId, sessionId) {
-    return this.locked(userId, sessionId, async () => structuredClone(await this.load(userId, sessionId)));
+    return this.locked(userId, sessionId, async () => publicTask(await this.load(userId, sessionId)));
   }
   async interruptGeneration(context) {
     const folder = join(this.rootDir, id(context.userId));
@@ -224,7 +255,7 @@ export class ResearchTasks {
       const key = this.key(userId, sessionId);
       if (!this.leases.has(key)) this.leases.set(key, new Map());
       this.leases.get(key).set(pageId, this.now() + LEASE_MS);
-      return structuredClone(task);
+      return publicTask(task);
     });
   }
   async stop(task, reason = "user-stopped") {
@@ -239,14 +270,21 @@ export class ResearchTasks {
     return this.locked(userId, sessionId, async () => {
       const task = await this.load(userId, sessionId);
       this.leases.get(this.key(userId, sessionId))?.delete(id(pageId));
-      return structuredClone(task);
+      return publicTask(task);
     });
   }
   async action(userId, sessionId, payload) {
     return this.locked(userId, sessionId, async () => {
       const task = await this.load(userId, sessionId);
       if (!task) throw error("research task not found", 404);
-      if (payload.action === "stop") return this.stop(task);
+      if (payload.action === "stop") {
+        const result=await this.stop(task);
+        if(task.execution>0&&this.onAnalyticsFact)try{this.onAnalyticsFact(
+          {accountId:task.userId,runtime:task.runtime,instanceId:task.instanceId,generation:task.generation},
+          {kind:'intervention',entityId:`takeover:${task.execution}:${task.updatedAt}`,sessionId:task.sessionId,execution:task.execution,
+            startedAt:task.updatedAt,endedAt:task.updatedAt,code:'takeover',outcome:'answered'});}catch{/* Optional observer. */}
+        return result;
+      }
       if (payload.action === "mode") {
         if (task.executionActive) throw error("cannot change mode while research is running", 409);
         task.mode = mode(payload.mode);
@@ -286,7 +324,8 @@ export class ResearchTasks {
         collaborative: "Propose a concrete plan first and record a decision for confirmation. After confirmation, perform its routine steps continuously. Pause and record a decision for material method changes or missing inputs.",
         delegated: "Execute the confirmed objective and deliverables continuously, checking each outcome. Repair execution errors at most twice. Pause for missing inputs or unapproved changes to the research question or scientific method.",
       }[task.mode];
-      const context = `SciKeel research task (version 1). Use the research-workflow Skill and relevant scientific Skills.\n${JSON.stringify(task)}\nMode policy: ${policy}\nExisting runtime tool permissions still apply; this mode grants no new permissions. Preserve original inputs. Never fabricate data or citations.\nWrite progress atomically to ${task.reportPath} inside this session workspace, using:\n${JSON.stringify({ version: 1, execution: task.execution, status: "running", steps: [{ title: "Actual research step", status: "pending" }], decisions: [], artifacts: [], checks: [], limitations: "" })}\nAllowed report status: running, waiting_input, completed, failed. Decisions: {id,question}; only user confirmations in the task record are confirmed decisions. Artifacts: relative file paths, including every requested deliverable. Checks: {title,status: passed|failed|pending,evidence: relative path to actual check output}. A completed report needs existing outputs and passed checks with evidence. Record missing inputs and limitations explicitly. Write waiting_input before stopping for a research decision; do not execute beyond that decision. Explain the result to the student, never claim publication readiness.\nUser request:\n`;
+      const promptTask=publicTask(task);
+      const context = `SciKeel research task (version 1). Use the research-workflow Skill and relevant scientific Skills.\n${JSON.stringify(promptTask)}\nMode policy: ${policy}\nExisting runtime tool permissions still apply; this mode grants no new permissions. Preserve original inputs. Never fabricate data or citations.\nWrite progress atomically to ${task.reportPath} inside this session workspace, using:\n${JSON.stringify({ version: 1, execution: task.execution, status: "running", steps: [{ title: "Actual research step", status: "pending" }], decisions: [], artifacts: [], checks: [], limitations: "" })}\nAllowed report status: running, waiting_input, completed, failed. Decisions: {id,question}; only user confirmations in the task record are confirmed decisions. Artifacts: relative file paths, including every requested deliverable. Checks: {title,status: passed|failed|pending,evidence: relative path to actual check output}. A completed report needs existing outputs and passed checks with evidence. Record missing inputs and limitations explicitly. Write waiting_input before stopping for a research decision; do not execute beyond that decision. Explain the result to the student, never claim publication readiness.\nUser request:\n`;
       const original = Array.isArray(body.parts) ? body.parts : [];
       return { ...body, system: [typeof body.system === "string" ? body.system : "", context].filter(Boolean).join("\n\n"), parts: original };
     });

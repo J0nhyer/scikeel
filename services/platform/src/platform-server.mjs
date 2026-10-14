@@ -251,6 +251,7 @@ function safeNextPath(value) {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return "/";
   return value;
 }
+function isAnalyticsDestination(value){try{return new URL(safeNextPath(value),'http://platform.invalid').pathname==='/admin/agent-analytics';}catch{return false;}}
 
 function booleanValue(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -306,6 +307,8 @@ export class PlatformServer {
     saveRuntimeDefaultModel = null,
     environments = null,
     workspaceFiles = null,
+    analyticsRoutes = null,
+    analyticsCollector = null,
   } = {}) {
     if (!authStore) throw new Error("authStore is required");
     if (!workerManager) throw new Error("workerManager is required");
@@ -316,6 +319,8 @@ export class PlatformServer {
     this.authStore = authStore;
     this.workerManager = workerManager;
     this.cliRuntime = cliRuntime;
+    this.analyticsRoutes = analyticsRoutes;
+    this.analyticsCollector = analyticsCollector;
     const resolveContext=async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
       if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("managed worker unavailable");
       return {userId,instanceId:worker.id,generation:worker.generation};};
@@ -324,6 +329,7 @@ export class PlatformServer {
       cancel: (task) => this.#cancelResearch(task),
       running: (task) => this.#researchRunning(task),
       logger,
+      onAnalyticsFact: analyticsCollector ? (scope, fact) => analyticsCollector.research(scope, fact) : null,
       workspace:tenantPolicy && workspaceFiles ? new ManagedResearchFiles({files:workspaceFiles,tenantPolicy,resolveContext}) : null,
     });
     const copies = tenantPolicy && workspaceFiles ? new ManagedAttachmentCopies({files:workspaceFiles,tenantPolicy,
@@ -1419,6 +1425,7 @@ export class PlatformServer {
         if (stopping && upstream.ok) {
           for (const { owner, stopId } of stopping.sessions) await this.toolOutcomes.confirmStop(owner, stopId);
           await this.network?.cancelExecution(context, stopping.owner.sessionId, stopping.state.execution, "stop");
+          try{this.analyticsCollector?.cancelSession({accountId:user.id,runtime:'opencode',instanceId:worker.id,generation:worker.generation},sessionId);}catch{/* Optional metadata hook. */}
         }
         if (permissionDecision) { permissionDecision.allowed = upstream.ok && body.reply !== "reject"; permissionDecision.release(); }
         if (operation.operation === "event" && upstream.ok) {
@@ -1618,7 +1625,7 @@ export class PlatformServer {
       if (path === "/login") {
         const user = await this.#currentUser(request);
         if (user && request.method === "GET") {
-          redirect(response, "/");
+          redirect(response, isAnalyticsDestination(parsed.searchParams.get('next'))?safeNextPath(parsed.searchParams.get('next')):'/');
           return;
         }
         if (request.method !== "GET") {
@@ -1663,7 +1670,7 @@ export class PlatformServer {
         }
         // A browser login starts its isolated workspace immediately; the
         // document and client assets can load while startup continues.
-        if (this.tenantPolicy && !isJsonRequest(request)) {
+        if (this.tenantPolicy && !isJsonRequest(request) && !isAnalyticsDestination(payload.next)) {
           void this.#ensureWorker(user).catch(() => this.logger({ type: "login.preparation_failed", userId: user.id }));
         }
         const cookies = [
@@ -1697,6 +1704,20 @@ export class PlatformServer {
         return;
       }
 
+      if (path === '/admin/agent-analytics' || path==='/api/admin/agent-analytics' || path.startsWith('/api/admin/agent-analytics/')) {
+        response.setHeader('cache-control', 'private, no-store');
+        const admin = await this.#requireAdmin(request, response);
+        if (!admin) return;
+        if (path === '/admin/agent-analytics') {
+          if (request.method !== 'GET') { sendJson(response,405,{code:'method_not_allowed'}); return; }
+          if (!this.webRoot) { sendJson(response,404,{code:'not_found'}); return; }
+          let html = await readFile(resolve(this.webRoot,'index.html'),'utf8');
+          html = html.replace('<head>', '<head><script>window.__OS_WEB__=true;window.__OS_PLATFORM__=true;</script>');
+          sendHtml(response,200,html); return;
+        }
+        if (!this.analyticsRoutes) { sendJson(response,503,{code:'analytics_unavailable'}); return; }
+        await this.analyticsRoutes.handle(request,response,{admin,url:parsed}); return;
+      }
       const collaborationPath = path.match(/^\/api\/collaboration\/([A-Za-z0-9_-]{1,128})$/);
       if (collaborationPath) {
         const user = await this.#currentUser(request);

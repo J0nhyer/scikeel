@@ -5,6 +5,7 @@ type AccountOptions = {
   suspend: () => void;
   clear: () => void;
   navigate: () => void;
+  onIdentityState?: (state:'ready'|'unavailable') => void;
 };
 
 /** Authentication owns account reads; workspace reconnects never invalidate them. */
@@ -58,13 +59,15 @@ export function createGatewayAccountLifecycle(options: AccountOptions) {
       try {
         const body = await request("/api/me", {}, controller);
         if (suspended || disposed || epoch !== authenticationEpoch || controller.signal.aborted) return;
-        if (typeof body !== "object" || body === null || !("user" in body)) return;
+        if (typeof body !== "object" || body === null || !("user" in body)) throw new Error('Invalid identity');
         const user = body.user;
         if (typeof user !== "object" || user === null || !("id" in user) || !("username" in user) || !("role" in user) ||
           typeof user.id !== "string" || !user.id || typeof user.username !== "string" || !user.username ||
-          (user.role !== "admin" && user.role !== "user")) return;
+          (user.role !== "admin" && user.role !== "user")) throw new Error('Invalid identity');
         options.publish({ id: user.id, username: user.username, role: user.role });
+        options.onIdentityState?.('ready');
       } catch {
+        if(!disposed&&!suspended&&epoch===authenticationEpoch)options.onIdentityState?.('unavailable');
         // Account availability cannot gate access to the independent logout route.
       }
     })();

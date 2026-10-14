@@ -108,6 +108,15 @@ test('release bundles only the matching checked source and excludes ACP', async 
 });
 
 import { browserStage, prepareRelease, requireBrowserConfiguration, parseArguments, validateResume, validateInstalledImage, assertSelectedSource } from './web-release.mjs';
+
+test('admin analytics source changes select a required protected browser scenario', () => {
+  for (const path of ['services/platform/src/agent-analytics-store.mjs','packages/sdk/src/agent-analytics-observer.mjs','apps/desktop/src/components/sidebar/GatewayAccountMenu.tsx']) {
+    const selection=selectVerification([path],{known:true});
+    assert.ok(selection.browserGroups.includes('agent-analytics'),path);
+    assert.equal(selection.buildWeb,true);
+  }
+  assert.ok(selectVerification([],{known:false}).browserGroups.includes('agent-analytics'));
+});
 test('CLI requires explicit source and rejects ambiguous commands/options', () => {
   assert.throws(() => parseArguments(['prepare']), /source/);
   assert.throws(() => parseArguments(['prepare', '--source', '/tmp/a', '--skip-tests']), /Unknown/);

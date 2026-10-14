@@ -7,6 +7,9 @@ import { PlatformServer } from "./platform-server.mjs";
 import { sandboxConfiguration } from "./sandbox-manifest.mjs";
 import { createSandboxControlPlane } from "./sandbox-control-plane.mjs";
 import { WorkerManager } from "./worker-manager.mjs";
+import { createAnalyticsStore } from './agent-analytics-store.mjs';
+import { createAnalyticsCollector } from './agent-analytics-collector.mjs';
+import { createAnalyticsRoutes } from './agent-analytics-routes.mjs';
 
 function env(name, fallback = "") {
   return process.env[name] ?? fallback;
@@ -52,6 +55,12 @@ const authStore = new AuthStore({
   bootstrapAdmin: adminPassword ? { username: adminUsername, password: adminPassword } : null,
 });
 const controlPlane = sandbox?.enabled ? await createSandboxControlPlane({ configuration: sandbox, dataDir }) : null;
+let analyticsStore=null;
+if(boolEnv('PLATFORM_AGENT_ANALYTICS',true)){
+  try{analyticsStore=createAnalyticsStore({path:join(dataDir,'agent-analytics','metadata.sqlite')});}
+  catch{console.error(JSON.stringify({type:'analytics.unavailable'}));}
+}
+const analyticsCollector=analyticsStore?createAnalyticsCollector({store:analyticsStore,registry:controlPlane?.analyticsRegistry??{skills:new Set(['research-workflow'])}}):null;
 const workerManager = controlPlane?.manager ?? new WorkerManager({
   rootDir: join(dataDir, "workers"),
   osdCommand: env("OSD_BIN", "osd"),
@@ -83,6 +92,8 @@ const platform = new PlatformServer({
   port: numberEnv("PLATFORM_PORT", 4790),
   authStore,
   workerManager,
+  analyticsCollector,
+  analyticsRoutes:analyticsStore?createAnalyticsRoutes({store:analyticsStore,authStore}):null,
   cliRuntime,
   tenantPolicy: controlPlane?.tenantPolicy,
   networkEgress: controlPlane?.egress,
@@ -99,6 +110,10 @@ const platform = new PlatformServer({
 });
 
 if(controlPlane) {
+  const scope=context=>({accountId:context.userId,runtime:'opencode',instanceId:context.instanceId,generation:context.generation});
+  controlPlane.manager.onWorkerReady=({context,access})=>analyticsCollector?.workerReady({scope:scope(context),access});
+  controlPlane.manager.onWorkerRevoked=context=>analyticsCollector?.workerRevoked(scope(context));
+  controlPlane.model.onAnalyticsAttempt=(context,fact)=>analyticsCollector?.recordAttempt(context?scope(context):null,fact);
   controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
   controlPlane.model.networkHandler=(context,body)=>platform.runtimeNetwork(context,body);
   controlPlane.revokeNetwork=async(context)=>{
@@ -113,6 +128,8 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(JSON.stringify({ type: "platform.stopping", signal }));
   await platform.close().catch((error) => console.error(error));
+  await analyticsCollector?.close();
+  await analyticsStore?.close();
   await cliRuntime?.close().catch((error) => console.error(error));
   if (controlPlane) await controlPlane.close().catch((error) => console.error(error));
   else await workerManager.close().catch((error) => console.error(error));
