@@ -40,6 +40,7 @@ test.skipIf(!process.env.OSD_CONTINUITY_BROWSER)("running Web turns survive conv
       json({ available: true, state: { schema: 1, mode: "collaborative", phase: path.endsWith("ses_live") && active ? "running" : "idle", revision: 1, execution: 1, decisions: [], pending: null } }); return;
     }
     const data = {
+      '/api/workspace/operations': {items:[],resolved:[],nextCursor:null},
       "/v1/whoami": { directory: "/tenant/workspace", mode: "full" },
       "/api/me": { user: { id: "usr_fixture", username: "fixture", role: "user" } },
       "/api/runtime": { runtime: "opencode", kind: "opencode", context: { instanceId: "user-fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true }] },
@@ -192,6 +193,7 @@ test.skipIf(!process.env.OSD_CONTINUITY_BROWSER)("Web Settings saves defaults ac
       promptCalls++; send(res, { error: "This fixture does not execute turns" }, 409); return;
     }
     const data = {
+      '/api/workspace/operations': {items:[],resolved:[],nextCursor:null},
       "/v1/whoami": { directory: "/tenant/workspace", mode: "full" },
       "/api/me": { user: { id: "usr_fixture", username: "fixture", role: "user" } },
       "/api/runtime": { runtime: "opencode", kind: "opencode", context: { instanceId: "user-fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true, models: [], status: "ready" }] },

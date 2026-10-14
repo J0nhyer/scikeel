@@ -30,6 +30,7 @@ test.skipIf(!process.env.OSD_TOOL_BROWSER)('Web tool failures and authenticated 
     if (path === `/session/${session.id}/abort`) { publish({ type: 'tool', callID: 'call_fetch', tool: 'webfetch', state: { status: 'error', error: 'Tool execution aborted', metadata: { scikeelOutcome: cancelled } } }); busy = false; json(true); return; }
     if (path === `/session/${session.id}/message`) { json(history()); return; }
     const data = {
+      '/api/workspace/operations': {items:[],resolved:[],nextCursor:null},
       '/v1/whoami': { directory: '/tenant/workspace', mode: 'full' }, '/api/me': { user: { id: 'user_fixture', username: 'fixture', role: 'user' } },
       '/api/runtime': { runtime: 'opencode', kind: 'opencode', context: { instanceId: 'user-fixture', generation: 1 }, available: [{ runtime: 'opencode', kind: 'opencode', enabled: true }] },
       '/config/providers': { providers: [{ id: 'fixture', name: 'Fixture', models: { model: { id: 'model', name: 'Fixture model' } } }], connected: ['fixture'], default: { fixture: 'model' } },

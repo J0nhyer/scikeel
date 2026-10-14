@@ -24,10 +24,11 @@ export function WorkspacePendingActions(){
    if(!current() || loading)return;loading=true;clearTimeout(timer);
    try{
     const result=await listPendingWorkspaceOperations(cursor);if(!current())return;
+    if(!result || !Array.isArray(result.items) || (result.resolved!==undefined && !Array.isArray(result.resolved)) || (result.nextCursor!==null && typeof result.nextCursor!=='string'))throw new Error('Pending operations are unavailable');
     for(const operation of result.resolved??[])if(operation.receipt.state==='committed')invalidate(operation);
     setView(previous=>({owner,items:cursor && previous.owner===owner?[...previous.items.filter(item=>!result.items.some(next=>next.operationId===item.operationId)),...result.items]:result.items,nextCursor:result.nextCursor,...(previous.owner===owner && result.items.length && previous.error?{error:previous.error}:{})}));
     if(result.items.length)timer=setTimeout(()=>void load(),5000);
-   }catch(error){if(current())setView(previous=>previous.owner===owner?{...previous,error:error instanceof Error?error.message:String(error)}:previous);}
+   }catch(error){if(current())setView(previous=>({...(previous.owner===owner?previous:{owner,items:[],nextCursor:null}),error:error instanceof Error?error.message:String(error)}));}
    finally{loading=false;}
   };
   loadRef.current=load;void load();const refresh=()=>void load();

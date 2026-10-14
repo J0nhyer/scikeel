@@ -16,6 +16,11 @@ it('offers receipt checking without mutation replay when native state is indeter
  expect(typeof WorkspacePendingActions).toBe('function');api.list.mockResolvedValue({items:[{...pending,retry:null,code:'operation_uncertain'}],nextCursor:null});render(<WorkspacePendingActions/>);await screen.findByText('source.txt');
  expect(screen.queryByRole('button',{name:'Retry operation: source.txt'})).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Check operation: source.txt'}));await waitFor(()=>expect(api.list.mock.calls.length).toBeGreaterThan(1));expect(api.retry).not.toHaveBeenCalled();
 });
+it('keeps the page usable when the pending operations response is malformed',async()=>{
+ api.list.mockResolvedValue({});render(<WorkspacePendingActions/>);
+ expect(await screen.findByRole('alert')).toHaveTextContent('Pending operations are unavailable');
+ expect(screen.queryByText('source.txt')).not.toBeInTheDocument();
+});
 it('retains the pending entry when a retry still has an unknown outcome',async()=>{
  expect(typeof WorkspacePendingActions).toBe('function');api.retry.mockRejectedValueOnce(new Error('Result not confirmed'));render(<WorkspacePendingActions/>);await screen.findByText('source.txt');fireEvent.click(screen.getByRole('button',{name:'Retry operation: source.txt'}));
  expect(await screen.findByRole('alert')).toHaveTextContent('Result not confirmed');expect(screen.getByText('source.txt')).toBeInTheDocument();

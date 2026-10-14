@@ -50,7 +50,7 @@ test.skipIf(!process.env.OSD_PROJECTS_ACCEPTANCE && !process.env.OSD_PROJECTS_LI
         };
         const create = async (name) => {
           await openSidebar();
-          await page.getByRole("button", { name: "New project", exact: true }).first().click();
+          await page.getByRole("button", { name: "New project", exact: true }).first().click().catch(async error=>{console.error('Project create candidate diagnostics:',width,name,await page.locator('body').innerText());throw error;});
           const dialog = page.getByRole("dialog", { name: "Name project" });
           await dialog.getByRole("textbox").fill(name);
           const faultCheck = width === 1280 && name.startsWith("A ");
@@ -122,7 +122,8 @@ test.skipIf(!process.env.OSD_PROJECTS_ACCEPTANCE && !process.env.OSD_PROJECTS_LI
         if (releaseUpload) expect(await page.getByRole("button", { name: "Send", exact: true }).isEnabled()).toBe(false);
         await openSidebar();
         await page.getByRole("button", { name: "Projects", exact: true }).click();
-        await page.getByRole("heading", { name: "Projects", exact: true }).locator("..").getByRole("button", { name: `New session in A ${width}`, exact: true }).click();
+        await page.getByRole('heading',{name:'Projects',exact:true}).locator('../..').getByRole('button',{name:`Project actions: A ${width}`,exact:true}).click();
+        await page.getByRole('menuitem',{name:'New session',exact:true}).click();
         const confirmation = page.getByRole("alertdialog");
         await confirmation.waitFor();
         await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -135,7 +136,8 @@ test.skipIf(!process.env.OSD_PROJECTS_ACCEPTANCE && !process.env.OSD_PROJECTS_LI
           await expect.poll(() => page.getByRole("button", { name: "Send", exact: true }).isEnabled()).toBe(true);
           await openSidebar();
           await page.getByRole("button", { name: "Projects", exact: true }).click();
-          await page.getByRole("heading", { name: "Projects", exact: true }).locator("..").getByRole("button", { name: `New session in A ${width}`, exact: true }).click();
+          await page.getByRole('heading',{name:'Projects',exact:true}).locator('../..').getByRole('button',{name:`Project actions: A ${width}`,exact:true}).click();
+          await page.getByRole('menuitem',{name:'New session',exact:true}).click();
           await page.getByRole("alertdialog").getByRole("button", { name: "Discard and continue", exact: true }).click();
           await page.locator("textarea").waitFor();
           expect(await page.locator("textarea").inputValue()).toBe("");

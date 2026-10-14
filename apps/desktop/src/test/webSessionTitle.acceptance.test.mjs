@@ -45,6 +45,7 @@ test.skipIf(!process.env.OSD_TITLE_BROWSER)("committed Web titles refresh, remai
     }
     if (session) { json(session); return; }
     const data = {
+      '/api/workspace/operations': {items:[],resolved:[],nextCursor:null},
       "/v1/whoami": { directory: "/tenant/workspace", mode: "full" },
       "/api/me": { user: { id: "usr_fixture", username: "fixture", role: "user" } },
       "/api/runtime": { runtime: "opencode", kind: "opencode", context: { instanceId: "user-fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true }] },

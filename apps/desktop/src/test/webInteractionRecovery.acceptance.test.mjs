@@ -74,6 +74,7 @@ test.skipIf(!process.env.OSD_INTERACTION_BROWSER)('Web answers retain drafts acr
       if(path==='/session/ses_live/abort'){active=false;aborts++;await store.settled(owner);json(true);return;}
       if(path==='/session/ses_live/revert'){revert={messageID:body.messageID};json({...sessions[0],revert});return;}
       const data={
+        '/api/workspace/operations': {items:[],resolved:[],nextCursor:null},
         '/v1/whoami':{directory:'/tenant/workspace',mode:'full'},'/api/me':{user:{id:'usr_fixture',username:'fixture',role:'user'}},
         '/api/runtime':{runtime:'opencode',kind:'opencode',context:{instanceId:'user-fixture',generation},available:[{runtime:'opencode',kind:'opencode',enabled:true}]},
         '/config/providers':{providers:[{id:'fixture',name:'Fixture',models:{model:{id:'model',name:'Fixture model'}}}],connected:['fixture'],default:{fixture:'model'}},
