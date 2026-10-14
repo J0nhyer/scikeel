@@ -31,7 +31,7 @@ export async function verifyLiveProjectFiles(){
   const text=path=>request('/api/workspace/text?'+new URLSearchParams({scope:JSON.stringify(scope),path}));
   const operate=async(operation,operationId=id())=>{
    const result=await request('/api/workspace/operations','POST',{scope,operation,operationId});
-   expect(result.state).toBe('committed');expect(result.warning).toBeUndefined();
+   expect(result.state).toBe('committed');expect(result.result?.warning).toBeUndefined();
    expect((await request('/api/workspace/operations/'+operationId)).state).toBe('committed');return result;
   };
   await operate({kind:'createDirectory',path:'reports'});

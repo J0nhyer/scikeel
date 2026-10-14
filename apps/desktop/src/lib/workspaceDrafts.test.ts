@@ -38,6 +38,8 @@ it('keyboard pane and screen closure preserve drafts when cancelled and discard 
  const confirm=vi.spyOn(window,'confirm').mockReturnValue(false);
  useLayoutStore.getState().closeFocused();expect(useLayoutStore.getState().tree).toEqual(leaf);
  useLayoutStore.getState().closeGroup(group.id);expect(useLayoutStore.getState().tree).toEqual(leaf);
+ useLayoutStore.getState().showDocumentPane({kind:'editor',path:'replacement.md'});expect(useLayoutStore.getState().tree).toEqual(leaf);
+ useLayoutStore.getState().reset('replacement-session');expect(useLayoutStore.getState().tree).toEqual(leaf);
  confirm.mockReturnValue(true);useLayoutStore.getState().closeGroup(group.id);
  expect(useLayoutStore.getState().tree).toBeNull();expect(a.getSnapshot().dirty).toBe(false);expect(b.getSnapshot().draft).toBe('other');
 });

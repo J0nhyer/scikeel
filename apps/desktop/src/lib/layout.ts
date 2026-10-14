@@ -801,6 +801,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
         ? leaves(tree).find((leaf) => leaf.content && isDocument(leaf.content))
         : undefined;
       if (!existing) return get().openContentPane(content);
+      if(JSON.stringify(existing.content)!==JSON.stringify(content) && !canCloseLeaves([existing]))return existing.id;
       const swap = (node: PaneNode): PaneNode =>
         node.kind === "leaf"
           ? node.id === existing.id
@@ -1065,6 +1066,8 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
       commitActive({ zoomedLeafId: get().zoomedLeafId === target ? null : target });
     },
     reset: (sessionId) => {
+      const tree=get().tree;
+      if(tree && !canCloseLeaves(leaves(tree)))return;
       const r = makeLeaf(sessionId);
       commitActive({ tree: r, focusedLeafId: r.id, zoomedLeafId: null });
     },
