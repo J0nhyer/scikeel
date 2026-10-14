@@ -10,7 +10,11 @@
     "./mock-server": "./src/mockServer.ts",
     "./acp": "./src/acp/index.ts",
     "./acp/stdio": "./src/acp/stdio.ts",
-    "./acp/serve-stdio": "./src/acp/serve-stdio.ts"
+    "./acp/serve-stdio": "./src/acp/serve-stdio.ts",
+    "./tool-outcome": {
+      "types": "./src/tool-outcome.d.mts",
+      "default": "./src/tool-outcome.mjs"
+    }
   },
   "dependencies": {
     "@ai4s/shared": "workspace:*"

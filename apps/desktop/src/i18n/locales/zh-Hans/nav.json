@@ -8,7 +8,9 @@
     "signOut": "退出登录",
     "account": "{{username}} 的账号",
     "adminBadge": "管理员",
-    "home": "回到首页"
+    "home": "回到首页",
+    "campusName": "成都理工大学",
+    "campusStudentProject": "学生科研项目"
   },
   "items": {
     "new": "新建",
@@ -52,7 +54,58 @@
     "seeAll": "全部项目",
     "openFolder": "打开 {{path}}",
     "newSession": "新建会话",
-    "openFolderLabel": "打开文件夹"
+    "openFolderLabel": "打开文件夹",
+    "discardTitle": "开始新会话？",
+    "discardBody": "未发送的消息和待发送附件将被丢弃。已保存的会话和项目文件会保留。",
+    "discardAction": "丢弃并继续",
+    "entryFailed": "项目已创建，但无法打开会话。",
+    "retryOpening": "重新打开",
+    "actionsAria": "项目操作：{{name}}",
+    "openFiles": "打开文件",
+    "trash": "移入回收站",
+    "trashTitle": "将 {{name}} 移入回收站？",
+    "trashBody": "文件和会话都会保留，恢复项目后可继续使用。请先完成运行中的任务。",
+    "finishDraftBeforeTrash": "请先完成或丢弃该项目未发送的消息和待上传文件。",
+    "unavailable": "项目暂不可用。",
+    "trashHeading": "回收站",
+    "restore": "恢复",
+    "trashEmpty": "回收站为空。",
+    "trashLoadFailed": "无法加载回收站。",
+    "checkingState": "正在检查项目状态…",
+    "trashedConversation": "该项目已在回收站中。恢复项目后可重新打开此会话。"
+  },
+  "fileManagement": {
+    "restoreElsewhere": "恢复到其他位置",
+    "restoreTitle": "恢复文件或文件夹",
+    "restoreName": "名称",
+    "saveAs": "另存为",
+    "savedAs": "已另存为 {{path}}",
+    "reloadText": "重新加载磁盘版本",
+    "textConflict": "磁盘文件已改变，您的草稿已保留。",
+    "saveUncertain": "保存结果尚未确认，请检查或重试原保存操作。",
+    "discardDraft": "放弃未保存的文件修改？",
+    "draftLimit": "请先保存或放弃另一文件的修改，再打开此编辑器。",
+    "finishDraft": "移动或删除前，请先保存或放弃该文件的草稿。",
+    "newFile": "新建文件",
+    "newFolder": "新建文件夹",
+    "actionsAria": "文件操作：{{name}}",
+    "move": "移动",
+    "trashTitle": "将 {{name}} 移入回收站？",
+    "trashBody": "文件或文件夹将保留以供恢复。运行中的任务须先结束。",
+    "destination": "目标文件夹",
+    "pendingOperations": "待确认操作",
+    "checkOperation": "检查操作：{{name}}",
+    "retryOperation": "重试操作：{{name}}",
+    "moreOperations": "更多待确认操作",
+    "loadMore": "加载更多",
+    "historyFailed": "已保存，历史记录失败。",
+    "retryHistory": "补记历史：{{name}}",
+    "upload": "上传文件",
+    "uploads": "上传",
+    "addFiles": "添加文件",
+    "resumeUpload": "继续上传：{{name}}",
+    "cancelUpload": "取消上传：{{name}}",
+    "uploadStatus": {"paused": "已暂停", "uploading": "上传中", "error": "需要处理", "complete": "已上传", "cancelling": "取消中", "cancelled": "已取消"}
   },
   "history": {
     "heading": "会话",
@@ -89,7 +142,9 @@
     "exportBodyFiltered": "匹配「{{query}}」的会话会写成 Markdown 文件，保存到你选择的文件夹，并附带索引。不会删除或修改任何内容。",
     "exportConfirm": "选择文件夹",
     "exportDone_other": "已导出 {{count}} 个会话。",
-    "exportDonePartial_other": "已导出 {{count}} 个会话，{{failed}} 个无法读取。"
+    "exportDonePartial_other": "已导出 {{count}} 个会话，{{failed}} 个无法读取。",
+    "titleGenerating": "正在生成标题…",
+    "titleUntitled": "新会话"
   },
   "confirmDelete": {
     "sessionTitle": "删除会话？",
@@ -179,7 +234,7 @@
       "openNotebooks": "打开笔记本",
       "manageSkills": "管理技能",
       "openSettings": "打开设置",
-      "toggleTheme": "切换主题（浅色 / 暖色 / 深色）"
+      "toggleTheme": "切换外观"
     }
   },
   "rowMenu": {

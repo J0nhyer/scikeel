@@ -1,4 +1,6 @@
-import type { MessageUsage, RuntimeStatus, ToolCallStatus } from "@ai4s/shared";
+import type { ConversationAttachment } from "@ai4s/shared";
+export type { AttachmentPromptContext } from "@ai4s/shared";
+import type { MessageUsage, RuntimeStatus, ToolCallStatus, ToolOutcome } from "@ai4s/shared";
 
 export type { RuntimeStatus, ToolCallStatus };
 
@@ -39,6 +41,8 @@ export interface StepUpdatedEvent {
   step: number;
 }
 export interface ToolUpdatedEvent {
+  error?: string;
+  outcome?: ToolOutcome;
   type: "tool.updated";
   sessionId: string;
   callId: string;
@@ -60,6 +64,14 @@ export interface ToolUpdatedEvent {
   /** A `task` tool's spawned subagent session — that session's interactive
    *  requests (question/permission) belong to THIS conversation. */
   childSessionId?: string;
+}
+/** A durable session title update, with optional derived Web presentation. */
+export interface SessionUpdatedEvent {
+  type: "session.updated";
+  sessionId: string;
+  title: string;
+  /** Full session metadata and optional Web title presentation. */
+  session?: SessionMeta;
 }
 export interface SessionIdleEvent {
   type: "session.idle";
@@ -139,6 +151,7 @@ export interface QuestionAskedEvent {
   sessionId: string;
   requestId: string;
   questions: QuestionItem[];
+  tool?: { messageID: string; callID: string };
 }
 /** A question was answered or rejected elsewhere — clear it from the UI. */
 export interface QuestionResolvedEvent {
@@ -155,6 +168,7 @@ export interface PermissionAskedEvent {
   action: string;
   /** The concrete targets (a command line, file paths). */
   resources: string[];
+  tool?: { messageID: string; callID: string };
 }
 export interface PermissionResolvedEvent {
   type: "permission.resolved";
@@ -202,6 +216,8 @@ export type OpenCodeEvent =
   | MessageUsageEvent
   | StepUpdatedEvent
   | ToolUpdatedEvent
+  | { type: "session.deleted"; sessionId: string }
+  | SessionUpdatedEvent
   | SessionIdleEvent
   | MessageAgentEvent
   | SessionRetryEvent
@@ -216,9 +232,17 @@ export type PermissionReply = "once" | "always" | "reject";
 
 // ---- REST shapes the app consumes ----
 
+export interface SessionTitlePresentation {
+  status: "pending" | "fallback" | "empty";
+  fallback?: string;
+  pendingUntil?: number;
+}
+
 export interface SessionMeta {
   id: string;
   title: string;
+  /** Read-only presentation; never passed to the manual rename API. */
+  titlePresentation?: SessionTitlePresentation;
   slug?: string;
   /** Workspace folder this session operates in (absolute path). */
   directory?: string;
@@ -242,6 +266,8 @@ export interface SessionMeta {
 /** One page of conversation history. Both the filter and the paging run on the
  *  server so a multi-year history never has to be held in memory. */
 export interface SessionQuery {
+  /** Explicit permitted project directory; OpenCode's list is project-scoped. */
+  directory?: string;
   /** Rows per page. */
   limit?: number;
   /** Page from here (an epoch-ms `updated`); omit for the newest page. */
@@ -262,6 +288,7 @@ export interface SkillInfo {
   name: string;
   description: string;
   location?: string;
+  source?: "builtin" | "project" | "user";
 }
 
 export interface AgentInfo {
@@ -288,6 +315,7 @@ export interface CommandInfo {
 
 /** A message loaded from history (GET /session/:id/message). */
 export interface HistoryMessage {
+  attachments?: ConversationAttachment[];
   role: "user" | "assistant";
   /** OpenCode's message id — the handle for reverting/editing a user message
    *  (`POST /session/:id/revert`). Absent only on synthetic/mock messages. */
@@ -348,15 +376,20 @@ export interface HistoryPart {
      *  `interrupted` marks a tool the user stopped: its `output` (not
      *  `state.error`) is what the model is shown. */
     metadata?: {
+      /** Native question tool receipt; only exact call/answer matching confirms delivery. */
+      answers?: string[][];
       output?: string;
       diff?: string;
       sessionId?: string;
       interrupted?: boolean;
+      scikeelOutcome?: ToolOutcome;
     };
   };
 }
 
 export interface OpenCodeClientOptions {
+  /** Interpret durable title jobs for the gateway Web UI. */
+  sessionTitlePresentation?: boolean;
   /** Base URL of a running `opencode serve`, e.g. http://127.0.0.1:4096 */
   baseUrl?: string;
   /** Optional OPENCODE_SERVER_PASSWORD (basic auth). */

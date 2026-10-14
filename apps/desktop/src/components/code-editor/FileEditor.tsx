@@ -56,7 +56,9 @@ export function FileEditor({
   valueRef.current = value;
   const ariaLabelRef = useRef(ariaLabel);
   ariaLabelRef.current = ariaLabel;
-  const theme = useUiStore((s) => s.theme);
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  const theme = useUiStore((s) => s.theme === "system" ? (s.systemDark ? "dark" : "light") : s.theme);
 
   useImperativeHandle(
     handleRef,
@@ -85,7 +87,7 @@ export function FileEditor({
         doc: valueRef.current,
         ariaLabel: ariaLabelRef.current,
         language: monacoLanguage(language),
-        readOnly,
+        readOnly: readOnlyRef.current,
         prose,
         onChange: (next) => onChangeRef.current?.(next),
         onSave: () => onSaveRef.current?.(),
@@ -99,7 +101,7 @@ export function FileEditor({
     // Built once per file kind. `value` and `ariaLabel` are pushed into the live
     // editor by the effects below rather than by rebuilding it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [language, readOnly, prose]);
+  }, [language, prose]);
 
   useEffect(() => {
     editor.current?.relabel(ariaLabel, readOnly);

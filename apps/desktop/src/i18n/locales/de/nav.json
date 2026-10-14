@@ -8,7 +8,9 @@
     "signOut": "Abmelden",
     "account": "Konto {{username}}",
     "adminBadge": "Admin",
-    "home": "Startseite"
+    "home": "Startseite",
+    "campusName": "Chengdu University of Technology",
+    "campusStudentProject": "Studentisches Forschungsprojekt"
   },
   "items": {
     "new": "Neu",
@@ -52,7 +54,58 @@
     "seeAll": "Alle Projekte",
     "openFolder": "{{path}} öffnen",
     "newSession": "Neue Sitzung",
-    "openFolderLabel": "Ordner öffnen"
+    "openFolderLabel": "Ordner öffnen",
+    "discardTitle": "Neue Unterhaltung starten?",
+    "discardBody": "Ihre nicht gesendete Nachricht und ausstehenden Anhänge werden verworfen. Gespeicherte Unterhaltungen und Projektdateien bleiben erhalten.",
+    "discardAction": "Verwerfen und fortfahren",
+    "entryFailed": "Projekt erstellt, aber die Unterhaltung konnte nicht geöffnet werden.",
+    "retryOpening": "Erneut öffnen",
+    "actionsAria": "Projektaktionen: {{name}}",
+    "openFiles": "Dateien öffnen",
+    "trash": "In den Papierkorb",
+    "trashTitle": "{{name}} in den Papierkorb verschieben?",
+    "trashBody": "Dateien und Gespräche bleiben erhalten. Stellen Sie das Projekt wieder her, um sie zu verwenden. Laufende Aufgaben müssen zuerst abgeschlossen werden.",
+    "finishDraftBeforeTrash": "Schließen oder verwerfen Sie zuerst ungesendete Nachrichten und Uploads dieses Projekts.",
+    "unavailable": "Projekt ist nicht verfügbar.",
+    "trashHeading": "Papierkorb",
+    "restore": "Wiederherstellen",
+    "trashEmpty": "Keine gelöschten Elemente.",
+    "trashLoadFailed": "Papierkorb konnte nicht geladen werden.",
+    "checkingState": "Projektstatus wird geprüft…",
+    "trashedConversation": "Dieses Projekt ist im Papierkorb. Stellen Sie es wieder her, um das Gespräch zu öffnen."
+  },
+  "fileManagement": {
+    "restoreElsewhere": "An anderem Ort wiederherstellen",
+    "restoreTitle": "Datei oder Ordner wiederherstellen",
+    "restoreName": "Name",
+    "saveAs": "Speichern unter",
+    "savedAs": "Gespeichert als {{path}}",
+    "reloadText": "Dateiversion neu laden",
+    "textConflict": "Die Datei wurde geändert. Ihr Entwurf bleibt erhalten.",
+    "saveUncertain": "Speicherergebnis unbekannt. Prüfen oder wiederholen Sie den ursprünglichen Vorgang.",
+    "discardDraft": "Ungespeicherte Dateiänderungen verwerfen?",
+    "draftLimit": "Speichere oder verwirf Änderungen in einer anderen Datei, bevor du diesen Editor öffnest.",
+    "finishDraft": "Speichern oder verwerfen Sie den Entwurf vor dem Verschieben oder Löschen.",
+    "newFile": "Neue Datei",
+    "newFolder": "Neuer Ordner",
+    "actionsAria": "Dateiaktionen: {{name}}",
+    "move": "Verschieben",
+    "trashTitle": "{{name}} in den Papierkorb verschieben?",
+    "trashBody": "Die Datei oder der Ordner bleibt bis zur Wiederherstellung erhalten. Laufende Aufgaben müssen zuerst enden.",
+    "destination": "Ziel",
+    "pendingOperations": "Ausstehende Vorgänge",
+    "checkOperation": "Vorgang prüfen: {{name}}",
+    "retryOperation": "Vorgang wiederholen: {{name}}",
+    "moreOperations": "Weitere ausstehende Vorgänge",
+    "loadMore": "Weitere laden",
+    "historyFailed": "Gespeichert; Verlauf konnte nicht aufgezeichnet werden.",
+    "retryHistory": "Verlauf erneut aufzeichnen: {{name}}",
+    "upload": "Dateien hochladen",
+    "uploads": "Uploads",
+    "addFiles": "Dateien hinzufügen",
+    "resumeUpload": "Upload fortsetzen: {{name}}",
+    "cancelUpload": "Upload abbrechen: {{name}}",
+    "uploadStatus": {"paused": "Pausiert", "uploading": "Wird hochgeladen", "error": "Prüfung erforderlich", "complete": "Hochgeladen", "cancelling": "Wird abgebrochen", "cancelled": "Abgebrochen"}
   },
   "history": {
     "heading": "Sitzungen",
@@ -91,7 +144,9 @@
     "exportDone_one": "{{count}} Unterhaltung exportiert.",
     "exportDone_other": "{{count}} Unterhaltungen exportiert.",
     "exportDonePartial_one": "{{count}} Unterhaltung exportiert; {{failed}} konnte nicht gelesen werden.",
-    "exportDonePartial_other": "{{count}} Unterhaltungen exportiert; {{failed}} konnten nicht gelesen werden."
+    "exportDonePartial_other": "{{count}} Unterhaltungen exportiert; {{failed}} konnten nicht gelesen werden.",
+    "titleGenerating": "Titel wird erstellt…",
+    "titleUntitled": "Neue Unterhaltung"
   },
   "confirmDelete": {
     "sessionTitle": "Sitzung löschen?",
@@ -181,7 +236,7 @@
       "openNotebooks": "Notebooks öffnen",
       "manageSkills": "Skills verwalten",
       "openSettings": "Einstellungen öffnen",
-      "toggleTheme": "Design wechseln (Hell / Warm / Dunkel)"
+      "toggleTheme": "Darstellung wechseln"
     }
   },
   "rowMenu": {

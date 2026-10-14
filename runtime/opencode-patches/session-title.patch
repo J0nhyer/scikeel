@@ -1,0 +1,603 @@
+diff --git a/packages/core/src/event.ts b/packages/core/src/event.ts
+index c92ac0a..4cb9e9b 100644
+--- a/packages/core/src/event.ts
++++ b/packages/core/src/event.ts
+@@ -121,6 +121,8 @@ export interface PublishOptions {
+   readonly location?: Location.Ref
+   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
+   readonly commit?: (seq: number) => Effect.Effect<void>
++  /** Resolve local write conditions before encoding/projecting, inside the durable transaction. */
++  readonly beforeCommit?: () => Effect.Effect<void>
+ }
+ 
+ export interface Interface {
+@@ -212,6 +214,7 @@ export const layerWith = (options?: LayerOptions) =>
+           readonly strictOwner?: boolean
+         },
+         commit?: (seq: number) => Effect.Effect<void>,
++        beforeCommit?: () => Effect.Effect<void>,
+       ) {
+         return Effect.gen(function* () {
+           const durable = definition?.durable
+@@ -240,6 +243,7 @@ export const layerWith = (options?: LayerOptions) =>
+                     .transaction(
+                       () =>
+                         Effect.gen(function* () {
++                          if (beforeCommit) yield* beforeCommit()
+                           const row = yield* db
+                             .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+                             .from(EventSequenceTable)
+@@ -366,9 +370,9 @@ export const layerWith = (options?: LayerOptions) =>
+         })
+       }
+ 
+-      function publishEvent<D extends Definition>(definition: D, event: Payload<D>, commit?: PublishOptions["commit"]) {
++      function publishEvent<D extends Definition>(definition: D, event: Payload<D>, commit?: PublishOptions["commit"], beforeCommit?: PublishOptions["beforeCommit"]) {
+         return Effect.gen(function* () {
+-          if (!definition?.durable && commit)
++          if (!definition?.durable && (commit || beforeCommit))
+             return yield* Effect.die(
+               new InvalidDurableEventError({
+                 type: event.type,
+@@ -376,7 +380,7 @@ export const layerWith = (options?: LayerOptions) =>
+               }),
+             )
+           if (definition?.durable) {
+-            const committed = yield* commitDurableEvent(definition, event as Payload, undefined, commit)
++            const committed = yield* commitDurableEvent(definition, event as Payload, undefined, commit, beforeCommit)
+             if (committed) {
+               event = {
+                 ...event,
+@@ -434,6 +438,7 @@ export const layerWith = (options?: LayerOptions) =>
+               data,
+             } as Payload<D>,
+             options?.commit,
++            options?.beforeCommit,
+           )
+         })
+       }
+diff --git a/packages/opencode/src/session/prompt.ts b/packages/opencode/src/session/prompt.ts
+index 0f85d44..57c3dc3 100644
+--- a/packages/opencode/src/session/prompt.ts
++++ b/packages/opencode/src/session/prompt.ts
+@@ -7,6 +7,8 @@ import { SessionID, MessageID, PartID } from "./schema"
+ import { MessageV2 } from "./message-v2"
+ import { SessionRevert } from "./revert"
+ import { Session } from "./session"
++import { TitlePolicy } from "./title-policy"
++import { TitleWork } from "./title-work"
+ import { Agent } from "../agent/agent"
+ import { Provider } from "@/provider/provider"
+ 
+@@ -203,16 +205,57 @@ const layer = Layer.effect(
+         m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic)
+       const idx = input.history.findIndex(real)
+       if (idx === -1) return
+-      if (input.history.filter(real).length !== 1) return
++      if (!TitlePolicy.enabled() && input.history.filter(real).length !== 1) return
+ 
+-      const context = input.history.slice(0, idx + 1)
+-      const firstUser = context[idx]
++      const job = TitlePolicy.enabled() ? TitlePolicy.readJob(input.session.metadata) : undefined
++      const sourceIdx = job?.firstMessageID
++        ? input.history.findIndex(m => m.info.id === job.firstMessageID && real(m)) : idx
++      const context = sourceIdx === -1 ? [] : input.history.slice(0, sourceIdx + 1)
++      const firstUser = sourceIdx === -1 ? input.history[idx] : context[sourceIdx]
+       if (!firstUser || firstUser.info.role !== "user") return
+       const firstInfo = firstUser.info
+ 
+       const subtasks = firstUser.parts.filter((p): p is SessionV1.SubtaskPart => p.type === "subtask")
+       const onlySubtasks = subtasks.length > 0 && firstUser.parts.every((p) => p.type === "subtask")
+ 
++      if (TitlePolicy.enabled()) {
++        const trigger = input.history.filter(real).at(-1)!
++        const attempt = yield* sessions.claimTitleAttempt({ sessionID: input.session.id, first: firstInfo, triggerMessageID: trigger.info.id })
++        if (!attempt?.model) return
++        yield* Effect.gen(function* () {
++          if (sourceIdx === -1) return yield* Effect.fail(new Error("context_unavailable"))
++          const ag = yield* agents.get("title")
++          if (!ag) return yield* Effect.fail(new Error("model_unavailable"))
++          const mdl = yield* provider.getModel(ProviderV2.ID.make(attempt.model!.providerID), ModelV2.ID.make(attempt.model!.modelID))
++          const msgs = onlySubtasks
++            ? [{ role: "user" as const, content: subtasks.map(p => p.prompt).join("\n") }]
++            : yield* MessageV2.toModelMessagesEffect(context, mdl)
++          const text = yield* llm.stream({ agent: ag, user: firstInfo, system: [], small: true,
++            tools: {}, model: mdl, sessionID: input.session.id, retries: 0,
++            messages: [{ role: "user", content: "Generate a title for this conversation:\n" }, ...msgs] })
++            .pipe(Stream.filter(LLMEvent.is.textDelta), Stream.map(e => e.text), Stream.mkString)
++          const cleaned = TitlePolicy.titleText(text)
++          if (!cleaned) return yield* Effect.fail(new Error("empty_output"))
++          yield* sessions.finishTitleAttempt({ sessionID: input.session.id, attempt, title: cleaned })
++        }).pipe(
++          Effect.timeout("30 seconds"),
++          Effect.catchCause(cause => Effect.uninterruptible(Effect.gen(function* () {
++            yield* sessions.finishTitleAttempt({ sessionID: input.session.id, attempt }).pipe(Effect.ignore)
++            const failure = Cause.squash(cause) as { name?: string; message?: string; statusCode?: number }
++            const category = Cause.hasInterrupts(cause) ? "cancelled"
++              : failure?.name === "TimeoutError" ? "timeout"
++              : failure?.statusCode === 401 || failure?.statusCode === 403 ? "authorization"
++              : ["context_unavailable", "model_unavailable", "empty_output"].includes(failure?.message ?? "")
++                ? failure.message : "provider_failure"
++            yield* Effect.logWarning("managed title failed", {
++              sessionID: input.session.id, model: `${attempt.model!.providerID}/${attempt.model!.modelID}`,
++              attempt: attempt.attempts, category,
++            })
++          }))),
++          Effect.onInterrupt(() => sessions.finishTitleAttempt({ sessionID: input.session.id, attempt }).pipe(Effect.ignore)),
++        )
++        return
++      }
+       const ag = yield* agents.get("title")
+       if (!ag) return
+       const mdl = ag.model
+@@ -1045,6 +1088,7 @@ const layer = Layer.effect(
+ 
+       yield* sessions.updateMessage(info)
+       for (const part of parts) yield* sessions.updatePart(part)
++      if (!parts.every(part => "synthetic" in part && part.synthetic)) yield* sessions.recordTitleMessage(info)
+ 
+       return { info, parts }
+     }, Effect.scoped)
+@@ -1130,13 +1174,19 @@ const layer = Layer.effect(
+           }
+ 
+           step++
+-          if (step === 1)
+-            yield* title({
+-              session,
+-              modelID: lastUser.model.modelID,
+-              providerID: lastUser.model.providerID,
+-              history: msgs,
+-            }).pipe(Effect.ignore, Effect.forkIn(scope))
++          if (step === 1) {
++            const token = ulid()
++            const managed = TitlePolicy.enabled()
++            if (!managed || TitleWork.reserve(sessionID, token)) {
++              const fiber = yield* title({
++                session,
++                modelID: lastUser.model.modelID,
++                providerID: lastUser.model.providerID,
++                history: msgs,
++              }).pipe(Effect.ignore, Effect.ensuring(Effect.sync(() => TitleWork.clear(sessionID, token))), Effect.forkIn(scope))
++              if (managed) yield* TitleWork.register(sessionID, token, fiber)
++            }
++          }
+ 
+           const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+           const task = tasks.pop()
+diff --git a/packages/opencode/src/session/run-state.ts b/packages/opencode/src/session/run-state.ts
+index 5cefdd0..493ccd5 100644
+--- a/packages/opencode/src/session/run-state.ts
++++ b/packages/opencode/src/session/run-state.ts
+@@ -1,3 +1,4 @@
++import { TitleWork } from "./title-work"
+ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+ import { InstanceState } from "@/effect/instance-state"
+ import { SessionV1 } from "@opencode-ai/core/v1/session"
+@@ -75,6 +76,7 @@ const layer = Layer.effect(
+     })
+ 
+     const cancel = Effect.fn("SessionRunState.cancel")(function* (sessionID: SessionID) {
++      yield* TitleWork.cancel(sessionID)
+       yield* cancelBackgroundJobs(background, sessionID)
+       const data = yield* InstanceState.get(state)
+       const existing = data.runners.get(sessionID)
+diff --git a/packages/opencode/src/session/session.ts b/packages/opencode/src/session/session.ts
+index a2a91cd..45b6440 100644
+--- a/packages/opencode/src/session/session.ts
++++ b/packages/opencode/src/session/session.ts
+@@ -1,3 +1,4 @@
++import { Cause } from "effect"
+ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+ import { Slug } from "@opencode-ai/core/util/slug"
+@@ -8,6 +9,9 @@ import { BackgroundJob } from "@/background/job"
+ import { Decimal } from "decimal.js"
+ import type { ProviderMetadata, Usage } from "@opencode-ai/llm"
+ import { InstallationVersion } from "@opencode-ai/core/installation/version"
++import { TitlePolicy } from "./title-policy"
++import { TitleWork } from "./title-work"
++import { randomUUID } from "node:crypto"
+ import { Database } from "@opencode-ai/core/database/database"
+ import { EventV2Bridge } from "@/event-v2-bridge"
+ import { SessionV2 } from "@opencode-ai/core/session"
+@@ -426,6 +430,9 @@ export interface Interface {
+   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
+   readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
+   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
++  readonly recordTitleMessage: (first: SessionV1.User) => Effect.Effect<void>
++  readonly claimTitleAttempt: (input: { sessionID: SessionID; first: SessionV1.User; triggerMessageID: string }) => Effect.Effect<TitlePolicy.TitleJob | undefined>
++  readonly finishTitleAttempt: (input: { sessionID: SessionID; attempt: TitlePolicy.TitleJob; title?: string }) => Effect.Effect<boolean>
+   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
+   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
+   readonly setAgentModel: (input: {
+@@ -521,7 +528,14 @@ const layer: Layer.Layer<
+         title: input.title ?? (input.parentID ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString(),
+         agent: input.agent,
+         model: input.model,
+-        metadata: input.metadata,
++        metadata: TitlePolicy.enabled()
++          ? (() => {
++              const metadata = { ...input.metadata }
++              delete metadata[TitlePolicy.key]
++              if (input.title === undefined && !input.parentID) metadata[TitlePolicy.key] = TitlePolicy.initialJob()
++              return metadata
++            })()
++          : input.metadata,
+         permission: input.permission ? [...input.permission] : undefined,
+         cost: 0,
+         tokens: EmptyTokens,
+@@ -604,6 +618,7 @@ const layer: Layer.Layer<
+     })
+ 
+     const remove: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
++      yield* TitleWork.cancel(sessionID)
+       const session = yield* get(sessionID)
+       try {
+         // `remove` needs to work in all cases, such as broken sessions that
+@@ -731,27 +746,93 @@ const layer: Layer.Layer<
+       return session
+     })
+ 
+-    const patch = (sessionID: SessionID, info: Patch) =>
++    class TitleUpdateSkipped extends Error {}
++    const atomicPatch = (sessionID: SessionID, transform: (current: Info) => Info | undefined, ignoreMissing = false) =>
+       Effect.gen(function* () {
+-        const current = yield* get(sessionID)
+-        const next = {
+-          ...current,
+-          ...info,
+-          time: info.time ? { ...current.time, ...info.time } : current.time,
+-          share: info.share === null ? undefined : info.share ? { ...current.share, ...info.share } : current.share,
+-          summary: info.summary === null ? undefined : (info.summary ?? current.summary),
+-          revert: info.revert === null ? undefined : (info.revert ?? current.revert),
+-          permission: info.permission === null ? undefined : (info.permission ?? current.permission),
+-        } as Info
+-        yield* events.publish(SessionV1.Event.Updated, { sessionID, info: next })
+-      })
++        const info = {} as Info
++        yield* events.publish(SessionV1.Event.Updated, { sessionID, info }, {
++          beforeCommit: () => Effect.gen(function* () {
++            const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
++            if (!row) return yield* Effect.die(ignoreMissing ? new TitleUpdateSkipped() : new NotFoundError({ message: `Session not found: ${sessionID}` }))
++            const next = transform(fromRow(row))
++            if (!next) return yield* Effect.die(new TitleUpdateSkipped())
++            Object.assign(info, next)
++          }),
++        })
++        return info
++      }).pipe(Effect.catchCause(cause => Cause.squash(cause) instanceof TitleUpdateSkipped
++        ? Effect.succeed(undefined) : Effect.failCause(cause)))
++
++    const managedMetadata = (current: Info, metadata: Info["metadata"]) => {
++      if (!TitlePolicy.enabled() || !metadata) return metadata
++      const next = { ...metadata }
++      delete next[TitlePolicy.key]
++      if (current.metadata?.[TitlePolicy.key]) next[TitlePolicy.key] = current.metadata[TitlePolicy.key]
++      return next
++    }
++    const patch = (sessionID: SessionID, info: Patch) =>
++      atomicPatch(sessionID, current => ({
++        ...current,
++        ...info,
++        ...(info.metadata ? { metadata: managedMetadata(current, info.metadata) } : {}),
++        time: info.time ? { ...current.time, ...info.time } : current.time,
++        share: info.share === null ? undefined : info.share ? { ...current.share, ...info.share } : current.share,
++        summary: info.summary === null ? undefined : (info.summary ?? current.summary),
++        revert: info.revert === null ? undefined : (info.revert ?? current.revert),
++        permission: info.permission === null ? undefined : (info.permission ?? current.permission),
++      } as Info))
+ 
+     const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
+       yield* patch(sessionID, { time: { updated: Date.now() } }).pipe(Effect.orDie)
+     })
+ 
++    const recordTitleMessage = Effect.fn("Session.recordTitleMessage")(function* (first: SessionV1.User) {
++      if (!TitlePolicy.enabled()) return
++      yield* atomicPatch(first.sessionID, current => {
++        if (current.parentID || !isDefaultTitle(current.title)) return
++        const job = TitlePolicy.readJob(current.metadata)
++        if (!job || job.firstMessageID || job.source !== "default") return
++        const captured = TitlePolicy.captureFirstMessage(job, first)
++        return { ...current, metadata: { ...current.metadata, [TitlePolicy.key]: captured } }
++      }, true)
++    })
++    const titleRunID = randomUUID()
++    const claimTitleAttempt = Effect.fn("Session.claimTitleAttempt")(function* (input: {
++      sessionID: SessionID; first: SessionV1.User; triggerMessageID: string
++    }) {
++      const info = yield* atomicPatch(input.sessionID, current => {
++        if (current.parentID || !isDefaultTitle(current.title)) return
++        const job = TitlePolicy.readJob(current.metadata)
++        if (!job) return
++        const captured = TitlePolicy.captureFirstMessage(job, input.first)
++        const attempt = TitlePolicy.beginAttempt(captured, input.triggerMessageID, titleRunID, randomUUID())
++        if (!attempt) return
++        return { ...current, metadata: { ...current.metadata, [TitlePolicy.key]: attempt } }
++      }, true)
++      return info ? TitlePolicy.readJob(info.metadata) : undefined
++    })
++    const finishTitleAttempt = Effect.fn("Session.finishTitleAttempt")(function* (input: {
++      sessionID: SessionID; attempt: TitlePolicy.TitleJob; title?: string
++    }) {
++      const info = yield* atomicPatch(input.sessionID, current => {
++        if (!isDefaultTitle(current.title)) return
++        const job = TitlePolicy.readJob(current.metadata)
++        if (!job || !input.attempt.attemptID) return
++        const nextJob = TitlePolicy.finishAttempt(job, input.attempt.attemptID, input.attempt.revision, input.title !== undefined)
++        if (!nextJob) return
++        return { ...current, title: input.title ?? current.title,
++          metadata: { ...current.metadata, [TitlePolicy.key]: nextJob },
++          time: { ...current.time, updated: Date.now() } }
++      }, true)
++      return info !== undefined
++    })
+     const setTitle = Effect.fn("Session.setTitle")(function* (input: { sessionID: SessionID; title: string }) {
+-      yield* patch(input.sessionID, { title: input.title }).pipe(Effect.orDie)
++      yield* atomicPatch(input.sessionID, current => {
++        const job = TitlePolicy.enabled() ? TitlePolicy.readJob(current.metadata) : undefined
++        return { ...current, title: input.title,
++          metadata: job ? { ...current.metadata, [TitlePolicy.key]: TitlePolicy.manualRename(job) } : current.metadata }
++      })
++      yield* TitleWork.cancel(input.sessionID)
+     })
+ 
+     const setArchived = Effect.fn("Session.setArchived")(function* (input: { sessionID: SessionID; time?: number }) {
+@@ -911,6 +992,9 @@ const layer: Layer.Layer<
+       touch,
+       get,
+       setTitle,
++      recordTitleMessage,
++      claimTitleAttempt,
++      finishTitleAttempt,
+       setArchived,
+       setMetadata,
+       setAgentModel,
+diff --git a/packages/opencode/src/session/title-policy.ts b/packages/opencode/src/session/title-policy.ts
+new file mode 100644
+index 0000000..d919d1f
+--- /dev/null
++++ b/packages/opencode/src/session/title-policy.ts
+@@ -0,0 +1,47 @@
++// SciKeel managed title policy. Keep this module independent of runtime services.
++export type TitleJob = {
++  version: 1
++  source: 'default' | 'manual' | 'automatic'
++  revision: number
++  firstMessageID?: string
++  model?: { providerID: string; modelID: string }
++  attempts: 0 | 1 | 2
++  status: 'ready' | 'running' | 'failed' | 'completed'
++  attemptID?: string
++  runID?: string
++  triggerMessageID?: string
++}
++export const key = 'scikeelSessionTitle'
++export const enabled = () => process.env.SCIKEEL_SESSION_TITLE_POLICY === 'conversation-v1'
++export const initialJob = (): TitleJob => ({ version: 1, source: 'default', revision: 0, attempts: 0, status: 'ready' })
++export function readJob(metadata: Record<string, unknown> | undefined): TitleJob | undefined {
++  const value = metadata?.[key] as TitleJob | undefined
++  if (!value || value.version !== 1 || !['default', 'manual', 'automatic'].includes(value.source) ||
++      !Number.isSafeInteger(value.revision) || value.revision < 0 || ![0, 1, 2].includes(value.attempts) ||
++      !['ready', 'running', 'failed', 'completed'].includes(value.status)) return
++  if (value.attempts && (typeof value.firstMessageID !== 'string' || !value.model ||
++      typeof value.model.providerID !== 'string' || typeof value.model.modelID !== 'string' ||
++      typeof value.attemptID !== 'string' || typeof value.runID !== 'string' || typeof value.triggerMessageID !== 'string')) return
++  return value
++}
++export function captureFirstMessage(job: TitleJob, message: { id: string; model: { providerID: string; modelID: string } }): TitleJob {
++  if (job.firstMessageID || job.source !== 'default') return job
++  return { ...job, firstMessageID: message.id, model: { providerID: message.model.providerID, modelID: message.model.modelID } }
++}
++export function beginAttempt(job: TitleJob, triggerMessageID: string, runID: string, attemptID: string): TitleJob | undefined {
++  if (job.source !== 'default' || !job.firstMessageID || !job.model || job.attempts >= 2 ||
++      job.status === 'completed' || job.status === 'running' && job.runID === runID ||
++      job.triggerMessageID === triggerMessageID) return
++  return { ...job, attempts: (job.attempts + 1) as 1 | 2, status: 'running', triggerMessageID, runID, attemptID }
++}
++export function finishAttempt(job: TitleJob, attemptID: string, revision: number, success: boolean): TitleJob | undefined {
++  if (job.source !== 'default' || job.status !== 'running' || job.attemptID !== attemptID || job.revision !== revision) return
++  return { ...job, source: success ? 'automatic' : 'default', status: success ? 'completed' : 'failed' }
++}
++export const manualRename = (job: TitleJob): TitleJob => ({ ...job, source: 'manual', revision: job.revision + 1, status: 'failed' })
++export function titleText(text: string): string | undefined {
++  const line = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').split('\n').map(line => line.trim()).find(Boolean)
++  return line && (line.length > 100 ? line.slice(0, 97) + '...' : line)
++}
++
++export * as TitlePolicy from "./title-policy.ts"
+diff --git a/packages/opencode/src/session/title-work.ts b/packages/opencode/src/session/title-work.ts
+new file mode 100644
+index 0000000..8094562
+--- /dev/null
++++ b/packages/opencode/src/session/title-work.ts
+@@ -0,0 +1,25 @@
++import { Effect, Fiber } from "effect"
++import type { SessionID } from "./schema"
++
++const active = new Map<SessionID, { token: string; fiber?: Fiber.Fiber<unknown, unknown> }>()
++export function reserve(id: SessionID, token: string) {
++  if (active.has(id)) return false
++  active.set(id, { token })
++  return true
++}
++export const clear = (id: SessionID, token: string) => {
++  if (active.get(id)?.token === token) active.delete(id)
++}
++export const register = (id: SessionID, token: string, fiber: Fiber.Fiber<unknown, unknown>) => Effect.gen(function* () {
++  const slot = active.get(id)
++  if (slot?.token === token) slot.fiber = fiber
++  else yield* Fiber.interrupt(fiber)
++})
++export const cancel = (id: SessionID) => Effect.gen(function* () {
++  const slot = active.get(id)
++  if (!slot) return
++  active.delete(id)
++  if (slot.fiber) yield* Fiber.interrupt(slot.fiber)
++})
++
++export * as TitleWork from "./title-work"
+diff --git a/packages/opencode/test/session/session.test.ts b/packages/opencode/test/session/session.test.ts
+index c4301d2..2e4ff57 100644
+--- a/packages/opencode/test/session/session.test.ts
++++ b/packages/opencode/test/session/session.test.ts
+@@ -1,4 +1,5 @@
+ import { describe, expect } from "bun:test"
++import { TitlePolicy } from "../../src/session/title-policy"
+ import { SessionV1 } from "@opencode-ai/core/v1/session"
+ import { EventV2 } from "@opencode-ai/core/event"
+ import { SessionProjector } from "@opencode-ai/core/session/projector"
+@@ -283,3 +284,84 @@ describe("Session", () => {
+     }),
+   )
+ })
++
++
++describe("SciKeel managed title transactions", () => {
++  it.instance("claims once and manual rename to the same title wins atomically", () =>
++    Effect.gen(function* () {
++      const previous = process.env.SCIKEEL_SESSION_TITLE_POLICY
++      process.env.SCIKEEL_SESSION_TITLE_POLICY = "conversation-v1"
++      try {
++        const session = yield* SessionNs.Service
++        const info = yield* session.create({ metadata: { existing: "keep" } })
++        const first = {
++          id: MessageID.ascending(), role: "user" as const, sessionID: info.id,
++          time: { created: Date.now() }, agent: "build", model: { providerID: "test", modelID: "model-a" },
++        } as SessionV1.User
++        yield* session.updateMessage(first)
++        yield* session.recordTitleMessage(first)
++        yield* session.recordTitleMessage({ ...first, id: MessageID.ascending(), model: { ...first.model, modelID: "model-later" as typeof first.model.modelID } })
++        const attempt = yield* session.claimTitleAttempt({ sessionID: info.id, first, triggerMessageID: first.id })
++        expect(attempt?.model).toEqual(first.model)
++        const duplicate = yield* session.claimTitleAttempt({ sessionID: info.id, first, triggerMessageID: first.id })
++        expect(duplicate).toBeUndefined()
++        yield* session.setMetadata({ sessionID: info.id, metadata: { newer: "preserve", scikeelSessionTitle: { version: 999 } } })
++        yield* session.setTitle({ sessionID: info.id, title: info.title })
++        expect(yield* session.finishTitleAttempt({ sessionID: info.id, attempt: attempt!, title: "Late generated title" })).toBe(false)
++        const renamed = yield* session.get(info.id)
++        expect(renamed.title).toBe(info.title)
++        expect(renamed.metadata?.newer).toBe("preserve")
++        expect(TitlePolicy.readJob(renamed.metadata)?.source).toBe("manual")
++        const fork = yield* session.fork({ sessionID: info.id })
++        expect(fork.metadata?.scikeelSessionTitle).toBeUndefined()
++        yield* session.remove(fork.id)
++        yield* session.remove(info.id)
++      } finally {
++        if (previous === undefined) delete process.env.SCIKEEL_SESSION_TITLE_POLICY
++        else process.env.SCIKEEL_SESSION_TITLE_POLICY = previous
++      }
++    }),
++  )
++  it.instance("publishes committed titles while explicit names and children stay ineligible", () =>
++    Effect.gen(function* () {
++      const previous = process.env.SCIKEEL_SESSION_TITLE_POLICY
++      process.env.SCIKEEL_SESSION_TITLE_POLICY = "conversation-v1"
++      try {
++        const session = yield* SessionNs.Service
++        const info = yield* session.create()
++        const first = {
++          id: MessageID.ascending(), role: "user" as const, sessionID: info.id,
++          time: { created: Date.now() }, agent: "build", model: { providerID: "test", modelID: "model-b" },
++        } as SessionV1.User
++        yield* session.updateMessage(first)
++        const attempt = yield* session.claimTitleAttempt({ sessionID: info.id, first, triggerMessageID: first.id })
++        const events = yield* EventV2Bridge.Service
++        const committed = yield* Deferred.make<string>()
++        const unsubscribe = yield* events.listen(event => Effect.gen(function* () {
++          if (event.type !== SessionNs.Event.Updated.type) return
++          const data = event.data as typeof SessionNs.Event.Updated.data.Type
++          if (data.info.id !== info.id || data.info.title !== "Research topic") return
++          const saved = yield* session.get(info.id).pipe(Effect.orDie)
++          Deferred.doneUnsafe(committed, Effect.succeed(saved.title))
++        }))
++        yield* Effect.addFinalizer(() => unsubscribe)
++        expect(yield* session.finishTitleAttempt({ sessionID: info.id, attempt: attempt!, title: "Research topic" })).toBe(true)
++        expect(yield* awaitDeferred(committed, "title notification before durable commit")).toBe("Research topic")
++        expect((yield* session.get(info.id)).title).toBe("Research topic")
++        const named = yield* session.create({ title: "Explicit" })
++        const child = yield* session.create({ parentID: info.id })
++        expect(named.metadata?.scikeelSessionTitle).toBeUndefined()
++        yield* session.setMetadata({ sessionID: named.id, metadata: { other: "keep", scikeelSessionTitle: TitlePolicy.initialJob() } })
++        const savedNamed = yield* session.get(named.id)
++        expect(savedNamed.metadata?.other).toBe("keep")
++        expect(savedNamed.metadata?.scikeelSessionTitle).toBeUndefined()
++        expect(child.metadata?.scikeelSessionTitle).toBeUndefined()
++        yield* session.remove(named.id)
++        yield* session.remove(info.id)
++      } finally {
++        if (previous === undefined) delete process.env.SCIKEEL_SESSION_TITLE_POLICY
++        else process.env.SCIKEEL_SESSION_TITLE_POLICY = previous
++      }
++    }),
++  )
++})
+diff --git a/packages/opencode/test/session/title-policy.test.ts b/packages/opencode/test/session/title-policy.test.ts
+new file mode 100644
+index 0000000..d31c851
+--- /dev/null
++++ b/packages/opencode/test/session/title-policy.test.ts
+@@ -0,0 +1,63 @@
++import assert from 'node:assert/strict';
++import { test } from 'bun:test';
++import { initialJob, captureFirstMessage, beginAttempt, finishAttempt, manualRename, titleText } from '../../src/session/title-policy';
++
++const first = { id: 'msg-a', model: { providerID: 'opencode', modelID: 'model-a', variant: 'high' } };
++const second = { id: 'msg-b', model: { providerID: 'opencode', modelID: 'model-b' } };
++test('capture keeps the first effective model and strips unrelated options', () => {
++  const job = captureFirstMessage(initialJob(), first);
++  assert.deepEqual(job.model, { providerID: 'opencode', modelID: 'model-a' });
++  assert.equal(job.firstMessageID, first.id);
++  assert.deepEqual(captureFirstMessage(job, second), job);
++});
++test('attempts are unique, bound to new messages, and exhausted after one retry', () => {
++  const captured = captureFirstMessage(initialJob(), first);
++  const running = beginAttempt(captured, first.id, 'run-1', 'attempt-1');
++  assert.ok(running);
++  assert.equal(running.attempts, 1);
++  assert.equal(beginAttempt(running, second.id, 'run-1', 'duplicate'), undefined);
++  const failed = finishAttempt(running, 'attempt-1', running.revision, false);
++  assert.ok(failed);
++  assert.equal(beginAttempt(failed, first.id, 'run-1', 'replay'), undefined);
++  const retry = beginAttempt(failed, second.id, 'run-1', 'attempt-2');
++  assert.ok(retry);
++  assert.equal(retry.attempts, 2);
++  assert.deepEqual(retry.model, captured.model);
++  const exhausted = finishAttempt(retry, 'attempt-2', retry.revision, false);
++  assert.ok(exhausted);
++  assert.equal(beginAttempt(exhausted, 'msg-c', 'run-1', 'extra'), undefined);
++});
++test('restart may retry an interrupted initial attempt but cannot restart its retry', () => {
++  const running = beginAttempt(captureFirstMessage(initialJob(), first), first.id, 'old-run', 'initial');
++  assert.ok(running);
++  assert.equal(beginAttempt(running, first.id, 'new-run', 'replay'), undefined);
++  const retry = beginAttempt(running, second.id, 'new-run', 'retry');
++  assert.ok(retry);
++  assert.equal(retry.attempts, 2);
++  assert.equal(beginAttempt(retry, 'msg-c', 'third-run', 'extra'), undefined);
++});
++test('manual rename invalidates completion even without a visible string change', () => {
++  const job = beginAttempt(captureFirstMessage(initialJob(), first), first.id, 'run', 'attempt');
++  assert.ok(job);
++  const manual = manualRename(job);
++  assert.equal(manual.source, 'manual');
++  assert.equal(manual.revision, job.revision + 1);
++  assert.equal(finishAttempt(manual, job.attemptID!, job.revision, true), undefined);
++  assert.equal(beginAttempt(manual, second.id, 'run', 'extra'), undefined);
++  assert.equal(finishAttempt(job, 'foreign', job.revision, true), undefined);
++  assert.equal(finishAttempt(job, job.attemptID!, job.revision + 1, true), undefined);
++});
++test('successful attempts never retitle on a later model selection', () => {
++  const running = beginAttempt(captureFirstMessage(initialJob(), first), first.id, 'run', 'attempt');
++  assert.ok(running);
++  const done = finishAttempt(running, 'attempt', running.revision, true);
++  assert.ok(done);
++  assert.equal(done.source, 'automatic');
++  assert.equal(done.status, 'completed');
++  assert.equal(beginAttempt(done, second.id, 'run', 'retitle'), undefined);
++});
++test('cleaned titles preserve upstream length limits and reject empty output', () => {
++  assert.equal(titleText('<think>private reasoning</think>\n  My topic\nignored'), 'My topic');
++  assert.equal(titleText('a'.repeat(120))?.length, 100);
++  assert.equal(titleText(' \n <think>nothing</think>'), undefined);
++});

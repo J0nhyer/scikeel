@@ -1,4 +1,14 @@
 {
+  "managedAgents": {
+    "title": "Agent access management",
+    "hint": "Applies to all users. Turning an Agent off hides it from assistant lists, lets running tasks finish and blocks subsequent calls. Turning it on restores it when the server configuration is available.",
+    "allow": "Allow {{runtime}}",
+    "saving": "Saving…",
+    "saved": "{{runtime}} saved.",
+    "failed": "Could not save {{runtime}}. Try again.",
+    "loadFailed": "Could not load Agent access settings.",
+    "retry": "Retry"
+  },
   "nav": {
     "back": "Volver a la app",
     "general": "General",
@@ -20,7 +30,9 @@
     "theme": {
       "light": "Claro",
       "warm": "Cálido",
-      "dark": "Oscuro"
+      "dark": "Oscuro",
+      "system": "Sistema",
+      "cdut": "CDUT"
     },
     "zoom": {
       "label": "Zoom",
@@ -28,6 +40,17 @@
       "in": "Acercar",
       "out": "Alejar",
       "reset": "Restablecer"
+    },
+    "summary": {
+      "light": "Un espacio de investigación claro y luminoso.",
+      "dark": "Superficies oscuras para investigar con concentración.",
+      "system": "Seguir la apariencia clara u oscura del dispositivo.",
+      "cdut": "Estilo azul y blanco con identidad universitaria y decoración discreta.",
+      "warm": "Se conserva tu apariencia cálida. Elige una tarjeta para cambiarla."
+    },
+    "campusDecoration": {
+      "label": "Decoración del campus",
+      "hint": "Mostrar el lema y las líneas solo en conversaciones vacías."
     }
   },
   "language": {
@@ -107,6 +130,10 @@
     "privacy": "Solo se contacta la API pública de GitHub Releases. No se envían archivos del workspace ni claves de API."
   },
   "model": {
+    "defaultTitle": "Modelo predeterminado",
+    "defaultDescription": "Las conversaciones nuevas usan este modelo para tu cuenta y el asistente actual. Las conversaciones existentes conservan su modelo.",
+    "defaultSaveProblem": "No se pudo completar el cambio de modelo predeterminado",
+    "defaultRecoveryFailed": "El modelo predeterminado se guardó, pero el asistente no pudo reconectarse: {{detail}}",
     "catalogLimited": "El servidor solo pudo encontrar algunos modelos de este asistente.",
     "title": "Modelo",
     "hint": "El modelo con el que empieza cada conversación nueva. Los proveedores de abajo determinan las opciones.",

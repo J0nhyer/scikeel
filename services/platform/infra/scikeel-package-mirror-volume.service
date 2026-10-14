@@ -1,0 +1,15 @@
+[Unit]
+Description=SciKeel reserved quota-backed public package store
+Before=scikeel-package-mirror.service
+ConditionPathExists=/var/lib/scikeel/package-mirror.img
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mount -o loop,prjquota,nodev,nosuid /var/lib/scikeel/package-mirror.img /var/lib/scikeel/package-mirror
+ExecStop=/usr/bin/umount /var/lib/scikeel/package-mirror
+TimeoutStartSec=15s
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

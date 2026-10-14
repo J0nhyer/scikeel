@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
 const args = process.argv.slice(2);
@@ -19,6 +19,9 @@ if (!port || !token || !workspace || !stateDir) {
   process.exit(2);
 }
 
+const projects = [];
+const managedHistory = [];
+let managedPermission = [];
 const server = createServer(async (request, response) => {
   if (request.url === "/v1/health") {
     response.writeHead(200, { "content-type": "application/json" });
@@ -60,6 +63,32 @@ const server = createServer(async (request, response) => {
     }));
     return;
   }
+  const runtimeUrl=new URL(request.url,"http://worker.invalid");
+  if(runtimeUrl.pathname.startsWith("/session/")) {
+    if(request.headers.authorization!==expectedBasic){response.writeHead(401);response.end();return;}
+    response.setHeader("content-type","application/json");
+    const match=/^\/session\/([A-Za-z0-9_-]+)(?:\/(message|prompt_async)(?:\/([A-Za-z0-9_-]+))?)?$/.exec(runtimeUrl.pathname);
+    if(!match || match[1]!=="owned"){response.writeHead(404);response.end();return;}
+    if(!match[2]){
+      if(request.method === "PATCH") {
+        const buffers=[];for await(const chunk of request)buffers.push(chunk);
+        const body=JSON.parse(Buffer.concat(buffers).toString());
+        if(body.permission)managedPermission=body.permission;
+      }
+      response.end(JSON.stringify({id:match[1],directory:workspace+"/project",permission:managedPermission}));return;
+    }
+    if(match[2]==="message" && request.method==="GET"){
+      const message = match[3] ? managedHistory.find(item => item.info.id === match[3]) : managedHistory;
+      if (!message) { response.writeHead(404); response.end("{}"); return; }
+      response.end(JSON.stringify(message));return;
+    }
+    if(match[2]==="prompt_async" && request.method==="POST") {
+      const buffers=[];for await(const chunk of request)buffers.push(chunk);
+      const body=JSON.parse(Buffer.concat(buffers).toString());
+      managedHistory.push({info:{id:body.messageID,role:"user"},parts:body.parts,fixtureSystem:body.system,fixturePermission:managedPermission});
+      response.writeHead(202);response.end("{}");return;
+    }
+  }
   if (request.headers.authorization !== `Bearer ${token}`) {
     response.writeHead(401, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: "unauthorized" }));
@@ -70,13 +99,29 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify({
       authorization: request.headers.authorization,
       directory: workspace,
+      mode: "full",
       stateDir,
     }));
     return;
   }
   const parsed = new URL(request.url, "http://worker.invalid");
+  if (parsed.pathname === "/v1/projects") {
+    response.setHeader("content-type", "application/json");
+    if (request.method === "POST") {
+      const buffers = []; for await (const chunk of request) buffers.push(chunk);
+      const { name } = JSON.parse(Buffer.concat(buffers).toString());
+      if (typeof name !== "string" || !name.trim()) { response.writeHead(400); response.end("{}"); return; }
+      const id = `project-${projects.length + 1}`;
+      const path = resolve(workspace, "projects", id);
+      await mkdir(path, { recursive: true });
+      await writeFile(resolve(path, "scope.txt"), id);
+      const project = { id, name: name.trim(), path, createdAt: Date.now(), imported: false, pinned: false };
+      projects.push(project); response.end(JSON.stringify(project));
+    } else response.end(JSON.stringify(projects));
+    return;
+  }
   if (parsed.pathname === "/v1/fs/read") {
-    const full = resolve(workspace, parsed.searchParams.get("path") ?? "");
+    const full = resolve(parsed.searchParams.get("dir") ?? workspace, parsed.searchParams.get("path") ?? "");
     if (!full.startsWith(`${resolve(workspace)}${sep}`)) {
       response.writeHead(403);
       response.end();

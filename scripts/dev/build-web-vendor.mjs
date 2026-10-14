@@ -1,13 +1,15 @@
 // Build heavy libraries sequentially with esbuild. Vite emits these files
 // without parsing their graphs again; all steps share the host cgroup limit.
 import { build } from "esbuild";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const root = fileURLToPath(new URL("../..", import.meta.url));
+export async function buildVendor({ root = fileURLToPath(new URL("../..", import.meta.url)), outputDirectory = resolve(root, ".deploy/vendor") } = {}) {
+await mkdir(outputDirectory, { recursive: true });
 await build({
   entryPoints: [resolve(root, "apps/desktop/node_modules/pptx-preview/dist/pptx-preview.es.js")],
-  outfile: resolve(root, ".deploy/vendor/pptx-preview.mjs"),
+  outfile: join(outputDirectory, "pptx-preview.mjs"),
   bundle: true,
   platform: "browser",
   target: "es2020",
@@ -17,7 +19,7 @@ await build({
 });
 await build({
   entryPoints: [resolve(root, "apps/desktop/node_modules/monaco-editor/esm/vs/index.js")],
-  outfile: resolve(root, ".deploy/vendor/monaco-editor.mjs"),
+  outfile: join(outputDirectory, "monaco-editor.mjs"),
   bundle: true,
   platform: "browser",
   target: "es2020",
@@ -33,7 +35,7 @@ for (const [name, entry] of [
 ]) {
   await build({
     entryPoints: [resolve(root, "apps/desktop/node_modules/monaco-editor/esm/vs", entry)],
-    outfile: resolve(root, `.deploy/vendor/${name}.worker.js`),
+    outfile: join(outputDirectory, `${name}.worker.js`),
     bundle: true,
     platform: "browser",
     target: "es2020",
@@ -50,7 +52,14 @@ for (const [name, entry] of [
 ]) {
   await build({
     entryPoints: [resolve(root, "apps/desktop/node_modules", entry)],
-    outfile: resolve(root, `.deploy/vendor/${name}.mjs`),
+    outfile: join(outputDirectory, `${name}.mjs`),
     bundle: true, platform: "browser", target: "es2020", format: "esm", minify: true, logLevel: "warning",
   });
+}
+
+}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2);
+  if (args.length && (args.length !== 2 || args[0] !== '--out-dir')) throw new Error('Usage: build-web-vendor.mjs [--out-dir directory]');
+  await buildVendor({ outputDirectory: args.length ? resolve(args[1]) : undefined });
 }

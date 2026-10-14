@@ -1,3 +1,6 @@
+import { SessionTitleReader, hasDefaultSessionTitle, withManualSessionTitle } from "./sessionTitle";
+import { normalizeToolResult } from "./tool-outcome.mjs";
+import type { AttachmentPromptContext, ConversationAttachment } from "@ai4s/shared";
 import type {
   AgentInfo,
   CommandInfo,
@@ -21,12 +24,26 @@ import type {
   SessionPage,
   SessionQuery,
   SkillInfo,
-  ToolCallStatus,
 } from "./types";
 import type { MessageUsage } from "@ai4s/shared";
 import { DEFAULT_OPENCODE_URL } from "./types";
 import type { AgentRuntime } from "./runtime";
 import { BaseAgentRuntime } from "./base-runtime";
+
+export interface ProjectEnvironmentInfo {
+  imageDigest: string;
+  inputHash: string | null;
+  packages: string[];
+  venvState: "absent" | "valid" | "broken";
+}
+export interface ProjectEnvironmentApproval {
+  id: string;
+  expiresAt: number;
+  patterns: string[];
+  metadata: { project: string; operation: "install" | "rebuild"; inputHash: string };
+}
+/** Optional bounds for Web catalog reads; existing callers keep their behavior. */
+export type OpenCodeCatalogReadOptions = { signal?: AbortSignal; timeoutMs?: number };
 
 export type CustomProviderModality = "text" | "audio" | "image" | "video" | "pdf";
 
@@ -61,10 +78,16 @@ export interface CustomProviderModel {
  */
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  readonly code?: string;
+  readonly source?: string;
+  readonly contextGeneration?: number;
+  constructor(message: string, status: number, options: { code?: string; source?: string; contextGeneration?: number } = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = options.code;
+    this.source = options.source;
+    this.contextGeneration = options.contextGeneration;
   }
 }
 
@@ -113,18 +136,6 @@ type CustomProviderModelConfig = {
   [key: string]: unknown;
 };
 
-function mapToolStatus(status: string): ToolCallStatus {
-  switch (status) {
-    case "running":
-      return "running";
-    case "completed":
-      return "success";
-    case "error":
-      return "failed";
-    default:
-      return "pending";
-  }
-}
 
 /** OpenCode's error objects nest the human-readable message at
  *  error.data.message; keep the first line (some errors append a stack). */
@@ -237,12 +248,46 @@ const MIN_FETCH = 50;
  *  unarchive route), which would make archiving a one-way door. */
 const META_NS = "ai4s";
 
+type RawSessionInfo = {
+  id: string;
+  title?: string;
+  slug?: string;
+  directory?: string;
+  parentID?: string | null;
+  metadata?: Record<string, unknown>;
+  time?: { created?: number; updated?: number };
+  model?: { id?: string; providerID?: string } | string;
+};
+
+function sessionMeta(s: RawSessionInfo): SessionMeta {
+  const mine = (s.metadata?.[META_NS] ?? {}) as { archived?: number };
+  return {
+    id: s.id,
+    title: s.title ?? "Untitled",
+    slug: s.slug,
+    directory: s.directory,
+    parentId: s.parentID ?? undefined,
+    created: s.time?.created,
+    updated: s.time?.updated,
+    ...(s.model ? { model: typeof s.model === "string" ? (() => {
+      const separator = s.model.indexOf("/");
+      return separator > 0 ? { providerID: s.model.slice(0, separator), id: s.model.slice(separator + 1) } : undefined;
+    })() : s.model } : {}),
+    ...(typeof mine.archived === "number" ? { archived: mine.archived } : {}),
+    ...(s.metadata ? { metadata: s.metadata } : {}),
+  } satisfies SessionMeta;
+}
+
 /**
  * The single boundary between the app and the OpenCode agent runtime.
  * Talks to a running `opencode serve` over its HTTP + SSE API. The UI must go
  * through this class, never the transport directly (see AGENTS.md guardrails).
  */
 export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
+  private readonly titleReader: SessionTitleReader | null;
+  private titleRevision = 0;
+  private readonly titleUpdates = new Map<string, { revision: number; session: SessionMeta }>();
+  private readonly titleDeleted = new Set<string>();
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly authHeader: string | null;
@@ -289,12 +334,25 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     this.baseUrl = (opts.baseUrl ?? DEFAULT_OPENCODE_URL).replace(/\/$/, "");
     this.customFetch = !!opts.fetchImpl;
     // Bind to globalThis — an unbound `fetch` reference throws "Illegal invocation" in browsers.
-    this.fetchImpl = (opts.fetchImpl ?? globalThis.fetch).bind(globalThis);
+    const transport = (opts.fetchImpl ?? globalThis.fetch).bind(globalThis);
+    this.fetchImpl = (input, init) => {
+      if (this.gatewayGeneration !== null && !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase())) {
+        const headers = new Headers(init?.headers);
+        headers.set("x-scikeel-runtime-generation", String(this.gatewayGeneration));
+        return transport(input, { ...init, headers }).then(response => this.captureContext(response));
+      }
+      return transport(input, init).then(response => this.captureContext(response));
+    };
     this.authToken = opts.password ? btoa(`${opts.username ?? "opencode"}:${opts.password}`) : null;
     this.authHeader = this.authToken ? `Basic ${this.authToken}` : null;
     this.directory = opts.directory ?? null;
     this.connectTimeoutMs = opts.connectTimeoutMs ?? 5000;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 15000;
+    this.titleReader = opts.sessionTitlePresentation ? new SessionTitleReader(async (sid, mid) => {
+      const result = await this.fetchWithTimeout(`${this.baseUrl}/session/${encodeURIComponent(sid)}/message/${encodeURIComponent(mid)}`, { headers: this.headers() }, 5000);
+      if (!result.ok) throw new Error("First title message unavailable");
+      return result.json();
+    }) : null;
   }
 
   private headers(json = false): Record<string, string> {
@@ -304,11 +362,33 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     return h;
   }
 
+  private contextGeneration: number | undefined;
+  private gatewayGeneration: number | null = null;
+  private gatewayContextChangedHandler: (() => void) | null = null;
+  setGatewayContextChangedHandler(handler: (() => void) | null): void { this.gatewayContextChangedHandler = handler; }
+  private gatewayContextChanged(): void { this.close(); this.gatewayContextChangedHandler?.(); }
+  setGatewayGeneration(generation: number | null): void {
+    if (generation !== null && (!Number.isSafeInteger(generation) || generation < 1)) throw new Error("Invalid workspace generation");
+    this.gatewayGeneration = generation;
+    this.contextGeneration = generation ?? undefined;
+  }
+  getContextGeneration(): number | undefined { return this.contextGeneration; }
+  private captureContext(response: Response): Response {
+    const generation=Number(response.headers.get("x-scikeel-runtime-generation"));
+    if (this.gatewayGeneration !== null && Number.isSafeInteger(generation) && generation > 0 && generation !== this.gatewayGeneration) {
+      void response.body?.cancel().catch(() => {});
+      this.gatewayContextChanged();
+      throw new ApiError("Workspace has changed; reconnect to its current state", 409, { code: "stale_workspace_context", contextGeneration: generation });
+    }
+    if (this.gatewayGeneration === null && Number.isSafeInteger(generation) && generation > 0) this.contextGeneration=generation;
+    return response;
+  }
+
   private async fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs = this.requestTimeoutMs): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await this.fetchImpl(input, { ...init, signal: controller.signal });
+      return this.captureContext(await this.fetchImpl(input, { ...init, signal: controller.signal }));
     } catch (err) {
       if (controller.signal.aborted) throw new Error("Timed out waiting for OpenCode");
       throw err;
@@ -317,9 +397,59 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     }
   }
 
+  private async projectEnvironmentRequest<T>(sessionId: string, operation?: "request" | "install", body: Record<string, unknown> = {}): Promise<T> {
+    const path = `/api/environments/${encodeURIComponent(sessionId)}${operation ? `/${operation}` : ""}`;
+    const response = await this.fetchWithTimeout(`${this.baseUrl}${path}`, {
+      method: operation ? "POST" : "GET", headers: this.headers(!!operation),
+      ...(operation ? {body: JSON.stringify(body)} : {}),
+    }, operation === "install" ? 360000 : this.requestTimeoutMs);
+    if (!response.ok) throw await this.apiError(response, "Project environment request failed");
+    return response.json() as Promise<T>;
+  }
+  describeProjectEnvironment(sessionId: string): Promise<ProjectEnvironmentInfo> {
+    return this.projectEnvironmentRequest(sessionId);
+  }
+  requestProjectEnvironment(sessionId: string): Promise<ProjectEnvironmentApproval> {
+    return this.projectEnvironmentRequest(sessionId, "request");
+  }
+  approveProjectEnvironment(sessionId: string, approvalId: string): Promise<{selection: {kind: "private"}}> {
+    return this.projectEnvironmentRequest(sessionId, "install", {id: approvalId, manual: true});
+  }
+
+  private async fetchCatalog(url: string, options?: OpenCodeCatalogReadOptions): Promise<Response> {
+    if (!options) return this.fetchImpl(url, { headers: this.headers() });
+    const controller = new AbortController();
+    const cancel = () => controller.abort(options.signal?.reason);
+    const timer = setTimeout(() => controller.abort(new Error("Timed out reading model catalog")),
+      Math.max(1, Math.min(options.timeoutMs ?? this.requestTimeoutMs, this.requestTimeoutMs)));
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    if (options.signal?.aborted) cancel();
+    let rejectAbort!: () => void;
+    try {
+      const aborted = new Promise<never>((_resolve, reject) => {
+        rejectAbort = () => reject(controller.signal.reason ?? new Error("Catalog read cancelled"));
+        controller.signal.addEventListener("abort", rejectAbort, { once: true });
+        if (controller.signal.aborted) rejectAbort();
+      });
+      const read = async () => {
+        controller.signal.throwIfAborted();
+        const response = await this.fetchImpl(url, { headers: this.headers(), signal: controller.signal });
+        // Keep the deadline through body reception; decoding uses this buffered response.
+        const bytes = await response.arrayBuffer();
+        return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+      };
+      return await Promise.race([read(), aborted]);
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", cancel);
+      controller.signal.removeEventListener("abort", rejectAbort);
+    }
+  }
+
   /** Open the SSE event stream. Resolves once the server acknowledges. */
   connect(): Promise<void> {
     this.closed = false;
+    this.titleReader?.open();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -398,6 +528,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         signal: abort.signal,
       })
         .then(async (res) => {
+          this.captureContext(res);
           clearTimeout(timer);
           if (!res.ok || !res.body) {
             this.setStatus("error");
@@ -423,6 +554,10 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
 
   close(): void {
     this.closed = true;
+    this.titleReader?.close();
+    this.titleUpdates.clear();
+    this.titleDeleted.clear();
+    this.titleRevision++;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -488,9 +623,15 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   /** The recent conversations the sidebar shows: newest first, across every
    *  workspace folder, archived ones excluded. Bounded by RECENT_WINDOW — the
    *  whole history is never held in memory (see the constant). */
-  async listSessions(): Promise<SessionMeta[]> {
-    const page = await this.querySessions({ limit: RECENT_WINDOW });
-    return page.sessions.slice(0, RECENT_WINDOW);
+  async listSessions(directories?: string[]): Promise<SessionMeta[]> {
+    const targets = directories?.length ? [...new Set(directories)] : [this.directory ?? undefined];
+    const sessions = new Map<string, SessionMeta>();
+    // Read sequentially to bound workspace initialization on small gateway hosts.
+    for (const directory of targets) {
+      const page = await this.querySessions({ limit: RECENT_WINDOW, directory });
+      for (const session of page.sessions) sessions.set(session.id, session);
+    }
+    return [...sessions.values()].sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0)).slice(0, RECENT_WINDOW);
   }
 
   /** One page of conversation history, newest first, across every workspace
@@ -527,15 +668,27 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     return { sessions: out, nextCursor: cursor };
   }
 
+  private hydrateTitle(row: SessionMeta, revision: number): void {
+    void this.titleReader?.present(row).then(session => {
+      const current = this.titleUpdates.get(row.id);
+      if (this.closed || this.titleDeleted.has(row.id) || current?.revision !== revision) return;
+      this.titleUpdates.set(row.id, { revision, session });
+      if (JSON.stringify(current.session.titlePresentation) !== JSON.stringify(session.titlePresentation))
+        this.emit({ type: "session.updated", sessionId: row.id, title: session.title, session });
+    });
+  }
+
   /** One HTTP page, unfiltered.
    *
    *  The plain `/session` list is scoped to the folder the sidecar's cwd
    *  resolves to, so history would appear to change when the user switches
-   *  projects; `/experimental/session` lists every project's sessions. Falls
-   *  back to `/session` on a server without the experimental route. */
+   *  projects; the pinned `/experimental/session` is also project-scoped.
+   *  Falls back to scoped `/session` without the experimental route. */
   private async rawSessionPage(query: SessionQuery): Promise<SessionPage> {
+    const revision = this.titleRevision;
     const limit = query.limit ?? SESSION_PAGE;
     const params = new URLSearchParams({ limit: String(limit) });
+    if (query.directory) params.set("directory", query.directory);
     if (query.cursor != null) params.set("cursor", String(query.cursor));
     if (query.search) params.set("search", query.search);
 
@@ -546,45 +699,35 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       // No experimental route means no paging either: answer its one list and
       // report no next page.
       if (query.cursor != null) return { sessions: [], nextCursor: null };
-      res = await this.fetchWithTimeout(`${this.baseUrl}/session`, { headers: this.headers() });
+      const scope = query.directory ? `?${new URLSearchParams({ directory: query.directory })}` : "";
+      res = await this.fetchWithTimeout(`${this.baseUrl}/session${scope}`, { headers: this.headers() });
     }
     if (!res.ok) throw await this.apiError(res, "Failed to list sessions");
-    const arr = (await res.json()) as Array<{
-      id: string;
-      title?: string;
-      slug?: string;
-      directory?: string;
-      parentID?: string | null;
-      metadata?: Record<string, unknown>;
-      time?: { created?: number; updated?: number };
-      model?: { id?: string; providerID?: string } | string;
-    }>;
-    const sessions = arr.map((s) => {
-      const mine = (s.metadata?.[META_NS] ?? {}) as { archived?: number };
-      return {
-        id: s.id,
-        title: s.title ?? "Untitled",
-        slug: s.slug,
-        directory: s.directory,
-        parentId: s.parentID ?? undefined,
-        created: s.time?.created,
-        updated: s.time?.updated,
-        ...(s.model ? { model: typeof s.model === "string" ? (() => {
-          const separator = s.model.indexOf("/");
-          return separator > 0 ? { providerID: s.model.slice(0, separator), id: s.model.slice(separator + 1) } : undefined;
-        })() : s.model } : {}),
-        ...(typeof mine.archived === "number" ? { archived: mine.archived } : {}),
-        ...(s.metadata ? { metadata: s.metadata } : {}),
-      } satisfies SessionMeta;
-    });
+    const arr = (await res.json()) as RawSessionInfo[];
+    const sessions = arr.map(raw => {
+      const row = sessionMeta(raw);
+      const newer = this.titleUpdates.get(row.id);
+      if (newer && newer.revision > revision) return newer.session;
+      if (!this.titleReader) return row;
+      const preview = this.titleReader.preview(row);
+      const token = ++this.titleRevision;
+      this.titleUpdates.set(row.id, { revision: token, session: preview });
+      if (this.titleUpdates.size > 256) this.titleUpdates.delete(this.titleUpdates.keys().next().value!);
+      // Allow callers to publish the page before its background hydration event.
+      if (hasDefaultSessionTitle(row)) setTimeout(() => {
+        if (!this.closed && !this.titleDeleted.has(row.id) && this.titleUpdates.get(row.id)?.revision === token)
+          this.hydrateTitle(row, token);
+      }, 0);
+      return preview;
+    }).filter(session => !this.titleDeleted.has(session.id));
 
     // The cursor is exclusive ("strictly older than"), and thousands of
     // sessions can share one millisecond — 1699 of 5038 did in the load test.
     // Cursoring on the last row's own timestamp therefore DROPS the rest of
     // that millisecond (8 sessions vanished); +1 re-reads the run instead, and
     // callers dedupe by id. Same page count, no silent loss.
-    const last = sessions[sessions.length - 1]?.updated;
-    const nextCursor = sessions.length < limit || last == null ? null : last + 1;
+    const last = arr[arr.length - 1]?.time?.updated;
+    const nextCursor = arr.length < limit || last == null ? null : last + 1;
     return { sessions, nextCursor };
   }
 
@@ -681,6 +824,13 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       },
     );
     if (!res.ok) throw await this.apiError(res, "Failed to rename session");
+    if (this.titleReader) {
+      const previous = this.titleUpdates.get(sessionId)?.session;
+      const row = withManualSessionTitle(previous ?? { id: sessionId, title }, title);
+      this.titleUpdates.set(sessionId, { revision: ++this.titleRevision, session: row });
+      if (this.titleUpdates.size > 256) this.titleUpdates.delete(this.titleUpdates.keys().next().value!);
+      this.emit({ type: "session.updated", sessionId, title, session: row });
+    }
   }
 
   /** Re-home an existing session into another workspace folder, so a
@@ -692,7 +842,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       `${this.baseUrl}/experimental/control-plane/move-session`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers: {...this.headers(true), "x-scikeel-manual-approval": "1"},
         body: JSON.stringify({ sessionID: sessionId, destination: { directory }, moveChanges: false }),
       },
     );
@@ -703,9 +853,61 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   async deleteSession(sessionId: string): Promise<void> {
     const res = await this.fetchImpl(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}`, {
       method: "DELETE",
-      headers: this.headers(),
+      headers: {...this.headers(), "x-scikeel-manual-approval": "1"},
     });
     if (!res.ok) throw await this.apiError(res, "Failed to delete session");
+    this.titleDeleted.add(sessionId);
+    if (this.titleDeleted.size > 256) this.titleDeleted.delete(this.titleDeleted.values().next().value!);
+    this.titleUpdates.delete(sessionId);
+  }
+
+  async listRunningSessions(directory?: string): Promise<string[] | null> {
+    const query = directory ? `?${new URLSearchParams({ directory })}` : this.dirQuery();
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("Timed out waiting for OpenCode session status"));
+      }, Math.min(this.requestTimeoutMs, 10000));
+    });
+    try {
+      return await Promise.race([deadline, (async () => {
+        const res = await this.fetchImpl(`${this.baseUrl}/session/status${query}`, { headers: this.headers(), signal: controller.signal });
+        if (res.status === 404 || res.status === 501) return null;
+        if (!res.ok) throw await this.apiError(res, "Failed to load session status");
+        const statuses: unknown = await res.json();
+        if (!statuses || typeof statuses !== "object" || Array.isArray(statuses))
+          throw new Error("Invalid session status response");
+        const running: string[] = [];
+        for (const [id, status] of Object.entries(statuses)) {
+          const type = status?.type;
+          if (type === "busy" || type === "retry") running.push(id);
+          else if (type !== "idle") throw new Error("Unknown session status");
+        }
+        return running;
+      })()]);
+    } finally { clearTimeout(timer); }
+  }
+
+  async isSessionRunning(sessionId: string, directory?: string): Promise<boolean | null> {
+    const query = directory
+      ? `?${new URLSearchParams({ directory })}`
+      : this.dirQuery();
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/session/status${query}`, {
+      headers: this.headers(),
+    });
+    if (res.status === 404 || res.status === 501) return null;
+    if (!res.ok) throw await this.apiError(res, "Failed to load session status");
+    const statuses: unknown = await res.json();
+    if (!statuses || typeof statuses !== "object" || Array.isArray(statuses)) {
+      throw new Error("Invalid session status response");
+    }
+    if (!Object.prototype.hasOwnProperty.call(statuses, sessionId)) return false;
+    const status = (statuses as Record<string, { type?: string } | null>)[sessionId];
+    if (status?.type === "idle") return false;
+    if (status?.type === "busy" || status?.type === "retry") return true;
+    throw new Error("Unknown session status");
   }
 
   /** Load a session's message history. */
@@ -725,6 +927,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         cost?: number;
         tokens?: RawTokens;
       };
+      attachments?: ConversationAttachment[];
       parts: HistoryMessage["parts"];
     }>;
     return arr.map((m) => {
@@ -732,6 +935,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       const usage = toUsage(m.info.tokens, m.info.cost);
       return {
         role: m.info.role,
+        ...(m.attachments ? { attachments: m.attachments } : {}),
         ...(m.info.id ? { id: m.info.id } : {}),
         completed: m.info.time?.completed,
         created: m.info.time?.created,
@@ -749,9 +953,17 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  then send the corrected text. The session must be idle (abort first);
    *  reverting a busy session is rejected by OpenCode. `partID` reverts to a
    *  specific part within the message; omit to revert the whole message. */
+  async readSession(sessionId: string): Promise<{ id: string; revert?: { messageID: string; partID?: string } }> {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}${this.dirQuery()}`, { headers: this.headers() });
+    if (!res.ok) throw await this.apiError(res, "Failed to read the session");
+    const value = await res.json() as { id: string; revert?: { messageID: string; partID?: string } };
+    if (value.id !== sessionId) throw new Error("Session metadata does not match");
+    return { id: value.id, revert: value.revert };
+  }
+
   async revert(sessionId: string, messageID: string, partID?: string): Promise<void> {
-    const res = await this.fetchImpl(
-      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/revert`,
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/revert${this.dirQuery()}`,
       {
         method: "POST",
         headers: this.headers(true),
@@ -763,8 +975,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
 
   /** Undo the last revert — restores the reverted messages and files. */
   async unrevert(sessionId: string): Promise<void> {
-    const res = await this.fetchImpl(
-      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/unrevert`,
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/unrevert${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: "{}" },
     );
     if (!res.ok) throw await this.apiError(res, "Failed to restore the reverted messages");
@@ -773,8 +985,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   /** Interrupt the session's current turn (POST /session/:id/abort). A no-op
    *  on an idle session — the server just answers false. */
   async abortSession(sessionId: string): Promise<void> {
-    const res = await this.fetchImpl(
-      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/abort`,
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/abort${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: "{}" },
     );
     if (!res.ok) throw await this.apiError(res, "Failed to interrupt the session");
@@ -832,12 +1044,10 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  from config-declared sources — config dirs plus `.opencode/skill(s)` —
    *  so home-level skills are missing from it even though sessions (which run
    *  on this same v1 API) load and use them (#61). */
-  async listSkills(): Promise<SkillInfo[]> {
+  async listSkills(options?: OpenCodeCatalogReadOptions): Promise<SkillInfo[]> {
     // Scope to the workspace: skill instances are created lazily per directory,
     // and the unscoped endpoint answers from an instance that may have none.
-    const res = await this.fetchImpl(`${this.baseUrl}/skill${this.dirQuery()}`, {
-      headers: this.headers(),
-    });
+    const res = await this.fetchCatalog(`${this.baseUrl}/skill${this.dirQuery()}`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list skills");
     // v1 answers with a bare array; tolerate the v2 envelope so a server
     // pinned to either shape still lists.
@@ -849,12 +1059,12 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   /** The configured default model ("provider/model"), or null when unset. */
-  async getDefaultModel(): Promise<string | null> {
+  async getDefaultModel(options?: OpenCodeCatalogReadOptions): Promise<string | null> {
     // Read the same global config that setDefaultModel PATCHes. The instance-
     // scoped /config only reflects a model change after OpenCode rebuilds the
     // instance (~1s later), so reading it right after a switch returns the
     // previous model.
-    const res = await this.fetchImpl(`${this.baseUrl}/global/config`, { headers: this.headers() });
+    const res = await this.fetchCatalog(`${this.baseUrl}/global/config`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to read config");
     const cfg = (await res.json()) as { model?: string };
     return cfg.model ?? null;
@@ -877,10 +1087,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   /** Providers OpenCode can use right now, with their models. */
-  async listProviders(): Promise<ProviderInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/config/providers`, {
-      headers: this.headers(),
-    });
+  async listProviders(options?: OpenCodeCatalogReadOptions): Promise<ProviderInfo[]> {
+    const res = await this.fetchCatalog(`${this.baseUrl}/config/providers`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list providers");
     const body = (await res.json()) as {
       providers?: Array<{
@@ -1216,32 +1424,35 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  dropping it turns an explained refusal into a bare status code (#119). */
   private async apiError(res: Response, what: string): Promise<Error> {
     let detail = "";
+    let code: string | undefined;
+    let source: string | undefined;
     try {
-      const body = (await res.json()) as {
-        data?: { message?: string };
-        message?: string;
-        error?: string;
-      };
-      detail = body.data?.message ?? body.message ?? body.error ?? "";
-    } catch {
-      /* not JSON — keep the status alone */
-    }
-    return new ApiError(`${what} (${res.status}${detail ? `: ${detail}` : ""})`, res.status);
+      const body = await res.json() as { data?: { message?: string }; message?: string; error?: string; code?: string; name?: string; _tag?: string; source?: string };
+      const message = body.data?.message ?? body.message ?? body.error;
+      if (typeof message === "string") detail = message.slice(0, 2048);
+      const candidate = body.code ?? body.name ?? body._tag;
+      if (typeof candidate === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(candidate)) code = candidate;
+      if (["gateway", "runtime"].includes(body.source ?? "")) source = body.source;
+      else if (code) source = "runtime";
+    } catch { /* Keep the HTTP status on malformed/non-JSON responses. */ }
+    const generation = Number(res.headers.get("x-scikeel-runtime-generation"));
+    if (this.gatewayGeneration !== null && ["stale_workspace_context", "runtime_context_changed"].includes(code ?? "")) this.gatewayContextChanged();
+    return new ApiError(`${what} (${res.status}${detail ? `: ${detail}` : ""})`, res.status, {
+      code, source, contextGeneration: Number.isSafeInteger(generation) && generation > 0 ? generation : undefined,
+    });
   }
 
   /** Real agents configured in OpenCode. */
-  async listAgents(): Promise<AgentInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/agent`, { headers: this.headers() });
+  async listAgents(options?: OpenCodeCatalogReadOptions): Promise<AgentInfo[]> {
+    const res = await this.fetchCatalog(`${this.baseUrl}/agent`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list agents");
     return (await res.json()) as AgentInfo[];
   }
 
   /** Slash commands the runtime can run — config commands, skills and MCP
    *  prompts all surface in this one list (directory-scoped like skills). */
-  async listCommands(): Promise<CommandInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/command${this.dirQuery()}`, {
-      headers: this.headers(),
-    });
+  async listCommands(options?: OpenCodeCatalogReadOptions): Promise<CommandInfo[]> {
+    const res = await this.fetchCatalog(`${this.baseUrl}/command${this.dirQuery()}`, options);
     if (!res.ok) throw await this.apiError(res, "Failed to list commands");
     const arr = (await res.json()) as Array<{
       name: string;
@@ -1269,7 +1480,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/shell`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers: {...this.headers(true), "x-scikeel-manual-approval": "1"},
         body: JSON.stringify({ agent, command }),
       },
     );
@@ -1284,7 +1495,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/command`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers: {...this.headers(true), "x-scikeel-manual-approval": "1"},
         body: JSON.stringify({ command, ...(args ? { arguments: args } : {}) }),
       },
     );
@@ -1310,6 +1521,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     model?: string | null,
     variant?: string | null,
     files?: PromptFile[],
+    attachmentContext?: AttachmentPromptContext,
+    collaborationRevision?: number,
   ): Promise<void> {
     const m = parseModel(model);
     const res = await this.fetchWithTimeout(
@@ -1330,6 +1543,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
               url: f.url,
             })),
           ],
+          ...(attachmentContext ? { attachmentTurn: attachmentContext } : {}),
+          ...(collaborationRevision !== undefined ? { collaborationRevision } : {}),
           ...(agent ? { agent } : {}),
           ...(m ? { model: m } : {}),
           system: ARTIFACT_PRESENTATION_SYSTEM,
@@ -1368,23 +1583,26 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/question${this.dirQuery()}`, {
       headers: this.headers(),
     });
-    if (!res.ok) return [];
+    if (res.status === 404 || res.status === 501) return [];
+    if (!res.ok) throw await this.apiError(res, "Failed to load questions");
     const arr = (await res.json()) as Array<{
       id: string;
       sessionID: string;
       questions?: QuestionAskedEvent["questions"];
+      tool?: QuestionAskedEvent["tool"];
     }>;
     return arr.map((q) => ({
       type: "question.asked" as const,
       sessionId: q.sessionID,
       requestId: q.id,
       questions: q.questions ?? [],
+      tool: q.tool,
     }));
   }
 
   /** Answer a question: one array of selected option labels per question, in order. */
   async answerQuestion(requestId: string, answers: string[][]): Promise<void> {
-    const res = await this.fetchImpl(
+    const res = await this.fetchWithTimeout(
       `${this.baseUrl}/question/${encodeURIComponent(requestId)}/reply${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: JSON.stringify({ answers }) },
     );
@@ -1393,7 +1611,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
 
   /** Reject/dismiss a question (the agent proceeds without an answer). */
   async rejectQuestion(requestId: string): Promise<void> {
-    const res = await this.fetchImpl(
+    const res = await this.fetchWithTimeout(
       `${this.baseUrl}/question/${encodeURIComponent(requestId)}/reject${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: "{}" },
     );
@@ -1405,7 +1623,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/permission${this.dirQuery()}`, {
       headers: this.headers(),
     });
-    if (!res.ok) return [];
+    if (res.status === 404 || res.status === 501) return [];
+    if (!res.ok) throw await this.apiError(res, "Failed to load permissions");
     // Same dual field names as the SSE event: `permission`/`patterns` (V2)
     // with `action`/`resources` as the legacy fallback.
     const arr = (await res.json()) as Array<{
@@ -1415,6 +1634,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       patterns?: string[];
       action?: string;
       resources?: string[];
+      tool?: PermissionAskedEvent["tool"];
     }>;
     return arr.map((p) => ({
       type: "permission.asked" as const,
@@ -1422,12 +1642,13 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       requestId: p.id,
       action: p.permission ?? p.action ?? "action",
       resources: p.patterns ?? p.resources ?? [],
+      tool: p.tool,
     }));
   }
 
   /** Reply to a permission request: allow once, allow always, or reject. */
   async replyPermission(requestId: string, reply: PermissionReply): Promise<void> {
-    const res = await this.fetchImpl(
+    const res = await this.fetchWithTimeout(
       `${this.baseUrl}/permission/${encodeURIComponent(requestId)}/reply${this.dirQuery()}`,
       { method: "POST", headers: this.headers(true), body: JSON.stringify({ reply }) },
     );
@@ -1586,11 +1807,12 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
             tool: string;
             state?: {
               status?: string;
+              error?: string;
               title?: string;
               input?: Record<string, unknown>;
               output?: string;
               time?: { start?: number; end?: number };
-              metadata?: { sessionId?: unknown; output?: unknown; diff?: unknown };
+              metadata?: { sessionId?: unknown; output?: unknown; diff?: unknown; scikeelOutcome?: unknown };
             };
           };
           // A task tool's metadata names the subagent session it spawned.
@@ -1601,7 +1823,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
             sessionId,
             callId: tp.callID,
             tool: tp.tool,
-            status: mapToolStatus(tp.state?.status ?? "pending"),
+            ...normalizeToolResult(tp.tool, tp.state, tp.callID),
             title: tp.state?.title,
             input: tp.state?.input,
             output: typeof tp.state?.output === "string" ? tp.state.output : undefined,
@@ -1642,6 +1864,32 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         }
         break;
       }
+      case "session.deleted": {
+        const info = props.info as { id?: string } | undefined;
+        if (info?.id) {
+          this.titleDeleted.add(info.id); this.titleUpdates.delete(info.id);
+          if (this.titleDeleted.size > 256) this.titleDeleted.delete(this.titleDeleted.values().next().value!);
+          this.emit({ type: "session.deleted", sessionId: info.id });
+        }
+        break;
+      }
+      case "session.updated": {
+        const info = props.info as RawSessionInfo | undefined;
+        if (typeof info?.id !== "string" || !info.id || typeof info.title !== "string" || this.titleDeleted.has(info.id)) break;
+        if (!this.titleReader) {
+          this.emit({ type: "session.updated", sessionId: info.id, title: info.title });
+          break;
+        }
+        const revision = ++this.titleRevision;
+        const row = this.titleReader.preview(sessionMeta(info));
+        this.titleUpdates.set(row.id, { revision, session: row });
+        if (this.titleUpdates.size > 256) this.titleUpdates.delete(this.titleUpdates.keys().next().value!);
+        // Notify immediately; message hydration must never delay a final/manual title.
+        this.emit({ type: "session.updated", sessionId: row.id, title: row.title, session: row });
+        if (!hasDefaultSessionTitle(row)) break;
+        this.hydrateTitle(row, revision);
+        break;
+      }
       case "session.idle": {
         const sessionId = String(props.sessionID ?? "");
         // The turn is over — its text/reasoning parts can no longer receive
@@ -1660,6 +1908,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         const q = props as {
           id?: string;
           sessionID?: string;
+          tool?: QuestionAskedEvent["tool"];
           questions?: Array<{
             question: string;
             header: string;
@@ -1672,6 +1921,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           type: "question.asked",
           sessionId: String(q.sessionID ?? ""),
           requestId: String(q.id ?? ""),
+          tool: q.tool,
           questions: (q.questions ?? []).map((it) => ({
             question: it.question,
             header: it.header,
@@ -1705,6 +1955,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           patterns?: string[];
           action?: string;
           resources?: string[];
+      tool?: PermissionAskedEvent["tool"];
         };
         this.emit({
           type: "permission.asked",
@@ -1712,6 +1963,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           requestId: String(p.id ?? ""),
           action: String(p.permission ?? p.action ?? "action"),
           resources: p.patterns ?? p.resources ?? [],
+      tool: p.tool,
         });
         break;
       }

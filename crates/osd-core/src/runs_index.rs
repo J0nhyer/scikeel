@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use crate::file_policy::WORKSPACE_ROOT;
+
 // Runs read-model: a SQLite index derived from the append-only runs logs
 // (`runs.jsonl` + `remote-runs.jsonl`). The JSONL stays the durable source of
 // truth; this index is disposable — rebuilt lazily from the logs by byte
@@ -80,6 +83,76 @@ pub struct Cursor {
 
 fn db_path(root: &Path) -> PathBuf {
     root.join(".openscience").join(DB_FILE)
+}
+
+// In managed mode, never open an agent-editable SQLite path: reconstruct a
+// bounded account-local in-memory read model from descriptor-opened JSONL.
+#[cfg(target_os = "linux")]
+pub(crate) fn managed_records(env: &Env) -> Result<Vec<(String, RunRecord)>, String> {
+    use std::io::{BufRead, BufReader, Read};
+    let policy = env.managed_files().ok_or("managed policy unavailable")?;
+    let mut directories = vec![String::new()];
+    for entry in policy.list(WORKSPACE_ROOT, "", 10000).map_err(|_| "managed inventory unavailable")? {
+        if !entry.is_dir || entry.name == "node_modules" || entry.name == "__pycache__" { continue; }
+        if matches!(entry.name.as_str(), "sessions" | "projects") {
+            for child in policy.list(WORKSPACE_ROOT, &entry.name, 10000).map_err(|_| "managed inventory unavailable")? {
+                if child.is_dir { directories.push(format!("{}/{}", entry.name, child.name)); }
+            }
+        } else { directories.push(entry.name); }
+        if directories.len() > 10000 { return Err("managed inventory exceeds limit".into()); }
+    }
+    directories.sort();
+    let mut records = Vec::new(); let mut bytes = 0u64; let mut consumed = 0usize;
+    for directory in directories {
+        for store in [RUNS_FILE, REMOTE_RUNS_FILE] {
+            let relative = if directory.is_empty() { format!(".openscience/{store}") }
+                else { format!("{directory}/.openscience/{store}") };
+            let file = match policy.open_regular(WORKSPACE_ROOT, &relative, 25 * 1024 * 1024) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err("managed run store unavailable".into()),
+            };
+            bytes += file.metadata().map_err(|_| "managed run store unavailable")?.len();
+            if bytes > 25 * 1024 * 1024 { return Err("managed run inventory exceeds limit".into()); }
+            let mut reader = BufReader::new(file);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                // take() bounds even a malicious single huge JSONL record.
+                let read = std::io::Read::by_ref(&mut reader).take(1024 * 1024 + 1)
+                    .read_until(b'\n', &mut line).map_err(|_| "managed run store unavailable")?;
+                if read == 0 { break; }
+                consumed += read;
+                if consumed > 25 * 1024 * 1024 { return Err("managed run inventory exceeds limit".into()); }
+                if line.len() > 1024 * 1024 { return Err("managed run record exceeds limit".into()); }
+                if !line.ends_with(b"\n") { break; }
+                if let Ok(record) = serde_json::from_slice::<RunRecord>(&line) {
+                    if records.len() >= 10000 { return Err("managed run inventory exceeds limit".into()); }
+                    records.push((directory.clone(), record));
+                }
+            }
+        }
+    }
+    Ok(records)
+}
+
+#[cfg(target_os = "linux")]
+fn managed_query(env: &Env, query: &RunQuery) -> Result<RunPage, String> {
+    let conn = Connection::open_in_memory().map_err(|_| "managed index unavailable")?;
+    ensure_schema(&conn)?;
+    let transaction = conn.unchecked_transaction().map_err(|_| "managed index unavailable")?;
+    {
+        let mut statement = transaction.prepare("INSERT OR IGNORE INTO runs(run_id,ts,status,surface,session_id,command,json) VALUES(?1,?2,?3,?4,?5,?6,?7)")
+            .map_err(|_| "managed index unavailable")?;
+        for (_, record) in managed_records(env)? {
+            let json = serde_json::to_string(&record).map_err(|_| "managed record unavailable")?;
+            statement.execute(params![record.run_id, record.ts as i64, record.status,
+                record.surface.as_deref().unwrap_or("local"), record.session_id, record.command, json])
+                .map_err(|_| "managed index unavailable")?;
+        }
+    }
+    transaction.commit().map_err(|_| "managed index unavailable")?;
+    query_runs(&conn, query)
 }
 
 /// Open (creating if needed) the per-workspace index, ensuring the schema. A
@@ -393,6 +466,8 @@ pub fn query_runs(conn: &Connection, q: &RunQuery) -> Result<RunPage, String> {
 
 /// Open + sync the index (reads new log bytes, writes the DB) and query it.
 pub fn query_runs_cmd(env: &Env, query: RunQuery) -> Result<RunPage, String> {
+    #[cfg(target_os = "linux")]
+    if env.managed_files().is_some() { return managed_query(env, &query); }
     // Global index, keyed to the base folder: it aggregates every session's
     // logs. The Runs page queries it unfiltered; a session's Runs pane passes
     // `sessionId` to narrow to its own runs.

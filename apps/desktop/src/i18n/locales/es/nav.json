@@ -8,7 +8,9 @@
     "signOut": "Cerrar sesión",
     "account": "Cuenta de {{username}}",
     "adminBadge": "Administrador",
-    "home": "Inicio"
+    "home": "Inicio",
+    "campusName": "Chengdu University of Technology",
+    "campusStudentProject": "Proyecto de investigación estudiantil"
   },
   "items": {
     "new": "Nuevo",
@@ -52,7 +54,58 @@
     "seeAll": "Todos los proyectos",
     "openFolder": "Abrir {{path}}",
     "newSession": "Nueva sesión",
-    "openFolderLabel": "Abrir carpeta"
+    "openFolderLabel": "Abrir carpeta",
+    "discardTitle": "¿Iniciar una nueva conversación?",
+    "discardBody": "Se descartarán el mensaje sin enviar y los archivos adjuntos pendientes. Se conservarán las conversaciones guardadas y los archivos del proyecto.",
+    "discardAction": "Descartar y continuar",
+    "entryFailed": "Se creó el proyecto, pero no se pudo abrir la conversación.",
+    "retryOpening": "Reintentar apertura",
+    "actionsAria": "Acciones del proyecto: {{name}}",
+    "openFiles": "Abrir archivos",
+    "trash": "Mover a la papelera",
+    "trashTitle": "¿Mover {{name}} a la papelera?",
+    "trashBody": "Se conservan archivos y conversaciones. Restaure el proyecto para usarlos. Las tareas en curso deben terminar primero.",
+    "finishDraftBeforeTrash": "Termine o descarte los mensajes y las cargas pendientes de este proyecto.",
+    "unavailable": "Proyecto no disponible.",
+    "trashHeading": "Papelera",
+    "restore": "Restaurar",
+    "trashEmpty": "No hay elementos eliminados.",
+    "trashLoadFailed": "No se pudo cargar la papelera.",
+    "checkingState": "Comprobando el proyecto…",
+    "trashedConversation": "Este proyecto está en la papelera. Restáurelo para abrir esta conversación."
+  },
+  "fileManagement": {
+    "restoreElsewhere": "Restaurar en otra ubicación",
+    "restoreTitle": "Restaurar archivo o carpeta",
+    "restoreName": "Nombre",
+    "saveAs": "Guardar como",
+    "savedAs": "Guardado como {{path}}",
+    "reloadText": "Recargar versión del disco",
+    "textConflict": "El archivo ha cambiado. Se conserva su borrador.",
+    "saveUncertain": "Resultado desconocido. Compruebe o reintente el guardado original.",
+    "discardDraft": "¿Descartar cambios sin guardar?",
+    "draftLimit": "Guarda o descarta los cambios en otro archivo antes de abrir este editor.",
+    "finishDraft": "Guarde o descarte el borrador antes de mover o eliminar el archivo.",
+    "newFile": "Nuevo archivo",
+    "newFolder": "Nueva carpeta",
+    "actionsAria": "Acciones del archivo: {{name}}",
+    "move": "Mover",
+    "trashTitle": "¿Mover {{name}} a la papelera?",
+    "trashBody": "El archivo o carpeta se conserva hasta restaurarlo. Las tareas en curso deben terminar primero.",
+    "destination": "Destino",
+    "pendingOperations": "Operaciones pendientes",
+    "checkOperation": "Comprobar operación: {{name}}",
+    "retryOperation": "Reintentar operación: {{name}}",
+    "moreOperations": "Más operaciones pendientes",
+    "loadMore": "Cargar más",
+    "historyFailed": "Guardado; no se pudo registrar el historial.",
+    "retryHistory": "Reintentar historial: {{name}}",
+    "upload": "Subir archivos",
+    "uploads": "Cargas",
+    "addFiles": "Añadir archivos",
+    "resumeUpload": "Reanudar carga: {{name}}",
+    "cancelUpload": "Cancelar carga: {{name}}",
+    "uploadStatus": {"paused": "En pausa", "uploading": "Subiendo", "error": "Requiere atención", "complete": "Subido", "cancelling": "Cancelando", "cancelled": "Cancelado"}
   },
   "history": {
     "heading": "Sesiones",
@@ -91,7 +144,9 @@
     "exportDone_one": "Se exportó {{count}} conversación.",
     "exportDone_other": "Se exportaron {{count}} conversaciones.",
     "exportDonePartial_one": "Se exportó {{count}} conversación; {{failed}} no se pudo leer.",
-    "exportDonePartial_other": "Se exportaron {{count}} conversaciones; {{failed}} no se pudieron leer."
+    "exportDonePartial_other": "Se exportaron {{count}} conversaciones; {{failed}} no se pudieron leer.",
+    "titleGenerating": "Generando título…",
+    "titleUntitled": "Nueva conversación"
   },
   "confirmDelete": {
     "sessionTitle": "¿Eliminar sesión?",
@@ -181,7 +236,7 @@
       "openNotebooks": "Abrir cuadernos",
       "manageSkills": "Gestionar habilidades",
       "openSettings": "Abrir configuración",
-      "toggleTheme": "Cambiar tema (claro / cálido / oscuro)"
+      "toggleTheme": "Cambiar apariencia"
     }
   },
   "rowMenu": {
