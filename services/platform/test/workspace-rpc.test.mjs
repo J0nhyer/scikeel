@@ -39,3 +39,84 @@ test('the text snapshot response budget includes JSON escaping without changing 
  const files=new WorkspaceRpc({workerManager:manager,tenantPolicy:policy,fetchImpl:async()=>new Response(JSON.stringify({text,revision:'a'.repeat(64)}))});
  assert.equal((await files.call(context,{operation:'readText',root:'workspace',path:'a'})).text,text);
 });
+
+function rpcFixture(fetchImpl, options = {}) {
+  const policy = new TenantPolicy(); policy.registerAccount(context);
+  let generation = 1, released = 0;
+  const manager = {
+    getWorker: () => ({userId: "a", status: "running", generation}),
+    getWorkerAccess: () => ({runnerUrl: "http://172.31.240.2:4791", token: "a".repeat(64)}),
+    retainWorker: () => ({generation, release: () => released++}),
+  };
+  return {files: new WorkspaceRpc({workerManager: manager, tenantPolicy: policy, fetchImpl, ...options}),
+    changeGeneration: value => { generation = value; }, released: () => released};
+}
+for (const [status, body, expectedStatus, code] of [
+  [429, {error:"runner_busy"}, 429, "workspace_rpc_busy"],
+  [403, {error:"synthetic-private-secret"}, 403, "workspace_rpc_denied"],
+  [500, {error:"synthetic-private-secret"}, 503, "workspace_rpc_unavailable"],
+  [429, {error:"synthetic-private-secret"}, 503, "workspace_rpc_unavailable"],
+]) test(`runner ${status}/${body.error} has an allowlisted safe classification`, async () => {
+  const f = rpcFixture(async () => new Response(JSON.stringify(body), {status}));
+  await assert.rejects(f.files.call(context, {operation:"stat", root:"workspace", path:"project"}),
+    error => error.statusCode === expectedStatus && error.code === code && !error.message.includes("synthetic-private-secret"));
+  assert.equal(f.released(), 1);
+});
+test("unknown transport and malformed response do not become authorization failures", async () => {
+  const f = rpcFixture(async () => { throw new Error("synthetic-private-secret"); });
+  const request = {operation:"stat", root:"workspace", path:"project"};
+  await assert.rejects(f.files.call(context,request), e => e.statusCode===503 && e.code==="workspace_rpc_unavailable" && !e.message.includes("secret"));
+  f.files.fetchImpl=async()=>new Response("synthetic-private-secret");
+  await assert.rejects(f.files.call(context,request), e => e.statusCode===503 && e.code==="workspace_rpc_unavailable");
+  assert.equal(f.released(),2);
+});
+test("concurrent owned file requests serialize even across background caller types", async () => {
+  let active=0, peak=0, calls=0; let release; const gate=new Promise(resolve=>{release=resolve;});
+  const f=rpcFixture(async(_url,{body})=>{
+    const request=JSON.parse(body); calls++; active++; peak=Math.max(peak,active);
+    if(calls===1) await gate;
+    if(active>1) {active--; return new Response(JSON.stringify({error:"runner_busy"}),{status:429});}
+    active--; return new Response(JSON.stringify({path:request.path}));
+  });
+  const a=f.files.call(context,{operation:"stat",root:"workspace",path:"project"});
+  const b=f.files.call(context,{operation:"mkdirAll",root:"workspace",path:"attachments"});
+  release();
+  assert.deepEqual(await Promise.all([a,b]),[{path:"project"},{path:"attachments"}]);
+  assert.equal(peak,1); assert.equal(f.released(),2);
+});
+test("queued generation change rejects before transport or worker lease", async () => {
+  let release; const gate=new Promise(resolve=>{release=resolve;}); let calls=0;
+  const f=rpcFixture(async()=>{calls++; await gate; return new Response("{}");});
+  const first=f.files.call(context,{operation:"stat",root:"workspace",path:"a"});
+  const second=f.files.call(context,{operation:"mkdirAll",root:"workspace",path:"b"});
+  const settled=Promise.allSettled([first,second]); f.changeGeneration(2); release();
+  const results=await settled;
+  assert.ok(results.every(r=>r.status==="rejected" && r.reason.code==="runtime_context_changed"));
+  assert.equal(calls,1); assert.equal(f.released(),1);
+});
+test("queued cancellation never contacts transport or acquires a lease", async () => {
+  let release; const gate=new Promise(resolve=>{release=resolve;}); let calls=0;
+  const f=rpcFixture(async()=>{calls++; await gate; return new Response("{}");});
+  const first=f.files.call(context,{operation:"stat",root:"workspace",path:"a"});
+  const controller=new AbortController();
+  const second=f.files.call(context,{operation:"mkdirAll",root:"workspace",path:"b"},{signal:controller.signal});
+  const rejected=assert.rejects(second,e=>e.code==="workspace_rpc_cancelled");
+  controller.abort(); release(); await rejected; await first;
+  assert.equal(calls,1); assert.equal(f.released(),1);
+});
+test("file deadline includes queue wait and never repeats a mutation", async () => {
+  let calls=0;
+  const f=rpcFixture(async(_url,{signal})=>{
+    calls++;
+    // A transport may acknowledge cancellation late; its slot must remain held.
+    await new Promise(resolve=>setTimeout(resolve,50));
+    signal.throwIfAborted();
+    return new Response("{}");
+  },{timeoutMs:20});
+  const results=await Promise.allSettled([
+    f.files.call(context,{operation:"mkdirAll",root:"workspace",path:"a"}),
+    f.files.call(context,{operation:"mkdirAll",root:"workspace",path:"b"}),
+  ]);
+  assert.ok(results.every(r=>r.status==="rejected" && r.reason.code==="workspace_rpc_timeout"));
+  assert.equal(calls,1); assert.equal(f.released(),1);
+});

@@ -16,6 +16,7 @@ export class ManagedAttachmentCopies {
     const context=await this.resolveContext(userId);
     if(context.userId!==userId)throw denied();
     const owner=this.tenantPolicy.account(context);this.tenantPolicy.session(context,sessionId);
+    if(files.length===0)return [];
     const directory=`.scikeel/attachments/${sessionId}`;
     await this.files.call(context,{operation:"mkdirAll",root:"workspace",path:directory},{signal});
     const result=[];

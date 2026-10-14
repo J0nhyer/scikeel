@@ -39,3 +39,12 @@ test("foreign session, original symlinks and changed source bytes cannot create 
   await writeFile(f.file.sourcePath,Buffer.alloc(f.file.size));
   await assert.rejects(f.copies.materialize({userId:"a",sessionId:"session-a",files:[f.file]}));assert.equal(f.writes.size,0);
 });
+
+test("owned empty attachment copies do not touch the runner",async t=>{
+  const f=await fixture(t);
+  assert.deepEqual(await f.copies.materialize({userId:"a",sessionId:"session-a",files:[]}),[]);
+  assert.equal(f.calls.length,0);
+  await assert.rejects(f.copies.materialize({userId:"b",sessionId:"session-a",files:[]}));
+  await assert.rejects(f.copies.materialize({userId:"a",sessionId:"foreign",files:[]}));
+  assert.equal(f.calls.length,0);
+});
