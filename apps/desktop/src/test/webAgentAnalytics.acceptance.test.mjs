@@ -87,6 +87,24 @@ test.skipIf(!process.env.OSD_AGENT_ANALYTICS_ACCEPTANCE)('protected analytics us
                 await context.close();
             }
         expect(starts).toBe(0);
+        const chineseContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+        await chineseContext.addCookies([{ name: 'osd_session', value: session.token, url: origin }]);
+        await chineseContext.addInitScript(() => localStorage.setItem('ai4s.locale', 'zh-Hans'));
+        const chinesePage = await chineseContext.newPage();
+        await chinesePage.goto(`${origin}/admin/agent-analytics`);
+        await chinesePage.getByRole('heading', { name: '智能体分析', exact: true }).waitFor();
+        await chinesePage.getByText('执行完成率', { exact: true }).waitFor();
+        for (const name of ['概览', '任务执行', '工具与模型', '人工介入']) {
+            await chinesePage.getByRole('tab', { name, exact: true }).click();
+            expect(await chinesePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        }
+        await chinesePage.getByRole('tab', { name: '任务执行', exact: true }).click();
+        await chinesePage.getByRole('button', { name: /研究任务/ }).click();
+        await chinesePage.getByRole('dialog').waitFor();
+        await chinesePage.getByText('交付检查', { exact: true }).waitFor();
+        await chinesePage.screenshot({ path: join(screenshots, 'zh-Hans-1440.png') });
+        expect(await chinesePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await chineseContext.close();
         const context = await browser.newContext();
         await context.addCookies([{ name: 'osd_session', value: session.token, url: origin }]);
         const page = await context.newPage();

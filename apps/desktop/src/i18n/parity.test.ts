@@ -25,6 +25,13 @@ function baseKeysFor(locale: string): Set<string> {
 }
 
 describe("locale key parity (base keys)", () => {
+  it("ships Chinese translations for every analytics label and its menu entry", () => {
+    const analytics = i18n.getResourceBundle('zh-Hans', 'pages').analytics as Record<string, string>;
+    for (const [key, value] of Object.entries(analytics)) {
+      expect(value, key).toMatch(/[\u3400-\u9fff]/);
+    }
+    expect(i18n.t('sidebar.agentAnalytics', { lng: 'zh-Hans', ns: 'nav' })).toBe('智能体分析');
+  });
   const english = baseKeysFor(DEFAULT_LOCALE);
   const others = shippedLocales().map((l) => l.code).filter((c) => c !== DEFAULT_LOCALE);
 
