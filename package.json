@@ -37,7 +37,8 @@
     "web:publish": "node scripts/dev/web-publish.mjs",
     "platform:title:live": "node scripts/dev/safe-desktop-task.mjs platform-title-live",
     "web:recovery:live": "node scripts/dev/safe-desktop-task.mjs web-recovery-live",
-    "web:projects:live": "node scripts/dev/safe-desktop-task.mjs web-projects-live"
+    "web:projects:live": "node scripts/dev/safe-desktop-task.mjs web-projects-live",
+    "web:files:live": "node scripts/dev/safe-desktop-task.mjs web-files-live"
   },
   "engines": {
     "node": ">=20"

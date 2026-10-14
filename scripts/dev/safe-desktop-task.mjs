@@ -23,14 +23,15 @@ const args = process.argv.slice(guarded ? 4 : 3);
 const smallLinuxHost = process.platform === "linux" && (totalmem() < 5 * 1024 ** 3 || process.env.OSD_TASK_FORCE_LIMITS === "1");
 const liveRecovery = mode === "web-recovery-live";
 const liveProjects = mode === "web-projects-live";
-const liveVerification = mode === "platform-title-live" || liveRecovery || liveProjects;
+const liveFiles = mode === "web-files-live";
+const liveVerification = mode === "platform-title-live" || liveRecovery || liveProjects || liveFiles;
 if (liveVerification && args.length) throw new Error("Live verification uses a fixed test only");
 const mib = 1024 ** 2;
 const memoryHigh = 1850 * mib;
 const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
-if (!["web-projects-live", "web-recovery-live", "platform-title-live", "opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
+if (!["web-files-live", "web-projects-live", "web-recovery-live", "platform-title-live", "opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
   "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install", "sandbox-migrate"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
@@ -128,9 +129,9 @@ if (smallLinuxHost) {
 if (liveRecovery) {
   process.env.SCIKEEL_RECOVERY_LIVE_ACCEPTANCE = "1";
   run(process.execPath, ["--test", "--test-concurrency=1", "test/web-runtime-recovery.live.acceptance.mjs"], join(root, "services/platform"));
-} else if (liveProjects) {
-  process.env.OSD_PROJECTS_LIVE_ACCEPTANCE = "1";
-  run(process.execPath, [join(desktop, "node_modules/vitest/vitest.mjs"), "run", "--no-file-parallelism", "src/test/webProjects.acceptance.test.mjs"]);
+} else if (liveProjects || liveFiles) {
+  process.env[liveFiles ? "OSD_PROJECT_FILES_LIVE_ACCEPTANCE" : "OSD_PROJECTS_LIVE_ACCEPTANCE"] = "1";
+  run(process.execPath, [join(desktop, "node_modules/vitest/vitest.mjs"), "run", "--no-file-parallelism", liveFiles ? "src/test/webProjectFiles.acceptance.test.mjs" : "src/test/webProjects.acceptance.test.mjs"]);
 } else if (liveVerification) {
   process.env.SCIKEEL_TITLE_LIVE_ACCEPTANCE = "1";
   run(process.execPath, ["--test", "--test-concurrency=1", "test/session-title.live.acceptance.mjs"], join(root, "services/platform"));
