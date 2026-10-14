@@ -161,8 +161,9 @@ Use one platform-owned SQLite analytics file behind a small storage interface:
 run summaries and normalized metadata events, with indexes for timestamp,
 account, run identity and event/call identity. Account/auth storage is unchanged. Synchronous database work runs in one bounded
 worker thread so it cannot block the platform streaming loop.
-The SQLite adapter must support the repository's declared server Node versions;
-a deployment-specific Node upgrade is not an implicit requirement of this design.
+The SQLite adapter must support the repository's declared Node 20 minimum and
+the selected deployment Node version; a deployment-specific Node upgrade is not
+an implicit requirement of this design.
 
 Expose read-only, administrator-guarded overview, runs, run-detail, capability and
 intervention queries under `/api/admin/agent-analytics`. UI requests use a typed
