@@ -333,3 +333,38 @@ test("native fixture cleanup cannot forget a surviving child when the app-server
   await new Promise(resolve => setTimeout(resolve, 700));
   await assert.rejects(access(late), { code: "ENOENT" });
 });
+
+function pendingNativeConnection() {
+  const child = new EventEmitter();
+  Object.assign(child, { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+  const connection = new protocol.NativeConnection(child, "stopped");
+  Object.assign(connection, { thread: "owned-thread", turn: "owned-turn", expectedCallId: "owned-call" });
+  return { child, connection };
+}
+
+const commandStart = { method: "item/started", params: { threadId: "owned-thread", turnId: "owned-turn",
+  item: { id: "owned-call", type: "commandExecution" } } };
+
+test("native running-command evidence waits for asynchronous exact owned start notification", async () => {
+  const { connection } = pendingNativeConnection();
+  const waiting = connection.waitForStarted("commandExecution", 500);
+  setTimeout(() => connection.receive(commandStart), 30);
+  assert.equal(await waiting, true);
+});
+
+test("native start wait cannot accept foreign identity, another item type or completion alone", async () => {
+  const { connection } = pendingNativeConnection();
+  for (const params of [{ ...commandStart.params, threadId: "foreign" }, { ...commandStart.params, turnId: "foreign" },
+    { ...commandStart.params, item: { id: "foreign", type: "commandExecution" } },
+    { ...commandStart.params, item: { id: "owned-call", type: "fileChange" } }])
+    connection.receive({ ...commandStart, params });
+  connection.receive({ ...commandStart, method: "item/completed" });
+  await assert.rejects(connection.waitForStarted("commandExecution", 60), /owned native item did not start/);
+});
+
+test("native start wait propagates observed process exit instead of claiming authority", async () => {
+  const { child, connection } = pendingNativeConnection();
+  const waiting = connection.waitForStarted("commandExecution", 500);
+  setTimeout(() => child.emit("close", 0), 20);
+  await assert.rejects(waiting, /native process closed/);
+});

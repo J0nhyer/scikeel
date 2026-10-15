@@ -183,6 +183,16 @@ export class NativeConnection {
       promise.finally(() => clearTimeout(timer)).catch(() => {});
     })]);
   }
+  async waitForStarted(itemType, timeout = 1500) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      if (typeof this.thread === "string" && typeof this.turn === "string" && typeof this.expectedCallId === "string" &&
+          this.frames.some(frame => frame.method === "item/started" && frame.params?.threadId === this.thread &&
+            frame.params.turnId === this.turn && frame.params.item?.id === this.expectedCallId && frame.params.item.type === itemType)) return true;
+      await Promise.race([this.failure, new Promise(resolve => setTimeout(resolve, 10))]);
+    }
+    throw new Error("owned native item did not start within the pre-effect deadline");
+  }
   async completed() {
     const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
@@ -352,11 +362,12 @@ export async function runNativeProtocolProbe() {
           assertFixture(await waitForFixtureFile(`${directory}/workspace/child-ready.txt`) === "child-ready");
           assertFixture(await waitForFixtureFile(`${directory}/workspace/parent-ready.txt`) === "parent-ready");
           childReadyAt = Date.now();
-          record.nativeStartedBeforeStop = connection.frames.some(frame => frame.method === "item/started" &&
-            frame.params?.threadId === connection.thread && frame.params.turnId === connection.turn &&
-            frame.params.item?.id === callId && frame.params.item.type === "commandExecution");
+          // Unified exec starts its process before asynchronously emitting the native Begin event.
+          record.nativeStartedBeforeStop = await connection.waitForStarted("commandExecution");
           assertFixture(record.nativeStartedBeforeStop);
           if (mode === "stopped") {
+            try { await readFile(marker); throw new Error("native Stop arrived after its controlled effect"); }
+            catch (error) { if (error.code !== "ENOENT") throw error; }
             await connection.request("turn/interrupt", { threadId: connection.thread, turnId: connection.turn });
             current.stopAcknowledged = true;
           }
@@ -395,7 +406,13 @@ export async function runNativeProtocolProbe() {
           (mode === "missing" ? record.guardCalls === 0 : record.boundGuardCalls > 0 && record.guardCalls === record.boundGuardCalls) && record.unexpectedRequests === 0 &&
           (kind !== "running-command" || record.nativeStartedBeforeStop && (mode !== "stopped" || record.lateEffectWindowObserved)) &&
           (mode === "allow" ? record.effect && record.bytesVerified : !record.effect && record.customDispatches === 0);
-      } catch (error) { record.failure = error.message; }
+      } catch (error) {
+        record.failure = error.message;
+        record.nativeItemEvidence = connection.frames.filter(frame => ["item/started", "item/completed"].includes(frame.method))
+          .map(frame => ({ method: frame.method, threadMatches: frame.params?.threadId === connection.thread,
+            turnMatches: frame.params?.turnId === connection.turn, callMatches: frame.params?.item?.id === callId,
+            type: frame.params?.item?.type }));
+      }
       finally { await connection.close(); record.processExitObserved = connection.exitObserved === true; record.passed &&= record.processExitObserved; }
       report.cases.push(record);
     }
