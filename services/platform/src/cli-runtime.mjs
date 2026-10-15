@@ -365,7 +365,10 @@ export class CliRuntimeManager {
       if (key.length !== 32) throw new Error("invalid private CLI revision key");
       this.profileResolver.revisionKey = key;
     }
-    const configured = await readJson(this.configPath, null);
+    const configured = await readJson(this.configPath, undefined);
+    if (configured !== undefined && (!configured || typeof configured !== "object" || Array.isArray(configured) ||
+        ![1, 2, 3, 4].includes(configured.version)))
+      throw issue("unsupported_runtime_schema", "Runtime storage is not supported by this reader; existing data was preserved", 503);
     let persist = false;
     if (configured?.version === 3 || configured?.version === 4) {
       if (configured.defaultRuntime) this.defaultRuntime = assertRuntime(configured.defaultRuntime);

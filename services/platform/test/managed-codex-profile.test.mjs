@@ -247,3 +247,53 @@ test("the imported private service connection reaches a real broker through a sa
   for (const forbidden of [endpoint, input.source, "synthetic-service-upstream-key", "unused-host-auth-key", "HOST_"])
     assert(!JSON.stringify(logs).includes(forbidden));
 });
+
+test("managed Codex rejects hardlinked credentials and a symlinked service ancestor", async t => {
+  const input = await fixture(t), service = resolver(input);
+  await service.initializeFromSource({ codexHome: input.source });
+  const link = join(input.root, "credential-hardlink");
+  await fs.link(join(input.home, "service-profile.json"), link);
+  await assert.rejects(service.refresh("codex"), { code: "unsafe_service_profile" });
+  await fs.unlink(link);
+  assert.equal((await service.refresh("codex")).status, "ready");
+  const alias = join(input.root, "platform-alias");
+  await fs.symlink(join(input.root, "platform"), alias);
+  const throughAlias = resolver({ ...input, home: join(alias, "new-service") });
+  await assert.rejects(throughAlias.initializeFromSource({ codexHome: input.source }), { code: "unsafe_service_profile" });
+  await assert.rejects(fs.lstat(join(input.root, "platform", "new-service")), { code: "ENOENT" });
+});
+
+test("managed Codex rejects a symlinked source catalog and a non-regular source configuration", async t => {
+  const input = await fixture(t), service = resolver(input);
+  const catalog = join(input.root, "actual-catalog.json");
+  await fs.rename(input.catalog, catalog);
+  await fs.symlink(catalog, input.catalog);
+  await assert.rejects(service.initializeFromSource({ codexHome: input.source }), { code: "service_profile_unavailable" });
+  assert.deepEqual(await fs.readdir(input.home), []);
+  await fs.unlink(input.catalog);
+  await fs.rename(catalog, input.catalog);
+  const config = join(input.source, "config.toml");
+  await fs.unlink(config);
+  await fs.mkdir(config);
+  await assert.rejects(service.initializeFromSource({ codexHome: input.source }), { code: "unsafe_service_profile" });
+  assert.deepEqual(await fs.readdir(input.home), []);
+});
+
+test("managed Codex failed explicit synchronization preserves the previous coherent service snapshot", async t => {
+  const input = await fixture(t), service = resolver(input);
+  await service.initializeFromSource({ codexHome: input.source });
+  const before = await service.refresh("codex");
+  const saved = await fs.readFile(join(input.home, "service-profile.json"), "utf8");
+  await fs.writeFile(join(input.source, "config.toml"), "model = [unfinished");
+  await assert.rejects(service.synchronizeFromSource({ codexHome: input.source, expectedRevision: before.sourceRevision }),
+    { code: "service_profile_unavailable" });
+  assert.equal(await fs.readFile(join(input.home, "service-profile.json"), "utf8"), saved);
+  assert.equal((await service.refresh("codex")).identityRevision, before.identityRevision);
+  assert.equal((await service.resolveProvider(before.identityRevision)).credential, "synthetic-service-upstream-key");
+  const lock = join(input.home, ".sync-lock");
+  await fs.writeFile(lock, "unknown prior synchronization", { mode: 0o600 });
+  await assert.rejects(service.synchronizeFromSource({ codexHome: input.source, expectedRevision: before.sourceRevision }),
+    { code: "service_profile_busy" });
+  assert.equal(await fs.readFile(lock, "utf8"), "unknown prior synchronization");
+  assert.equal(await fs.readFile(join(input.home, "service-profile.json"), "utf8"), saved);
+});
