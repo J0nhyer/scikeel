@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   /** Authenticated platform Web client, toggled only by gateway-specific tests. */
   isGatewayWeb: false,
   isPlatformWeb: false,
+  assistantRevisions: [] as Array<number | null>,
+  assistantChanged: null as (() => void) | null,
   /** The host's active workspace folder, as `active-workspace.txt` holds it.
    *  `setWorkspace`/`newDatedWorkspace` move it and `workspacePath` reads it
    *  back, because that is the contract the Rust side keeps: creating a dated
@@ -176,6 +178,7 @@ vi.mock("./webMode", () => ({
   gatewayOrigin: () => "http://gateway.test",
   setPlatformSessionExpiryHandler: vi.fn(),
   setPlatformWorkspaceGeneration: vi.fn(),
+  setPlatformAssistantRevision: vi.fn(),
 }));
 vi.mock("./collaboration",()=>({prepareCollaborationSend:mocks.prepareCollaborationSend}));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
@@ -187,6 +190,8 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@ai4s/sdk")>();
   class OpenCodeClient {
     setGatewayContextChangedHandler(handler: () => void) { mocks.contextChanged = handler; }
+    setGatewayAssistantRevision(revision: number | null) { mocks.assistantRevisions.push(revision); }
+    setGatewayAssistantChangedHandler(handler: () => void) { mocks.assistantChanged = handler; }
     private statusCb: (s: string) => void = () => {};
     /** The real client keeps its status (BaseAgentRuntime); the store reads it
      *  after connecting rather than waiting for a transition. */
@@ -415,6 +420,7 @@ beforeEach(async () => {
   mocks.isTauri = true;
   mocks.isGatewayWeb = false;
   mocks.isPlatformWeb = false;
+  mocks.assistantRevisions.length = 0; mocks.assistantChanged = null;
   mocks.activeWorkspace = "/ws/base";
   mocks.failConnects = 0;
   mocks.failSessionLists = 0;
@@ -585,9 +591,40 @@ describe("platform connection context", () => {
   function response(path: string): Response {
     const data = path.endsWith("/v1/whoami") ? { directory: "/ws/base", mode: "full" }
       : path.endsWith("/api/me") ? { user: { id: "usr_fixture", username: "fixture", role: "user" } }
-      : { runtime: "opencode", kind: "opencode", context: { instanceId: "user-usr_fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true }] };
+      : { runtime: "opencode", policyRevision: 1, kind: "opencode", context: { instanceId: "user-usr_fixture", generation: 1 },
+        available: [{ runtime: "opencode", kind: "opencode", managed: false, label: "OpenCode", enabled: true, models: [], defaultModel: null, selectedModel: null }] };
     return new Response(JSON.stringify(data));
   }
+  it("captures verified policy revision and refreshes a stale client without replay or presentation reset", async () => {
+    let revision = 7;
+    mocks.providers = [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/runtime")) return new Response(JSON.stringify({ ...await response(path).json(), policyRevision: revision }));
+      return response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    expect(useRuntimeStore.getState().gatewayPolicyRevision).toBe(7); expect(mocks.assistantRevisions).toContain(7);
+    useRuntimeStore.setState({ draftWorkspaces: { draft: "/ws/unsent" }, runningSessions: { ses_live: true } });
+    const before = useRuntimeStore.getState(); const sendCount = mocks.sendPromptSpy.mock.calls.length;
+    revision = 8; expect(mocks.assistantChanged).toBeTypeOf("function"); mocks.assistantChanged!();
+    await vi.waitFor(() => expect(useRuntimeStore.getState().gatewayPolicyRevision).toBe(8));
+    const after = useRuntimeStore.getState();
+    expect(after.gatewayCatalogState).toBe("ready");
+    expect(after.draftWorkspaces).toBe(before.draftWorkspaces); expect(after.threads).toBe(before.threads);
+    expect(after.questions).toBe(before.questions); expect(after.runningSessions).toBe(before.runningSessions);
+    expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(sendCount); expect(mocks.abortSession).not.toHaveBeenCalled();
+    useRuntimeStore.getState().clearPlatformPresentation(); expect(useRuntimeStore.getState().gatewayPolicyRevision).toBeNull();
+  });
+  it.each([undefined, 0, -1, 1.5, "2"])("rejects missing or invalid committed policy revision %s before a usable connection", async revision => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      return path.endsWith("/api/runtime") ? new Response(JSON.stringify({ ...await response(path).json(), policyRevision: revision })) : response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    expect(useRuntimeStore.getState().gatewayPolicyRevision).toBeNull();
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled(); expect(mocks.assistantRevisions).toEqual([]);
+  });
   it("reconstructs a verified stopped workspace once and retains drafts without replaying a prompt", async () => {
     let available = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -640,7 +677,7 @@ describe("platform connection context", () => {
   it("a context change invokes the existing reconnect owner without resending a turn", async () => {
     let generation = 1;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/api/runtime")
-      ? new Response(JSON.stringify({ runtime: "opencode", kind: "opencode", context: { instanceId: "user-usr_fixture", generation }, available: [] }))
+      ? new Response(JSON.stringify({ runtime: "opencode", policyRevision: 1, kind: "opencode", context: { instanceId: "user-usr_fixture", generation }, available: [] }))
       : response(String(input))));
     expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
     expect(mocks.contextChanged).toBeTypeOf("function");

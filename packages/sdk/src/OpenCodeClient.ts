@@ -336,9 +336,10 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     // Bind to globalThis — an unbound `fetch` reference throws "Illegal invocation" in browsers.
     const transport = (opts.fetchImpl ?? globalThis.fetch).bind(globalThis);
     this.fetchImpl = (input, init) => {
-      if (this.gatewayGeneration !== null && !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase())) {
+      if ((this.gatewayGeneration !== null || this.gatewayAssistantRevision !== null) && !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase())) {
         const headers = new Headers(init?.headers);
-        headers.set("x-scikeel-runtime-generation", String(this.gatewayGeneration));
+        if (this.gatewayGeneration !== null) headers.set("x-scikeel-runtime-generation", String(this.gatewayGeneration));
+        if (this.gatewayAssistantRevision !== null) headers.set("x-scikeel-assistant-revision", String(this.gatewayAssistantRevision));
         return transport(input, { ...init, headers }).then(response => this.captureContext(response));
       }
       return transport(input, init).then(response => this.captureContext(response));
@@ -364,6 +365,13 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
 
   private contextGeneration: number | undefined;
   private gatewayGeneration: number | null = null;
+  private gatewayAssistantRevision: number | null = null;
+  private gatewayAssistantChangedHandler: (() => void) | null = null;
+  setGatewayAssistantChangedHandler(handler: (() => void) | null): void { this.gatewayAssistantChangedHandler = handler; }
+  setGatewayAssistantRevision(revision: number | null): void {
+    if (revision !== null && (!Number.isSafeInteger(revision) || revision < 1)) throw new Error("Invalid assistant revision");
+    this.gatewayAssistantRevision = revision;
+  }
   private gatewayContextChangedHandler: (() => void) | null = null;
   setGatewayContextChangedHandler(handler: (() => void) | null): void { this.gatewayContextChangedHandler = handler; }
   private gatewayContextChanged(): void { this.close(); this.gatewayContextChangedHandler?.(); }
@@ -1437,6 +1445,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     } catch { /* Keep the HTTP status on malformed/non-JSON responses. */ }
     const generation = Number(res.headers.get("x-scikeel-runtime-generation"));
     if (this.gatewayGeneration !== null && ["stale_workspace_context", "runtime_context_changed"].includes(code ?? "")) this.gatewayContextChanged();
+    if (this.gatewayAssistantRevision !== null && code === "assistant_revision_conflict") this.gatewayAssistantChangedHandler?.();
     return new ApiError(`${what} (${res.status}${detail ? `: ${detail}` : ""})`, res.status, {
       code, source, contextGeneration: Number.isSafeInteger(generation) && generation > 0 ? generation : undefined,
     });

@@ -72,13 +72,20 @@ export function consumeUrlToken(): void {
 let unauthorizedHandler: (() => void) | null = null;
 let platformSessionExpiryHandler: (() => void) | null = null;
 let platformWorkspaceGeneration: number | null = null;
+let platformAssistantRevision: number | null = null;
+export function setPlatformAssistantRevision(revision: number | null): void {
+  if (revision !== null && (!Number.isSafeInteger(revision) || revision < 1)) throw new Error("Invalid assistant revision");
+  platformAssistantRevision = revision;
+}
 export function setPlatformWorkspaceGeneration(generation: number | null): void {
   platformWorkspaceGeneration = generation;
 }
-/** XHR mutations share the same generation fence as same-origin fetch. */
+/** XHR mutations share the same captured workspace and assistant fences as fetch. */
 export function platformWorkspaceMutationHeaders(): Record<string, string> {
-  return isPlatformWeb && platformWorkspaceGeneration !== null
-    ? { "x-scikeel-runtime-generation": String(platformWorkspaceGeneration) } : {};
+  return isPlatformWeb ? {
+    ...(platformWorkspaceGeneration !== null ? { "x-scikeel-runtime-generation": String(platformWorkspaceGeneration) } : {}),
+    ...(platformAssistantRevision !== null ? { "x-scikeel-assistant-revision": String(platformAssistantRevision) } : {}),
+  } : {};
 }
 
 export function setPlatformSessionExpiryHandler(fn: (() => void) | null): void {
@@ -106,10 +113,11 @@ export function installGatewayAuthGuard(): void {
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const parsed = new URL(url, origin);
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-    if (isPlatformWeb && parsed.origin === origin && platformWorkspaceGeneration !== null && !["GET", "HEAD"].includes(method) &&
+    if (isPlatformWeb && parsed.origin === origin && (platformWorkspaceGeneration !== null || platformAssistantRevision !== null) && !["GET", "HEAD"].includes(method) &&
         !parsed.pathname.startsWith("/auth/") && parsed.pathname!=="/api/workspace/recover" && !parsed.pathname.startsWith("/api/admin/")) {
       const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
-      if (!headers.has("x-scikeel-runtime-generation")) headers.set("x-scikeel-runtime-generation", String(platformWorkspaceGeneration));
+      if (platformWorkspaceGeneration !== null && !headers.has("x-scikeel-runtime-generation")) headers.set("x-scikeel-runtime-generation", String(platformWorkspaceGeneration));
+      if (platformAssistantRevision !== null && !headers.has("x-scikeel-assistant-revision")) headers.set("x-scikeel-assistant-revision", String(platformAssistantRevision));
       init = { ...init, headers };
     }
     const res = await original(input, init);

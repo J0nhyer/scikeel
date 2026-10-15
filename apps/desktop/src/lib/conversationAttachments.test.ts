@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attachmentRequestKey, uploadConversationAttachment, attachmentPreviewUrl } from "./conversationAttachments";
-const workspaceHeaders=vi.hoisted(()=>vi.fn(()=>({"x-scikeel-runtime-generation":"7"})));
+const workspaceHeaders=vi.hoisted(()=>vi.fn(()=>({"x-scikeel-runtime-generation":"7","x-scikeel-assistant-revision":"9"})));
 vi.mock("./webMode",()=>({platformWorkspaceMutationHeaders:workspaceHeaders}));
 afterEach(() => vi.unstubAllGlobals());
 describe("Web conversation attachment API",()=>{
@@ -18,7 +18,7 @@ describe("Web conversation attachment API",()=>{
   });
 });
 
-it("session-owned XHR attachment uploads carry the current workspace generation",async()=>{
+it("session-owned XHR attachment uploads carry the captured workspace and assistant revisions",async()=>{
   const headers=new Map<string,string>();
   class Upload {
     upload={};withCredentials=false;status=201;responseText=JSON.stringify({id:"att_one"});onload:()=>void=()=>{};
@@ -28,4 +28,5 @@ it("session-owned XHR attachment uploads carry the current workspace generation"
   vi.stubGlobal("XMLHttpRequest",Upload);
   await uploadConversationAttachment({owner:{sessionId:"session_a"},file:new File(["value\n2\n"],"data.csv")});
   expect(headers.get("x-scikeel-runtime-generation")).toBe("7");
+  expect(headers.get("x-scikeel-assistant-revision")).toBe("9");
 });
