@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { capabilityResult, nativePin, responsesFrame } from "../fixtures/native-protocol.mjs";
+import * as protocol from "../fixtures/native-protocol.mjs";
 
 const workflow = new URL("../../../.github/workflows/sandbox-image.yml", import.meta.url);
 
@@ -30,6 +31,13 @@ test("fixture Responses frames exercise native tool dispatch rather than a text-
   const frames = responsesFrame(item).trim().split("\n\n").map(line => JSON.parse(line.slice(6)));
   assert.deepEqual(frames.map(frame => frame.type), ["response.created", "response.output_item.done", "response.completed"]);
   assert.deepEqual(frames[1].item, item);
+});
+
+test("native diagnostics retain only advertised tool names and tool results, not prompts", () => {
+  const value = { tools: [{ type: "function", name: "exec_command", description: "must not retain", parameters: {} }],
+    input: [{ role: "system", content: "must not retain" }, { type: "function_call_output", call_id: "owned", output: "sandbox unavailable" }] };
+  assert.deepEqual(protocol.nativeToolFacts?.(value), { toolCatalog: [{ type: "function", name: "exec_command" }],
+    toolResults: ["sandbox unavailable"] });
 });
 
 test("feasibility uses the repository download pin and never a host Codex installation", async () => {

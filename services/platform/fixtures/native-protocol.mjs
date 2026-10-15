@@ -28,6 +28,14 @@ export function capabilityResult(cases) {
   return { checks, activationEligible: Object.values(checks).every(Boolean) };
 }
 
+export function nativeToolFacts(value) {
+  return {
+    toolCatalog: (value.tools ?? []).map(tool => ({ type: tool.type, ...(typeof tool.name === "string" ? { name: tool.name } : {}) })),
+    toolResults: (value.input ?? []).filter(item => ["function_call_output", "custom_tool_call_output"].includes(item.type))
+      .map(item => typeof item.output === "string" ? item.output.slice(0,2048) : JSON.stringify(item.output).slice(0,2048)),
+  };
+}
+
 async function hook() {
   let text = "";
   for await (const chunk of process.stdin) {
@@ -146,8 +154,9 @@ export async function runNativeProtocolProbe() {
       if (request.url === "/v1/responses") {
         const value = JSON.parse(bytes); current.requests++;
         if (current.requests > 3) throw new Error("unexpected native model loop");
-        if (current.requests === 1) current.tools = value.tools;
-        else current.toolOutput = value.input;
+        const facts = nativeToolFacts(value);
+        if (current.requests === 1) current.toolCatalog = facts.toolCatalog;
+        else current.toolResults = facts.toolResults;
         const item = current.requests === 1 ? current.item : { type: "message", role: "assistant", id: "fixture-message",
           content: [{ type: "output_text", text: "Fixture complete" }] };
         response.setHeader("content-type", "text/event-stream"); response.end(responsesFrame(item, `fixture-${current.requests}`)); return;
@@ -198,6 +207,8 @@ export async function runNativeProtocolProbe() {
         record.bytesVerified = kind === "custom" ? connection.customEffects === 1 : file?.trim() === "verified-native-write";
         record.nativeToolStarted = connection.frames.some(frame => frame.method === "item/started");
         record.nativeToolCompleted = connection.frames.some(frame => frame.method === "item/completed");
+        record.toolCatalog = current.toolCatalog;
+        record.toolResults = current.toolResults?.map(output => output.replaceAll(directory, "[fixture]").replaceAll("synthetic-not-a-real-key", "[redacted]"));
         // A crashing guard is not an allow decision, even when native execution continues.
         record.passed = record.identity && record.status === "completed" && record.guardCalls > 0 && record.unexpectedRequests === 0 &&
           (mode === "allow" ? record.effect && record.bytesVerified : !record.effect);
