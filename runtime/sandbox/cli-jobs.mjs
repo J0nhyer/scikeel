@@ -81,7 +81,7 @@ export function runtimeArgv({ runtime, model, sessionId }) {
 // One private native app-server per turn. All argv/configuration is fixed here;
 // callers cannot send a host command or choose a different transport endpoint.
 export class CodexAppServer {
-  #child; #pending=new Map(); #approvals=new Map(); #questions=new Map(); #next=1; #buffer=""; #bytes=0; #closed=false; #thread; #turn; #closing;
+  #child; #pending=new Map(); #approvals=new Map(); #questions=new Map(); #next=1; #buffer=""; #bytes=0; #closed=false; #thread; #turn; #closing; #exited;
   constructor({spawnImpl,emit,onStopped=()=>{},timeoutMs=1200000,requestTimeoutMs=30000}) {
     if(typeof spawnImpl!=="function" || typeof emit!=="function" || typeof onStopped!=="function" || !Number.isSafeInteger(timeoutMs) || timeoutMs<1 || timeoutMs>1200000 ||
         !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs<1 || requestTimeoutMs>30000)throw new Error("invalid native turn configuration");
@@ -97,7 +97,7 @@ export class CodexAppServer {
     if(this.#pending.size>=32)return Promise.reject(new Error("native request capacity"));
     const id=this.#next++;
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{this.#pending.delete(id);reject(new Error("native request timeout"));void this.close();},this.requestTimeoutMs);
+      const timer=setTimeout(()=>{this.#pending.delete(id);reject(new Error("native request timeout"));void this.close().catch(()=>{});},this.requestTimeoutMs);
       this.#pending.set(id,{resolve,reject,timer});
       try {this.#write({id,method,params});}catch(error){clearTimeout(timer);this.#pending.delete(id);reject(error);}
     });
@@ -115,13 +115,14 @@ export class CodexAppServer {
       'model_providers.scikeel={name="SciKeel",base_url="http://172.31.240.1:4792/v1",env_key="OPENAI_API_KEY",wire_api="responses"}',
       "-c",'approval_policy="on-request"',"-c",'sandbox_mode="read-only"',"-c",'web_search="disabled"'];
     this.#child=this.spawnImpl("/opt/scikeel/tools/bin/codex",args,{cwd:projectDir,env,detached:true,stdio:["pipe","pipe","pipe"]});
-    const child=this.#child;child.stdin.on("error",()=>{});child.stderr.resume();
+    const child=this.#child;this.#exited=new Promise(resolve=>child.once("close",resolve));
+    child.stdin.on("error",()=>{});child.stderr.resume();
     const decoder=new StringDecoder("utf8");
     this.redact=value=>String(value).replaceAll(brokers.modelToken,"[redacted]").replaceAll(privateHome,"[private home]");
     let queue=Promise.resolve();
     child.stdout.on("data",chunk=>{
       this.#bytes+=chunk.length;this.#buffer+=decoder.write(chunk);
-      if(this.#bytes>32*1024**2 || Buffer.byteLength(this.#buffer)>2*1024**2){void this.close();return;}
+      if(this.#bytes>32*1024**2 || Buffer.byteLength(this.#buffer)>2*1024**2){void this.close().catch(()=>{});return;}
       child.stdout.pause();
       queue=queue.then(async()=>{
         let boundary;
@@ -130,12 +131,12 @@ export class CodexAppServer {
           if(Buffer.byteLength(line)>1024**2)throw new Error("native output limit");
           if(line.trim())await this.#message(JSON.parse(line));
         }
-      }).then(()=>{if(!this.#closed)child.stdout.resume();}).catch(()=>{void this.close();});
+      }).then(()=>{if(!this.#closed)child.stdout.resume();}).catch(()=>{void this.close().catch(()=>{});});
     });
-    child.once("error",()=>{void this.close();});
-    child.once("close",()=>{void this.close();});
-    this.deadline=setTimeout(()=>{void this.close();},this.timeoutMs);
-    this.abort=()=>{void this.close();};this.signal=signal;signal?.addEventListener("abort",this.abort,{once:true});
+    child.once("error",()=>{void this.close().catch(()=>{});});
+    child.once("close",()=>{void this.close().catch(()=>{});});
+    this.deadline=setTimeout(()=>{void this.close().catch(()=>{});},this.timeoutMs);
+    this.abort=()=>{void this.close().catch(()=>{});};this.signal=signal;signal?.addEventListener("abort",this.abort,{once:true});
     if(signal?.aborted){await this.close();throw new Error("native turn cancelled");}
     try {
       await this.#request("initialize",{clientInfo:{name:"scikeel",version:"1.0.0"}});
@@ -214,11 +215,22 @@ export class CodexAppServer {
     for(const pending of this.#pending.values()){clearTimeout(pending.timer);pending.reject(new Error("native runtime stopped"));}
     this.#pending.clear();this.#approvals.clear();this.#questions.clear();const child=this.#child;
     this.#closing=(async()=>{
-      if(!child || child.exitCode!==null || child.signalCode!==null)return;
-      const stopped=new Promise(resolve=>child.once("close",resolve));
-      try{process.kill(-child.pid,"SIGTERM");}catch{child.kill("SIGTERM");}
-      const timer=setTimeout(()=>{try{process.kill(-child.pid,"SIGKILL");}catch{child.kill("SIGKILL");}},2000);
-      await stopped;clearTimeout(timer);
+      if(!child)return;
+      const signalGroup=signal=>{
+        if(!Number.isSafeInteger(child.pid) || child.pid<2)return; // A failed spawn has no process group.
+        try{process.kill(-child.pid,signal);}catch(error){if(error.code!=="ESRCH")throw new Error("native cleanup unverified");}
+      };
+      let escalation;let deadline;
+      try {
+        // The detached group may outlive its parent; exitCode is not cleanup evidence.
+        signalGroup("SIGTERM");
+        escalation=setTimeout(()=>{try{signalGroup("SIGKILL");}catch{}},2000);
+        await Promise.race([this.#exited,new Promise((_,reject)=>{
+          deadline=setTimeout(()=>reject(new Error("native cleanup unverified")),5000);
+        })]);
+        // A resistant child with closed stdio cannot be forgotten when the parent exits.
+        signalGroup("SIGKILL");
+      } finally {clearTimeout(escalation);clearTimeout(deadline);}
     })().then(()=>{this.onStopped();});
     return this.#closing;
   }

@@ -224,7 +224,9 @@ assert.equal((await policy.select({runtime:'codex', expectedRevision:1,
 ### Task 8: One Execution Permission Decision for Every Adapter
 
 **Create:** `services/platform/src/execution-permissions.mjs`, `services/platform/test/execution-permissions.test.mjs`.
-**Modify:** `services/platform/src/{automatic-tool-permissions,sandbox-native-jobs,platform-server,collaboration}.mjs`; their focused tests.
+**Modify:** `services/platform/src/{automatic-tool-permissions,sandbox-native-jobs,platform-server,collaboration}.mjs`, `runtime/sandbox/cli-jobs.mjs`; their focused tests.
+
+Focused cleanup preparation reproduced actual delayed writes from a surviving child in both production-adapter cases: the app-server was still alive at Stop, or had already exited. The adapter now retains its close observation, signals the detached process group even after parent exit, escalates termination, kills remaining group members and bounds the close wait; a failed cleanup does not call the successful-stop callback. The two real-process regressions changed from RED to GREEN alongside 39 focused guarded tests. This is a narrow cleanup fix, not completion of shared permissions, durable uncertainty or native/final-image Stop acceptance.
 
 - [ ] Add table-driven assertions for owner/ancestor, policy revision, generation, execution/job, explicit deny, outside-workspace access, Stop during await, pending research decision and repair-exhausted state. Foreign or blocked requests cause zero approval calls.
 - [ ] Define `ExecutionPermissions.authorize(identity, action)` with injected current-authority, owned-session, execution/decision and effective-deny readers; return a scoped allow/deny decision, not a reusable global boolean. `assertCurrent(decision)` rechecks before a native reply or effect.
@@ -271,6 +273,8 @@ Verified existing entry point: the Admin account's model menu/page at `/settings
 ### Task 12: Measure, Attest and Install the Native-Capable Image
 
 **Modify:** `.github/workflows/sandbox-image.yml`, `scripts/dev/{fetch-sandbox-codex,prepare-science-image,stage-sandbox-image}.mjs`, `scripts/dev/install-sandbox-image.py`, `runtime/sandbox/image-manifest.schema.json`, `services/platform/src/sandbox-manifest.mjs`, image tests and release source-input checks.
+
+Offline preparation ran six intended RED assertions in `native-image-contract.test.mjs`: four omitted guard/compiler source inputs, rejected fixed native resources, and acceptance of a Codex executable without its required integration/resource identities. The existing image suite remains 13/13 GREEN. These failings remain open; no deployable Codex image has been built or installed.
 
 - [ ] Add manifest tests rejecting advertised Codex without its measured executable/version/hash, mismatched runner/tool bridge inputs, writable/untrusted manifests, altered image digest and unsupported native capabilities. Never trust a new environment flag as proof of image contents.
 - [ ] Regress the exact discovered exclusions: `web-release-policy.mjs` source inputs must include `runtime/codex-patches/**` and `scripts/dev/build-codex-guard-runtime.mjs`; build-context validation must admit only the measured `codex-resources/bwrap` and `native-integration.json` additions. Bind patch/test/compiler locks, builder and native resources into manifest/tool lock, installer hashes and source matching. A guard-only change must invalidate old-image reuse. The production science job must actually build this integration; feasibility-only artifacts are not deployable images.
