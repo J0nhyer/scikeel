@@ -72,7 +72,7 @@ Real upstream credentials stay outside browser responses, tenant mounts, tenant 
 
 Profile refresh pins a coherent configuration revision for a turn. Credential rotation invalidates incompatible bindings without erasing conversation history. Do not copy the administrator's entire `.codex` directory or launch a host CLI as a sandbox fallback. The Web managed path must never call the legacy `CliProfileResolver.copyForTurn`, copy raw `auth.json`/upstream keys into a tenant, or inherit host MCP servers, plugins, trusted directories or permissions. Preserve desktop legacy behavior separately and prove these Web exclusions with negative integration tests. Apply the same boundary to future Claude activation.
 
-The inspected host upstream uses HTTP. Do not describe server-side key storage as transport encryption, silently change the endpoint, or disable TLS checks; production acceptance must explicitly record this existing transport risk and any provider-supported HTTPS remediation.
+The inspected host upstream uses public HTTP. On October 15, 2026 (Asia/Shanghai), after disclosure that plaintext transport may expose upstream API credentials and research content, the user explicitly authorized this deployment to use the existing endpoint unchanged ("Of course, use it directly"). This resolves the transport-choice wait for selected-Codex live acceptance and publication, not any other safety gate. Keep this accepted risk in deployment evidence; server-side secret storage is not transport encryption. Do not silently change the endpoint, disable TLS checks, print credentials or claim HTTPS protection.
 
 ## 6. Stable Conversations and Runtime Bindings
 

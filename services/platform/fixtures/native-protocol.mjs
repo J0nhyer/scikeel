@@ -13,6 +13,7 @@ const binary = "/opt/scikeel/tools/bin/codex";
 const node = "/opt/scikeel/tools/bin/node";
 const root = "/fixture/native";
 const port = 48177;
+const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBqkAAAAASUVORK5CYII=";
 
 export function responsesFrame(item, id = "fixture-response") {
   return [
@@ -25,6 +26,8 @@ export function responsesFrame(item, id = "fixture-response") {
 export function capabilityResult(cases) {
   const required = ["denied-command", "allowed-command", "denied-edit", "allowed-edit",
     "denied-custom", "allowed-custom", "crashed-command", "crashed-edit", "crashed-custom",
+    "stopped-command", "stopped-edit", "stopped-custom",
+    "allowed-question", "denied-question",
     ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
   const checks = Object.fromEntries(required.map(name => [name, cases.some(value => value.name === name && value.passed === true)]));
   return { checks, activationEligible: Object.values(checks).every(Boolean) };
@@ -32,6 +35,8 @@ export function capabilityResult(cases) {
 
 export function nativeToolFacts(value) {
   return {
+    reasoningEffort: typeof value.reasoning?.effort === "string" ? value.reasoning.effort : null,
+    imageInput: (value.input ?? []).some(item => Array.isArray(item.content) && item.content.some(content => content.type === "input_image")),
     toolCatalog: (value.tools ?? []).map(tool => ({ type: tool.type, ...(typeof tool.name === "string" ? { name: tool.name } : {}) })),
     toolResults: (value.input ?? []).filter(item => ["function_call_output", "custom_tool_call_output"].includes(item.type))
       .map(item => typeof item.output === "string" ? item.output.slice(0,2048) : JSON.stringify(item.output).slice(0,2048)),
@@ -43,6 +48,12 @@ export function validNativeGuardInput(value, expected) {
     value.session_id === expected.thread && value.turn_id === expected.turn && value.tool_use_id === expected.call &&
     value.cwd === expected.cwd && value.tool_name === expected.tool && value.hook_event_name === "PreToolUse" &&
     isDeepStrictEqual(value.tool_input, expected.input);
+}
+
+export function nativeGuardInput(item) {
+  const nativeInput = item.type === "custom_tool_call" ? item.input : JSON.parse(item.arguments);
+  return { nativeTool: item.name, nativeInput, canonicalInput: item.name === "exec_command" ? { command: nativeInput.cmd }
+    : item.name === "apply_patch" ? { command: nativeInput } : nativeInput };
 }
 
 async function hook() {
@@ -107,6 +118,7 @@ export function orderedNativeToolEvidence(frames, threadId, turnId) {
 export class NativeConnection {
   pending = new Map(); frames = []; next = 1; unexpectedRequests = 0; customEffects = 0; customCalls = 0;
   seenCalls = new Set();
+  questionAnswers = 0;
   constructor(child, mode) {
     this.child = child; this.mode = mode;
     this.failure = new Promise((_, reject) => this.reject = reject);
@@ -130,7 +142,16 @@ export class NativeConnection {
       this.pending.delete(frame.id);
       frame.error ? pending.reject(new Error(`native request rejected: ${pending.method}`)) : pending.resolve(frame.result);
     } else if (frame.id !== undefined) {
-      if (frame.method === "item/tool/call" && frame.params?.threadId === this.thread &&
+      if (frame.method === "item/tool/requestUserInput" && this.mode === "allow" && frame.params?.threadId === this.thread &&
+          frame.params.turnId === this.turn && frame.params.itemId === this.expectedCallId && typeof this.expectedCallId === "string" &&
+          frame.params.isBlocking === true && !this.seenCalls.has(frame.params.itemId) &&
+          frame.params.questions?.length === 1 && frame.params.questions[0]?.id === "fixture_choice" &&
+          frame.params.questions[0].question === "Select fixture outcome?" && frame.params.questions[0].isSecret !== true &&
+          isDeepStrictEqual(frame.params.questions[0].options, [{ label: "Continue", description: "Continue fixture" }, { label: "Pause", description: "Pause fixture" }])) {
+        this.seenCalls.add(frame.params.itemId);
+        this.questionAnswers++;
+        this.write({ id: frame.id, result: { answers: { fixture_choice: { answers: ["Continue"] } } } });
+      } else if (frame.method === "item/tool/call" && frame.params?.threadId === this.thread &&
           frame.params?.tool === "research_checkpoint" && frame.params?.turnId === this.turn &&
           frame.params.callId === this.expectedCallId && typeof this.expectedCallId === "string" &&
           !this.seenCalls.has(frame.params.callId) && frame.params.arguments?.checkpoint === "fixture" &&
@@ -221,13 +242,22 @@ export async function runNativeProtocolProbe() {
         const bound = validNativeGuardInput(value, { ...current.expectedGuard, thread: current.connection.thread, turn: current.connection.turn });
         current.guards.push({ bound });
         if (!bound) { response.writeHead(403).end(); return; }
-        response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ mode: current.mode })); return;
+        if (current.mode === "stopped") {
+          await current.connection.request("turn/interrupt", { threadId: current.connection.thread, turnId: current.connection.turn });
+          current.stopAcknowledged = true;
+        }
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ mode: current.mode === "stopped" ? "allow" : current.mode })); return;
       }
       if (request.url === "/v1/responses") {
         const value = JSON.parse(bytes); current.requests++;
         if (current.requests > 3) throw new Error("unexpected native model loop");
         const facts = nativeToolFacts(value);
-        if (current.requests === 1) current.toolCatalog = facts.toolCatalog;
+        if (current.requests === 1) {
+          current.toolCatalog = facts.toolCatalog;
+          current.reasoningEffort = facts.reasoningEffort;
+          current.imageInput = facts.imageInput;
+        }
         else current.toolResults = facts.toolResults;
         const item = current.requests === 1 ? current.item : { type: "message", role: "assistant", id: "fixture-message",
           content: [{ type: "output_text", text: "Fixture complete" }] };
@@ -238,7 +268,7 @@ export async function runNativeProtocolProbe() {
   });
   await new Promise(resolve => server.listen(port, "127.0.0.1", resolve));
   try {
-    for (const kind of ["command", "edit", "custom"]) for (const mode of ["deny", "allow", "crash", "malformed", "empty", "timeout", "missing"]) {
+    for (const kind of ["command", "edit", "custom", "question"]) for (const mode of (kind === "question" ? ["deny", "allow"] : ["deny", "allow", "crash", "malformed", "empty", "timeout", "missing", "stopped"])) {
       const label = { deny: "denied", allow: "allowed", crash: "crashed", timeout: "timedout" }[mode] ?? mode;
       const name = `${label}-${kind}`;
       const directory = `${root}/${name}`;
@@ -247,12 +277,15 @@ export async function runNativeProtocolProbe() {
       const callId = `call-${name}`;
       const item = kind === "edit" ? { type: "custom_tool_call", call_id: callId, name: "apply_patch",
         input: "*** Begin Patch\n*** Add File: result.txt\n+verified-native-write\n*** End Patch" } : {
-        type: "function_call", call_id: callId, name: kind === "command" ? "exec_command" : "research_checkpoint",
-        arguments: JSON.stringify(kind === "command" ? { cmd: "printf verified-native-write > result.txt" } : { checkpoint: "fixture" }),
+        type: "function_call", call_id: callId, name: kind === "command" ? "exec_command" : kind === "question" ? "request_user_input" : "research_checkpoint",
+        arguments: JSON.stringify(kind === "command" ? { cmd: "printf verified-native-write > result.txt" } : kind === "question" ? {
+          questions: [{ id: "fixture_choice", header: "Choice", question: "Select fixture outcome?", options: [
+            { label: "Continue", description: "Continue fixture" }, { label: "Pause", description: "Pause fixture" }] }],
+        } : { checkpoint: "fixture" }),
       };
       current = { mode, item, guards: [], requests: 0, expectedGuard: { cwd: `${directory}/workspace`, call: callId,
-        tool: kind === "command" ? "Bash" : kind === "edit" ? "apply_patch" : "research_checkpoint",
-        input: kind === "command" ? { command: "printf verified-native-write > result.txt" } : kind === "edit" ? { command: item.input } : { checkpoint: "fixture" } } };
+        tool: kind === "command" ? "Bash" : item.name,
+        input: nativeGuardInput(item) } };
       const child = spawn(binary, ["app-server", "--listen", "stdio://", "-c", 'model_provider="fixture"', "-c",
         `model_providers.fixture={name="Fixture",base_url="http://127.0.0.1:${port}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}`,
         "-c", 'model_catalog_json="/fixture/config/models.json"', "-c", 'web_search="disabled"', "-c", `features.hooks=${mode !== "missing"}`, "-c", 'features.unified_exec=true'], {
@@ -272,29 +305,40 @@ export async function runNativeProtocolProbe() {
           dynamicTools: [{ type: "function", name: "research_checkpoint", description: "Synthetic research decision fixture",
             inputSchema: { type: "object", properties: { checkpoint: { type: "string" } }, required: ["checkpoint"], additionalProperties: false } }] });
         connection.thread = started.thread.id;
-        const turn = await connection.request("turn/start", { threadId: connection.thread, input: [{ type: "text", text: "Synthetic native protocol test" }],
+        const turn = await connection.request("turn/start", { threadId: connection.thread,
+          input: [{ type: "text", text: "Synthetic native protocol test" }, { type: "image", url: pixel }], effort: "low",
+          ...(kind === "question" ? { collaborationMode: { mode: "plan", settings: { model: "gpt-6.1-sol", reasoning_effort: "low", developer_instructions: null } } } : {}),
           approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite", writableRoots: [`${directory}/workspace`], networkAccess: false,
             excludeTmpdirEnvVar: true, excludeSlashTmp: true } });
         if (connection.turn && connection.turn !== turn.turn.id) throw new Error("native turn acknowledgement mismatch");
         connection.turn = turn.turn.id;
         record.identity = typeof connection.thread === "string" && typeof turn.turn.id === "string";
         record.status = (await connection.completed()).status;
+        if (mode === "stopped") await connection.close();
         record.guardCalls = current.guards.length;
         record.boundGuardCalls = current.guards.filter(value => value.bound).length;
         record.unexpectedRequests = connection.unexpectedRequests;
         record.customDispatches = connection.customCalls;
         let file;
         try { file = await readFile(marker, "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
-        record.effect = kind === "custom" ? connection.customEffects > 0 : file !== undefined;
-        record.bytesVerified = kind === "custom" ? connection.customEffects === 1 : file?.trim() === "verified-native-write";
+        record.questionAnswers = connection.questionAnswers;
+        record.effect = kind === "question" ? connection.questionAnswers > 0 : kind === "custom" ? connection.customEffects > 0 : file !== undefined;
+        record.bytesVerified = kind === "question" ? connection.questionAnswers === 1 && current.toolResults?.some(value => value.includes("Continue"))
+          : kind === "custom" ? connection.customEffects === 1 : file?.trim() === "verified-native-write";
         record.nativeToolStarted = connection.frames.some(frame => frame.method === "item/started");
         record.nativeToolCompleted = connection.frames.some(frame => frame.method === "item/completed");
         record.orderedToolEvidence = orderedNativeToolEvidence(connection.frames, connection.thread, connection.turn);
         record.toolCatalog = current.toolCatalog;
         record.toolResults = current.toolResults?.map(output => output.replaceAll(directory, "[fixture]").replaceAll("synthetic-not-a-real-key", "[redacted]"));
         // A crashing guard is not an allow decision, even when native execution continues.
-        record.passed = record.identity && record.status === "completed" &&
-          record.orderedToolEvidence &&
+        record.stopAcknowledged = current.stopAcknowledged === true;
+        record.reasoningEffort = current.reasoningEffort;
+        record.imageInput = current.imageInput === true;
+        record.nativeDenialResult = current.toolResults?.some(value => /blocked by PreToolUse hook|SciKeel execution authority/.test(value)) === true;
+        // A guard denial happens before tool-start dispatch; require its real native result and no effect instead.
+        record.passed = record.identity && (mode === "stopped" ? record.status === "interrupted" && record.stopAcknowledged : record.status === "completed") &&
+          record.reasoningEffort === "low" && record.imageInput &&
+          (mode === "allow" ? kind === "question" ? record.questionAnswers === 1 : record.orderedToolEvidence : mode === "stopped" || record.nativeDenialResult) &&
           (mode === "missing" ? record.guardCalls === 0 : record.boundGuardCalls > 0 && record.guardCalls === record.boundGuardCalls) && record.unexpectedRequests === 0 &&
           (mode === "allow" ? record.effect && record.bytesVerified : !record.effect && record.customDispatches === 0);
       } catch (error) { record.failure = error.message; }

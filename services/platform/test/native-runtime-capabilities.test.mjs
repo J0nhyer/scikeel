@@ -57,7 +57,7 @@ test("pinned staging rejects a symlinked sandbox helper before writing executabl
 
 test("the native gate cannot pass with any missing, skipped or failed pre-effect check", () => {
   const names = ["denied-command", "allowed-command", "denied-edit", "allowed-edit", "denied-custom", "allowed-custom",
-    "crashed-command", "crashed-edit", "crashed-custom",
+    "crashed-command", "crashed-edit", "crashed-custom", "stopped-command", "stopped-edit", "stopped-custom", "allowed-question", "denied-question",
     ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
   const cases = names.map(name => ({ name, passed: true }));
   assert.equal(capabilityResult(cases).activationEligible, true);
@@ -92,7 +92,7 @@ test("fixture Responses frames exercise native tool dispatch rather than a text-
 test("native diagnostics retain only advertised tool names and tool results, not prompts", () => {
   const value = { tools: [{ type: "function", name: "exec_command", description: "must not retain", parameters: {} }],
     input: [{ role: "system", content: "must not retain" }, { type: "function_call_output", call_id: "owned", output: "sandbox unavailable" }] };
-  assert.deepEqual(protocol.nativeToolFacts?.(value), { toolCatalog: [{ type: "function", name: "exec_command" }],
+  assert.deepEqual(protocol.nativeToolFacts?.(value), { reasoningEffort: null, imageInput: false, toolCatalog: [{ type: "function", name: "exec_command" }],
     toolResults: ["sandbox unavailable"] });
 });
 
@@ -199,4 +199,44 @@ test("the native fixture binds hook authority to the exact owned tool input, not
     { tool_input: { ...expected.input, injected: true } }, { hook_event_name: "PostToolUse" }])
     assert.equal(protocol.validNativeGuardInput({ ...input, ...changed }, expected), false);
   assert.equal(protocol.validNativeGuardInput(null, expected), false);
+});
+
+test("native authorization includes all original arguments alongside canonical command input", () => {
+  assert.equal(typeof protocol.nativeGuardInput, "function");
+  const args = { cmd: "printf allowed", workdir: "/fixture/workspace", shell: "/bin/bash", login: false };
+  const item = { type: "function_call", name: "exec_command", arguments: JSON.stringify(args) };
+  assert.deepEqual(protocol.nativeGuardInput(item), { nativeTool: "exec_command", nativeInput: args, canonicalInput: { command: args.cmd } });
+  const changed = { ...item, arguments: JSON.stringify({ ...args, workdir: "/host" }) };
+  assert.notDeepEqual(protocol.nativeGuardInput(changed), protocol.nativeGuardInput(item), "same command cannot hide a changed execution directory");
+  assert.throws(() => protocol.nativeGuardInput({ ...item, arguments: "not-json" }));
+});
+
+test("native question answers require the owned thread, turn, item and exact question", () => {
+  const child = new EventEmitter();
+  Object.assign(child, { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+  const connection = new protocol.NativeConnection(child, "allow");
+  Object.assign(connection, { thread: "owned-thread", turn: "owned-turn", expectedCallId: "owned-call" });
+  const params = { threadId: "owned-thread", turnId: "owned-turn", itemId: "owned-call", isBlocking: true,
+    questions: [{ id: "fixture_choice", header: "Choice", question: "Select fixture outcome?", options: [
+      { label: "Continue", description: "Continue fixture" }, { label: "Pause", description: "Pause fixture" }] }] };
+  for (const changed of [{ threadId: "foreign" }, { turnId: "foreign" }, { itemId: "foreign" }, { isBlocking: false },
+    { questions: [{ ...params.questions[0], id: "foreign" }] }]) {
+    connection.receive({ id: 40, method: "item/tool/requestUserInput", params: { ...params, ...changed } });
+    assert.equal(connection.questionAnswers ?? 0, 0);
+  }
+  connection.receive({ id: 41, method: "item/tool/requestUserInput", params });
+  assert.equal(connection.questionAnswers, 1);
+  connection.receive({ id: 41, method: "item/tool/requestUserInput", params });
+  assert.equal(connection.questionAnswers, 1);
+  assert.equal(connection.customEffects, 0, "answering a question does not authorize another tool effect");
+});
+
+test("native reasoning and attachment evidence observes serialized provider inputs without retaining content", () => {
+  const facts = protocol.nativeToolFacts({ reasoning: { effort: "low" }, input: [
+    { type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,synthetic-image-canary" }] },
+  ] });
+  assert.equal(facts.reasoningEffort, "low");
+  assert.equal(facts.imageInput, true);
+  assert.ok(!JSON.stringify(facts).includes("synthetic-image-canary"));
+  assert.equal(protocol.nativeToolFacts({ input: [] }).imageInput, false);
 });

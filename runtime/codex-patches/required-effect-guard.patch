@@ -139,6 +139,10 @@ diff --git a/codex-rs/hooks/src/engine/mod.rs b/codex-rs/hooks/src/engine/mod.rs
 diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
 --- a/codex-rs/core/src/tools/registry.rs
 +++ b/codex-rs/core/src/tools/registry.rs
+@@ -588,2 +588,2 @@
+-        if let Some(pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
++        if let Some(pre_tool_use_payload) = scikeel_guard_payload(tool.as_ref(), &invocation) {
+             match run_pre_tool_use_hooks(
 @@ -638,3 +638,8 @@
                  } => {}
              }
@@ -148,3 +152,37 @@ diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/regis
 +                "SciKeel requires an authorizable input for this tool".to_string(),
 +            ));
          }
+@@ -798,1 +803,6 @@
++    if invocation.cancellation_token.is_cancelled() {
++        return Err(FunctionCallError::RespondToModel(
++            "SciKeel execution was stopped before the tool effect".to_string(),
++        ));
++    }
+     let output = tool.handle(invocation.clone()).await?;
+@@ -824,1 +834,26 @@
++fn scikeel_guard_payload(tool: &dyn CoreToolRuntime, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
++    let native_input = match &invocation.payload {
++        ToolPayload::Function { arguments } => {
++            let input: Value = if arguments.trim().is_empty() {
++                serde_json::json!({})
++            } else {
++                serde_json::from_str(arguments).ok()?
++            };
++            if !input.is_object() { return None; }
++            input
++        }
++        ToolPayload::Custom { input } => Value::String(input.clone()),
++        ToolPayload::ToolSearch { arguments } => serde_json::to_value(arguments).ok()?,
++    };
++    let (tool_name, canonical_input) = match tool.pre_tool_use_payload(invocation) {
++        Some(payload) => (payload.tool_name, payload.tool_input),
++        None => (function_hook_tool_name(invocation), native_input.clone()),
++    };
++    Some(PreToolUsePayload { tool_name, tool_input: serde_json::json!({
++        "nativeTool": flat_tool_name(&invocation.tool_name),
++        "nativeInput": native_input,
++        "canonicalInput": canonical_input,
++    }) })
++}
++
+ fn function_hook_tool_name(invocation: &ToolInvocation) -> HookToolName {
