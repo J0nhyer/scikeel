@@ -20,7 +20,7 @@ const sameFile=(a,b)=>['dev','ino','size','mtimeNs','ctimeNs'].every(key=>a[key]
 const bindingFields=['runtime','nativeSessionId','identityRevision','representedSequence'];
 const eventFields=['nativeEventId','nativeMessageId','publicMessageId','role','state','contentHash'];
 const conversationFields=['id','userId','instanceId','workspaceDir','directory','title','parentId','lifecycle',
-  'revision','sequence','bindings','currentBindingId','events','execution','turns'];
+  'revision','sequence','bindings','currentBindingId','events','execution','turns','historicalSource'];
 const turnInputFields=['requestId','payloadHash','policyRevision','runtime','generation','model','identityRevision'];
 const identityFields=['userId','instanceId','generation','conversationId','execution','requestId','policyRevision','runtime'];
 const model=value=>typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/.test(value);
@@ -44,6 +44,7 @@ function eventInput(value) {
  return structuredClone(value);
 }
 const bindingId=(conversationId,binding)=>`binding_${digest([conversationId,binding.runtime,binding.nativeSessionId,binding.identityRevision]).slice(0,40)}`;
+const historicalId=(conversationId,source)=>`history_${digest([conversationId,source.runtime,source.sessionId]).slice(0,40)}`;
 const originKey=(binding,event)=>digest([binding,event.nativeEventId]);
 
 /** Versioned owned references and delivery metadata; native transcripts stay in their existing stores. */
@@ -64,8 +65,19 @@ export class ConversationState {
   const stat=await lstat(pathname,{bigint:true});if(!privateEntry(stat,true))throw storage();return stat;
  }
  #validate(data,userId) {
-  if(!exact(data,['schema','userId','conversations']) || data.schema!==1 || data.userId!==userId ||
+  if(!exact(data,['schema','userId','conversations']) || ![1,2].includes(data.schema) || data.userId!==userId ||
       !record(data.conversations) || Object.keys(data.conversations).length>10000)throw storage();
+  if(data.schema===1) {
+   for(const value of Object.values(data.conversations)) {
+    if(!exact(value,conversationFields.filter(field=>field!=='historicalSource'))||!Array.isArray(value.events))throw storage();
+    value.historicalSource=null;
+    for(const event of value.events) {
+     if(!exact(event,[...eventFields,'sequence','bindingId','originKey']))throw storage();
+     event.historicalSourceId=null;
+    }
+   }
+   data.schema=2;
+  }
   const origins=new Set();
   for(const [id,value] of Object.entries(data.conversations)) {
    if(!name(id) || !exact(value,conversationFields) || value.id!==id || value.userId!==userId ||
@@ -84,11 +96,20 @@ export class ConversationState {
     const origin=JSON.stringify([binding.runtime,binding.nativeSessionId]);
     if(origins.has(origin))throw storage();origins.add(origin);
    }
-   if(bindings.size ? !bindings.has(value.currentBindingId) : value.currentBindingId!==null || value.events.length)throw storage();
+   const historical=value.historicalSource;
+   if(historical!==null) {
+    if(!exact(historical,['id','runtime','sessionId','importCursor'])||!runtime(historical.runtime)||!name(historical.sessionId)||
+        historical.id!==historicalId(id,historical)||historical.importCursor!==null&&!name(historical.importCursor))throw storage();
+    const origin=JSON.stringify(['history',historical.runtime,historical.sessionId]);
+    if(origins.has(origin))throw storage();origins.add(origin);
+   }
+   if(bindings.size ? !bindings.has(value.currentBindingId) : value.currentBindingId!==null || !historical&&value.events.length)throw storage();
    const events=new Set();
    for(const [index,event] of value.events.entries()) {
-    if(!exact(event,[...eventFields,'sequence','bindingId','originKey']) || event.sequence!==index+1 ||
-        !bindings.has(event.bindingId) || event.originKey!==originKey(event.bindingId,event) || events.has(event.originKey))throw storage();
+    const validOrigin=event.bindingId===null?historical&&event.historicalSourceId===historical.id:
+      bindings.has(event.bindingId)&&event.historicalSourceId===null;
+    if(!exact(event,[...eventFields,'sequence','bindingId','historicalSourceId','originKey']) || event.sequence!==index+1 ||
+        !validOrigin || event.originKey!==originKey(event.bindingId??event.historicalSourceId,event) || events.has(event.originKey))throw storage();
     eventInput(Object.fromEntries(eventFields.map(key=>[key,event[key]])));events.add(event.originKey);
    }
    if(!integer(value.execution) || !record(value.turns) || Object.keys(value.turns).length>1024)throw storage();
@@ -124,7 +145,7 @@ export class ConversationState {
    const root=await this.#directory(this.rootDir),parent=await this.#directory(folder);
    let file;
    try {file=await filesystem.open(path,constants.O_RDONLY|(constants.O_NOFOLLOW??0));}
-   catch(error) {if(error.code==='ENOENT')return {schema:1,userId,conversations:{}};throw error;}
+   catch(error) {if(error.code==='ENOENT')return {schema:2,userId,conversations:{}};throw error;}
    let data;
    try {
     const before=await file.stat({bigint:true});
@@ -136,7 +157,7 @@ export class ConversationState {
     data=JSON.parse(bytes.subarray(0,length).toString('utf8'));
    }finally {await file.close();}
    return this.#validate(data,userId);
-  }catch(error) {if(error.code==='ENOENT')return {schema:1,userId,conversations:{}};throw storage();}
+  }catch(error) {if(error.code==='ENOENT')return {schema:2,userId,conversations:{}};throw storage();}
  }
  async #save(data,owner) {
   this.#validate(data,data.userId);
@@ -191,7 +212,7 @@ export class ConversationState {
    if(Object.keys(data.conversations).length>=10000)throw fail('conversation_metadata_full',507);
    if(input.parentId!==null)await this.#owned(data,owner,input.parentId);
    const value={id:input.conversationId,...ownerInput(owner),title:input.title,parentId:input.parentId,lifecycle:input.lifecycle,
-    revision:1,sequence:0,bindings:[],currentBindingId:null,events:[],execution:0,turns:{}};
+    revision:1,sequence:0,bindings:[],currentBindingId:null,events:[],execution:0,turns:{},historicalSource:null};
    data.conversations[value.id]=value;await this.#save(data,owner);return structuredClone(value);
   });
  }
@@ -222,8 +243,8 @@ export class ConversationState {
    }
   return null;
  }
- #append(value,bindingId,event) {
-  const key=originKey(bindingId,event),previous=value.events.find(item=>item.originKey===key);
+ #append(value,bindingId,event,historicalSourceId=null) {
+  const key=originKey(bindingId??historicalSourceId,event),previous=value.events.find(item=>item.originKey===key);
   if(previous) {
    const changed=eventFields.filter(field=>previous[field]!==event[field]);
    if(!changed.length)return false;
@@ -231,7 +252,41 @@ export class ConversationState {
    previous.state=event.state;previous.contentHash=event.contentHash;return true;
   }
   if(value.events.length>=12000)throw fail('conversation_metadata_full',507);
-  value.events.push({...event,sequence:++value.sequence,bindingId,originKey:key});return true;
+  value.events.push({...event,sequence:++value.sequence,bindingId,historicalSourceId,originKey:key});return true;
+ }
+ async importHistorical(owner,input) {
+  owner=await this.#owner(owner);
+  if(!exact(input,['conversationId','expectedRevision','title','parentId','lifecycle','source','events','cursor'])||!name(input.conversationId)||
+      !integer(input.expectedRevision)||typeof input.title!=='string'||input.title.length>512||input.parentId!==null&&!name(input.parentId)||
+      !['active','archived','trashed'].includes(input.lifecycle)||!Array.isArray(input.events)||input.events.length>1000||
+      input.cursor!==null&&!name(input.cursor)||!exact(input.source,['runtime','sessionId'])||!runtime(input.source.runtime)||!name(input.source.sessionId))throw invalid();
+  const events=input.events.map(eventInput);
+  return this.#serialized(owner.userId,async()=>{
+   const data=await this.#load(owner.userId);let value=data.conversations[input.conversationId];
+   for(const candidate of Object.values(data.conversations))if(candidate.historicalSource?.runtime===input.source.runtime&&
+      candidate.historicalSource.sessionId===input.source.sessionId&&candidate.id!==input.conversationId)throw fail('conversation_origin_conflict');
+   if(value) {
+    value=await this.#owned(data,owner,input.conversationId);
+    if(value.directory!==owner.directory||value.parentId!==input.parentId)throw fail('conversation_origin_conflict');
+   }else {
+    if(input.expectedRevision!==0)throw fail('conversation_revision_conflict');
+    if(Object.keys(data.conversations).length>=10000)throw fail('conversation_metadata_full',507);
+    if(input.parentId!==null)await this.#owned(data,owner,input.parentId);
+    value={id:input.conversationId,...ownerInput(owner),title:input.title,parentId:input.parentId,lifecycle:input.lifecycle,
+     revision:0,sequence:0,bindings:[],currentBindingId:null,events:[],execution:0,turns:{},historicalSource:null};
+    data.conversations[value.id]=value;
+   }
+   const previous=value.historicalSource;
+   if(previous&&(previous.runtime!==input.source.runtime||previous.sessionId!==input.source.sessionId))throw fail('conversation_origin_conflict');
+   const source=previous??{...input.source,id:historicalId(value.id,input.source),importCursor:null};
+   const replay=previous&&previous.importCursor===input.cursor&&events.every(event=>value.events.some(item=>
+    item.originKey===originKey(source.id,event)&&eventFields.every(field=>item[field]===event[field])));
+   if(replay)return structuredClone(value);
+   if(value.revision!==input.expectedRevision)throw fail('conversation_revision_conflict');
+   value.historicalSource=source;
+   for(const event of events)this.#append(value,null,event,source.id);
+   source.importCursor=input.cursor;value.revision++;await this.#save(data,owner);return structuredClone(value);
+  });
  }
  async importNative(owner,input) {
   owner=await this.#owner(owner);
@@ -253,7 +308,7 @@ export class ConversationState {
     if(Object.keys(data.conversations).length>=10000)throw fail('conversation_metadata_full',507);
     if(input.parentId!==null)await this.#owned(data,owner,input.parentId);
     value={id:input.conversationId,...ownerInput(owner),title:input.title,parentId:input.parentId,lifecycle:input.lifecycle,
-      revision:0,sequence:0,bindings:[],currentBindingId:null,events:[],execution:0,turns:{}};
+      revision:0,sequence:0,bindings:[],currentBindingId:null,events:[],execution:0,turns:{},historicalSource:null};
     data.conversations[value.id]=value;
    }
    if(!binding) {

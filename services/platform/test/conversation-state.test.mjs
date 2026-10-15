@@ -16,6 +16,38 @@ async function fixture(t,options={}) {
  return {rootDir,authorize,state:new ConversationState({rootDir,authorize,...options})};
 }
 const imported={conversationId:'public-conversation',expectedRevision:0,title:'Existing research',parentId:null,lifecycle:'active',binding,events:[event],cursor:'page-1'};
+test('legacy history without a verified native identity uses an archival source and never invents a binding',async t=>{
+ const {state,rootDir,authorize}=await fixture(t);
+ assert.equal(typeof state.importHistorical,'function');
+ const input={conversationId:'old-public',expectedRevision:0,title:'Old research',parentId:null,lifecycle:'active',
+  source:{runtime:'claude',sessionId:'old-public'},events:[event],cursor:'first-page'};
+ const first=await state.importHistorical(owner,input);
+ assert.deepEqual(first.bindings,[]);assert.equal(first.currentBindingId,null);assert.equal(first.sequence,1);
+ assert.equal(first.events[0].bindingId,null);assert.equal(first.events[0].historicalSourceId,first.historicalSource.id);
+ assert.equal(first.historicalSource.sessionId,'old-public');assert.equal(first.historicalSource.nativeSessionId,undefined);
+ assert.deepEqual(await state.importHistorical(owner,input),first);
+ const bound=await state.bind(owner,first.id,{expectedRevision:first.revision,binding:{...binding,runtime:'codex',representedSequence:1}});
+ assert.equal(bound.events[0].historicalSourceId,first.historicalSource.id);assert.equal(bound.sequence,1);
+ assert.deepEqual(await new ConversationState({rootDir,authorize}).open(owner,first.id),bound);
+ await assert.rejects(state.importHistorical(owner,{...input,expectedRevision:bound.revision,source:{runtime:'codex',sessionId:'foreign'}}),{code:'conversation_origin_conflict'});
+});
+test('archival origins preserve partial/failure messages and reject credentials or fabricated native authority',async t=>{
+ const {state}=await fixture(t);assert.equal(typeof state.importHistorical,'function');
+ const input={conversationId:'legacy',expectedRevision:0,title:'Legacy',parentId:null,lifecycle:'active',
+  source:{runtime:'opencode',sessionId:'old-session'},events:[{...event,state:'failed'}],cursor:null};
+ for(const source of [{...input.source,auth:'synthetic'},{...input.source,nativeSessionId:'invented'},{...input.source,identityRevision:'invented'}])
+  await assert.rejects(state.importHistorical(owner,{...input,source}),{code:'invalid_conversation_input'});
+ assert.equal((await state.importHistorical(owner,input)).events[0].state,'failed');
+ await assert.rejects(state.importHistorical(owner,{...input,conversationId:'duplicate-origin'}),{code:'conversation_origin_conflict'});
+});
+test('a version-one conversation reader upgrades references in memory without rewriting historical bytes',async t=>{
+ const {state,rootDir}=await fixture(t);const first=await state.importNative(owner,imported);
+ const file=join(rootDir,owner.userId,'conversations.json'),data=JSON.parse(await readFile(file,'utf8'));
+ data.schema=1;for(const value of Object.values(data.conversations)){delete value.historicalSource;for(const event of value.events)delete event.historicalSourceId;}
+ const bytes=JSON.stringify(data);await writeFile(file,bytes);
+ const restored=await state.open(owner,first.id);assert.equal(restored.historicalSource,null);assert.equal(restored.events[0].historicalSourceId,null);
+ assert.equal(await readFile(file,'utf8'),bytes);
+});
 test('new public conversations exist durably before any target-native identity is known',async t=>{
  const {state,rootDir,authorize}=await fixture(t);
  const input={conversationId:'new-conversation',title:'New research',parentId:null,lifecycle:'active'};
