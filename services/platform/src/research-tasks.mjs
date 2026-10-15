@@ -52,13 +52,14 @@ async function artifact(directory, path) {
 
 /** One durable brief per conversation. Page leases are deliberately ephemeral. */
 export class ResearchTasks {
-  constructor({ rootDir, cancel = async () => {}, running = null, now = Date.now, logger = () => {}, workspace = null } = {}) {
+  constructor({ rootDir, cancel = async () => {}, running = null, now = Date.now, logger = () => {}, workspace = null, retainUnverifiedExecution = false } = {}) {
     this.rootDir = resolve(rootDir);
     this.workspace = workspace;
     this.cancel = cancel;
     this.running = running;
     this.logger = logger;
     this.now = now;
+    this.retainUnverifiedExecution=retainUnverifiedExecution;
     this.records = new Map();
     this.leases = new Map();
     this.queues = new Map();
@@ -79,8 +80,16 @@ export class ResearchTasks {
     await fs.mkdir(folder, { recursive: true, mode: 0o700 });
     const file = join(folder, `${id(task.sessionId)}.json`);
     const temp = `${file}.${randomUUID()}.tmp`;
-    await fs.writeFile(temp, JSON.stringify(task), { mode: 0o600 });
-    await fs.rename(temp, file);
+    try {
+      if(this.retainUnverifiedExecution) {
+        const descriptor=await fs.open(temp,'wx',0o600);
+        try {await descriptor.writeFile(JSON.stringify(task));await descriptor.sync();}finally{await descriptor.close();}
+      }else await fs.writeFile(temp, JSON.stringify(task), { mode: 0o600 });
+      await fs.rename(temp, file);
+      if(this.retainUnverifiedExecution) {
+        const parent=await fs.open(folder,'r');try{await parent.sync();}finally{await parent.close();}
+      }
+    }finally{await fs.rm(temp,{force:true});}
     this.records.set(this.key(task.userId, task.sessionId), task);
     return structuredClone(task);
   }
@@ -93,7 +102,8 @@ export class ResearchTasks {
     if (task.userId !== userId || task.sessionId !== sessionId || task.version !== 1) throw error("invalid saved research task", 500);
     this.records.set(key, task);
     if (task.executionActive || task.status === "running") {
-      await this.cancel({...task,cancelReason:"server_restarted"});
+      if(this.retainUnverifiedExecution)task.recoveryRequired=true;
+      else await this.cancel({...task,cancelReason:"server_restarted"});
       task.executionActive = false;
       task.status = "paused";
       task.stopReason = "server-restarted";
@@ -114,7 +124,8 @@ export class ResearchTasks {
         const task = this.records.get(this.key(context.userId, sessionId)) ?? JSON.parse(await fs.readFile(join(folder, file), "utf8"));
         if (task.version !== 1 || task.userId !== context.userId || task.sessionId !== sessionId) throw error("invalid saved research task", 500);
         if (task.instanceId !== context.instanceId || task.generation !== context.generation ||
-            !task.executionActive && !["running", "waiting_input"].includes(task.status)) return;
+            !task.recoveryRequired && !task.executionActive && !["running", "waiting_input"].includes(task.status)) return;
+        delete task.recoveryRequired;
         task.executionActive = false; task.status = "paused"; task.stopReason = "workspace-restarted";
         task.revision++; task.updatedAt = this.now();
         await this.save(task);
@@ -265,6 +276,7 @@ export class ResearchTasks {
     return this.locked(userId, sessionId, async () => {
       const task = await this.load(userId, sessionId);
       if (!task) return null;
+      if(task.recoveryRequired)throw Object.assign(error("Previous execution cleanup is unverified",503),{code:"assistant_recovery_required"});
       if (task.executionActive) {
         if (this.running && !await this.running(task)) task.executionActive = false;
         else throw Object.assign(error("research task is already running", 409),{code:"research_execution_running"});
@@ -296,7 +308,7 @@ export class ResearchTasks {
   assertAdmission(ticket) {
     return this.locked(ticket.userId,ticket.sessionId,async()=>{
       const task=await this.load(ticket.userId,ticket.sessionId);
-      if(!task || task.instanceId!==ticket.instanceId || task.generation!==ticket.generation ||
+      if(!task || task.recoveryRequired || task.instanceId!==ticket.instanceId || task.generation!==ticket.generation ||
           task.execution!==ticket.execution || !task.executionActive || task.status!=="running" || this.pending(task).length)
         throw Object.assign(error("Research execution changed before sending",409),{code:"research_execution_changed"});
     });

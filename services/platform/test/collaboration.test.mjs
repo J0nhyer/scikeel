@@ -4,6 +4,7 @@ import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CollaborationStore, collaborationPolicy } from "../src/collaboration.mjs";
+import {promises as filesystem} from 'node:fs';
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "collaboration-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -38,6 +39,33 @@ test("generation interruption preserves durable decisions and does not cancel a 
   const paused = await restored.get(o);
   assert.equal(paused.phase, "paused"); assert.equal(paused.pending.id, pending.pending.id);
   assert.equal(paused.execution, pending.execution); assert.equal(paused.revision, pending.revision + 1);
+});
+
+test("managed restart keeps durable uncertainty after status reconciliation until verified generation cleanup",async t=>{
+ const f=await fixture(t),context={userId:"student",instanceId:"user-student",generation:1},o={...owner,...context};
+ await f.store.begin(o,0);
+ const restored=new CollaborationStore({rootDir:f.root,retainUnverifiedExecution:true,running:async()=>false});
+ const recovered=await restored.get(o);
+ assert.equal(recovered.phase,"paused");assert.equal(recovered.recoveryRequired,true);
+ await restored.settled(o,recovered.execution);
+ const restarted=new CollaborationStore({rootDir:f.root,retainUnverifiedExecution:true});
+ const retained=await restarted.get(o);assert.equal(retained.recoveryRequired,true);
+ await assert.rejects(restarted.begin(o,retained.revision),{code:"assistant_recovery_required"});
+ await restarted.interruptGeneration({...context,generation:2});
+ assert.equal((await restarted.get(o)).recoveryRequired,true);
+ await restarted.interruptGeneration(context);
+ const cleared=await restarted.get(o);assert.equal(cleared.recoveryRequired,undefined);
+ assert.equal((await restarted.begin({...o,generation:2},cleared.revision)).execution,2);
+});
+test("managed recovery persistence failure preserves the original unresolved execution",async t=>{
+ const f=await fixture(t),o={...owner,instanceId:'user-student',generation:1};await f.store.begin(o,0);
+ const original=filesystem.open;
+ filesystem.open=async(...args)=>{const file=await original(...args);if(args[1]==='wx')file.sync=async()=>{throw Error('synthetic sync failure');};return file;};
+ const restored=new CollaborationStore({rootDir:f.root,retainUnverifiedExecution:true});
+ try {await assert.rejects(restored.get(o),/synthetic sync failure/);}
+ finally {filesystem.open=original;}
+ const restarted=new CollaborationStore({rootDir:f.root,retainUnverifiedExecution:true});
+ assert.equal((await restarted.get(o)).recoveryRequired,true);
 });
 test("mode defaults, identity isolation and release availability", async (t) => {
   const f = await fixture(t);

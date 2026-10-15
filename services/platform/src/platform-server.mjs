@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { WorkspaceState, workspaceError } from "./workspace-state.mjs";
+import { readAssistantLedgerInventory } from "./assistant-inventory.mjs";
 import { WorkspaceAdmission } from "./workspace-admission.mjs";
 import { WorkspaceFiles } from "./workspace-files.mjs";
 import { WorkspaceUploads } from "./workspace-uploads.mjs";
@@ -334,6 +335,7 @@ export class PlatformServer {
       return {userId,instanceId:worker.id,generation:worker.generation};};
     this.researchTasks = new ResearchTasks({
       rootDir: resolve(workerManager.rootDir, "../research"),
+      retainUnverifiedExecution:typeof workerManager.assistantInventory==="function",
       cancel: (task) => this.#cancelResearch(task),
       running: (task) => this.#admissionRunning("research",task),
       logger,
@@ -345,6 +347,7 @@ export class PlatformServer {
         return {userId,instanceId:worker.id,generation:worker.generation};}}) : null;
     this.collaborationCapabilities = new Map();
     this.collaboration = new CollaborationStore({research:this.researchTasks,readLegacy:(o)=>this.researchTasks.get(o.userId,o.sessionId),rootDir:resolve(workerManager.rootDir,"../collaboration"),
+      retainUnverifiedExecution:typeof workerManager.assistantInventory==="function",
       applyPermissions:async(owner,mode)=>{
         if(owner.runtime !== "opencode")return;
         await this.#workerResearchRequest(owner, `/session/${encodeURIComponent(owner.sessionId)}`, "PATCH", {permission:collaborationPermissions(mode)});
@@ -473,6 +476,24 @@ export class PlatformServer {
     }
     this.server = null;
     this.listenPromise = null;
+  }
+
+  async assistantExecutionInventory() {
+    if(typeof this.workerManager.assistantInventory!=="function")throw workspaceError("assistant_inventory_unavailable",503);
+    const workers=await this.workerManager.assistantInventory();
+    const ledgers=await readAssistantLedgerInventory({
+      roots:{research:this.researchTasks.rootDir,collaboration:this.collaboration.rootDir},
+      records:{research:this.researchTasks.records,collaboration:this.collaboration.records},
+    });
+    const activeExecutions=[...workers.activeExecutions,...ledgers.activeExecutions];
+    const uncertainEffects=[...workers.uncertainEffects,...ledgers.uncertainEffects,
+      ...await this.workspaceManagement?.state.pendingRuntimeEffects()??[]];
+    for(const held of this.promptAdmissions.values()) {
+      const owner=held.owner,effect={source:"prompt",userId:owner.userId,instanceId:owner.instanceId,
+        generation:owner.generation,sessionId:owner.sessionId};
+      (held.disposition==="unknown"?uncertainEffects:activeExecutions).push(effect);
+    }
+    return {activeExecutions,uncertainEffects};
   }
 
   async init() {

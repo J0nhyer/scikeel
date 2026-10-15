@@ -26,6 +26,7 @@ export class CollaborationStore {
     readLegacy = null,
     research = null,
     applyPermissions = async () => {},
+    retainUnverifiedExecution = false,
   } = {}) {
     Object.assign(this, {
       rootDir: resolve(rootDir),
@@ -35,6 +36,7 @@ export class CollaborationStore {
       readLegacy,
       research,
       applyPermissions,
+      retainUnverifiedExecution,
     });
     this.records = new Map();
     this.queues = new Map();
@@ -59,8 +61,16 @@ export class CollaborationStore {
     await fs.mkdir(folder, { recursive: true, mode: 0o700 });
     const path = join(folder, `${id(s.sessionId)}.json`),
       tmp = `${path}.${randomUUID()}`;
-    await fs.writeFile(tmp, JSON.stringify(s), { mode: 0o600 });
-    await fs.rename(tmp, path);
+    try {
+      if(this.retainUnverifiedExecution) {
+        const file=await fs.open(tmp,'wx',0o600);
+        try {await file.writeFile(JSON.stringify(s));await file.sync();}finally{await file.close();}
+      }else await fs.writeFile(tmp, JSON.stringify(s), { mode: 0o600 });
+      await fs.rename(tmp, path);
+      if(this.retainUnverifiedExecution) {
+        const parent=await fs.open(folder,'r');try{await parent.sync();}finally{await parent.close();}
+      }
+    }finally{await fs.rm(tmp,{force:true});}
     this.records.set(this.key(s), s);
     return structuredClone(s);
   }
@@ -103,6 +113,7 @@ export class CollaborationStore {
     }
     this.records.set(key, s);
     if (["running", "waiting_input"].includes(s.phase)) {
+      if(this.retainUnverifiedExecution)s.recoveryRequired=true;
       s.phase = "paused";
       s.revision++;
       await this.save(s);
@@ -124,7 +135,9 @@ export class CollaborationStore {
       await this.locked(owner, async () => {
         const state = this.records.get(this.key(owner)) ?? JSON.parse(await fs.readFile(join(folder, file), "utf8"));
         if (state.version !== 1 || state.userId !== owner.userId || state.sessionId !== owner.sessionId) throw fail("Invalid saved collaboration state", 500);
-        if (state.instanceId !== context.instanceId || state.generation !== context.generation || !["running", "waiting_input"].includes(state.phase)) return;
+        if (state.instanceId !== context.instanceId || state.generation !== context.generation ||
+            !state.recoveryRequired && !["running", "waiting_input"].includes(state.phase)) return;
+        delete state.recoveryRequired;
         state.phase = "paused"; state.revision++;
         await this.save(state);
       });
@@ -168,6 +181,7 @@ export class CollaborationStore {
   begin(o, revision, {onStarted} = {}) {
     return this.locked(o, async () => {
       const s = await this.load(o);
+      if(s.recoveryRequired)throw businessFailure("assistant_recovery_required","Previous execution cleanup is unverified",503);
       this.revision(s, revision);
       if (!["collaborative", "guided", "delegated", "autonomous"].includes(s.mode))
         throw fail(
@@ -291,6 +305,7 @@ export class CollaborationStore {
       const s = await this.load(o);
       return {
         blocked:
+          Boolean(s.recoveryRequired) ||
           Boolean(s.pending) ||
           s.phase === "paused",
         repairExhausted: Boolean(s.delivery?.status === "failed" && s.delivery.attempts >= 3),
@@ -318,7 +333,7 @@ export class CollaborationStore {
   assertAdmission(o,execution) {
     return this.locked(o,async()=>{
       const s=await this.load(o);
-      if(s.instanceId!==o.instanceId || s.generation!==o.generation || s.execution!==execution || s.phase!=="running" || s.pending)
+      if(s.recoveryRequired || s.instanceId!==o.instanceId || s.generation!==o.generation || s.execution!==execution || s.phase!=="running" || s.pending)
         throw businessFailure("research_execution_changed","Research execution changed before sending");
       return structuredClone(s);
     });
