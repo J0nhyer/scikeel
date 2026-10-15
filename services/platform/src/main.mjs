@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { AuthStore } from "./auth-store.mjs";
 import { CliRuntimeManager } from "./cli-runtime.mjs";
 import { PlatformServer } from "./platform-server.mjs";
-import { sandboxConfiguration } from "./sandbox-manifest.mjs";
+import { sandboxConfiguration, loadSandboxImageConfiguration } from "./sandbox-manifest.mjs";
 import { createSandboxControlPlane } from "./sandbox-control-plane.mjs";
 import { WorkerManager } from "./worker-manager.mjs";
 
@@ -44,7 +44,7 @@ function optionalPath(name, fallback) {
 }
 
 const dataDir = resolve(env("PLATFORM_DATA_DIR", "/srv/osd/platform"));
-const sandbox = sandboxConfiguration(process.env, dataDir);
+const sandbox = await loadSandboxImageConfiguration(sandboxConfiguration(process.env, dataDir));
 const adminUsername = env("PLATFORM_ADMIN_USERNAME", "admin");
 const adminPassword = env("PLATFORM_ADMIN_PASSWORD");
 const authStore = new AuthStore({
