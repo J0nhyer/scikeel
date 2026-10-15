@@ -1,6 +1,6 @@
 # Web Assistant Runtime Compatibility Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Work locally; this plan does not authorize agent delegation, implementation, live provider probes, or publication.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. The October 15, 2026 execution instruction authorizes this single owner to implement, run necessary selected-Codex live acceptance, and publish after all gates pass. Do not delegate further or create tasks. Historical plan-only/publication caveats below are superseded; verification requirements are not.
 
 **Goal:** Let only the administrator select one deployment-wide assistant, initially host-profile-backed Codex with `gpt-6.1-sol`, while preserving common Web workflows, security boundaries, and existing conversations through lazy context handover.
 
@@ -23,7 +23,7 @@ Specification: `docs/superpowers/specs/2026-10-15-web-assistant-runtime-compatib
 - All tests/builds/typechecks/lint use package scripts and the existing cgroup guard, sequentially. Do not run Vitest, Vite, Cargo or Docker builds directly on this host. Native image builds belong on dedicated CI.
 - Do not patch frozen releases or installed image contents. Do not revert unrelated worktree changes. Preserve conversations, files, credentials, and recoverable state.
 
-Implementation begins only after execution authorization. A successful feasibility test, a model HTTP 200, or a persisted Admin selection is not product completion.
+Execution authorization was received on October 15, 2026 (Asia/Shanghai). No further routine implementation/publication approval is required. A successful feasibility test, a model HTTP 200, or a persisted Admin selection is not product completion.
 
 ## 2. Baseline and File Ownership
 
@@ -280,7 +280,7 @@ assert.equal((await policy.select({runtime:'codex', expectedRevision:1,
 
 - [ ] Review the complete spec-to-task matrix, staged source identity, CI image artifact and compatible rollback reader. Ensure all required Codex capabilities passed; ask the user about any unresolved native limitation or plaintext-upstream remediation rather than silently accepting weaker behavior.
 - [ ] Inspect with `pnpm web:release inspect --source /opt/open-science-desktop/.worktrees/web-prompt-send-recovery-20261015`. Prepare with the same source, `--full --maintenance`, and the exact verified `--image-digest` returned by Task 12. Use actual workflow-returned identifiers, never an invented release/image ID.
-- [ ] Before publication, present the prepared candidate/rollback identities, live-tested capability results and remaining OpenCode/Claude availability limits. This plan-only request is not publication approval. On explicit deployment authorization, run the existing deploy command for the prepared release and apply the approved Admin target through the authenticated revisioned API; do not edit runtime JSON or credential files manually.
+- [ ] Before publication, present the prepared candidate/rollback identities, live-tested capability results and remaining OpenCode/Claude availability limits. Publication is authorized by the October 15 execution instruction, conditional on every required gate. Run the existing deploy command for the prepared release and apply the approved Admin target through the authenticated revisioned API; do not edit runtime JSON or credential files manually.
 - [ ] Verify exact served assets, health, committed exclusive selection, only `gpt-6.1-sol`, no student assistant picker, legacy conversation readability and native continuation, isolation/permission outcomes and retained rollback. Required failure restores only a compatible release and preserves new histories/files; unknown rollback remains an explicit recovery state.
 - [ ] Add one English actual-result milestone to `PROGRESS.md`, newest first. Report separately what was implemented, live-verified, deployed and still unavailable. Do not claim OpenCode upstream refusal was repaired by activating Codex.
 
@@ -310,4 +310,4 @@ Keep intermediate commits reviewable and non-activating. No service-wide switch,
 | Missing capabilities and unavailable Claude/OpenCode are honest | 1, 12, 13, 14 |
 | Guarded tasks, attested image, frozen release, compatible rollback | 0, 12, 14, 15 |
 
-Self-review: policy versus worker revisions are distinct; lock order and durable unknown effects are explicit; switching back cannot reuse stale native context; no new framework/provider editor is introduced; native hooks and safe revert are feasibility gates rather than assumed implementations; required tests cannot pass through skips; no Claude live request or disabled-assistant inference is authorized. Product implementation, tests and publication were not performed while authoring this plan.
+Self-review: policy versus worker revisions are distinct; lock order and durable unknown effects are explicit; switching back cannot reuse stale native context; no new framework/provider editor is introduced; native hooks and safe revert are feasibility gates rather than assumed implementations; required tests cannot pass through skips; no Claude live request or disabled-assistant inference is authorized. Product implementation, tests and publication were not performed while authoring this plan; the subsequent October 15 instruction authorizes execution and gated publication by this single owner.

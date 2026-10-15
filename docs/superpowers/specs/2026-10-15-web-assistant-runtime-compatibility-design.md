@@ -1,7 +1,7 @@
 # Web Assistant Runtime Compatibility and Conversation Continuity
 
 Date: 2026-10-15 (Asia/Shanghai)
-Status: The user approved the design direction, administrator-only exclusive selection, and cross-runtime context handover, then requested implementation planning on October 15, 2026. Implementation and publication have not started.
+Status: On October 15, 2026 (Asia/Shanghai), the user authorized one implementation owner to execute the complete plan, perform necessary selected-Codex live acceptance, and publish after every required gate passes. The owner must not delegate further. Native feasibility precedes broad implementation; activation and publication remain conditional on verification.
 Scope: The authenticated multi-user gateway Web client, including phone-width viewports. Preserve shared desktop compatibility without changing desktop approval defaults.
 
 ## 1. Product Contract
@@ -167,7 +167,7 @@ Included: repairing the existing Admin control, exclusive global admission, host
 
 Excluded: user-facing assistant selection, simultaneous active assistants, hot migration of in-flight native execution, transfer of native approval authority, lossless hidden-state migration, a new model/provider editor, arbitrary host execution, an ACP/framework rewrite, desktop UX changes, and speculative fixes to the upstream OpenCode free service.
 
-Self-review checked ownership, runtime versus platform identity, lazy handover, switch-back freshness, unknown side effects, durable decisions versus transient approvals, model/credential separation, browser recovery, and unavailable-provider gates. The user approved these design directions and requested the companion implementation plan. This does not authorize product implementation or publication. No product code, host credentials, runtime selection, image, or deployed assets were changed by writing it.
+Self-review checked ownership, runtime versus platform identity, lazy handover, switch-back freshness, unknown side effects, durable decisions versus transient approvals, model/credential separation, browser recovery, and unavailable-provider gates. The original document was plan-only; the October 15 execution instruction supersedes that restriction and authorizes implementation, necessary selected-Codex live acceptance and publication after all gates. No additional agents are authorized. This authorization does not waive native capability, safety, CI provenance or compatible rollback requirements.
 
 ## 12. Primary Design References
 
