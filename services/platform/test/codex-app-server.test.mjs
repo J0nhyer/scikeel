@@ -9,6 +9,26 @@ import {CodexAppServer} from "../../../runtime/sandbox/cli-jobs.mjs";
 const fixture=fileURLToPath(new URL("../fixtures/sandbox-cli.mjs",import.meta.url));
 const request={privateHome:"/tenant/home",projectDir:"/tenant/workspace/project",environment:{kind:"base",python:"/opt/scikeel/science/bin/python"},
   brokers:{modelToken:"a".repeat(64)},model:"fixture/approved",text:"Do research"};
+for(const mode of ["foreign-completion","missing-completion-thread","missing-delta-turn","missing-approval-item"]) {
+  test(`native events reject ${mode} before exposing completion, output or approval`,async(t)=>{
+    const events=[];let stopped;const closed=new Promise(resolve=>stopped=resolve);
+    const server=new CodexAppServer({requestTimeoutMs:1000,timeoutMs:2000,onStopped:stopped,emit:async event=>events.push(event),
+      spawnImpl:(_command,_args,options)=>spawn(process.execPath,[fixture,mode],{...options,cwd:undefined})});
+    t.after(()=>server.close());await server.start(request);await closed;
+    assert.deepEqual(events,[],mode);await server.close();
+  });
+}
+test("native events that arrive before turn acknowledgement wait for and carry the actual acceptance identity",async(t)=>{
+  const events=[];let stopped;const closed=new Promise(resolve=>stopped=resolve);
+  const server=new CodexAppServer({requestTimeoutMs:1000,timeoutMs:2000,onStopped:stopped,emit:async event=>events.push(event),
+    spawnImpl:(_command,_args,options)=>spawn(process.execPath,[fixture,"early-delta"],{...options,cwd:undefined})});
+  t.after(()=>server.close());const result=await server.start(request);await closed;
+  assert.deepEqual(result,{nativeSessionId:"native-owned",turnId:"turn-owned"});
+  assert.deepEqual(events.map(({type,nativeSessionId,turnId})=>({type,nativeSessionId,turnId})),[
+    {type:"text",nativeSessionId:"native-owned",turnId:"turn-owned"},
+    {type:"completed",nativeSessionId:"native-owned",turnId:"turn-owned"},
+  ]);
+});
 function make() {
   const events=[];const specs=[];let completed;let approved;
   const asked=new Promise(resolve=>approved=resolve);

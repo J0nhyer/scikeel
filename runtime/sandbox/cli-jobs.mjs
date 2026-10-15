@@ -80,8 +80,11 @@ export function runtimeArgv({ runtime, model, sessionId }) {
 
 // One private native app-server per turn. All argv/configuration is fixed here;
 // callers cannot send a host command or choose a different transport endpoint.
+const nativeTurnEvents=new Set(["item/tool/requestUserInput","item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval","item/agentMessage/delta","item/commandExecution/outputDelta","turn/completed"]);
 export class CodexAppServer {
   #child; #pending=new Map(); #approvals=new Map(); #questions=new Map(); #next=1; #buffer=""; #bytes=0; #closed=false; #thread; #turn; #closing; #exited;
+  #startingTurn=false; #deferredEvents=[];
   constructor({spawnImpl,emit,onStopped=()=>{},timeoutMs=1200000,requestTimeoutMs=30000}) {
     if(typeof spawnImpl!=="function" || typeof emit!=="function" || typeof onStopped!=="function" || !Number.isSafeInteger(timeoutMs) || timeoutMs<1 || timeoutMs>1200000 ||
         !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs<1 || requestTimeoutMs>30000)throw new Error("invalid native turn configuration");
@@ -145,10 +148,15 @@ export class CodexAppServer {
       const thread=await this.#request(nativeSessionId ? "thread/resume" : "thread/start",{...params,...(nativeSessionId?{threadId:nativeSessionId}:{})});
       if(!/^[A-Za-z0-9_-]{1,128}$/.test(thread.thread?.id??"") || (nativeSessionId && thread.thread.id!==nativeSessionId))throw new Error("native resume identity changed");
       this.#thread=thread.thread.id;
+      this.#startingTurn=true;
       const turn=await this.#request("turn/start",{threadId:this.#thread,cwd:projectDir,model,approvalPolicy:"on-request",
         sandboxPolicy:{type:"readOnly",networkAccess:false},input:[{type:"text",text},...images.map(url=>({type:"image",url}))]});
       if(!/^[A-Za-z0-9_-]{1,128}$/.test(turn.turn?.id??""))throw new Error("native turn identity unavailable");
       this.#turn=turn.turn.id;
+      // A notification can share a frame batch with the turn acknowledgement.
+      // Keep its order, but grant it no identity until the actual RPC reply is validated.
+      while(this.#deferredEvents.length)await this.#event(this.#deferredEvents.shift());
+      this.#startingTurn=false;
       signal?.removeEventListener("abort",this.abort);this.signal=undefined;
       return {nativeSessionId:this.#thread,turnId:this.#turn};
     } catch {await this.close();throw new Error("native turn unavailable");}
@@ -161,9 +169,22 @@ export class CodexAppServer {
       value.error ? pending.reject(new Error("native request failed")) : pending.resolve(value.result);return;
     }
     if(typeof value.method!=="string")throw new Error("invalid native event");
+    if(nativeTurnEvents.has(value.method)&&this.#startingTurn) {
+      if(this.#deferredEvents.length>=32)throw new Error("native early event capacity");
+      this.#deferredEvents.push(value);return;
+    }
+    return this.#event(value);
+  }
+  async #event(value) {
+    if(this.#closed)throw new Error("native runtime stopped");
     const params=value.params??{};
     if(params.threadId && this.#thread && params.threadId!==this.#thread)throw new Error("foreign native thread");
     if(params.turnId && this.#turn && params.turnId!==this.#turn)throw new Error("foreign native turn");
+    const scoped=nativeTurnEvents.has(value.method);
+    if(scoped&&(!this.#thread||!this.#turn||params.threadId!==this.#thread||
+        (value.method==="turn/completed"?params.turn?.id:params.turnId)!==this.#turn))throw new Error("foreign native execution");
+    if(scoped&&value.id!==undefined&&!/^[A-Za-z0-9_-]{1,128}$/.test(params.itemId??""))throw new Error("invalid native item scope");
+    const scope={nativeSessionId:this.#thread,turnId:this.#turn};
     if(value.id!==undefined) {
       if(value.method==="item/tool/requestUserInput") {
         if(!["string","number"].includes(typeof value.id) || !this.#thread || params.threadId!==this.#thread || typeof params.turnId!=="string" ||
@@ -182,7 +203,7 @@ export class CodexAppServer {
           return {header:this.redact(question.header),question:this.redact(question.question),options,custom:question.isOther===true || !options.length,multiple:false};
         });
         const id=String(value.id);this.#questions.set(id,{rpcId:value.id,ids:[...ids]});
-        await this.emit({type:"question",id,questions});return;
+        await this.emit({type:"question",id,questions,...scope,itemId:params.itemId});return;
       }
       if(!["item/commandExecution/requestApproval","item/fileChange/requestApproval"].includes(value.method) ||
           !["string","number"].includes(typeof value.id) || this.#approvals.size>=32 || this.#approvals.has(String(value.id))) {
@@ -190,12 +211,12 @@ export class CodexAppServer {
       }
       if(!this.#thread || params.threadId!==this.#thread || typeof params.turnId!=="string")throw new Error("invalid native approval scope");
       const id=String(value.id);this.#approvals.set(id,{rpcId:value.id,threadId:params.threadId,turnId:params.turnId});
-      await this.emit({type:"approval",id,kind:value.method.includes("commandExecution")?"command":"edit",command:params.command ? this.redact(params.command) : null});return;
+      await this.emit({type:"approval",id,kind:value.method.includes("commandExecution")?"command":"edit",command:params.command ? this.redact(params.command) : null,...scope,itemId:params.itemId});return;
     }
-    if(value.method==="item/agentMessage/delta" && typeof params.delta==="string")await this.emit({type:"text",text:this.redact(params.delta)});
-    else if(value.method==="item/commandExecution/outputDelta" && typeof params.delta==="string")await this.emit({type:"tool-output",text:this.redact(params.delta)});
+    if(value.method==="item/agentMessage/delta" && typeof params.delta==="string")await this.emit({type:"text",text:this.redact(params.delta),...scope});
+    else if(value.method==="item/commandExecution/outputDelta" && typeof params.delta==="string")await this.emit({type:"tool-output",text:this.redact(params.delta),...scope});
     else if(value.method==="turn/completed") {
-      await this.emit({type:"completed",status:params.turn?.status==="completed"?"completed":"failed"});await this.close();
+      await this.emit({type:"completed",status:params.turn?.status==="completed"?"completed":"failed",...scope});await this.close();
     }
   }
   approve({id,decision}) {
@@ -213,7 +234,7 @@ export class CodexAppServer {
     if(this.#closing)return this.#closing;
     this.#closed=true;clearTimeout(this.deadline);this.signal?.removeEventListener("abort",this.abort);
     for(const pending of this.#pending.values()){clearTimeout(pending.timer);pending.reject(new Error("native runtime stopped"));}
-    this.#pending.clear();this.#approvals.clear();this.#questions.clear();const child=this.#child;
+    this.#pending.clear();this.#approvals.clear();this.#questions.clear();this.#deferredEvents=[];const child=this.#child;
     this.#closing=(async()=>{
       if(!child)return;
       const signalGroup=signal=>{
