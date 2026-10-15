@@ -28,6 +28,7 @@ export function capabilityResult(cases) {
     "denied-custom", "allowed-custom", "crashed-command", "crashed-edit", "crashed-custom",
     "stopped-command", "stopped-edit", "stopped-custom",
     "allowed-question", "denied-question",
+    "allowed-running-command", "stopped-running-command",
     ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
   const checks = Object.fromEntries(required.map(name => [name, cases.some(value => value.name === name && value.passed === true)]));
   return { checks, activationEligible: Object.values(checks).every(Boolean) };
@@ -126,6 +127,7 @@ export class NativeConnection {
     this.failure = new Promise((_, reject) => this.reject = reject);
     this.failure.catch(() => {});
     child.once("error", () => this.reject(new Error("native process spawn failed")));
+    this.exited = new Promise(resolve => child.once("close", () => { this.exitObserved = true; resolve(); }));
     child.once("close", () => this.reject(new Error("native process closed before completion")));
     createInterface({ input: child.stdout }).on("line", line => {
       try { this.receive(JSON.parse(line)); } catch { this.reject(new Error("invalid native protocol frame")); }
@@ -190,13 +192,39 @@ export class NativeConnection {
     }
     throw new Error("native turn did not complete");
   }
-  async close() {
-    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
-    const stopped = new Promise(resolve => this.child.once("close", resolve));
-    this.child.kill("SIGTERM");
-    const timer = setTimeout(() => this.child.kill("SIGKILL"), 2000);
-    await stopped; clearTimeout(timer);
+  close() {
+    if (this.closing) return this.closing;
+    this.closing = (async () => {
+      const signalGroup = signal => {
+        try { process.kill(-this.child.pid, signal); }
+        catch (error) {
+          if (error.code === "ESRCH") return;
+          if (this.exitObserved) throw new Error("native process group cleanup is unverified");
+          this.child.kill(signal);
+        }
+      };
+      signalGroup("SIGTERM");
+      const kill = setTimeout(() => signalGroup("SIGKILL"), 2000);
+      let deadline;
+      try {
+        await Promise.race([this.exited, new Promise((_, reject) => {
+          deadline = setTimeout(() => reject(new Error("native process cleanup is unverified")), 5000);
+        })]);
+        // Parent exit alone does not settle children that ignored SIGTERM.
+        signalGroup("SIGKILL");
+      } finally { clearTimeout(kill); clearTimeout(deadline); }
+    })();
+    return this.closing;
   }
+}
+
+async function waitForFixtureFile(path) {
+  const deadline = Date.now() + 7000;
+  while (Date.now() < deadline) {
+    try { return await readFile(path, "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error("native command did not start its controlled child");
 }
 
 export async function runNativeProtocolProbe() {
@@ -244,7 +272,7 @@ export async function runNativeProtocolProbe() {
         const bound = validNativeGuardInput(value, { ...current.expectedGuard, thread: current.connection.thread, turn: current.connection.turn });
         current.guards.push({ bound });
         if (!bound) { response.writeHead(403).end(); return; }
-        if (current.mode === "stopped") {
+        if (current.mode === "stopped" && current.stopAtGuard) {
           await current.connection.request("turn/interrupt", { threadId: current.connection.thread, turnId: current.connection.turn });
           current.stopAcknowledged = true;
         }
@@ -270,7 +298,8 @@ export async function runNativeProtocolProbe() {
   });
   await new Promise(resolve => server.listen(port, "127.0.0.1", resolve));
   try {
-    for (const kind of ["command", "edit", "custom", "question"]) for (const mode of (kind === "question" ? ["deny", "allow"] : ["deny", "allow", "crash", "malformed", "empty", "timeout", "missing", "stopped"])) {
+    for (const kind of ["command", "edit", "custom", "question", "running-command"]) for (const mode of (kind === "question" ? ["deny", "allow"] : kind === "running-command" ? ["allow", "stopped"] : ["deny", "allow", "crash", "malformed", "empty", "timeout", "missing", "stopped"])) {
+      const isCommand = kind === "command" || kind === "running-command";
       const label = { deny: "denied", allow: "allowed", crash: "crashed", timeout: "timedout" }[mode] ?? mode;
       const name = `${label}-${kind}`;
       const directory = `${root}/${name}`;
@@ -279,20 +308,23 @@ export async function runNativeProtocolProbe() {
       const callId = `call-${name}`;
       const item = kind === "edit" ? { type: "custom_tool_call", call_id: callId, name: "apply_patch",
         input: "*** Begin Patch\n*** Add File: result.txt\n+verified-native-write\n*** End Patch" } : {
-        type: "function_call", call_id: callId, name: kind === "command" ? "exec_command" : kind === "question" ? "request_user_input" : "research_checkpoint",
-        arguments: JSON.stringify(kind === "command" ? { cmd: "printf verified-native-write > result.txt" } : kind === "question" ? {
+        type: "function_call", call_id: callId, name: isCommand ? "exec_command" : kind === "question" ? "request_user_input" : "research_checkpoint",
+        arguments: JSON.stringify(isCommand ? kind === "running-command" ? {
+          cmd: '(printf child-ready > child-ready.txt; sleep 4; printf verified-native-write > result.txt) & child=$!; printf parent-ready > parent-ready.txt; wait "$child"',
+          yield_time_ms: 10000, max_output_tokens: 1000,
+        } : { cmd: "printf verified-native-write > result.txt" } : kind === "question" ? {
           questions: [{ id: "fixture_choice", header: "Choice", question: "Select fixture outcome?", options: [
             { label: "Continue", description: "Continue fixture" }, { label: "Pause", description: "Pause fixture" }] }],
         } : { checkpoint: "fixture" }),
       };
-      current = { mode, item, guards: [], requests: 0, expectedGuard: { cwd: `${directory}/workspace`, call: callId,
-        tool: kind === "command" ? "Bash" : item.name,
+      current = { mode, item, guards: [], requests: 0, stopAtGuard: kind !== "running-command", expectedGuard: { cwd: `${directory}/workspace`, call: callId,
+        tool: isCommand ? "Bash" : item.name,
         input: nativeGuardInput(item) } };
       const child = spawn(binary, ["app-server", "--listen", "stdio://", "-c", 'model_provider="fixture"', "-c",
         `model_providers.fixture={name="Fixture",base_url="http://127.0.0.1:${port}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}`,
         "-c", 'model_catalog_json="/fixture/config/models.json"', "-c", 'web_search="disabled"', "-c", `features.hooks=${mode !== "missing"}`, "-c", 'features.unified_exec=true'], {
         cwd: `${directory}/workspace`, env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", HOME: `${directory}/home`,
-          CODEX_HOME: `${directory}/home`, OPENAI_API_KEY: "synthetic-not-a-real-key", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "pipe"],
+          CODEX_HOME: `${directory}/home`, OPENAI_API_KEY: "synthetic-not-a-real-key", LANG: "C.UTF-8" }, detached: true, stdio: ["pipe", "pipe", "pipe"],
       });
       const connection = new NativeConnection(child, mode);
       current.connection = connection;
@@ -315,8 +347,26 @@ export async function runNativeProtocolProbe() {
         if (connection.turn && connection.turn !== turn.turn.id) throw new Error("native turn acknowledgement mismatch");
         connection.turn = turn.turn.id;
         record.identity = typeof connection.thread === "string" && typeof turn.turn.id === "string";
+        let childReadyAt;
+        if (kind === "running-command") {
+          assertFixture(await waitForFixtureFile(`${directory}/workspace/child-ready.txt`) === "child-ready");
+          assertFixture(await waitForFixtureFile(`${directory}/workspace/parent-ready.txt`) === "parent-ready");
+          childReadyAt = Date.now();
+          record.nativeStartedBeforeStop = connection.frames.some(frame => frame.method === "item/started" &&
+            frame.params?.threadId === connection.thread && frame.params.turnId === connection.turn &&
+            frame.params.item?.id === callId && frame.params.item.type === "commandExecution");
+          assertFixture(record.nativeStartedBeforeStop);
+          if (mode === "stopped") {
+            await connection.request("turn/interrupt", { threadId: connection.thread, turnId: connection.turn });
+            current.stopAcknowledged = true;
+          }
+        }
         record.status = (await connection.completed()).status;
         if (mode === "stopped") await connection.close();
+        if (kind === "running-command" && mode === "stopped") {
+          await new Promise(resolve => setTimeout(resolve, Math.max(0, childReadyAt + 5500 - Date.now())));
+          record.lateEffectWindowObserved = Date.now() - childReadyAt >= 5500;
+        }
         record.guardCalls = current.guards.length;
         record.boundGuardCalls = current.guards.filter(value => value.bound).length;
         record.unexpectedRequests = connection.unexpectedRequests;
@@ -330,7 +380,7 @@ export async function runNativeProtocolProbe() {
         record.nativeToolStarted = connection.frames.some(frame => frame.method === "item/started");
         record.nativeToolCompleted = connection.frames.some(frame => frame.method === "item/completed");
         record.orderedToolEvidence = orderedNativeToolEvidence(connection.frames, connection.thread, connection.turn,
-          { callId, itemType: { command: "commandExecution", edit: "fileChange", custom: "dynamicToolCall" }[kind] });
+          { callId, itemType: isCommand ? "commandExecution" : { edit: "fileChange", custom: "dynamicToolCall" }[kind] });
         record.toolCatalog = current.toolCatalog;
         record.toolResults = current.toolResults?.map(output => output.replaceAll(directory, "[fixture]").replaceAll("synthetic-not-a-real-key", "[redacted]"));
         // A crashing guard is not an allow decision, even when native execution continues.
@@ -343,9 +393,10 @@ export async function runNativeProtocolProbe() {
           record.reasoningEffort === "low" && record.imageInput &&
           (mode === "allow" ? kind === "question" ? record.questionAnswers === 1 : record.orderedToolEvidence : mode === "stopped" || record.nativeDenialResult) &&
           (mode === "missing" ? record.guardCalls === 0 : record.boundGuardCalls > 0 && record.guardCalls === record.boundGuardCalls) && record.unexpectedRequests === 0 &&
+          (kind !== "running-command" || record.nativeStartedBeforeStop && (mode !== "stopped" || record.lateEffectWindowObserved)) &&
           (mode === "allow" ? record.effect && record.bytesVerified : !record.effect && record.customDispatches === 0);
       } catch (error) { record.failure = error.message; }
-      finally { await connection.close(); }
+      finally { await connection.close(); record.processExitObserved = connection.exitObserved === true; record.passed &&= record.processExitObserved; }
       report.cases.push(record);
     }
   } finally { await new Promise(resolve => server.close(resolve)); }
@@ -354,6 +405,10 @@ export async function runNativeProtocolProbe() {
   await writeFile("/fixture/output/native-capabilities.json", JSON.stringify(report, null, 2) + "\n");
   console.log(JSON.stringify(report));
   if (!report.activationEligible) throw new Error("Pinned native safety/workflow capability gate failed; activation remains blocked");
+}
+
+function assertFixture(value) {
+  if (!value) throw new Error("native running-command identity or start evidence is missing");
 }
 
 if (process.argv[1] === fixture) {

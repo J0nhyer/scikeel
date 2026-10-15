@@ -69,11 +69,32 @@ jobs:
           chmod 777 .deploy/native-capabilities/output
           docker pull python:3.12.12-slim-bookworm
           docker image inspect --format '{{index .RepoDigests 0}}' python:3.12.12-slim-bookworm > .deploy/native-capabilities/output/container-image.txt
+      # Cache only exact pinned compilation inputs, never a fixture's pass result.
+      # RED/GREEN, cargo build and binary measurement run even after a cache hit.
+      - name: Restore exact native compilation cache
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .deploy/codex-source/codex-rs/target
+          key: codex-36650394c5b38c2990ccf2a3457165ca3e9d9726-rust1.95.0-x86_64-unknown-linux-gnu-ubuntu22.04-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('runtime/codex-patches/**', 'scripts/dev/build-codex-guard-runtime.mjs', 'pnpm-lock.yaml') }}
       - name: Build only the pinned Web guard integration on dedicated CI
+        id: native-build
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           pnpm install --frozen-lockfile --ignore-scripts --filter @ai4s/platform...
           pnpm runtime:codex:build
+      - name: Save exact compilation cache before capability acceptance
+        if: ${{ steps.native-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .deploy/codex-source/codex-rs/target
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
       - name: Verify real pre-effect guards and file bytes without host credentials or egress
         run: |
           # Match backend.rs: zero capabilities/no-new-privileges and no outer

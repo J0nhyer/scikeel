@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile, mkdtemp, mkdir, writeFile, rm, access, symlink } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
@@ -22,6 +22,26 @@ test("the native feasibility gate stages the integrity-pinned binary on dedicate
   assert.match(source, /node scripts\/dev\/fetch-sandbox-codex\.mjs/);
   assert.match(source, /probe-production-runner\.mjs --native-capabilities/);
   assert.match(source, /native-capabilities-\$\{\{ github.sha \}\}/);
+});
+
+test("native CI caches exact compiler inputs without fuzzy restoration or skipping Rust evidence", async () => {
+  const source = await readFile(workflow, "utf8");
+  const { load } = createRequire(import.meta.url)("js-yaml");
+  const steps = load(source).jobs["native-feasibility"].steps;
+  const cache = steps.find(step => step.id === "native-cache");
+  assert.equal(cache?.uses, "actions/cache/restore@v4");
+  assert.equal(cache.with["restore-keys"], undefined);
+  assert.ok(steps.find(step => step.id === "native-build").run.includes("pnpm runtime:codex:build"));
+  assert.ok(source.includes("uses: actions/cache/restore@v4"));
+  assert.ok(source.includes("uses: actions/cache/save@v4"));
+  assert.ok(source.includes("codex-36650394c5b38c2990ccf2a3457165ca3e9d9726-rust1.95.0-x86_64-unknown-linux-gnu"));
+  assert.ok(source.includes("hashFiles('runtime/codex-patches/**', 'scripts/dev/build-codex-guard-runtime.mjs', 'pnpm-lock.yaml')"));
+  assert.ok(!source.includes("restore-keys:"));
+  assert.ok(source.indexOf("uses: actions/cache/save@v4") < source.indexOf("name: Verify real pre-effect guards"));
+  const builder = await readFile(new URL("../../../scripts/dev/build-codex-guard-runtime.mjs", import.meta.url), "utf8");
+  assert.ok(builder.includes('regression("red")'));
+  assert.ok(builder.includes('regression("green")'));
+  assert.ok(builder.includes('run("cargo", ["build", "--locked"'));
 });
 
 async function archiveFixture(t, linked = false) {
@@ -58,6 +78,7 @@ test("pinned staging rejects a symlinked sandbox helper before writing executabl
 test("the native gate cannot pass with any missing, skipped or failed pre-effect check", () => {
   const names = ["denied-command", "allowed-command", "denied-edit", "allowed-edit", "denied-custom", "allowed-custom",
     "crashed-command", "crashed-edit", "crashed-custom", "stopped-command", "stopped-edit", "stopped-custom", "allowed-question", "denied-question",
+    "allowed-running-command", "stopped-running-command",
     ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
   const cases = names.map(name => ({ name, passed: true }));
   assert.equal(capabilityResult(cases).activationEligible, true);
@@ -251,4 +272,45 @@ test("native reasoning and attachment evidence observes serialized provider inpu
   assert.equal(facts.imageInput, true);
   assert.ok(!JSON.stringify(facts).includes("synthetic-image-canary"));
   assert.equal(protocol.nativeToolFacts({ input: [] }).imageInput, false);
+});
+
+test("native fixture cleanup waits for exit and kills an already running child process group", async t => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-native-stop-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const ready = join(root, "child-ready.txt"), late = join(root, "late-effect.txt");
+  const descendant = `require('node:fs').writeFileSync(${JSON.stringify(ready)},'started');setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(late)},'late effect'),500);`;
+  const parent = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'inherit'});setInterval(()=>{},1000);`;
+  const child = spawn(process.execPath, ["-e", parent], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
+  t.after(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} });
+  const connection = new protocol.NativeConnection(child, "stopped");
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    try { await access(ready); break; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  await access(ready);
+  await connection.close();
+  await new Promise(resolve => setTimeout(resolve, 700));
+  await assert.rejects(access(late), { code: "ENOENT" });
+  assert.equal(connection.exitObserved, true);
+});
+
+test("native fixture cleanup cannot forget a surviving child when the app-server has already exited", async t => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-native-orphan-"));
+  const ready = join(root, "child-ready.txt"), late = join(root, "late-effect.txt");
+  const descendant = `process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(${JSON.stringify(ready)},'started');setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(late)},'late effect'),500);`;
+  const parent = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'});process.exit(0);`;
+  const child = spawn(process.execPath, ["-e", parent], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
+  t.after(async () => { try { process.kill(-child.pid, "SIGKILL"); } catch {} await rm(root, { recursive: true, force: true }); });
+  const connection = new protocol.NativeConnection(child, "stopped");
+  await connection.exited;
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    try { await access(ready); break; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  await access(ready);
+  await connection.close();
+  await new Promise(resolve => setTimeout(resolve, 700));
+  await assert.rejects(access(late), { code: "ENOENT" });
 });
