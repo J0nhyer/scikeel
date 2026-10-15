@@ -30,6 +30,38 @@ test("inference capabilities bind account, generation, provider, model, route an
   assert.throws(() => authorizeModelRequest({ ...args, policy: { ...policy, enabledModels: [] } }));
 });
 
+test("a revisioned provider snapshot cannot authorize a missing or stale profile grant", async t => {
+  const broker = new ModelBroker({ providers: {}, identify: () => context, now: () => 1000 });
+  t.after(() => broker.close());
+  const provider = { baseUrl: "http://127.0.0.1:1/v1", credential: "synthetic-snapshot-key",
+    enabledModels: ["gpt-6.1-sol"], routes: ["/v1/responses"], authMode: "bearer" };
+  assert.equal(typeof broker.replaceProviderSnapshot, "function");
+  const receipt = broker.replaceProviderSnapshot({ name: "codex", expectedRevision: null, identityRevision: "profile-1", provider });
+  assert.deepEqual(receipt, { identityRevision: "profile-1" });
+  assert(!JSON.stringify(receipt).includes("synthetic-snapshot-key"));
+  const grant = { ...context, provider: "codex", models: ["gpt-6.1-sol"], routes: ["/v1/responses"], expiresAt: 2000 };
+  for (const profileRevision of [undefined, "foreign-profile"])
+    assert.throws(() => broker.issue({ ...grant, profileRevision }), { code: "model_grant_denied" });
+  const token = broker.issue({ ...grant, profileRevision: "profile-1" });
+  assert.throws(() => broker.replaceProviderSnapshot({ name: "codex", expectedRevision: "foreign", identityRevision: "profile-2", provider }),
+    { code: "model_profile_revision_conflict" });
+  assert.equal(broker.renew(token, context), 901000, "A rejected update must preserve the existing grant");
+  assert.throws(() => broker.replaceProviderSnapshot({ name: "codex", expectedRevision: "profile-1", identityRevision: "profile-1",
+    provider: { ...provider, credential: "changed-under-old-identity" } }), { code: "model_profile_revision_conflict" });
+  broker.replaceProviderSnapshot({ name: "codex", expectedRevision: "profile-1", identityRevision: "profile-2", provider });
+  assert.throws(() => broker.renew(token, context), { code: "model_grant_denied" });
+  assert.throws(() => broker.issue({ ...grant, profileRevision: "profile-1" }), { code: "model_grant_denied" });
+  assert.equal(typeof broker.issue({ ...grant, profileRevision: "profile-2" }), "string");
+});
+
+test("model request authorization independently rejects an obsolete profile identity", () => {
+  const args = { capability: { ...capability, profileRevision: "profile-1" },
+    policy: { ...policy, identityRevision: "profile-2" }, now: 1000,
+    request: { ...context, provider: "fixture", method: "POST", path: "/v1/responses", model: "approved" } };
+  assert.throws(() => authorizeModelRequest(args), { code: "model_request_denied" });
+  assert.equal(authorizeModelRequest({ ...args, policy: { ...args.policy, identityRevision: "profile-1" } }), true);
+});
+
 async function fixture(t, handler, options = {}) {
   const { basePath = "", authMode = "bearer", providerId = "fixture", enabledModels = ["approved"], ...limits } = options;
   const upstream = createServer(handler);
@@ -50,8 +82,42 @@ async function fixture(t, handler, options = {}) {
     });
     req.setTimeout(2000, () => req.destroy(new Error("fixture timeout"))); req.on("error", reject); req.end(JSON.stringify(body));
   });
-  return { broker, token, fetch };
+  return { broker, token, fetch, upstream };
 }
+
+test("provider replacement cancels the old real stream and old tokens cannot contact either snapshot", async t => {
+  const credentials = [];
+  let upstreamClosed;
+  const closed = new Promise(resolve => { upstreamClosed = resolve; });
+  const { broker, upstream, fetch: requestBroker } = await fixture(t, (req, res) => {
+    credentials.push(req.headers.authorization);
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write('data: {"fixture":"started"}\n\n');
+    if (credentials.length === 1) res.once("close", upstreamClosed);
+    else res.end("data: [DONE]\n\n");
+  });
+  assert.equal(typeof broker.replaceProviderSnapshot, "function");
+  const provider = { baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`, credential: "profile-one-key",
+    enabledModels: ["approved"], routes: ["/v1/responses"], authMode: "bearer" };
+  broker.replaceProviderSnapshot({ name: "fixture", expectedRevision: null, identityRevision: "profile-1", provider });
+  const grant = { ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 };
+  const old = broker.issue({ ...grant, profileRevision: "profile-1" });
+  const response = await globalThis.fetch(`http://127.0.0.1:${broker.server.address().port}/v1/responses`, {
+    method: "POST", headers: { authorization: `Bearer ${old}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: "approved", input: "synthetic", stream: true, max_output_tokens: 1 }), signal: AbortSignal.timeout(3000) });
+  const reader = response.body.getReader();
+  await reader.read();
+  broker.replaceProviderSnapshot({ name: "fixture", expectedRevision: "profile-1", identityRevision: "profile-2",
+    provider: { ...provider, credential: "profile-two-key" } });
+  let timer;
+  try { await Promise.race([closed, new Promise((_, reject) => { timer = setTimeout(() => reject(Error("Old provider stream was not cancelled")), 1000); })]); }
+  finally { clearTimeout(timer); await reader.cancel().catch(() => {}); }
+  assert.equal((await requestBroker(undefined, { grant: old })).status, 403);
+  assert.equal(credentials.length, 1);
+  const next = broker.issue({ ...grant, profileRevision: "profile-2" });
+  assert.equal((await requestBroker({ model: "approved", stream: true, max_output_tokens: 1 }, { grant: next })).status, 200);
+  assert.deepEqual(credentials, ["Bearer profile-one-key", "Bearer profile-two-key"]);
+});
 test("a fixed upstream receives only the platform credential and preserves model SSE", async (t) => {
   const { fetch } = await fixture(t, (req, res) => {
     assert.equal(req.url, "/v1/responses"); assert.equal(req.headers.authorization, "Bearer administrator-secret-canary");

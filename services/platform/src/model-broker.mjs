@@ -47,6 +47,17 @@ async function endWithError(res, frame) {
   });
 }
 const failure = (code, status = 403) => Object.assign(new Error(code), { code, status });
+function fixedProvider(name, provider, identityRevision = null) {
+  let url;
+  try { url = new URL(provider?.baseUrl); } catch { throw new Error("invalid fixed model provider"); }
+  if (!validName(name) || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash ||
+      !Array.isArray(provider.enabledModels) || !provider.enabledModels.length || !provider.enabledModels.every(validModel) ||
+      !Array.isArray(provider.routes) || !provider.routes.length || !provider.routes.every(route => ROUTES.has(route)) ||
+      typeof provider.credential !== "string" || !provider.credential || /[\r\n\0]/.test(provider.credential) ||
+      ![undefined, "bearer", "x-api-key"].includes(provider.authMode)) throw new Error("invalid fixed model provider");
+  return { url, credential: provider.credential, authMode: provider.authMode ?? "bearer", identityRevision,
+    enabledModels: [...provider.enabledModels], routes: [...provider.routes], revoked: false };
+}
 function identity(context) {
   if (!context || !validName(context.userId) || !validName(context.instanceId) ||
       !Number.isSafeInteger(context.generation) || context.generation < 1) throw failure("model_identity_denied");
@@ -59,6 +70,7 @@ export function authorizeModelRequest({ capability, request, policy, now }) {
       policy.revoked !== false || request.method !== "POST" || !ROUTES.has(request.path) ||
       !capability.routes?.includes(request.path) || !validModel(request.model) ||
       !capability.models?.includes(request.model) || !policy.enabledModels?.includes(request.model) ||
+      (policy.identityRevision != null && capability.profileRevision !== policy.identityRevision) ||
       Object.hasOwn(request, "upstream")) throw failure("model_request_denied");
   return true;
 }
@@ -97,15 +109,8 @@ export class ModelBroker {
         maxBodyBytes > 16 * 1024 ** 2 || maxResponseBytes > 64 * 1024 ** 2 || maxConnections > 32 || maxGrants > 10000)
       throw new Error("model broker limits exceed host budget");
     for (const [name, provider] of Object.entries(providers)) {
-      const url = new URL(provider.baseUrl);
-      if (!validName(name) || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash ||
-          !Array.isArray(provider.enabledModels) || !provider.enabledModels.length || !provider.enabledModels.every(validModel) ||
-          !Array.isArray(provider.routes) || !provider.routes.length || !provider.routes.every((route) => ROUTES.has(route)) ||
-          typeof provider.credential !== "string" || !provider.credential || /[\r\n\0]/.test(provider.credential) ||
-          ![undefined, "bearer", "x-api-key"].includes(provider.authMode)) throw new Error("invalid fixed model provider");
       // Fixed administrator-owned routing. No tenant input reaches URL construction.
-      this.#providers.set(name, { url, credential: provider.credential, authMode: provider.authMode ?? "bearer",
-        enabledModels: [...provider.enabledModels], routes: [...provider.routes], revoked: false });
+      this.#providers.set(name, fixedProvider(name, provider));
     }
     Object.assign(this, { identify, now, firstByteTimeoutMs, idleTimeoutMs, totalTimeoutMs, maxBodyBytes, maxResponseBytes, maxConnections,
       maxOutputTokens, maxGrants, logger });
@@ -115,10 +120,23 @@ export class ModelBroker {
     this.server.on("connect", (_req, socket) => socket.destroy());
     this.server.on("upgrade", (_req, socket) => socket.destroy());
   }
+  replaceProviderSnapshot({ name, expectedRevision, identityRevision, provider }) {
+    const current = this.#providers.get(name);
+    if (!validName(identityRevision) || expectedRevision !== (current?.identityRevision ?? null) || identityRevision === current?.identityRevision)
+      throw failure("model_profile_revision_conflict", 409);
+    const next = fixedProvider(name, provider, identityRevision);
+    const revoked = new Set();
+    for (const [key, grant] of this.#grants) if (grant.provider === name) { this.#grants.delete(key); revoked.add(key); }
+    for (const operation of this.#operations) if (revoked.has(operation.grantKey))
+      operation.controller.abort(failure("model_grant_revoked"));
+    this.#providers.set(name, next);
+    return { identityRevision };
+  }
   issue(capability) {
     identity(capability);
     const policy = this.#providers.get(capability.provider);
-    if (!policy || policy.revoked || !Number.isSafeInteger(capability.expiresAt) || capability.expiresAt <= this.now() ||
+    if (!policy || policy.revoked || (policy.identityRevision != null && capability.profileRevision !== policy.identityRevision) ||
+        !Number.isSafeInteger(capability.expiresAt) || capability.expiresAt <= this.now() ||
         capability.expiresAt > this.now() + 900000 || !Array.isArray(capability.models) || !capability.models.length ||
         !capability.models.every((model) => policy.enabledModels.includes(model)) || !Array.isArray(capability.routes) ||
         !capability.routes.length || !capability.routes.every((route) => policy.routes.includes(route))) throw failure("model_grant_denied");
@@ -127,6 +145,7 @@ export class ModelBroker {
     const token = randomBytes(32).toString("hex");
     this.#grants.set(hash(token), Object.freeze({ userId: capability.userId, instanceId: capability.instanceId,
       generation: capability.generation, provider: capability.provider, expiresAt: capability.expiresAt,
+      ...(policy.identityRevision != null ? { profileRevision: policy.identityRevision } : {}),
       models: Object.freeze([...capability.models]), routes: Object.freeze([...capability.routes]) }));
     return token;
   }
@@ -141,6 +160,7 @@ export class ModelBroker {
     const key = hash(token); const grant = this.#grants.get(key);
     const policy = grant && this.#providers.get(grant.provider);
     if (!grant || identity(grant) !== identity(context) || grant.expiresAt <= this.now() || !policy || policy.revoked ||
+        (policy.identityRevision != null && grant.profileRevision !== policy.identityRevision) ||
         grant.models.some((model) => !policy.enabledModels.includes(model))) throw failure("model_grant_denied");
     const expiresAt = this.now() + 900000;
     this.#grants.set(key, Object.freeze({ ...grant, expiresAt }));
