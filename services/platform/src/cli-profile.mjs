@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse, stringify } from "smol-toml";
@@ -17,6 +17,193 @@ function codexVariants(entry) {
   return Object.fromEntries(levels
     .filter((level) => typeof level?.effort === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(level.effort))
     .map(({ effort }) => [effort, { reasoningEffort: effort }]));
+}
+
+const profileFailure = code => Object.assign(new Error(code), { code });
+const profileCodes = new Set(["unsafe_service_profile", "service_profile_unavailable", "service_profile_initialized",
+  "profile_revision_conflict", "service_profile_busy", "service_profile_source_changed"]);
+const safeProfileFailure = error => { throw profileFailure(profileCodes.has(error?.code) ? error.code : "unsafe_service_profile"); };
+const exactKeys = (value, keys) => !!value && typeof value === "object" && !Array.isArray(value) &&
+  Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+const safeModelName = value => typeof value === "string" && value.length > 0 && value.length <= 160 && !/[\x00-\x1f]/.test(value);
+function safeModelMetadata(value) {
+  return exactKeys(value, ["id", "name", "variants", "inputModalities"]) && value.id === "gpt-6.1-sol" && safeModelName(value.name) &&
+    value.variants && typeof value.variants === "object" && !Array.isArray(value.variants) &&
+    Object.entries(value.variants).every(([effort, metadata]) => /^[a-z][a-z0-9_-]{0,31}$/.test(effort) &&
+      exactKeys(metadata, ["reasoningEffort"]) && metadata.reasoningEffort === effort) &&
+    Array.isArray(value.inputModalities) && value.inputModalities.includes("text") &&
+    value.inputModalities.every(modality => ["text", "image"].includes(modality)) && new Set(value.inputModalities).size === value.inputModalities.length;
+}
+
+async function noFollowDirectories(path) {
+  const directories = [];
+  for (let current = resolve(path); ; current = dirname(current)) {
+    directories.unshift(current);
+    if (dirname(current) === current) break;
+  }
+  for (const directory of directories) {
+    const info = await fs.lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw profileFailure("unsafe_service_profile");
+  }
+}
+
+async function profileFile(path, { privateFile = false, limit = 8 * 1024 ** 2 } = {}) {
+  await noFollowDirectories(dirname(path));
+  const handle = await fs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.uid !== process.getuid() || info.nlink !== 1 || info.size > limit ||
+        (info.mode & (privateFile ? 0o777 : 0o022)) !== (privateFile ? 0o600 : 0))
+      throw profileFailure("unsafe_service_profile");
+    const text = await handle.readFile("utf8");
+    if (Buffer.byteLength(text) > limit) throw profileFailure("unsafe_service_profile");
+    return text;
+  } finally { await handle.close(); }
+}
+
+// This server-only store has no tenant-copy API. The legacy resolver below is unchanged.
+export class ManagedCodexProfile {
+  #home; #allowedModels; #environment;
+  constructor({ home, allowedModels = ["gpt-6.1-sol"], environment = process.env }) {
+    if (!isAbsolute(home ?? "") || typeof process.getuid !== "function" ||
+        !Array.isArray(allowedModels) || allowedModels.length !== 1 || allowedModels[0] !== "gpt-6.1-sol")
+      throw profileFailure("invalid_service_profile");
+    this.#home = resolve(home);
+    this.#allowedModels = [...allowedModels];
+    this.#environment = environment;
+  }
+
+  async #directory(create = false) {
+    await noFollowDirectories(dirname(this.#home));
+    const parent = await fs.lstat(dirname(this.#home));
+    if (parent.uid !== process.getuid() || (parent.mode & 0o777) !== 0o700)
+      throw profileFailure("unsafe_service_profile");
+    if (create) await fs.mkdir(this.#home, { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    const info = await fs.lstat(this.#home);
+    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o777) !== 0o700)
+      throw profileFailure("unsafe_service_profile");
+  }
+
+  async #read() {
+    await this.#directory();
+    const value = JSON.parse(await profileFile(join(this.#home, "service-profile.json"), { privateFile: true }));
+    if (value.schema !== 1 || !/^[a-f0-9-]{36}$/.test(value.sourceRevision ?? "") ||
+        !/^[a-f0-9-]{36}$/.test(value.identityRevision ?? "") || !this.#validProvider(value.provider) ||
+        !Array.isArray(value.models) || value.models.length !== 1 || !safeModelMetadata(value.models[0]) ||
+        !exactKeys(value, ["schema", "sourceRevision", "identityRevision", "provider", "models"]))
+      throw profileFailure("unsafe_service_profile");
+    return value;
+  }
+
+  #validProvider(provider) {
+    if (!provider || typeof provider.baseUrl !== "string" || typeof provider.credential !== "string" ||
+        !provider.credential || provider.credential.length > 16384 || /[\r\n\0]/.test(provider.credential) ||
+        provider.authMode !== "bearer" || JSON.stringify(provider.routes) !== '["/v1/responses"]' ||
+        JSON.stringify(provider.enabledModels) !== JSON.stringify(this.#allowedModels) ||
+        !exactKeys(provider, ["baseUrl", "credential", "authMode", "routes", "enabledModels"])) return false;
+    try {
+      const url = new URL(provider.baseUrl);
+      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
+    } catch { return false; }
+  }
+
+  async #import(codexHome) {
+    try {
+      if (!isAbsolute(codexHome ?? "") || resolve(codexHome) === this.#home) throw profileFailure("invalid_service_source");
+      const sources = [];
+      const source = async (path, options) => {
+        const text = await profileFile(path, options);
+        sources.push({ path, options, text });
+        return text;
+      };
+      const config = parse(await source(join(codexHome, "config.toml")));
+      const provider = config.model_providers?.[config.model_provider ?? "openai"];
+      if (!provider || provider.wire_api !== "responses" || typeof config.model_catalog_json !== "string")
+        throw profileFailure("service_profile_unavailable");
+      let credential;
+      if (provider.env_key !== undefined) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(provider.env_key)) throw profileFailure("service_profile_unavailable");
+        credential = this.#environment[provider.env_key];
+      } else {
+        const auth = JSON.parse(await source(join(codexHome, "auth.json"), { privateFile: true }));
+        credential = auth.OPENAI_API_KEY;
+      }
+      const route = { baseUrl: provider.base_url, credential, enabledModels: this.#allowedModels,
+        routes: ["/v1/responses"], authMode: "bearer" };
+      if (!this.#validProvider(route)) throw profileFailure("service_profile_unavailable");
+      const catalog = JSON.parse(await source(sourcePath(codexHome, config.model_catalog_json), { limit: 32 * 1024 ** 2 }));
+      const entries = Array.isArray(catalog) ? catalog : catalog.models;
+      const matches = Array.isArray(entries) ? entries.filter(entry => this.#allowedModels.includes(entry?.slug ?? entry?.id)) : [];
+      if (matches.length !== 1) throw profileFailure("service_profile_unavailable");
+      const entry = matches[0];
+      const name = entry.display_name ?? entry.name ?? entry.slug ?? entry.id;
+      if (!safeModelName(name)) throw profileFailure("service_profile_unavailable");
+      const models = [{ id: this.#allowedModels[0], name, variants: codexVariants(entry),
+        inputModalities: [...new Set((Array.isArray(entry.input_modalities) ? entry.input_modalities : []).filter(value => ["text", "image"].includes(value)))] }];
+      if (!safeModelMetadata(models[0])) throw profileFailure("service_profile_unavailable");
+      if (provider.env_key && this.#environment[provider.env_key] !== credential) throw profileFailure("service_profile_source_changed");
+      for (const item of sources) if (await profileFile(item.path, item.options) !== item.text)
+        throw profileFailure("service_profile_source_changed");
+      return { schema: 1, sourceRevision: randomUUID(), identityRevision: randomUUID(), provider: route, models };
+    } catch (error) {
+      if (profileCodes.has(error.code)) throw error;
+      throw profileFailure("service_profile_unavailable");
+    }
+  }
+
+  async #mutate({ codexHome, expectedRevision, initialize }) {
+    if (!isAbsolute(codexHome ?? "") || resolve(codexHome) === this.#home) throw profileFailure("service_profile_unavailable");
+    await this.#directory(true);
+    let lock;
+    const lockPath = join(this.#home, ".sync-lock");
+    try { lock = await fs.open(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
+    catch { throw profileFailure("service_profile_busy"); }
+    const temporary = join(this.#home, `.profile-${randomUUID()}.tmp`);
+    try {
+      let current;
+      try { current = await this.#read(); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      if (initialize && current) throw profileFailure("service_profile_initialized");
+      if (!initialize && (!current || current.sourceRevision !== expectedRevision)) throw profileFailure("profile_revision_conflict");
+      const value = await this.#import(codexHome);
+      const file = await fs.open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try { await file.writeFile(JSON.stringify(value) + "\n"); await file.sync(); } finally { await file.close(); }
+      await this.#directory();
+      await fs.rename(temporary, join(this.#home, "service-profile.json"));
+      const directory = await fs.open(this.#home, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try { await directory.sync(); } finally { await directory.close(); }
+    } finally {
+      await fs.rm(temporary, { force: true });
+      await lock.close();
+      await fs.unlink(lockPath);
+    }
+    return this.refresh("codex");
+  }
+
+  initializeFromSource({ codexHome }) { return this.#mutate({ codexHome, initialize: true }).catch(safeProfileFailure); }
+  synchronizeFromSource({ codexHome, expectedRevision }) { return this.#mutate({ codexHome, expectedRevision, initialize: false }).catch(safeProfileFailure); }
+
+  async refresh(runtime) {
+    if (runtime !== "codex") throw profileFailure("unknown_service_runtime");
+    let value;
+    try { value = await this.#read(); }
+    catch (error) {
+      if (error.code === "ENOENT") return { runtime, status: "unavailable", models: [], defaultModel: null, enabledByProfile: false, catalogRevision: null };
+      throw profileFailure("unsafe_service_profile");
+    }
+    return { runtime, status: "ready", models: value.models, defaultModel: this.#allowedModels[0], enabledByProfile: true,
+      sourceRevision: value.sourceRevision, identityRevision: value.identityRevision, catalogRevision: digest(value.models) };
+  }
+
+  publicOption({ runtime, status, models, defaultModel, enabledByProfile, catalogRevision }) {
+    return { runtime, status, models, defaultModel, enabledByProfile, catalogRevision };
+  }
+
+  async resolveProvider(identityRevision) {
+    let value;
+    try { value = await this.#read(); } catch { throw profileFailure("service_profile_unavailable"); }
+    if (value.identityRevision !== identityRevision) throw profileFailure("profile_revision_conflict");
+    return structuredClone(value.provider);
+  }
 }
 
 export class CliProfileResolver {
