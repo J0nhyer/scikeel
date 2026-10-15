@@ -144,6 +144,8 @@ Latest Task 1 evidence, October 16: run `38773484306` at `8410b48` completed; ar
 
 ### Task 2: One Durable Assistant Policy With Migration and Recovery
 
+Bounded independent preparation, October 16: `assistant-policy.mjs` owns no file and is not imported by the running platform. Its 25 contracts pass, including durable-before-revoke ordering, operation replay, lost-write acknowledgement recovery, mandatory retry of unconfirmed revocation, all-account inventory failures, cleanup uncertainty, reservation races and strict nested-state validation. Ten corruption cases and the failed-revocation recovery case were observed RED before their corrections. The latest guarded union passes 192 tests with zero skips. Four existing-manager migration contracts and four authenticated Admin integration contracts still intentionally fail; there is no version-5 store or public/execution admission integration yet. Task 2 remains incomplete and native integration remains gated by Task 1.
+
 **Create:** `services/platform/src/assistant-policy.mjs`, `services/platform/test/assistant-policy.test.mjs`.
 **Modify:** `services/platform/src/cli-runtime.mjs`, `services/platform/test/cli-runtime.test.mjs`.
 
@@ -200,6 +202,8 @@ Further Task 4 evidence, October 16: the existing control-plane startup now cons
 
 Task 4 provisioning evidence, October 16: commit `a2e4ca5` adds a strict operator command for explicit initialization and revision-checked synchronization, with sanitized output and overlapping-root rejection. Its two process-level contracts pass. The approved private `/opt/open-science-desktop/.deploy/platform-data/codex-service` was initialized from `/home/ubuntu/.codex` by this command; the service directory/file are owned by the service user with modes 700/600 and expose only `gpt-6.1-sol`. This is server-side configuration only: no tenant copy, real provider call, Admin activation, image installation or release publication occurred. The old production reader does not consume this new store. Tenant-native routing, global policy and full workflow/image/rollback gates remain incomplete; earlier notes that provisioning had not occurred are historical.
 
+The operator synchronization command changes the private store only. Before production use, coordinate it with the existing project-maintenance workflow or the trusted policy/broker refresh boundary, so no old inference grant survives an acknowledged credential change. Do not claim instantaneous running-broker rotation from this disk-only command. Private registration now also refuses a colliding infrastructure provider without replacing it or revoking its grants (commit `9ad8e89`).
+
 ### Task 5: Give Conversations Stable Identity and Versioned Native Bindings
 
 **Create:** `services/platform/src/conversation-state.mjs`, `services/platform/test/conversation-state.test.mjs`.
@@ -234,6 +238,8 @@ Task 4 provisioning evidence, October 16: commit `a2e4ca5` adds a strict operato
 - [ ] Run `pnpm platform:test test/conversation-handover.test.mjs test/conversation-state.test.mjs test/conversation-router.test.mjs test/cli-runtime-sandbox.test.mjs`; commit `feat(platform): hand over completed context between assistants`.
 
 ### Task 8: One Execution Permission Decision for Every Adapter
+
+Pinned-source preparation, October 16: verified Git blobs from upstream commit `36650394` show that native questions are root-thread-only and Default-mode questions require the `default_mode_request_user_input` feature (default false), while plugins default true. Do not silently force every research turn into native Plan mode to obtain questions. Bind the required feature and disabling of tenant/project plugin discovery in immutable managed requirements, not caller CLI overrides alone, and add actual Default-mode question and hostile startup configuration cases to final-image acceptance. `mcp_servers = {}` in managed requirements filters both configured and plugin MCP servers; native startup negative tests must prove no command/network effect, rather than infer this from tool-hook receipt. These are inspected protocol/configuration facts, not completed adapter or native acceptance evidence.
 
 **Create:** `services/platform/src/execution-permissions.mjs`, `services/platform/test/execution-permissions.test.mjs`.
 **Modify:** `services/platform/src/{automatic-tool-permissions,sandbox-native-jobs,platform-server,collaboration}.mjs`, `runtime/sandbox/cli-jobs.mjs`; their focused tests.
