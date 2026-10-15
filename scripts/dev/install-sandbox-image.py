@@ -143,6 +143,8 @@ def validate_native(manifest, listing, tool_lock):
             or source_map.get("runtime/codex-patches/required-effect-guard-tests.patch") != integration["testPatchSha256"]
             or "runtime/codex-patches/required-effect-guard.lock.json" not in source_map
             or "scripts/dev/build-codex-guard-runtime.mjs" not in source_map
+            or "scripts/dev/probe-production-runner.mjs" not in source_map
+            or "services/platform/fixtures/native-protocol.mjs" not in source_map
             or tool_lock.get("schema") != 1 or tool_lock.get("codexRuntime") != native
             or tool_lock.get("sourceInputs") != sources or tool_lock.get("tools", {}).get("codex") != tool
             or tool_lock.get("baselineLockSha256") != manifest.get("baselineLockSha256")):

@@ -19,7 +19,8 @@ const networkRuntimeLock = JSON.parse(await readFile(join(repo, "runtime/opencod
 const titleRuntimeLock = JSON.parse(await readFile(join(repo, "runtime/opencode-patches/session-title.lock.json"), "utf8"));
 const nativeLock = JSON.parse(await readFile(join(repo, "runtime/codex-patches/required-effect-guard.lock.json"), "utf8"));
 const nativePaths = ["runtime/codex-patches/required-effect-guard.patch", "runtime/codex-patches/required-effect-guard-tests.patch",
-  "runtime/codex-patches/required-effect-guard.lock.json", "scripts/dev/build-codex-guard-runtime.mjs"];
+  "runtime/codex-patches/required-effect-guard.lock.json", "scripts/dev/build-codex-guard-runtime.mjs",
+  "scripts/dev/probe-production-runner.mjs", "services/platform/fixtures/native-protocol.mjs"];
 const nativeInputs = Object.fromEntries(await Promise.all(nativePaths.map(async path => [path,
   createHash("sha256").update(await readFile(join(repo, path))).digest("hex")])));
 const nativeResourcePaths = ["opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json"];

@@ -14,7 +14,8 @@ import {fileURLToPath} from 'node:url';
 import {validateInstalledImage} from '../../../scripts/dev/web-release.mjs';
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const nativeInputs=['runtime/codex-patches/required-effect-guard.patch','runtime/codex-patches/required-effect-guard-tests.patch',
- 'runtime/codex-patches/required-effect-guard.lock.json','scripts/dev/build-codex-guard-runtime.mjs'];
+ 'runtime/codex-patches/required-effect-guard.lock.json','scripts/dev/build-codex-guard-runtime.mjs',
+ 'scripts/dev/probe-production-runner.mjs','services/platform/fixtures/native-protocol.mjs'];
 const nativeLock=JSON.parse(await readFile(new URL('../../../runtime/codex-patches/required-effect-guard.lock.json',import.meta.url),'utf8'));
 async function guardedManifest() {
  const sha='a'.repeat(64),commit='b'.repeat(40);
@@ -30,9 +31,7 @@ async function guardedManifest() {
    'opt/scikeel/tools/bin/native-integration.json':hash(JSON.stringify(integration)+'\n')}}};
 }
 
-for (const path of ["runtime/codex-patches/required-effect-guard.patch",
-  "runtime/codex-patches/required-effect-guard-tests.patch", "runtime/codex-patches/required-effect-guard.lock.json",
-  "scripts/dev/build-codex-guard-runtime.mjs"]) {
+for (const path of nativeInputs) {
   test(`native authority input ${path} invalidates an earlier image`, () => {
     assert.equal(imageInputPath(path), true);
     assert.equal(selectVerification([path], { known: true }).imageRequired, true);
@@ -67,6 +66,7 @@ test('a guarded image binds the binary, compiler/dependency locks, exact patch s
   {...value.codexRuntime.resources,'opt/scikeel/tools/bin/codex-resources/bwrap':'a'.repeat(64)}])
   assert.throws(()=>validateImageManifest({...value,codexRuntime:{...value.codexRuntime,resources}}),/native|guard|resource/);
  for(const sourceInputs of [[],value.sourceInputs.slice(1),[...value.sourceInputs,value.sourceInputs[0]],
+  value.sourceInputs.filter(item=>item.path!=='services/platform/fixtures/native-protocol.mjs'),
   value.sourceInputs.map((item,index)=>index?item:{...item,sha256:'f'.repeat(64)})])
   assert.throws(()=>validateImageManifest({...value,sourceInputs}),/native|guard|source/);
 });
