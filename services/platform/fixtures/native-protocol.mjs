@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -57,6 +57,16 @@ export async function prepareNativeProbe() {
   if (process.env.CI !== "true") throw new Error("dedicated CI fixture preparation required");
   await mkdir(".deploy/native-capabilities/config", { recursive: true });
   await mkdir(".deploy/native-capabilities/output", { recursive: true });
+  const response = await fetch(`https://raw.githubusercontent.com/openai/codex/${nativePin.sourceCommit}/codex-rs/models-manager/models.json`,
+    { signal: AbortSignal.timeout(20000), redirect: "error" });
+  if (!response.ok) throw new Error("pinned synthetic tool metadata unavailable");
+  const text = await response.text();
+  if (createHash("sha256").update(text).digest("hex") !== "0178d235c589a31abd6ed0ea1e870935dc5819240eb0e813e178d3ebedf534f4")
+    throw new Error("pinned synthetic tool metadata changed");
+  const model = JSON.parse(text).models.find(value => value.slug === "gpt-5.4");
+  if (model?.apply_patch_tool_type !== "freeform" || model.shell_type !== "unified_exec") throw new Error("native tool metadata unavailable");
+  // This offline fixture is not the application's host-profile catalog or a model-identity claim.
+  await writeFile(".deploy/native-capabilities/config/models.json", JSON.stringify({ models: [{ ...model, slug: "gpt-6.1-sol" }] }));
   // A managed, read-only requirement is stronger than trusting tenant hooks.json.
   await writeFile(".deploy/native-capabilities/config/requirements.toml", `
 [hooks]
@@ -137,8 +147,26 @@ export async function runNativeProtocolProbe() {
   if (version.status !== 0 || !version.stdout.includes(nativePin.version)) throw new Error("native binary pin mismatch");
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(binary)) hash.update(chunk);
-  const report = { schema: 1, source: process.env.GITHUB_SHA, native: { ...nativePin, sha256: hash.digest("hex") },
-    productionChanged: false, liveInference: false, fixtureModelMetadata: "gpt-5.1-codex", cases: [] };
+  const resourceHash = createHash("sha256");
+  for await (const chunk of createReadStream("/opt/scikeel/tools/bin/codex-resources/bwrap")) resourceHash.update(chunk);
+  const schemasDirectory = `${root}/schemas`;
+  const generated = spawnSync(binary, ["app-server", "generate-json-schema", "--experimental", "--out", schemasDirectory],
+    { encoding: "utf8", timeout: 20000, maxBuffer: 1024 ** 2 });
+  if (generated.status !== 0) throw new Error("pinned native protocol schema generation failed");
+  const files = await readdir(schemasDirectory, { recursive: true });
+  const properties = async name => {
+    const file = files.find(path => path === `${name}.json` || path.endsWith(`/${name}.json`));
+    return file ? JSON.parse(await readFile(`${schemasDirectory}/${file}`, "utf8")).properties ?? {} : {};
+  };
+  const thread = await properties("ThreadStartParams"), turn = await properties("TurnStartParams");
+  const dynamic = await properties("DynamicToolCallParams"), command = await properties("CommandExecutionRequestApprovalParams");
+  const edit = await properties("FileChangeRequestApprovalParams");
+  const schemaFacts = { dynamicRegistration: !!thread.dynamicTools, nativeTurn: !!turn.threadId,
+    reasoningSetting: !!turn.effort, attachmentInput: !!turn.input,
+    dynamicCallIdentity: !!dynamic.threadId && !!dynamic.turnId && !!dynamic.callId,
+    commandApproval: !!command.threadId && !!command.turnId, editApproval: !!edit.threadId && !!edit.turnId };
+  const report = { schema: 1, source: process.env.GITHUB_SHA, native: { ...nativePin, sha256: hash.digest("hex"), bwrapSha256: resourceHash.digest("hex") },
+    schemaFacts, productionChanged: false, liveInference: false, syntheticCatalog: true, fixtureModelMetadata: "gpt-5.4 tool schema only", cases: [] };
   let current;
   const server = createServer(async (request, response) => {
     try {
@@ -180,7 +208,7 @@ export async function runNativeProtocolProbe() {
       current = { mode, item, guards: [], requests: 0 };
       const child = spawn(binary, ["app-server", "--listen", "stdio://", "-c", 'model_provider="fixture"', "-c",
         `model_providers.fixture={name="Fixture",base_url="http://127.0.0.1:${port}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}`,
-        "-c", 'web_search="disabled"', "-c", 'features.hooks=true', "-c", 'features.unified_exec=true'], {
+        "-c", 'model_catalog_json="/fixture/config/models.json"', "-c", 'web_search="disabled"', "-c", 'features.hooks=true', "-c", 'features.unified_exec=true'], {
         cwd: `${directory}/workspace`, env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", HOME: `${directory}/home`,
           CODEX_HOME: `${directory}/home`, OPENAI_API_KEY: "synthetic-not-a-real-key", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "pipe"],
       });
@@ -190,7 +218,7 @@ export async function runNativeProtocolProbe() {
         await connection.request("initialize", { clientInfo: { name: "scikeel-ci-feasibility", version: "1.0.0" }, capabilities: { experimentalApi: true } });
         connection.write({ method: "initialized" });
         // Offline tool metadata only; no request is sent to this model or any real provider.
-        const started = await connection.request("thread/start", { cwd: `${directory}/workspace`, model: report.fixtureModelMetadata,
+        const started = await connection.request("thread/start", { cwd: `${directory}/workspace`, model: "gpt-6.1-sol",
           modelProvider: "fixture", approvalPolicy: "on-request", sandbox: "workspace-write", ephemeral: true,
           dynamicTools: [{ type: "function", name: "research_checkpoint", description: "Synthetic research decision fixture",
             inputSchema: { type: "object", properties: { checkpoint: { type: "string" } }, required: ["checkpoint"], additionalProperties: false } }] });
@@ -219,6 +247,7 @@ export async function runNativeProtocolProbe() {
     }
   } finally { await new Promise(resolve => server.close(resolve)); }
   Object.assign(report, capabilityResult(report.cases));
+  report.activationEligible &&= Object.values(schemaFacts).every(Boolean);
   await writeFile("/fixture/output/native-capabilities.json", JSON.stringify(report, null, 2) + "\n");
   console.log(JSON.stringify(report));
   if (!report.activationEligible) throw new Error("Pinned native safety/workflow capability gate failed; activation remains blocked");

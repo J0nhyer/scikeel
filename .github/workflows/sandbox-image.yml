@@ -63,13 +63,18 @@ jobs:
           docker image inspect --format '{{index .RepoDigests 0}}' python:3.12.12-slim-bookworm > .deploy/native-capabilities/output/container-image.txt
       - name: Verify real pre-effect guards and file bytes without host credentials or egress
         run: |
+          # Match backend.rs: zero capabilities/no-new-privileges and no outer
+          # seccomp/AppArmor profile. Native workspace-write isolation remains on.
           timeout --signal=TERM --kill-after=10s 180s docker run --rm --name scikeel-native-capability-test \
             --network=none --read-only --user 1000:1000 --memory=768m --memory-swap=896m --pids-limit=128 --cpus=1 \
+            --cap-drop=ALL --security-opt no-new-privileges \
+            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
             --tmpfs /tmp:rw,nosuid,nodev,size=64m \
             --tmpfs /fixture/native:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
             -v "$PWD:/fixture/repo:ro" \
             -v "$PWD/.deploy/science-context/tools/bin:/opt/scikeel/tools/bin:ro" \
             -v "$PWD/.deploy/native-capabilities/config/requirements.toml:/etc/codex/requirements.toml:ro" \
+            -v "$PWD/.deploy/native-capabilities/config:/fixture/config:ro" \
             -v "$PWD/.deploy/native-capabilities/output:/fixture/output:rw" \
             -e CI=true -e SCIKEEL_NATIVE_CAPABILITY_CONTAINER=1 -e GITHUB_SHA="$GITHUB_SHA" \
             --entrypoint /opt/scikeel/tools/bin/node "$(cat .deploy/native-capabilities/output/container-image.txt)" \

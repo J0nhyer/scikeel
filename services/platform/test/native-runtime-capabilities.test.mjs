@@ -84,6 +84,7 @@ test("feasibility uses the repository download pin and never a host Codex instal
   assert.ok(!fixture.includes("/home/ubuntu/.codex"));
   const source = await readFile(workflow, "utf8");
   assert.ok(source.includes("--network=none --read-only --user 1000:1000 --memory=768m"));
+  assert.ok(source.includes("--cap-drop=ALL --security-opt no-new-privileges"), "CI must retain the production zero-capability/no-new-privileges boundary");
   assert.ok(source.includes("persist-credentials: false"));
   assert.ok(!source.includes("--privileged"));
 });
