@@ -9,6 +9,7 @@ import { capabilityResult, nativePin, responsesFrame } from "../fixtures/native-
 import * as protocol from "../fixtures/native-protocol.mjs";
 import { extractCodexArchive } from "../../../scripts/dev/fetch-sandbox-codex.mjs";
 import { validateGuardLock, buildGuardRuntime } from "../../../scripts/dev/build-codex-guard-runtime.mjs";
+import * as integration from "../../../scripts/dev/build-codex-guard-runtime.mjs";
 
 const workflow = new URL("../../../.github/workflows/sandbox-image.yml", import.meta.url);
 
@@ -73,7 +74,7 @@ test("the integrated native guard patch is immutable and requires explicit allow
   assert.ok(patch.includes('required_guard_count > 0'));
   assert.ok(patch.includes('hook_events.len() == required_guard_count'));
   assert.deepEqual(validateGuardLock(lock), lock);
-  for (const key of ["policy", "upstreamCommit", "upstreamVersion", "rustVersion", "patchSha256", "bwrapSha256"])
+  for (const key of ["policy", "upstreamCommit", "upstreamVersion", "rustVersion", "patchSha256", "bwrapSha256", "lockFormat", "upstreamLockSha256", "workspaceLockSha256"])
     assert.throws(() => validateGuardLock({ ...lock, [key]: "foreign" }), /Invalid pinned/);
   if (process.env.CI !== "true") await assert.rejects(buildGuardRuntime(), /Dedicated native CI required/);
 });
@@ -114,4 +115,19 @@ test("Web native integration requires an explicit successful guard and cannot co
   assert.ok(source.includes("Dedicated native CI required"));
   const workflowSource = await readFile(workflow, "utf8");
   assert.ok(workflowSource.includes("pnpm runtime:codex:build"));
+});
+
+test("native release lock reconciliation changes only local workspace versions and preserves upstream dependency pins", () => {
+  const lock = { version: 4, package: [
+    ...Array.from({ length: 155 }, (_, i) => ({ name: `fixture-${i}`, version: "0.0.0", dependencies: ["external 1.2.3"] })),
+    { name: "external", version: "1.2.3", source: "registry+https://github.com/rust-lang/crates.io-index", checksum: "a".repeat(64) },
+  ] };
+  const reconciled = integration.reconcileWorkspaceVersions?.(lock);
+  assert.ok(reconciled, "the tagged upstream lock needs checked workspace-only version reconciliation");
+  assert.equal(reconciled.package.filter(value => value.version === "0.157.1").length, 155);
+  assert.equal(lock.package[0].version, "0.0.0", "input remains untouched");
+  assert.deepEqual(reconciled.package.at(-1), lock.package.at(-1));
+  assert.deepEqual(reconciled.package[0].dependencies, lock.package[0].dependencies);
+  assert.throws(() => integration.reconcileWorkspaceVersions({ ...lock, package: lock.package.slice(1) }), /workspace version/);
+  assert.throws(() => integration.reconcileWorkspaceVersions({ ...lock, version: 3 }), /workspace version/);
 });

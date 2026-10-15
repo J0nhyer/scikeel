@@ -72,6 +72,7 @@ jobs:
       - name: Build only the pinned Web guard integration on dedicated CI
         run: |
           rustup toolchain install 1.95.0 --profile minimal
+          pnpm install --frozen-lockfile --ignore-scripts --filter @ai4s/platform...
           pnpm runtime:codex:build
       - name: Verify real pre-effect guards and file bytes without host credentials or egress
         run: |

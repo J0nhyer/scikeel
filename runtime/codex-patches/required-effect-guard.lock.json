@@ -5,5 +5,8 @@
   "upstreamCommit": "36650394c5b38c2990ccf2a3457165ca3e9d9726",
   "patchSha256": "5773f7feb076bae81330381d8f6a3d8375da1eec82327ef583eccdb933cf10e5",
   "rustVersion": "1.95.0",
+  "lockFormat": "smol-toml@1.9.0",
+  "upstreamLockSha256": "72efa81ed947d07ed4fbb3e10b094715ff00626126d758aaed56733c97887e5f",
+  "workspaceLockSha256": "10ab1433e7299b299253fb23a40562042076911c2e3997205b97a08e59fe54b6",
   "bwrapSha256": "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c"
 }
