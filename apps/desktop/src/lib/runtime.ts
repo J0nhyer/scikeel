@@ -294,8 +294,8 @@ interface RuntimeState {
   status: RuntimeStatus;
   serverUrl: string;
   runtimeKind: RuntimeKind;
-  /** Multi-user Web platform runtime selected by this account. Null on the
-   *  desktop and on older gateways that do not expose runtime selection. */
+  /** Deployment assistant committed by the administrator. Null on the desktop
+   *  and older gateways that do not expose platform assistant metadata. */
   gatewayRuntime: GatewayRuntimeId | null;
   gatewayRuntimes: GatewayRuntimeOption[];
   gatewayUser: GatewayUser | null;
@@ -3795,6 +3795,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   gatewayRuntimeSwitching: false,
   selectGatewayRuntime: async (runtime) => {
     if (!isGatewayWeb) return;
+    if (isPlatformWeb) {
+      set({ error: i18n.t("settings:managedAgents.adminOnly") });
+      return;
+    }
     const state = get();
     if (state.gatewayRuntime === runtime || state.gatewayRuntimeSwitching) return;
     const option = state.gatewayRuntimes.find((candidate) => candidate.runtime === runtime);

@@ -7,7 +7,7 @@ import { GatewayModelsPanel } from "./GatewayModelsPanel";
 
 const viewport = vi.hoisted(() => ({ mobile: false }));
 vi.mock("@/lib/useIsMobile", () => ({ useIsMobile: () => viewport.mobile }));
-vi.mock("./ManagedAgentsCard", () => ({ ManagedAgentsCard: () => null }));
+vi.mock("./ManagedAgentsCard", () => ({ ManagedAgentsCard: () => <div data-testid="deployment-assistant-selector" /> }));
 
 const before = useRuntimeStore.getState();
 const language = i18n.language;
@@ -26,6 +26,11 @@ beforeEach(async () => {
 afterEach(async () => { cleanup(); useRuntimeStore.setState(before, true); await i18n.changeLanguage(language); });
 
 describe("Gateway default model settings", () => {
+  it.each(["user", "admin"] as const)("keeps the existing single Admin entry and no per-user selector for %s", role => {
+    useRuntimeStore.setState({ gatewayUserRole: role }); render(<GatewayModelsPanel />);
+    expect(screen.queryByRole("button", { name: /AI assistant/ })).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId("deployment-assistant-selector")).toHaveLength(role === "admin" ? 1 : 0);
+  });
   it.each(["en", "zh-Hans"])("explains the default in %s", async locale => {
     await i18n.changeLanguage(locale);
     render(<GatewayModelsPanel />);

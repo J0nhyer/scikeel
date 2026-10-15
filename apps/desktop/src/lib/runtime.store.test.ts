@@ -1403,6 +1403,22 @@ describe("gateway runtime selection", () => {
   });
 });
 
+describe("deployment-wide assistant selection", () => {
+  it.each(["user", "admin"] as const)("rejects the old per-account action for %s without requests or conversation resets", async role => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayUserRole: role,
+      gatewayUser: { id: "owned", username: "owned", role }, currentId: "ses_a" });
+    const before = useRuntimeStore.getState();
+    await before.selectGatewayRuntime("codex");
+    const after = useRuntimeStore.getState();
+    expect(fetchMock).not.toHaveBeenCalled(); expect(after.gatewayRuntime).toBe("opencode");
+    expect(after.currentId).toBe("ses_a"); expect(after.sessions).toBe(before.sessions); expect(after.threads).toBe(before.threads);
+    expect(after.questions).toBe(before.questions); expect(after.permissions).toBe(before.permissions);
+    expect(after.runningSessions).toBe(before.runningSessions); expect(after.error).toMatch(/administrator/i);
+  });
+});
+
 describe("agent artifact presentation targets", () => {
   it("creates a real dedicated Session and opens it with the artifact in a new Screen", async () => {
     const source = makeLeaf("ses_source");
