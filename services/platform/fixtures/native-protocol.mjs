@@ -138,7 +138,7 @@ export async function runNativeProtocolProbe() {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(binary)) hash.update(chunk);
   const report = { schema: 1, source: process.env.GITHUB_SHA, native: { ...nativePin, sha256: hash.digest("hex") },
-    productionChanged: false, liveInference: false, cases: [] };
+    productionChanged: false, liveInference: false, fixtureModelMetadata: "gpt-5.1-codex", cases: [] };
   let current;
   const server = createServer(async (request, response) => {
     try {
@@ -189,7 +189,8 @@ export async function runNativeProtocolProbe() {
       try {
         await connection.request("initialize", { clientInfo: { name: "scikeel-ci-feasibility", version: "1.0.0" }, capabilities: { experimentalApi: true } });
         connection.write({ method: "initialized" });
-        const started = await connection.request("thread/start", { cwd: `${directory}/workspace`, model: "gpt-6.1-sol",
+        // Offline tool metadata only; no request is sent to this model or any real provider.
+        const started = await connection.request("thread/start", { cwd: `${directory}/workspace`, model: report.fixtureModelMetadata,
           modelProvider: "fixture", approvalPolicy: "on-request", sandbox: "workspace-write", ephemeral: true,
           dynamicTools: [{ type: "function", name: "research_checkpoint", description: "Synthetic research decision fixture",
             inputSchema: { type: "object", properties: { checkpoint: { type: "string" } }, required: ["checkpoint"], additionalProperties: false } }] });
