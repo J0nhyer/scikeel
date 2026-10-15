@@ -1,10 +1,11 @@
 import { claudeUserInput, codexImageArgs } from "./attachment-input.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn as nodeSpawn, execFile } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { CliProfileResolver } from "./cli-profile.mjs";
+import { AssistantPolicy, validateAssistantPolicyState } from "./assistant-policy.mjs";
 import { discoverSkills, seedSkills } from "./skills.mjs";
 
 const RUNTIME_ORDER = ["opencode", "claude", "codex"];
@@ -148,6 +149,17 @@ async function writePrivate(path, content) {
   await fs.rename(temporary, path);
 }
 
+async function writeRuntimePolicy(path, content) {
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const file = await fs.open(temporary, "wx", 0o600);
+    try { await file.writeFile(content); await file.sync(); } finally { await file.close(); }
+    await fs.rename(temporary, path);
+    const directory = await fs.open(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { await directory.sync(); } finally { await directory.close(); }
+  } finally { await fs.rm(temporary, { force: true }); }
+}
+
 async function copyPrivate(source, destination) {
   try {
     await fs.copyFile(source, destination);
@@ -288,11 +300,12 @@ function toolPart({ sessionId, messageId, callId, title, status, input, output }
  * CLIs. It intentionally exposes an OpenCode-shaped HTTP surface so the
  * existing Web client can keep using packages/sdk/OpenCodeClient.
  *
- * The administrator's config is copied into a private per-user runtime home
- * before a turn. Native histories never share a directory with another user,
- * and no provider credential is returned by this class or its HTTP handlers.
+ * Legacy local-CLI mode copies its profile into private user state. Managed Web
+ * mode delegates to the isolated runner without copying host credentials.
+ * Native histories never share a directory with another user.
  */
 export class CliRuntimeManager {
+  #policyState; #policyDescription; #initializing; #policyStorageUncertain = false; #policyStopped = false;
   constructor({
     rootDir,
     runtime = "opencode",
@@ -308,6 +321,7 @@ export class CliRuntimeManager {
     logger = () => {},
     profileResolver,
     sandboxJobs = null,
+    assistantAuthority = null,
   } = {}) {
     if (!rootDir) throw new Error("rootDir is required");
     this.rootDir = resolve(rootDir);
@@ -333,6 +347,7 @@ export class CliRuntimeManager {
     this.turnTimeoutMs = turnTimeoutMs;
     this.spawnImpl = spawnImpl;
     this.sandboxJobs = sandboxJobs;
+    this.assistantAuthority = assistantAuthority;
     this.nativeApprovals = new Map();
     this.nativeQuestions = new Map();
     this.logger = logger;
@@ -349,6 +364,11 @@ export class CliRuntimeManager {
 
   async init() {
     if (this.initialized) return;
+    this.#initializing ??= this.#initialize().catch(error => { this.#initializing = null; throw error; });
+    return this.#initializing;
+  }
+
+  async #initialize() {
     await ensureDirectory(this.rootDir);
     await ensureDirectory(this.usersDir);
     if (!this.externalProfileResolver) {
@@ -367,10 +387,9 @@ export class CliRuntimeManager {
     }
     const configured = await readJson(this.configPath, undefined);
     if (configured !== undefined && (!configured || typeof configured !== "object" || Array.isArray(configured) ||
-        ![1, 2, 3, 4].includes(configured.version)))
+        ![1, 2, 3, 4, 5].includes(configured.version)))
       throw issue("unsupported_runtime_schema", "Runtime storage is not supported by this reader; existing data was preserved", 503);
-    let persist = false;
-    if (configured?.version === 3 || configured?.version === 4) {
+    if ([2, 3, 4, 5].includes(configured?.version)) {
       if (configured.defaultRuntime) this.defaultRuntime = assertRuntime(configured.defaultRuntime);
       if (configured.userRuntimes && typeof configured.userRuntimes === "object") {
         for (const [userId, runtime] of Object.entries(configured.userRuntimes)) {
@@ -389,34 +408,56 @@ export class CliRuntimeManager {
           if (Object.keys(normalized).length > 0) this.userModels.set(userId, normalized);
         }
       }
-      for (const runtime of MANAGED_RUNTIMES) this.assistantEnabled[runtime] = configured.version === 4
-        ? configured.assistantEnabled?.[runtime] === true
-        : Array.isArray(configured.managedRuntimes?.[runtime]?.models) && configured.managedRuntimes[runtime].models.length > 0;
-      persist = configured.version === 3;
-    } else if (configured?.version === 2) {
-      if (configured.defaultRuntime) this.defaultRuntime = assertRuntime(configured.defaultRuntime);
-      if (configured.userRuntimes && typeof configured.userRuntimes === "object") {
-        for (const [userId, runtime] of Object.entries(configured.userRuntimes)) {
-          if (!USER_ID.test(userId) || !RUNTIMES.has(runtime)) continue;
-          this.userRuntimes.set(userId, runtime);
-        }
-      }
-      for (const runtime of MANAGED_RUNTIMES) this.assistantEnabled[runtime] = (await this.profileResolver.refresh(runtime)).enabledByProfile;
-      persist = true;
-    } else if (configured?.runtime) {
-      // Version 1 stored one global switch. Migrating that value would keep the
-      // exact multi-user bug this format replaces, so every user starts on the
-      // original OpenCode runtime and may opt into a managed CLI independently.
+    } else if (configured?.version === 1) {
       this.defaultRuntime = "opencode";
-      for (const runtime of MANAGED_RUNTIMES) this.assistantEnabled[runtime] = (await this.profileResolver.refresh(runtime)).enabledByProfile;
-      persist = true;
-    } else {
-      for (const runtime of MANAGED_RUNTIMES) this.assistantEnabled[runtime] = (await this.profileResolver.refresh(runtime)).enabledByProfile;
-      persist = true;
     }
+    this.#policyState = configured?.version === 5 ? structuredClone(configured.assistantPolicy) : {
+      schema: 1, activeRuntime: this.defaultRuntime, revision: 1, transition: null, receipts: [], executions: {},
+    };
+    if (configured?.version === 5 && configured.defaultRuntime !== this.#policyState?.activeRuntime)
+      throw issue("invalid_assistant_policy", "invalid assistant policy", 503);
+    this.assistantPolicy = new AssistantPolicy({ state: this.#policyState,
+      persist: state => this.persistRuntime(state),
+      load: async () => {
+        await this.configPersistQueue;
+        const stored = await readJson(this.configPath);
+        if (stored?.version !== 5 || stored.defaultRuntime !== stored.assistantPolicy?.activeRuntime)
+          throw issue("invalid_assistant_policy", "invalid assistant policy", 503);
+        const state = validateAssistantPolicyState(stored.assistantPolicy);
+        this.#policyState = state;
+        this.#policyStorageUncertain = false;
+        return state;
+      },
+      prepare: async runtime => {
+        if (MANAGED_RUNTIMES.has(runtime)) {
+          const profile = await this.profileResolver.refresh(runtime);
+          if (profile.status !== "ready" || !profile.enabledByProfile || !profile.models.length || !profile.defaultModel)
+            throw issue("assistant_unavailable", "assistant is unavailable", 503);
+        }
+        if (typeof this.assistantAuthority?.prepare !== "function") throw issue("assistant_unavailable", "verified assistant authority is unavailable", 503);
+        await this.assistantAuthority.prepare(runtime);
+      },
+      revoke: async input => {
+        if (typeof this.assistantAuthority?.revoke !== "function") throw issue("assistant_recovery_required", "assistant revocation is unavailable", 503);
+        await this.assistantAuthority.revoke(input);
+      },
+      inventory: async () => {
+        const external = await this.assistantAuthority?.inventory?.() ?? { activeExecutions: [], uncertainEffects: [{ source: "unconfigured_authority" }] };
+        return { ...external, activeExecutions: [...external.activeExecutions, ...this.turnReservations.keys(), ...this.activeTurns] };
+      },
+    });
+    this.#applyPolicy(this.#policyState);
     await this.refreshProfiles();
-    if (persist) await this.persistRuntime();
+    if (configured?.version !== 5) await this.persistRuntime(this.#policyState);
+    await this.assistantPolicy.init();
+    this.#policyDescription = await this.assistantPolicy.describe();
+    this.#applyPolicy(this.#policyState);
     this.initialized = true;
+  }
+
+  #applyPolicy(state) {
+    this.defaultRuntime = state.activeRuntime;
+    this.assistantEnabled = { claude: state.activeRuntime === "claude", codex: state.activeRuntime === "codex" };
   }
 
   async seedManagedRuntimes() {
@@ -443,28 +484,36 @@ export class CliRuntimeManager {
     return seeded;
   }
 
-  async persistRuntime() {
-    const snapshot = {
-      version: 4,
-      defaultRuntime: this.defaultRuntime,
-      userRuntimes: Object.fromEntries([...this.userRuntimes].sort(([a], [b]) => a.localeCompare(b))),
-      userModels: Object.fromEntries(
-        [...this.userModels]
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([userId, choices]) => [userId, { ...choices }]),
-      ),
-      assistantEnabled: { ...this.assistantEnabled },
-    };
-    const next = this.configPersistQueue.then(() =>
-      writePrivate(this.configPath, `${JSON.stringify(snapshot, null, 2)}\n`),
-    );
+  async persistRuntime(policyState) {
+    const next = this.configPersistQueue.then(async () => {
+      if (this.#policyStopped || this.closed && policyState === undefined) throw issue("assistant_closed", "Assistant authority is closed", 503);
+      if (this.#policyStorageUncertain || policyState === undefined && this.#policyDescription?.recoveryRequired)
+        throw issue("assistant_recovery_required", "Assistant storage requires reconciliation", 503);
+      const policy = validateAssistantPolicyState(policyState ?? this.#policyState);
+      const snapshot = {
+        version: 5,
+        defaultRuntime: policy.activeRuntime,
+        userRuntimes: Object.fromEntries([...this.userRuntimes].sort(([a], [b]) => a.localeCompare(b))),
+        userModels: Object.fromEntries(
+          [...this.userModels]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([userId, choices]) => [userId, { ...choices }]),
+        ),
+        assistantEnabled: { claude: policy.activeRuntime === "claude", codex: policy.activeRuntime === "codex" },
+        assistantPolicy: policy,
+      };
+      try { await writeRuntimePolicy(this.configPath, `${JSON.stringify(snapshot, null, 2)}\n`); }
+      catch (error) { this.#policyStorageUncertain = true; throw error; }
+      this.#policyState = policy;
+      this.#applyPolicy(policy);
+    });
     this.configPersistQueue = next.catch(() => {});
     await next;
   }
 
   runtimeForUser(userId) {
     assertUserId(userId);
-    return this.userRuntimes.get(userId) ?? this.defaultRuntime;
+    return this.defaultRuntime;
   }
 
   modelForUser(userId, runtime = this.runtimeForUser(userId)) {
@@ -477,7 +526,6 @@ export class CliRuntimeManager {
 
   async refreshProfiles() {
     for (const runtime of MANAGED_RUNTIMES) {
-      if (!this.assistantEnabled[runtime]) continue;
       const profile = await this.profileResolver.refresh(runtime);
       this.profiles.set(runtime, profile);
       this.managedRuntimes[runtime] = { models: profile.models.map((item) => item.id), defaultModel: profile.defaultModel };
@@ -488,6 +536,7 @@ export class CliRuntimeManager {
     await this.init();
     await this.refreshProfiles();
     assertUserId(userId);
+    if (runtime !== this.runtimeForUser(userId)) throw issue("assistant_selection_admin_only", "Only an administrator can select the deployment assistant", 403);
     if (!MANAGED_RUNTIMES.has(runtime)) {
       throw issue("invalid_runtime", "OpenCode manages its own models");
     }
@@ -502,16 +551,35 @@ export class CliRuntimeManager {
   }
 
   async setManagedRuntime(runtime, models, defaultModel) {
-    throw issue("catalog_migrated", "model lists are read from CLI profiles; use { runtime, enabled }", 400);
+    throw issue("assistant_selection_migrated", "Use revisioned administrator assistant selection", 409);
   }
 
   async setAssistantEnabled(runtime, enabled) {
+    throw issue("assistant_selection_migrated", "Use revisioned administrator assistant selection", 409);
+  }
+
+  async selectAssistant(input) {
+    if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
     await this.init();
-    if (!MANAGED_RUNTIMES.has(runtime) || typeof enabled !== "boolean") throw issue("invalid_runtime", "expected a managed assistant and enabled boolean");
-    this.assistantEnabled[runtime] = enabled;
-    await this.persistRuntime();
-    if (enabled) await this.refreshProfiles();
-    return this.adminDescribe();
+    this.#policyDescription = { ...this.#policyDescription, recoveryRequired: true };
+    try { return await this.assistantPolicy.select(input); }
+    finally {
+      this.#policyDescription = await this.assistantPolicy.describe();
+      this.defaultRuntime = this.#policyDescription.activeRuntime;
+      this.assistantEnabled = { claude: this.defaultRuntime === "claude", codex: this.defaultRuntime === "codex" };
+    }
+  }
+
+  async reconcileAssistant() {
+    if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
+    await this.init();
+    this.#policyDescription = { ...this.#policyDescription, recoveryRequired: true };
+    try { return await this.assistantPolicy.reconcile(); }
+    finally {
+      this.#policyDescription = await this.assistantPolicy.describe();
+      this.defaultRuntime = this.#policyDescription.activeRuntime;
+      this.assistantEnabled = { claude: this.defaultRuntime === "claude", codex: this.defaultRuntime === "codex" };
+    }
   }
 
   async setUserRuntime(userId, runtime, model) {
@@ -520,6 +588,7 @@ export class CliRuntimeManager {
     assertUserId(userId);
     const selected = assertRuntime(runtime);
     const current = this.runtimeForUser(userId);
+    if (selected !== current) throw issue("assistant_selection_admin_only", "Only an administrator can select the deployment assistant", 403);
     let selectedModel = null;
     if (MANAGED_RUNTIMES.has(selected)) {
       const config = this.managedRuntimes[selected];
@@ -531,13 +600,6 @@ export class CliRuntimeManager {
         throw issue("model_not_enabled", `model ${selectedModel} is not enabled for ${selected}`);
       }
     }
-    if (selected !== current) {
-      const state = await this.ensureUser(userId);
-      if ([...state.sessions.values()].some((session) => session.status === "running")) {
-        throw issue("runtime_busy", "wait for the current agent turn to finish before switching runtime", 409);
-      }
-    }
-    this.userRuntimes.set(userId, selected);
     if (selectedModel && model !== undefined) {
       this.userModels.set(userId, { ...(this.userModels.get(userId) ?? {}), [selected]: selectedModel });
     }
@@ -548,7 +610,7 @@ export class CliRuntimeManager {
   runtimeOption(runtime, userId = null) {
     const descriptor = runtimeDescriptor(runtime);
     if (!MANAGED_RUNTIMES.has(runtime)) {
-      return { ...descriptor, enabled: true, models: [], defaultModel: null, selectedModel: null };
+      return { ...descriptor, enabled: this.defaultRuntime === runtime, models: [], defaultModel: null, selectedModel: null };
     }
     const config = this.managedRuntimes[runtime];
     return {
@@ -566,6 +628,7 @@ export class CliRuntimeManager {
     const selected = this.runtimeForUser(userId);
     return {
       ...this.runtimeOption(selected, userId),
+      policyRevision: this.#policyDescription?.revision ?? this.#policyState?.revision,
       model: this.modelForUser(userId, selected),
       available: RUNTIME_ORDER.map((runtime) => this.runtimeOption(runtime, userId)),
     };
@@ -576,6 +639,7 @@ export class CliRuntimeManager {
 
   adminDescribe() {
     return {
+      ...(this.#policyDescription ?? { activeRuntime: this.defaultRuntime, revision: this.#policyState?.revision, recoveryRequired: true }),
       defaultRuntime: this.defaultRuntime,
       available: RUNTIME_ORDER.map((runtime) => this.runtimeOption(runtime)),
       assistantEnabled: { ...this.assistantEnabled },
@@ -888,6 +952,10 @@ export class CliRuntimeManager {
   }
 
   async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput, workspaceContext }) {
+    await this.init();
+    if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
+    if (this.#policyStorageUncertain || this.#policyDescription?.recoveryRequired || this.#policyState.transition)
+      throw issue("assistant_recovery_required", "Assistant selection requires reconciliation", 503);
     const { state, session } = await this.getOwnedSession(userId, sessionId);
     if (session.status === "running" || this.turnReservations.has(session.id)) throw issue("session_busy", "session is already running", 409);
     if (typeof text !== "string" || !text.trim()) throw issue("empty_prompt", "prompt is empty");
@@ -1551,5 +1619,6 @@ export class CliRuntimeManager {
     this.subscribers.clear();
     await Promise.all([...this.persistQueues.values()].map((queue) => queue.catch(() => {})));
     await this.configPersistQueue.catch(() => {});
+    this.#policyStopped = true;
   }
 }

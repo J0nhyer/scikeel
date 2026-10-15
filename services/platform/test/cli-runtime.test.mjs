@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import { afterEach, test } from "node:test";
 
 import { CliRuntimeManager, handoverText } from "../src/cli-runtime.mjs";
+import { CliProfileResolver } from "../src/cli-profile.mjs";
 
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
 const roots = [];
@@ -29,6 +30,14 @@ async function makeManager(runtime) {
   await writeFile(join(adminCodex, "config.toml"), "model = \"admin-model\"\n");
   await writeFile(join(adminCodex, "codex-models.json"), JSON.stringify({ models: ["admin-model", "gpt-fast", "gpt-deep"] }));
   await writeFile(join(adminCodex, "config.toml"), 'model = "admin-model"\nmodel_catalog_json = "codex-models.json"\n');
+  const profileResolver = new CliProfileResolver({ claudeConfigDir: adminClaude, codexHome: adminCodex,
+    fetchImpl: async () => { throw Error("Deterministic CLI tests must never contact a provider"); } });
+  const refresh = profileResolver.refresh.bind(profileResolver);
+  // The synthetic CLI is always available; this is not live Claude readiness evidence.
+  profileResolver.refresh = async (...args) => {
+    const profile = await refresh(...args);
+    return args[0] === "claude" && profile.enabledByProfile ? { ...profile, status: "ready" } : profile;
+  };
   const options = {
       rootDir: join(root, "runtime"),
       runtime,
@@ -38,13 +47,22 @@ async function makeManager(runtime) {
       codexArgs: [fakeCli, "codex"],
       claudeConfigDir: adminClaude,
       codexHome: adminCodex,
+      profileResolver,
       turnTimeoutMs: 5_000,
+      assistantAuthority: { prepare: async () => {}, revoke: async () => {},
+        inventory: async () => ({ activeExecutions: [], uncertainEffects: [] }) },
   };
   return {
     root,
     options,
     manager: new CliRuntimeManager(options),
   };
+}
+
+async function selectRuntime(manager, runtime) {
+  const { revision, activeRuntime } = manager.adminDescribe();
+  if (activeRuntime === runtime) return;
+  return manager.selectAssistant({ runtime, expectedRevision: revision, operationId: `fixture_selection_${revision}` });
 }
 
 async function waitForIdle(manager, userId, sessionId) {
@@ -154,31 +172,32 @@ for (const runtime of ["claude", "codex"]) {
       assert.match(await readFile(join(pinned.configDir, "skills", "publication-figures", "SKILL.md"), "utf8"), /Publication Figures/);
     } finally { await manager.close(); }
   });
-  test(`${runtime} access switches persist, preserve accepted turns and history, and reject subsequent calls`, async () => {
+  test(`${runtime} exclusive selection waits for accepted turns and persists history across a global switch`, async () => {
     const { root, manager, options } = await makeManager(runtime);
     const workspace = join(root, "workspace");
     await mkdir(workspace);
     await manager.init();
     const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
     const turn = await manager.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "accepted research task" });
-    await manager.setAssistantEnabled(runtime, false);
-    assert.equal(manager.describe("usr_a").available.find((item) => item.runtime === runtime).enabled, false);
+    await assert.rejects(selectRuntime(manager, "opencode"), { code: "assistant_busy" });
     await manager.runReservedPrompt(turn);
     const finished = await waitForIdle(manager, "usr_a", session.id);
     assert.equal(finished.history.length, 2);
     assert.equal(finished.history.at(-1).info.error, undefined);
-    await assert.rejects(manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "blocked" }), { code: "runtime_unconfigured" });
-    await assert.rejects(manager.setUserRuntime("usr_b", runtime), { code: "runtime_unconfigured" });
+    await selectRuntime(manager, "opencode");
+    assert.equal(manager.describe("usr_a").available.find((item) => item.runtime === runtime).enabled, false);
+    await assert.rejects(manager.setUserRuntime("usr_b", runtime), { code: "assistant_selection_admin_only" });
     assert.equal(finished.history.length, 2);
+    await manager.close();
     const restarted = new CliRuntimeManager(options);
     await restarted.init();
     assert.equal(restarted.adminDescribe().assistantEnabled[runtime], false);
+    assert.equal(restarted.runtimeForUser("usr_b"), "opencode");
+    await selectRuntime(restarted, runtime);
+    await restarted.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "continue" });
+    const continued = await waitForIdle(restarted, "usr_a", session.id);
+    assert.equal(continued.history.length, 4);
     await restarted.close();
-    await manager.setAssistantEnabled(runtime, true);
-    await manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "continue" });
-    await waitForIdle(manager, "usr_a", session.id);
-    assert.equal(finished.history.length, 4);
-    await manager.close();
   });
 }
 
@@ -457,7 +476,7 @@ test("runs Codex and never shares one user's session list with another user", as
   assert.equal((await readFile(join(root, "runtime", "users", "usr_a", "codex-home", "profiles", finished.identityRevision, manager.profiles.get("codex").sourceRevision, "codex-models.json"), "utf8")), await readFile(join(root, "admin-codex", "codex-models.json"), "utf8"));
 });
 
-test("migrates the old global switch to OpenCode and persists per-user choices", async () => {
+test("migrates the old switch to OpenCode and persists one administrator selection for all users", async () => {
   const { root, options, manager } = await makeManager("codex");
   await mkdir(join(root, "runtime"), { recursive: true });
   await writeFile(
@@ -468,19 +487,21 @@ test("migrates the old global switch to OpenCode and persists per-user choices",
   await manager.init();
   assert.equal(manager.describe("usr_a").runtime, "opencode");
   assert.equal(manager.describe("usr_b").runtime, "opencode");
-  assert.equal((await manager.setUserRuntime("usr_a", "codex")).runtime, "codex");
-  assert.equal(manager.describe("usr_b").runtime, "opencode");
+  await assert.rejects(manager.setUserRuntime("usr_a", "codex"), { code: "assistant_selection_admin_only" });
+  await selectRuntime(manager, "codex");
+  assert.equal(manager.describe("usr_a").runtime, "codex");
+  assert.equal(manager.describe("usr_b").runtime, "codex");
   await manager.close();
 
   const persisted = JSON.parse(await readFile(join(root, "runtime", "runtime.json"), "utf8"));
-  assert.equal(persisted.version, 4);
-  assert.equal(persisted.defaultRuntime, "opencode");
-  assert.equal(persisted.userRuntimes.usr_a, "codex");
+  assert.equal(persisted.version, 5);
+  assert.equal(persisted.defaultRuntime, "codex");
+  assert.deepEqual(persisted.userRuntimes, {});
 
   const reopened = new CliRuntimeManager(options);
   await reopened.init();
   assert.equal(reopened.describe("usr_a").runtime, "codex");
-  assert.equal(reopened.describe("usr_b").runtime, "opencode");
+  assert.equal(reopened.describe("usr_b").runtime, "codex");
   await reopened.close();
 });
 
@@ -498,10 +519,10 @@ test("migrates version 2 runtime choices and seeds managed model catalogs", asyn
 
   await manager.init();
 
-  assert.equal(manager.describe("usr_a").runtime, "codex");
-  assert.deepEqual(manager.adminDescribe().assistantEnabled, { claude: true, codex: true });
+  assert.equal(manager.describe("usr_a").runtime, "opencode");
+  assert.deepEqual(manager.adminDescribe().assistantEnabled, { claude: false, codex: false });
   const saved = JSON.parse(await readFile(join(root, "runtime", "runtime.json"), "utf8"));
-  assert.equal(saved.version, 4);
+  assert.equal(saved.version, 5);
   assert.equal(saved.userRuntimes.usr_a, "codex");
 });
 
@@ -510,9 +531,12 @@ test("remembers one enabled managed model per user and runtime", async () => {
   await manager.init();
   await writeFile(join(root, "admin-claude", "settings.json"), JSON.stringify({ model: "sonnet", env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "sonnet", ANTHROPIC_DEFAULT_OPUS_MODEL: "opus" } }));
   await manager.refreshProfiles();
-  await manager.setUserRuntime("usr_a", "codex", "gpt-deep");
+  await selectRuntime(manager, "codex");
+  await manager.setUserModel("usr_a", "codex", "gpt-deep");
+  await assert.rejects(manager.setUserModel("usr_a", "claude", "opus"), { code: "assistant_selection_admin_only" });
+  await selectRuntime(manager, "claude");
   await manager.setUserModel("usr_a", "claude", "opus");
-
+  await selectRuntime(manager, "codex");
   assert.equal(manager.describe("usr_a").model, "gpt-deep");
   assert.equal(manager.modelForUser("usr_a", "claude"), "opus");
 });
@@ -522,7 +546,8 @@ test("falls back to the new default when an administrator removes a selected mod
   await manager.init();
   await writeFile(join(root, "admin-codex", "config.toml"), 'model = "gpt-fast"\nmodel_catalog_json = "codex-models.json"\n');
   await manager.refreshProfiles();
-  await manager.setUserRuntime("usr_a", "codex", "gpt-deep");
+  await selectRuntime(manager, "codex");
+  await manager.setUserModel("usr_a", "codex", "gpt-deep");
 
   await writeFile(join(root, "admin-codex", "codex-models.json"), JSON.stringify({ models: ["gpt-fast"] }));
   await manager.refreshProfiles();
@@ -561,8 +586,9 @@ test("migrates version 3 assistant flags while preserving account selections", a
   await writeFile(join(root, "runtime", "runtime.json"), JSON.stringify({ version: 3, defaultRuntime: "opencode", userRuntimes: { usr_a: "codex" }, userModels: { usr_a: { codex: "gpt-deep" } }, managedRuntimes: { codex: { models: ["gpt-deep"], defaultModel: "gpt-deep" }, claude: { models: [], defaultModel: null } } }));
   await manager.init();
   const saved = JSON.parse(await readFile(join(root, "runtime", "runtime.json"), "utf8"));
-  assert.equal(saved.version, 4);
-  assert.deepEqual(saved.assistantEnabled, { claude: false, codex: true });
+  assert.equal(saved.version, 5);
+  assert.deepEqual(saved.assistantEnabled, { claude: false, codex: false });
+  assert.equal(saved.userRuntimes.usr_a, "codex");
   assert.equal(manager.modelForUser("usr_a", "codex"), "gpt-deep");
 });
 

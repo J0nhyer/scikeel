@@ -19,7 +19,7 @@ function identity(value) {
     .map(key => [key, value[key]]));
 }
 
-function validateState(value) {
+export function validateAssistantPolicyState(value) {
   if (!value || value.schema !== 1 || !runtimes.has(value.activeRuntime) || !integer(value.revision) ||
       !Array.isArray(value.receipts) || value.receipts.length > 64 || !value.executions ||
       typeof value.executions !== "object" || Array.isArray(value.executions) || Object.keys(value.executions).length > 1024 ||
@@ -44,6 +44,8 @@ function validateState(value) {
       throw error("invalid_assistant_policy", 503);
     operations.add(receipt.operationId); previousRevision = result.revision;
   }
+  if (value.revision > 1 && (previousRevision !== value.revision || value.receipts.at(-1)?.result.activeRuntime !== value.activeRuntime))
+    throw error("invalid_assistant_policy", 503);
   const transition = value.transition;
   if (transition !== null && (!exact(transition, "expectedRevision,operationId,payloadHash,runtime") ||
       !name(transition.operationId) || operations.has(transition.operationId) ||
@@ -59,7 +61,7 @@ export class AssistantPolicy {
   constructor({ state, persist, prepare, revoke, inventory, load }) {
     if (![persist, prepare, revoke, inventory].every(value => typeof value === "function"))
       throw error("invalid_assistant_policy", 503);
-    this.#state = validateState(state);
+    this.#state = validateAssistantPolicyState(state);
     Object.assign(this, { persist, prepare, revoke, inventory, load });
   }
   #serial(run) {
@@ -67,7 +69,7 @@ export class AssistantPolicy {
     this.#queue = next; return next;
   }
   async #save(next) {
-    const value = validateState(next);
+    const value = validateAssistantPolicyState(next);
     try { await this.persist(structuredClone(value)); }
     catch { this.#uncertain = true; throw error("assistant_persistence_uncertain", 503); }
     this.#state = value;
@@ -102,7 +104,7 @@ export class AssistantPolicy {
     return this.#serial(async () => {
       this.#uncertain = true;
       let loaded;
-      try { loaded = validateState(await this.load()); }
+      try { loaded = validateAssistantPolicyState(await this.load()); }
       catch { throw error("assistant_recovery_required", 503); }
       const previous = this.#state;
       if (loaded.revision < previous.revision || loaded.revision === previous.revision && loaded.activeRuntime !== previous.activeRuntime)

@@ -11,8 +11,9 @@ async function fixture(t,jobs) {
     defaultModel:runtime==="codex"?"approved":null,identityRevision:"owned-profile",catalogRevision:"owned-profile",status:"ready",files:{}}),
     copyForTurn:()=>{throw new Error("host credential copying is forbidden in managed mode");}};
   const manager=new CliRuntimeManager({rootDir:join(root,"native"),profileResolver:resolver,sandboxJobs:jobs,
+    assistantAuthority:{prepare:async()=>{},revoke:async()=>{},inventory:async()=>({activeExecutions:[],uncertainEffects:[]})},
     spawnImpl:()=>{throw new Error("host native process must never be spawned");}});
-  t.after(()=>manager.close());await manager.init();await manager.setUserRuntime("a","codex");
+  t.after(()=>manager.close());await manager.init();await manager.selectAssistant({runtime:"codex",expectedRevision:1,operationId:"fixture_codex"});
   const session=await manager.createSession({userId:"a",workspaceDir:workspace,directory:project,title:"Owned"});
   return {manager,session,workspace,project};
 }
