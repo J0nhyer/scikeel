@@ -125,10 +125,19 @@ export class AssistantPolicy {
     try { await this.revoke(input); }
     catch { throw error("assistant_recovery_required", 503); }
   }
-  async describe() {
-    return this.#serial(async () => ({ activeRuntime: this.#state.activeRuntime, revision: this.#state.revision,
-      recoveryRequired: !this.#initialized || this.#uncertain || !!this.#state.transition,
-      operation: this.#state.transition ? { operationId: this.#state.transition.operationId, state: "pending" } : null }));
+  async describe(operationId) {
+    return this.#serial(async () => {
+      if (operationId !== undefined && !name(operationId)) throw error("invalid_assistant_operation", 400);
+      const pending = this.#state.transition;
+      let operation = pending ? { operationId: pending.operationId, state: "pending" } : null;
+      if (operationId !== undefined) {
+        const receipt = this.#state.receipts.find(item => item.operationId === operationId);
+        operation = receipt ? { operationId, state: "committed", result: structuredClone(receipt.result) } :
+          { operationId, state: pending?.operationId === operationId ? "pending" : "unknown" };
+      }
+      return { activeRuntime: this.#state.activeRuntime, revision: this.#state.revision,
+        recoveryRequired: !this.#initialized || this.#uncertain || !!pending, operation };
+    });
   }
   async #commitTransition() {
     const transition = this.#state.transition, inventory = await this.#inventory();

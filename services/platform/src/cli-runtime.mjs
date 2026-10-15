@@ -607,15 +607,15 @@ export class CliRuntimeManager {
     return this.describe(userId);
   }
 
-  runtimeOption(runtime, userId = null) {
+  runtimeOption(runtime, userId = null, activeRuntime = this.defaultRuntime) {
     const descriptor = runtimeDescriptor(runtime);
     if (!MANAGED_RUNTIMES.has(runtime)) {
-      return { ...descriptor, enabled: this.defaultRuntime === runtime, models: [], defaultModel: null, selectedModel: null };
+      return { ...descriptor, enabled: activeRuntime === runtime, models: [], defaultModel: null, selectedModel: null };
     }
     const config = this.managedRuntimes[runtime];
     return {
       ...descriptor,
-      enabled: this.assistantEnabled[runtime] && config.models.length > 0 && Boolean(config.defaultModel),
+      enabled: activeRuntime === runtime && config.models.length > 0 && Boolean(config.defaultModel),
       models: [...config.models],
       status: this.profiles.get(runtime)?.status ?? "unavailable",
       catalogRevision: this.profiles.get(runtime)?.catalogRevision ?? null,
@@ -624,25 +624,43 @@ export class CliRuntimeManager {
     };
   }
 
-  describe(userId) {
-    const selected = this.runtimeForUser(userId);
+  describe(userId, policy) {
+    const selected = policy?.activeRuntime ?? this.runtimeForUser(userId);
     return {
-      ...this.runtimeOption(selected, userId),
-      policyRevision: this.#policyDescription?.revision ?? this.#policyState?.revision,
+      ...this.runtimeOption(selected, userId, selected),
+      policyRevision: policy?.revision ?? this.#policyState?.revision,
       model: this.modelForUser(userId, selected),
-      available: RUNTIME_ORDER.map((runtime) => this.runtimeOption(runtime, userId)),
+      available: RUNTIME_ORDER.map((runtime) => this.runtimeOption(runtime, userId, selected)),
     };
   }
 
-  async freshDescribe(userId) { await this.init(); await this.refreshProfiles(); return this.describe(userId); }
-  async freshAdminDescribe() { await this.init(); await this.refreshProfiles(); return this.adminDescribe(); }
+  async freshDescribe(userId) {
+    await this.init();
+    await this.refreshProfiles();
+    return this.describe(userId, await this.assistantPolicy.describe());
+  }
+  async assertAssistantRevision(revision) {
+    await this.init();
+    const policy = await this.assistantPolicy.describe();
+    if (this.closed || policy.recoveryRequired || this.#policyStorageUncertain)
+      throw Object.assign(issue("assistant_recovery_required", "Assistant recovery is required", 503), { statusCode: 503 });
+    if (revision !== String(policy.revision))
+      throw Object.assign(issue("assistant_revision_conflict", "The deployment assistant changed; reload before continuing", 409), { statusCode: 409 });
+    return policy;
+  }
 
-  adminDescribe() {
+  async freshAdminDescribe(operationId) {
+    await this.init();
+    await this.refreshProfiles();
+    return this.adminDescribe(await this.assistantPolicy.describe(operationId));
+  }
+
+  adminDescribe(policy = this.#policyDescription ?? { activeRuntime: this.defaultRuntime, revision: this.#policyState?.revision, recoveryRequired: true }) {
     return {
-      ...(this.#policyDescription ?? { activeRuntime: this.defaultRuntime, revision: this.#policyState?.revision, recoveryRequired: true }),
-      defaultRuntime: this.defaultRuntime,
-      available: RUNTIME_ORDER.map((runtime) => this.runtimeOption(runtime)),
-      assistantEnabled: { ...this.assistantEnabled },
+      ...policy,
+      defaultRuntime: policy.activeRuntime,
+      available: RUNTIME_ORDER.map((runtime) => this.runtimeOption(runtime, null, policy.activeRuntime)),
+      assistantEnabled: { claude: policy.activeRuntime === "claude", codex: policy.activeRuntime === "codex" },
     };
   }
 

@@ -564,6 +564,24 @@ export class PlatformServer {
     sendJson(response, 403, { error: message });
   }
 
+  #requireRuntimeOrigin(request, response) {
+    const expected = `${this.secureCookies ? "https" : "http"}://${request.headers.host}`;
+    if (request.headers.origin !== expected || request.headers["sec-fetch-site"] === "cross-site") {
+      this.#forbidden(response, "Foreign origin");
+      return false;
+    }
+    return true;
+  }
+
+  async #requireAssistantContext(request, response) {
+    if (!this.cliRuntime || ["GET", "HEAD"].includes(request.method)) return;
+    const route = classifyRuntimeRoute(request.method, (request.url ?? "/").split("?")[0]);
+    // Stop uses the captured worker/execution authority, not the next assistant.
+    if (!route || route.operation === "sessionAbort") return;
+    const policy = await this.cliRuntime.assertAssistantRevision(request.headers["x-scikeel-assistant-revision"]);
+    response.setHeader("x-scikeel-assistant-revision", String(policy.revision));
+  }
+
   async #requireAdmin(request, response) {
     const user = await this.#currentUser(request);
     if (!user) {
@@ -763,6 +781,7 @@ export class PlatformServer {
 
   async #proxy(request, response, access, user, worker) {
     this.#requireWriteContext(request, user, worker);
+    await this.#requireAssistantContext(request, response);
     if(this.workspaceManagement && (request.url??"").startsWith("/v1/")) {
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
       const url=new URL(request.url,"http://platform.invalid");
@@ -2052,6 +2071,7 @@ export class PlatformServer {
             const worker=this.workerManager.getWorker(workerIdForUser(user.id));
             const context=worker && worker.userId===user.id && worker.status==="running" && Number.isSafeInteger(worker.generation)
               ? {instanceId:worker.id,generation:worker.generation} : null;
+            if (description.policyRevision) response.setHeader("x-scikeel-assistant-revision", String(description.policyRevision));
             sendJson(response,200,{...description,context});
             return;
           }
@@ -2063,12 +2083,13 @@ export class PlatformServer {
             sendJson(response, 404, { error: "runtime selection is unavailable" });
             return;
           }
+          if (!this.#requireRuntimeOrigin(request, response)) return;
           const payload = await this.#readPayload(request, response);
           if (!payload) return;
           try {
             sendJson(response, 200, await this.cliRuntime.setUserRuntime(user.id, payload.runtime, payload.model));
           } catch (error) {
-            sendJson(response, error?.status ?? 400, { error: error?.message ?? "could not set runtime" });
+            sendJson(response, error?.status ?? 400, { error: error?.message ?? "could not set runtime", code: error?.code });
           }
           return;
         }
@@ -2090,22 +2111,32 @@ export class PlatformServer {
             return;
           }
           if (request.method === "GET") {
-            sendJson(response, 200, await this.cliRuntime.freshAdminDescribe());
+            const keys = [...parsed.searchParams.keys()];
+            if (keys.length && (keys.length !== 1 || keys[0] !== "operationId")) {
+              sendJson(response, 400, { error: "invalid assistant operation query", code: "invalid_assistant_operation" });
+              return;
+            }
+            try {
+              const description = await this.cliRuntime.freshAdminDescribe(parsed.searchParams.get("operationId") ?? undefined);
+              response.setHeader("x-scikeel-assistant-revision", String(description.revision));
+              sendJson(response, 200, description);
+            } catch (error) {
+              sendJson(response, error?.status ?? 503, { error: error?.code ?? "assistant_unavailable", code: error?.code });
+            }
             return;
           }
           if (request.method === "POST") {
+            if (!this.#requireRuntimeOrigin(request, response)) return;
             const payload = await this.#readPayload(request, response);
             if (!payload) return;
             try {
-              sendJson(
-                response,
-                200,
-                await (Object.keys(payload).sort().join(",") === "enabled,runtime"
+              const selection = await (Object.keys(payload).sort().join(",") === "enabled,runtime"
                   ? this.cliRuntime.setAssistantEnabled(payload.runtime, payload.enabled)
-                  : this.cliRuntime.setManagedRuntime(payload.runtime, payload.models, payload.defaultModel)),
-              );
+                  : this.cliRuntime.selectAssistant(payload));
+              response.setHeader("x-scikeel-assistant-revision", String(selection.revision));
+              sendJson(response, 200, selection);
             } catch (error) {
-              sendJson(response, error?.status ?? 400, { error: error?.message ?? "could not update runtime" });
+              sendJson(response, error?.status ?? 400, { error: error?.code ?? "invalid_assistant_selection", code: error?.code });
             }
             return;
           }
@@ -2128,6 +2159,7 @@ export class PlatformServer {
         return;
       }
       if (this.tenantPolicy && await this.#serveWeb(request, response)) return;
+      await this.#requireAssistantContext(request, response);
       const readOnly = ["GET", "HEAD"].includes(request.method);
       const { access, worker } = await this.#ensureWorker(user, { allowRecovery: !this.tenantPolicy || readOnly });
       const expectedGeneration = request.headers["x-scikeel-runtime-generation"];

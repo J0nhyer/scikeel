@@ -62,6 +62,25 @@ test("the manager persists policy selection and model preferences in one version
   assert.equal(restarted.adminDescribe().revision, 2);
 });
 
+test("an Admin description queued during cutover reports one consistent committed snapshot", async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const revoking = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(t, { revoke: async () => { entered(); await gate; } });
+  const switching = f.manager.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "queued-description" });
+  await revoking;
+  const reading = f.manager.freshAdminDescribe();
+  await new Promise(resolve => setImmediate(resolve));
+  release();
+  await switching;
+  const description = await reading;
+  assert.equal(description.activeRuntime, "codex");
+  assert.equal(description.defaultRuntime, "codex");
+  assert.equal(description.revision, 2);
+  assert.deepEqual(description.assistantEnabled, { claude: false, codex: true });
+  assert.deepEqual(description.available.filter(option => option.enabled).map(option => option.runtime), ["codex"]);
+});
+
 test("an unfinished manager cutover is durable before revocation and reconciles before reopening admission", async t => {
   let failing = true, root;
   const f = await fixture(t, { revoke: async () => {

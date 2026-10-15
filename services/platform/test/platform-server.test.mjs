@@ -8,6 +8,7 @@ import { afterEach, test } from "node:test";
 
 import { AuthStore } from "../src/auth-store.mjs";
 import { CliRuntimeManager } from "../src/cli-runtime.mjs";
+import { CliProfileResolver } from "../src/cli-profile.mjs";
 import { PlatformServer } from "../src/platform-server.mjs";
 import { WorkerManager } from "../src/worker-manager.mjs";
 import { TenantPolicy } from "../src/tenant-policy.mjs";
@@ -49,10 +50,13 @@ function cookieHeader(jar) {
 
 function makeClient(base) {
   const jar = new Map();
+  let policyRevision = "1";
   return {
     jar,
     async request(path, options = {}) {
       const headers = { ...(options.headers ?? {}) };
+      if (options.method && !["GET", "HEAD"].includes(options.method) && !Object.hasOwn(headers, "origin")) headers.origin = base;
+      if (options.method && !["GET", "HEAD"].includes(options.method) && !Object.hasOwn(headers, "x-scikeel-assistant-revision")) headers["x-scikeel-assistant-revision"] = policyRevision;
       if (options.method && !["GET", "HEAD"].includes(options.method) && !Object.hasOwn(headers, "x-scikeel-runtime-generation")) headers["x-scikeel-runtime-generation"] = "1";
       const cookies = cookieHeader(jar);
       if (cookies) headers.cookie = cookies;
@@ -62,6 +66,7 @@ function makeClient(base) {
         headers,
       });
       addCookies(jar, response);
+      policyRevision = response.headers.get("x-scikeel-assistant-revision") ?? policyRevision;
       return response;
     },
   };
@@ -231,7 +236,7 @@ test("research tasks validate ownership, preserve page-independent execution, an
   await writeFile(join(home, "auth.json"), '{"auth":true}');
   await writeFile(join(home, "config.toml"), 'model = "gpt-fast"\nmodel_catalog_json = "models.json"\n');
   await writeFile(join(home, "models.json"), JSON.stringify({ models: ["gpt-fast"] }));
-  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: home, codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
+  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), runtime: "codex", codexHome: home, codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
   const f = await makeFixture({ root, cliRuntime });
   const admin = makeClient(f.base);
   const account = await login(admin, "admin", "admin-password");
@@ -421,7 +426,7 @@ test("logs out through a browser form and revokes the platform session", async (
   assert.equal(me.status, 401);
 });
 
-test("keeps OpenCode per user while exposing administrator-managed Claude and Codex CLIs", async () => {
+test("keeps one administrator-selected assistant while isolating users, model preferences and native histories", async () => {
   const root = await mkdtemp(join(tmpdir(), "osd-platform-cli-"));
   const webRoot = join(root, "web");
   const adminClaude = join(root, "admin-claude");
@@ -436,6 +441,16 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   await writeFile(join(webRoot, "index.html"), "<!doctype html><html><head></head><body>web</body></html>");
   await writeFile(join(webRoot, "assets", "app.js"), "console.log('web');\n");
 
+  const profileResolver = new CliProfileResolver({ claudeConfigDir: adminClaude, codexHome: adminCodex,
+    fetchImpl: async () => { throw Error("Deterministic adapter fixtures must not contact a provider"); } });
+  const refresh = profileResolver.refresh.bind(profileResolver);
+  // Only the synthetic CLI is available; this is not live Claude evidence.
+  profileResolver.refresh = async (...args) => {
+    const profile = await refresh(...args);
+    return args[0] === "claude" && profile.enabledByProfile ? { ...profile, status: "ready" } : profile;
+  };
+  const assistantAuthority = { prepare: async () => {}, revoke: async () => {},
+    inventory: async () => ({ activeExecutions: [], uncertainEffects: [] }) };
   const cliRuntime = new CliRuntimeManager({
     rootDir: join(root, "cli-runtime"),
     runtime: "opencode",
@@ -445,6 +460,8 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     codexArgs: [fakeCli, "codex"],
     claudeConfigDir: adminClaude,
     codexHome: adminCodex,
+    profileResolver,
+    assistantAuthority,
     turnTimeoutMs: 5_000,
   });
   const fixture = await makeFixture({ cliRuntime, webRoot, root });
@@ -488,8 +505,8 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     headers: { accept: "application/json", "content-type": "application/json" },
     body: JSON.stringify({ runtime: "codex", enabled: true }),
   });
-  assert.equal(configuredCodex.status, 200);
-  assert.equal((await json(configuredCodex)).assistantEnabled.codex, true);
+  assert.equal(configuredCodex.status, 409);
+  assert.equal((await json(configuredCodex)).code, "assistant_selection_migrated");
 
   const invalidCatalog = await admin.request("/api/admin/runtime", {
     method: "POST",
@@ -504,7 +521,7 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   const unchangedCatalog = await admin.request("/api/admin/runtime", {
     headers: { accept: "application/json" },
   });
-  assert.equal((await json(unchangedCatalog)).assistantEnabled.codex, true);
+  assert.equal((await json(unchangedCatalog)).assistantEnabled.codex, false);
 
   const studentAdminAttempt = await student.request("/api/admin/runtime", {
     method: "POST",
@@ -525,18 +542,19 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   assert.equal(studentSwitchAttempt.status, 403);
   assert.equal((await json(await admin.request("/api/admin/runtime", {
     headers: { accept: "application/json" },
-  }))).assistantEnabled.codex, true);
+  }))).assistantEnabled.codex, false);
 
-  const selectClaude = await admin.request("/api/runtime", {
+  const selectClaude = await admin.request("/api/admin/runtime", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ runtime: "claude" }),
+    body: JSON.stringify({ runtime: "claude", expectedRevision: 1, operationId: "fixture-claude" }),
   });
   assert.equal(selectClaude.status, 200);
-  assert.equal((await json(selectClaude)).runtime, "claude");
+  assert.equal((await json(selectClaude)).activeRuntime, "claude");
   const unchangedStudentRuntime = await student.request("/api/runtime", { headers: { accept: "application/json" } });
-  assert.equal((await json(unchangedStudentRuntime)).runtime, "opencode");
+  assert.equal((await json(unchangedStudentRuntime)).runtime, "claude");
   const studentOpenCode = await student.request("/echo", { headers: { accept: "application/json" } });
+  // This legacy fixture's diagnostic bridge is not an inference fallback.
   assert.equal(studentOpenCode.status, 200);
 
   const eventResponse = await admin.request(`/event?directory=${encodeURIComponent(workspace)}`);
@@ -572,15 +590,21 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   assert.match(streamed, /session\.idle/);
   await eventReader.cancel();
 
-  const switchRuntime = await admin.request("/api/runtime", {
+  const switchRuntime = await admin.request("/api/admin/runtime", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ runtime: "codex", model: "gpt-deep" }),
+    body: JSON.stringify({ runtime: "codex", expectedRevision: 2, operationId: "fixture-codex" }),
   });
   assert.equal(switchRuntime.status, 200);
-  assert.equal((await json(switchRuntime)).model, "gpt-deep");
+  assert.equal((await json(switchRuntime)).activeRuntime, "codex");
+  const chooseModel = await admin.request("/api/runtime", {
+    method: "POST", headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ runtime: "codex", model: "gpt-deep" }),
+  });
+  assert.equal(chooseModel.status, 200);
+  assert.equal((await json(chooseModel)).model, "gpt-deep");
   const stillUnchangedStudentRuntime = await student.request("/api/runtime", { headers: { accept: "application/json" } });
-  assert.equal((await json(stillUnchangedStudentRuntime)).runtime, "opencode");
+  assert.equal((await json(stillUnchangedStudentRuntime)).runtime, "codex");
   const adminManagedConfig = await admin.request("/global/config", {
     headers: { accept: "application/json" },
   });
@@ -704,6 +728,7 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     claudeCommand: process.execPath, claudeArgs: [fakeCli, "claude"],
     codexCommand: process.execPath, codexArgs: [fakeCli, "codex"],
     claudeConfigDir: adminClaude, codexHome: adminCodex, turnTimeoutMs: 5_000,
+    profileResolver, assistantAuthority,
   });
   try {
     await restored.init();
@@ -711,10 +736,10 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     assert.equal(restored.modelForUser(studentLogin.user.id, "codex"), "gpt-deep");
   } finally { await restored.close(); }
 
-  const switchBack = await admin.request("/api/runtime", {
+  const switchBack = await admin.request("/api/admin/runtime", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ runtime: "claude" }),
+    body: JSON.stringify({ runtime: "claude", expectedRevision: 3, operationId: "fixture-back" }),
   });
   assert.equal(switchBack.status, 200);
   const restoredClaudeSessions = await admin.request("/experimental/session", {
@@ -853,7 +878,7 @@ test("conversation attachments persist on real managed messages and reject anoth
   const home = join(root, "codex-home"); await mkdir(home);
   await writeFile(join(home, "auth.json"), '{"auth":true}');
   await writeFile(join(home, "config.toml"), 'model = "fixture-model"\n');
-  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: home,
+  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), runtime: "codex", codexHome: home,
     codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
   const f = await makeFixture({ root, cliRuntime }); const client = makeClient(f.base);
   const account = await login(client, "admin", "admin-password"); await client.request("/"); await cliRuntime.setUserRuntime(account.user.id, "codex");
