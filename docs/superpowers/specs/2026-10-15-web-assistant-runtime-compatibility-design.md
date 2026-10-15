@@ -89,6 +89,8 @@ Keep these responsibilities distinct:
 
 Historical messages retain their originating assistant/model metadata internally. Normalize legacy histories through owned runtime reads; preserve native records and keep imports idempotent with stable message identity. Runtime data may remain the historical source, but opening old history cannot depend on that runtime being enabled for inference or having working upstream credentials. No mutation is authorized by a path or native ID alone.
 
+A new platform conversation may remain unbound until the target reports a verified native identity. Reserving its durable execution does not require inventing a native session ID. A duplicate delivery receipt is read-only recovery information and never grants another dispatch; an uncertain receipt retains the canonical and deployment-policy fences until verified cleanup.
+
 The SDK presents one conversation/history contract and normalizes adapter events into existing message, tool, question, status, and error shapes. The frontend does not call native runtime APIs or infer authority from raw tool text. User-facing menus contain model choices, not an assistant switch.
 
 ## 7. Lazy Context Handover

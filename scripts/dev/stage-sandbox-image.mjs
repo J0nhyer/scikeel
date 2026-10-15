@@ -4,8 +4,10 @@ import { lstat, readFile, statfs } from "node:fs/promises";
 import { posix, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { validateRuntimeArtifact, validateNetworkRuntime } from "./build-opencode-title-runtime.mjs";
+import { validateGuardLock } from "./build-codex-guard-runtime.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const hex = /^[a-f0-9]{64}$/;
@@ -15,6 +17,46 @@ const opencodeVersion = await pinned("scripts/dev/fetch-opencode.sh", "OPENCODE_
 const uvVersion = await pinned("scripts/dev/fetch-uv.sh", "UV_VERSION");
 const networkRuntimeLock = JSON.parse(await readFile(join(repo, "runtime/opencode-patches/network.lock.json"), "utf8"));
 const titleRuntimeLock = JSON.parse(await readFile(join(repo, "runtime/opencode-patches/session-title.lock.json"), "utf8"));
+const nativeLock = JSON.parse(await readFile(join(repo, "runtime/codex-patches/required-effect-guard.lock.json"), "utf8"));
+const nativePaths = ["runtime/codex-patches/required-effect-guard.patch", "runtime/codex-patches/required-effect-guard-tests.patch",
+  "runtime/codex-patches/required-effect-guard.lock.json", "scripts/dev/build-codex-guard-runtime.mjs"];
+const nativeInputs = Object.fromEntries(await Promise.all(nativePaths.map(async path => [path,
+  createHash("sha256").update(await readFile(join(repo, path))).digest("hex")])));
+const nativeResourcePaths = ["opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json"];
+
+export function validateGuardArtifact(artifact, binarySha256, source) {
+  validateGuardLock(nativeLock);
+  const fields = [...Object.keys(nativeLock), "target", "binarySha256", "source", "version"].sort();
+  if (!artifact || Object.keys(artifact).sort().join(",") !== fields.join(",") ||
+      Object.entries(nativeLock).some(([key, value]) => artifact[key] !== value) ||
+      artifact.target !== "x86_64-unknown-linux-gnu" || !hex.test(binarySha256 ?? "") ||
+      artifact.binarySha256 !== binarySha256 || !/^[a-f0-9]{40}$/.test(artifact.source ?? "") ||
+      source !== undefined && artifact.source !== source || artifact.version !== `codex-cli ${nativeLock.upstreamVersion}`)
+    throw new Error("invalid pinned native integration identity");
+  return artifact;
+}
+
+export function validateNativeArchive(manifest, listing) {
+  if (!manifest.enabledRuntimes.includes("codex")) return;
+  if (!isDeepStrictEqual(manifest.codexRuntime?.integration, listing.nativeIntegration) ||
+      listing.toolHashes?.[manifest.tools.codex.path] !== manifest.tools.codex.sha256 ||
+      (listing.entries ?? []).some(entry => entry.path.startsWith("opt/scikeel/tools/bin/codex-resources/") &&
+        !nativeResourcePaths.includes(entry.path)) ||
+      Object.entries(manifest.codexRuntime.resources).some(([path, sha]) => listing.toolHashes?.[path] !== sha))
+    throw new Error("immutable native integration resource mismatch");
+}
+
+export function validateImageToolLock(manifest, lock) {
+  if (lock?.schema !== 1 || lock.baselineLockSha256 !== manifest.baselineLockSha256 ||
+      ["osd", "opencode", "node", "uv"].some(name => !lock.tools?.[name]) ||
+      Object.entries(lock.tools ?? {}).some(([name, tool]) => !isDeepStrictEqual(tool, manifest.tools[name]) &&
+        !(name === "uv" && tool.path === "opt/scikeel/tools/bin/uv" && manifest.tools.uv.path === "usr/local/bin/uv" &&
+          tool.version === manifest.tools.uv.version && tool.sha256 === manifest.tools.uv.sha256)))
+    throw new Error("immutable tool lock mismatch");
+  if (manifest.enabledRuntimes.includes("codex") && (!isDeepStrictEqual(lock.codexRuntime, manifest.codexRuntime) ||
+      !isDeepStrictEqual(lock.sourceInputs, manifest.sourceInputs) || !isDeepStrictEqual(lock.tools?.codex, manifest.tools.codex)))
+    throw new Error("immutable native tool lock source mismatch");
+}
 
 export function validateImageManifest(v) {
   if (!v || v.schema !== 1 || v.name !== "science-v1" || !["probe", "production"].includes(v.variant) ||
@@ -39,6 +81,26 @@ export function validateImageManifest(v) {
   }
   if (v.tools.opencode.version !== opencodeVersion || v.tools.uv.version !== v.uv || v.tools.python.version !== v.python)
     throw new Error("pinned tool version mismatch");
+  if (v.enabledRuntimes.includes("codex")) {
+    const native = v.codexRuntime;
+    if (!native || Object.keys(native).sort().join(",") !== "integration,resources" ||
+        v.tools.codex.path !== "opt/scikeel/tools/bin/codex" || v.tools.codex.version !== nativeLock.upstreamVersion)
+      throw new Error("missing native guard integration identity");
+    validateGuardArtifact(native.integration, v.tools.codex.sha256, v.provenance.commit);
+    if (!native.resources || Object.keys(native.resources).sort().join(",") !== nativeResourcePaths.join(",") ||
+        Object.values(native.resources).some(value => !hex.test(value)) || native.resources[nativeResourcePaths[0]] !== nativeLock.bwrapSha256)
+      throw new Error("missing immutable native resources");
+    if (!Array.isArray(v.sourceInputs) || v.sourceInputs.length > 10000) throw new Error("missing native source inputs");
+    const sources = new Map();
+    for (const input of v.sourceInputs) {
+      if (!input || Object.keys(input).sort().join(",") !== "path,sha256" || typeof input.path !== "string" ||
+          !hex.test(input.sha256) || sources.has(input.path)) throw new Error("invalid native source inputs");
+      validateArchiveEntry({ path: input.path, type: "file", size: 1 }); sources.set(input.path, input.sha256);
+    }
+    if (Object.entries(nativeInputs).some(([path, sha]) => sources.get(path) !== sha) ||
+        sources.get(nativePaths[0]) !== native.integration.patchSha256 || sources.get(nativePaths[1]) !== native.integration.testPatchSha256)
+      throw new Error("native guard source inputs mismatch");
+  } else if (v.codexRuntime) throw new Error("unexpected native integration identity");
   if (v.sessionTitleRuntime?.networkRuntime) validateNetworkRuntime(v.sessionTitleRuntime.networkRuntime, networkRuntimeLock);
   if (v.sessionTitleRuntime) validateRuntimeArtifact(v.sessionTitleRuntime, titleRuntimeLock, v.tools.opencode.sha256);
   if (v.variant === "production" && v.testEntryPoint) throw new Error("invalid production test entrypoint");
@@ -53,7 +115,8 @@ export function validateImageManifest(v) {
 }
 
 export function validateBuildContext(paths) {
-  const fixed = new Set(["Dockerfile", "pyproject.toml", "uv.lock", "tool-lock.json", "tools/session-title-runtime.json"]);
+  const fixed = new Set(["Dockerfile", "pyproject.toml", "uv.lock", "tool-lock.json", "tools/session-title-runtime.json",
+    "tools/bin/codex-resources/bwrap", "tools/bin/native-integration.json"]);
   for (const path of paths) {
     if (typeof path !== "string" || path.startsWith("/") || path.includes("\\") ||
         path.split("/").some((part) => !part || part === "." || part === "..") ||
@@ -100,6 +163,13 @@ function command(binary, args, timeout = 30000) {
   if (result.error || result.signal || result.status !== 0) throw new Error("image verification prerequisite failed");
   return result.stdout;
 }
+export async function verifyInstallerInputs({ readHash = path => command("sudo", ["-n", "sha256sum", path]).split(/\s+/)[0] } = {}) {
+  for (const name of ["install-sandbox-image.py", "inspect-sandbox-archive.py"]) {
+    const actual = await readHash(`/usr/local/lib/scikeel/${name}`);
+    if (!hex.test(actual ?? "") || actual !== await digest(join(repo, "scripts/dev", name)))
+      throw new Error("privileged image installer helper identity mismatch");
+  }
+}
 export async function stageImage(args) {
   if (args.length !== 3 || args[0] !== "--manifest" || !["--dry-run", "--install"].includes(args[2]))
     throw new Error("Expected --manifest PATH --dry-run|--install");
@@ -114,6 +184,7 @@ export async function stageImage(args) {
   for (const path of [archive, lock, toolLock, bundle]) await regular(path, path === archive ? 2 * 1024 ** 3 : 32 * 1024 ** 2);
   if (await digest(archive) !== manifest.rootfsSha256 || await digest(lock) !== manifest.baselineLockSha256 ||
       await digest(toolLock) !== manifest.toolLockSha256) throw new Error("immutable artifact digest mismatch");
+  validateImageToolLock(manifest, JSON.parse(await readFile(toolLock, "utf8")));
   // Both manifest and rootfs must carry CI attestations from the exact workflow.
   for (const artifact of [manifestPath, archive]) {
     command("gh", ["attestation", "verify", artifact, "--repo", "J0nhyer/scikeel", "--bundle", bundle,
@@ -126,6 +197,7 @@ export async function stageImage(args) {
   }
   for (const [path, sha] of Object.entries(manifest.runnerFiles ?? {}))
     if (listing.toolHashes?.[path] !== sha) throw new Error("immutable installed runner digest mismatch");
+  validateNativeArchive(manifest, listing);
   if (manifest.variant === "production" && listing.entries.some((entry) => entry.path === "opt/scikeel/tools/probe-entry.mjs"))
     throw new Error("invalid production test entrypoint");
   if (listing.fileCount !== manifest.fileCount || listing.uncompressedBytes !== manifest.uncompressedBytes)
@@ -134,6 +206,7 @@ export async function stageImage(args) {
   if (Number(disk.bavail) * Number(disk.bsize) < manifest.uncompressedBytes + 600 * 1024 ** 2)
     throw new Error("insufficient image staging storage");
   if (args[2] === "--install") {
+    await verifyInstallerInputs();
     const installed = JSON.parse(command("sudo", ["-n", "/usr/bin/python3", "/usr/local/lib/scikeel/install-sandbox-image.py", artifactRoot], 180000));
     if (installed.installed !== true || installed.imageDigest !== manifest.imageDigest) throw new Error("invalid installed image identity");
   }

@@ -7,6 +7,8 @@ on:
     branches: [feat/tenant-science-isolation]
     paths:
       - runtime/opencode-patches/**
+      - runtime/codex-patches/**
+      - scripts/dev/build-codex-guard-runtime.mjs
       - scripts/dev/build-opencode-title-runtime.mjs
       - runtime/sandbox/**
       - scripts/dev/probe-production-runner.mjs
@@ -43,7 +45,6 @@ concurrency:
 
 jobs:
   native-feasibility:
-    if: ${{ inputs.native_feasibility_only }}
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
@@ -120,10 +121,21 @@ jobs:
           name: native-capabilities-${{ github.sha }}
           path: .deploy/native-capabilities/output/
           retention-days: 14
+      - name: Preserve the successful same-source native build for the production image
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-codex-${{ github.sha }}
+          path: |
+            .deploy/science-context/tools/bin/codex
+            .deploy/science-context/tools/bin/codex-resources/bwrap
+            .deploy/science-context/tools/bin/native-integration.json
+          compression-level: 0
+          retention-days: 14
       - name: Clean up the disposable native fixture
         if: always()
         run: docker rm -f scikeel-native-capability-test 2>/dev/null || true
   science-probe-image:
+    needs: native-feasibility
     if: ${{ !inputs.native_feasibility_only }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
@@ -137,6 +149,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Consume only the successful guarded binary from this workflow source
+        uses: actions/download-artifact@v4
+        with:
+          name: guarded-codex-${{ github.sha }}
+          path: .deploy/guarded-codex
+      - name: Compose the measured native build resources
+        run: |
+          mkdir -p .deploy/science-context/tools/bin/codex-resources
+          cp .deploy/guarded-codex/codex .deploy/science-context/tools/bin/codex
+          cp .deploy/guarded-codex/native-integration.json .deploy/science-context/tools/bin/native-integration.json
+          cp .deploy/guarded-codex/codex-resources/bwrap .deploy/science-context/tools/bin/codex-resources/bwrap
+          chmod 755 .deploy/science-context/tools/bin/codex .deploy/science-context/tools/bin/codex-resources/bwrap
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14

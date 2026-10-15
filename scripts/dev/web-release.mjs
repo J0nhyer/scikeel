@@ -65,27 +65,42 @@ async function baselineFor(store, production) {
     return { known: true, id: previous.id, files: previous.source.files, fingerprint: productionFingerprint(production) };
   } catch { return { known: false, files: await inventorySource(production.source, { git: !!await lstat(join(production.source, '.git')).catch(() => null) }), fingerprint: productionFingerprint(production) }; }
 }
-export async function validateInstalledImage(candidate, digest) {
+export async function validateInstalledImage(candidate, digest, { execute = command } = {}) {
   if (!digest) {
     if (candidate.selection?.imageRequired) throw new Error('Required CI-attested image digest is missing');
     return { imageDigest: null, reused: true };
   }
   if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid image digest');
   const imageRoot = `/var/lib/scikeel/images/${digest.slice(7)}`;
-  const manifest = JSON.parse(command('sudo', ['-n', 'cat', join(imageRoot, 'image-manifest.json')]));
-  const ready = JSON.parse(command('sudo', ['-n', 'cat', join(imageRoot, 'ready.json')]));
+  const manifest = JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'image-manifest.json')]));
+  const ready = JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'ready.json')]));
   if (candidate.selection?.imageRequired && digest === candidate.production.imageDigest) throw new Error('Changed image inputs require a newly installed CI-attested image');
   if (candidate.selection?.imageRequired) {
     const inputs = candidate.source.files.filter((file) => imageInputPath(file.path)).map(({ path, sha256 }) => ({ path, sha256 })).sort((a, b) => a.path.localeCompare(b.path));
     if (!Array.isArray(manifest.sourceInputs) || JSON.stringify(manifest.sourceInputs) !== JSON.stringify(inputs)) throw new Error('CI-attested image source inputs do not match candidate');
   }
   if (await sha256(join(candidate.source.root, 'runtime/sandbox/image/uv.lock')) !== manifest.baselineLockSha256) throw new Error('Scientific dependency lock differs from installed image');
-  for (const [name, tool] of Object.entries(manifest.tools)) {
-    const installed = command('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', tool.path)]).split(/\s+/)[0];
-    if (installed !== tool.sha256) throw new Error('Installed image tool identity changed');
-  }
-  const { validateImageManifest } = await import(pathToFileURL(join(candidate.source.root, 'scripts/dev/stage-sandbox-image.mjs')));
+  const { validateImageManifest, validateNativeArchive, validateImageToolLock } = await import(pathToFileURL(join(candidate.source.root, 'scripts/dev/stage-sandbox-image.mjs')));
   validateImageManifest(manifest);
+  const installedHashes = {};
+  for (const [name, tool] of Object.entries(manifest.tools)) {
+    const installed = execute('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', tool.path)]).split(/\s+/)[0];
+    if (installed !== tool.sha256) throw new Error('Installed image tool identity changed');
+    installedHashes[tool.path] = installed;
+  }
+  if (manifest.codexRuntime) {
+    for (const path of Object.keys(manifest.codexRuntime.resources))
+      installedHashes[path] = execute('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', path)]).split(/\s+/)[0];
+    const nativeIntegration = JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'rootfs/opt/scikeel/tools/bin/native-integration.json')]));
+    validateNativeArchive(manifest, { toolHashes: installedHashes, nativeIntegration });
+    const inventory = execute('sudo', ['-n', 'python3', '-c',
+      "import pathlib,json; root=pathlib.Path(__import__('sys').argv[1]); entries=list(root.iterdir()); assert all(p.is_file() and not p.is_symlink() for p in entries); print(json.dumps(sorted(p.name for p in entries)))",
+      join(imageRoot, 'rootfs/opt/scikeel/tools/bin/codex-resources')]);
+    if (JSON.stringify(JSON.parse(inventory)) !== JSON.stringify(['bwrap'])) throw new Error('Installed native resource inventory changed');
+    if (execute('sudo', ['-n', 'sha256sum', join(imageRoot, 'tool-lock.json')]).split(/\s+/)[0] !== manifest.toolLockSha256)
+      throw new Error('Installed native tool lock source changed');
+    validateImageToolLock(manifest, JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'tool-lock.json')])));
+  }
   const runtimeLockPath = join(candidate.source.root, "runtime/opencode-patches/session-title.lock.json");
   if (existsSync(runtimeLockPath)) {
     const { validateRuntimeArtifact } = await import(pathToFileURL(join(candidate.source.root, "scripts/dev/build-opencode-title-runtime.mjs")));
@@ -100,16 +115,16 @@ export async function validateInstalledImage(candidate, digest) {
   for (const [path, hash] of Object.entries(manifest.runnerFiles)) {
     const local = join(candidate.source.root, 'runtime/sandbox', path.split('/').at(-1));
     if (await sha256(local) !== hash) throw new Error('Candidate runner requires a different CI-attested image');
-    const installed = command('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', path)]).split(/\s+/)[0];
+    const installed = execute('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', path)]).split(/\s+/)[0];
     if (installed !== hash) throw new Error('Installed runner identity changed');
   }
   // The image carries core skills; compare their actual bytes rather than frontend HEAD.
   for (const file of candidate.source.files.filter((file) => file.path.startsWith('runtime/skills/core/') && !file.path.endsWith('.gitkeep'))) {
     const installedPath = join(imageRoot, 'rootfs/opt/scikeel/tools/resources/skills-core', file.path.slice('runtime/skills/core/'.length));
-    const installedHash = command('sudo', ['-n', 'sha256sum', installedPath]).split(/\s+/)[0];
+    const installedHash = execute('sudo', ['-n', 'sha256sum', installedPath]).split(/\s+/)[0];
     if (installedHash !== file.sha256) throw new Error('Core skill change requires a different CI-attested image');
   }
-  const installedSkills = command('sudo', ['-n', 'python3', '-c', "import pathlib,json; root=pathlib.Path(__import__('sys').argv[1]); print(json.dumps(sorted(str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name!='.gitkeep')))", join(imageRoot, 'rootfs/opt/scikeel/tools/resources/skills-core')]);
+  const installedSkills = execute('sudo', ['-n', 'python3', '-c', "import pathlib,json; root=pathlib.Path(__import__('sys').argv[1]); print(json.dumps(sorted(str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name!='.gitkeep')))", join(imageRoot, 'rootfs/opt/scikeel/tools/resources/skills-core')]);
   const candidateSkills = candidate.source.files.filter((file) => file.path.startsWith('runtime/skills/core/') && !file.path.endsWith('.gitkeep')).map((file) => file.path.slice('runtime/skills/core/'.length)).sort();
   if (JSON.stringify(candidateSkills) !== JSON.stringify(JSON.parse(installedSkills))) throw new Error('Core skill inventory differs from installed image');
   return { imageDigest: digest, reused: digest === candidate.production.imageDigest, runnerFiles: manifest.runnerFiles };

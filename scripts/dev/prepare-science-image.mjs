@@ -7,7 +7,7 @@ import { readdir, lstat, readFile, writeFile } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { validateBuildContext, validateImageManifest } from "./stage-sandbox-image.mjs";
+import { validateBuildContext, validateImageManifest, validateGuardArtifact, validateImageToolLock, validateNativeArchive } from "./stage-sandbox-image.mjs";
 
 export function validateSourceImages(sources) {
   if (!/^(?:docker\.io\/library\/)?python@sha256:[a-f0-9]{64}$/.test(sources?.python ?? "") ||
@@ -23,6 +23,27 @@ async function sha256(path) {
   const hash = createHash("sha256");
   for await (const bytes of createReadStream(path)) hash.update(bytes);
   return hash.digest("hex");
+}
+export async function measureNativeContext(context, { required = true, source } = {}) {
+  const names = ["codex", "codex-resources/bwrap", "native-integration.json"];
+  const entries = [];
+  for (const name of names) {
+    try {
+      const entry = await lstat(join(context, "tools/bin", name));
+      if (!entry.isFile() || entry.nlink !== 1 || entry.size > (name.endsWith(".json") ? 65536 : 400 * 1024 ** 2))
+        throw new Error("invalid native runtime build resource");
+      entries.push(name);
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  if (!entries.length && !required) return null;
+  if (entries.length !== names.length) throw new Error("complete guarded native runtime required");
+  const integration = validateGuardArtifact(JSON.parse(await readFile(join(context, "tools/bin/native-integration.json"), "utf8")),
+    await sha256(join(context, "tools/bin/codex")), source);
+  const resources = {};
+  for (const name of names.slice(1)) resources[`opt/scikeel/tools/bin/${name}`] = await sha256(join(context, "tools/bin", name));
+  if (resources["opt/scikeel/tools/bin/codex-resources/bwrap"] !== integration.bwrapSha256)
+    throw new Error("native sandbox resource identity mismatch");
+  return { integration, resources };
 }
 function run(binary, args) {
   const result = spawnSync(binary, args, { encoding: "utf8", timeout: 30000, maxBuffer: 32 * 1024 ** 2 });
@@ -49,8 +70,9 @@ export async function prepareImage(args) {
   const sources = validateSourceImages({ python: (await readFile(join(artifacts, "python-image.txt"), "utf8")).trim(),
     uv: (await readFile(join(artifacts, "uv-image.txt"), "utf8")).trim() });
   validateBuildContext(await files(context));
+  const codexRuntime = await measureNativeContext(context, { required: variant === "production", source: process.env.GITHUB_SHA });
   const tools = {};
-  for (const name of ["osd", "opencode", "node", "uv"]) {
+  for (const name of ["osd", "opencode", "node", "uv", ...(codexRuntime ? ["codex"] : [])]) {
     const path = join(context, "tools/bin", name);
     const version = run(path, toolVersionArguments(name)).match(/\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?/)?.[0];
     if (!version) throw new Error("unmeasured CI tool version");
@@ -59,8 +81,12 @@ export async function prepareImage(args) {
   const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
   const runtimeLock = JSON.parse(await readFile(join(sourceRoot, "runtime/opencode-patches/session-title.lock.json"), "utf8"));
   const sessionTitleRuntime = validateRuntimeArtifact(JSON.parse(await readFile(join(context, "tools/session-title-runtime.json"), "utf8")), runtimeLock, tools.opencode.sha256);
+  const sourceInputs = [];
+  const sourcePaths = run('git', ['-C', sourceRoot, 'ls-files', '-z']).split('\0').filter(Boolean).filter(imageInputPath).sort((a, b) => a.localeCompare(b));
+  for (const path of sourcePaths) sourceInputs.push({ path, sha256: await sha256(join(sourceRoot, path)) });
   if (!args[2]) {
-    const lock = { schema: 1, sources, tools, baselineLockSha256: await sha256(join(context, "uv.lock")) };
+    const lock = { schema: 1, sources, tools, sourceInputs, ...(codexRuntime ? { codexRuntime } : {}),
+      baselineLockSha256: await sha256(join(context, "uv.lock")) };
     await writeFile(join(context, "tool-lock.json"), JSON.stringify(lock, null, 2) + "\n");
     await writeFile(join(artifacts, "tool-lock.json"), JSON.stringify(lock, null, 2) + "\n");
     return;
@@ -89,16 +115,15 @@ print(json.dumps(out))`;
   const runnerFiles = {};
   if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs", "collaboration.mjs", "tool-outcome.mjs"])
     runnerFiles[`opt/scikeel/tools/${name}`] = await sha256(join(context, "tools", name));
-  const sourceInputs = [];
-  const sourcePaths = run('git', ['-C', sourceRoot, 'ls-files', '-z']).split('\0').filter(Boolean).filter(imageInputPath).sort((a, b) => a.localeCompare(b));
-  for (const path of sourcePaths) sourceInputs.push({ path, sha256: await sha256(join(sourceRoot, path)) });
-  const manifest = { schema: 1, sourceInputs, sessionTitleRuntime, name: "science-v1", variant, architecture: "linux/amd64",
+  const manifest = { schema: 1, sourceInputs, sessionTitleRuntime, ...(codexRuntime ? { codexRuntime } : {}), name: "science-v1", variant, architecture: "linux/amd64",
     rootfsSha256: digest, imageDigest: `sha256:${digest}`, python: tools.python.version, uv: tools.uv.version,
     baselineLockSha256: await sha256(join(artifacts, "uv.lock")), toolLockSha256: await sha256(join(artifacts, "tool-lock.json")),
-    fileCount: inventory.fileCount, uncompressedBytes: inventory.uncompressedBytes, tools, enabledRuntimes: ["opencode"],
+    fileCount: inventory.fileCount, uncompressedBytes: inventory.uncompressedBytes, tools, enabledRuntimes: ["opencode", ...(codexRuntime ? ["codex"] : [])],
     ...(variant === "probe" ? { testEntryPoint: "/opt/scikeel/tools/probe-entry.mjs" } : { runnerFiles }),
     provenance: { repository: "J0nhyer/scikeel", commit: process.env.GITHUB_SHA, workflow: "sandbox-image.yml" } };
   validateImageManifest(manifest);
+  validateImageToolLock(manifest, JSON.parse(await readFile(join(artifacts, "tool-lock.json"), "utf8")));
+  validateNativeArchive(manifest, inventory);
   await writeFile(join(artifacts, "image-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
