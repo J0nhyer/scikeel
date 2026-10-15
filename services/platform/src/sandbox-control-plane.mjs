@@ -97,7 +97,7 @@ export function managedNativeProfileResolver({ configuration, serviceProfile, br
       if (!registered || revision !== profile.identityRevision) {
         const provider = await serviceProfile.resolveProvider(profile.identityRevision);
         broker.replaceProviderSnapshot({ name: "scikeel-codex", expectedRevision: revision,
-          identityRevision: profile.identityRevision, provider });
+          identityRevision: profile.identityRevision, provider, createOnly: revision === null });
         revision = profile.identityRevision; registered = true;
       }
       return profile;

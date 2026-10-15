@@ -355,3 +355,17 @@ test("a missing image capability or unavailable service never discovers the pers
   await assert.rejects(fs.lstat(input.home), { code: "ENOENT" });
   await assert.rejects(missing.refresh("not-a-runtime"), { code: "invalid_runtime" });
 });
+
+test("private service registration never replaces a colliding infrastructure provider or revokes its grants", async t => {
+  const input = await fixture(t), service = resolver(input);
+  await service.initializeFromSource({ codexHome: input.source });
+  const context = { userId: "profile_owner", instanceId: "profile_instance", generation: 1 };
+  const broker = new ModelBroker({ providers: { "scikeel-codex": { baseUrl: "https://infrastructure.invalid/v1",
+    credential: "synthetic-infrastructure-key", authMode: "bearer", enabledModels: ["helper-model"], routes: ["/v1/responses"] } },
+    identify: () => context, logger: () => {} });
+  t.after(() => broker.close());
+  const token = broker.issue({ ...context, provider: "scikeel-codex", models: ["helper-model"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 });
+  const managed = controlPlane.managedNativeProfileResolver({ configuration: { enabledRuntimes: ["codex"] }, serviceProfile: service, broker });
+  await assert.rejects(managed.refresh("codex"), { code: "model_profile_revision_conflict" });
+  assert(broker.renew(token, context) > Date.now(), "A failed private registration cannot change infrastructure grants");
+});

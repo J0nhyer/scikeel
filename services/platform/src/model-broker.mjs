@@ -120,9 +120,9 @@ export class ModelBroker {
     this.server.on("connect", (_req, socket) => socket.destroy());
     this.server.on("upgrade", (_req, socket) => socket.destroy());
   }
-  replaceProviderSnapshot({ name, expectedRevision, identityRevision, provider }) {
+  replaceProviderSnapshot({ name, expectedRevision, identityRevision, provider, createOnly = false }) {
     const current = this.#providers.get(name);
-    if (!validName(identityRevision) || expectedRevision !== (current?.identityRevision ?? null))
+    if (!validName(identityRevision) || expectedRevision !== (current?.identityRevision ?? null) || createOnly && current)
       throw failure("model_profile_revision_conflict", 409);
     const next = fixedProvider(name, provider, identityRevision);
     if (identityRevision === current?.identityRevision && (!current.revoked ||
