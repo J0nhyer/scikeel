@@ -368,3 +368,18 @@ test("native start wait propagates observed process exit instead of claiming aut
   setTimeout(() => child.emit("close", 0), 20);
   await assert.rejects(waiting, /native process closed/);
 });
+
+test("late native effects remain under observation when the timer wakes before its requested deadline", async () => {
+  let clock = 100, waits = 0;
+  const elapsed = await protocol.observeLateEffects(100, 5500, { now: () => clock, wait: async ms => {
+    waits++; clock += waits === 1 ? ms - 1 : ms;
+  } });
+  assert(elapsed >= 5500, "One early timer wake must not end the required native late-effect observation window");
+  assert.equal(waits, 2);
+});
+
+test("late native effects already observed through cleanup need no additional deadline delay", async () => {
+  let waits = 0;
+  const elapsed = await protocol.observeLateEffects(100, 5500, { now: () => 5700, wait: async () => { waits++; } });
+  assert.equal(elapsed, 5600); assert.equal(waits, 0);
+});

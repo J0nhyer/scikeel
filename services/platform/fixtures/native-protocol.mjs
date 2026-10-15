@@ -15,6 +15,15 @@ const root = "/fixture/native";
 const port = 48177;
 export const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
 
+export async function observeLateEffects(startedAt, duration, { now = () => performance.now(), wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+  let elapsed = now() - startedAt;
+  while (elapsed < duration) {
+    await wait(Math.max(1, Math.ceil(duration - elapsed)));
+    elapsed = now() - startedAt;
+  }
+  return elapsed;
+}
+
 export function responsesFrame(item, id = "fixture-response") {
   return [
     { type: "response.created", response: { id } },
@@ -361,7 +370,7 @@ export async function runNativeProtocolProbe() {
         if (kind === "running-command") {
           assertFixture(await waitForFixtureFile(`${directory}/workspace/child-ready.txt`) === "child-ready");
           assertFixture(await waitForFixtureFile(`${directory}/workspace/parent-ready.txt`) === "parent-ready");
-          childReadyAt = Date.now();
+          childReadyAt = performance.now();
           // Unified exec starts its process before asynchronously emitting the native Begin event.
           record.nativeStartedBeforeStop = await connection.waitForStarted("commandExecution");
           assertFixture(record.nativeStartedBeforeStop);
@@ -375,8 +384,8 @@ export async function runNativeProtocolProbe() {
         record.status = (await connection.completed()).status;
         if (mode === "stopped") await connection.close();
         if (kind === "running-command" && mode === "stopped") {
-          await new Promise(resolve => setTimeout(resolve, Math.max(0, childReadyAt + 5500 - Date.now())));
-          record.lateEffectWindowObserved = Date.now() - childReadyAt >= 5500;
+          record.lateEffectObservationMs = await observeLateEffects(childReadyAt, 5500);
+          record.lateEffectWindowObserved = record.lateEffectObservationMs >= 5500;
         }
         record.guardCalls = current.guards.length;
         record.boundGuardCalls = current.guards.filter(value => value.bound).length;
