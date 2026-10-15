@@ -4,7 +4,10 @@ import { promises as fs, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "smol-toml";
+import { createServer } from "node:http";
 import * as profiles from "../src/cli-profile.mjs";
+import { ModelBroker } from "../src/model-broker.mjs";
+import { brokerProfile } from "../src/sandbox-control-plane.mjs";
 
 async function fixture(t) {
   const root = await fs.mkdtemp(join(tmpdir(), "scikeel-managed-profile-"));
@@ -198,4 +201,49 @@ test("managed Codex missing allowed metadata, ambiguous entries and OAuth-only a
   await fs.writeFile(join(input.source, "config.toml"), stringify(input.config));
   await fs.writeFile(join(input.source, "auth.json"), JSON.stringify({ tokens: { access_token: "OAUTH_NOT_AN_API_KEY" } }));
   await assert.rejects(service.initializeFromSource({ codexHome: input.source }), { code: "service_profile_unavailable" });
+});
+
+test("the imported private service connection reaches a real broker through a sanitized revision-bound tenant profile", async t => {
+  const input = await fixture(t), service = resolver(input);
+  const received = [];
+  const upstream = createServer((request, response) => {
+    received.push({ route: request.url, authorization: request.headers.authorization });
+    request.resume();
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"fixture":"ok"}');
+  });
+  await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => { upstream.closeAllConnections(); return new Promise(resolve => upstream.close(resolve)); });
+  const endpoint = `http://127.0.0.1:${upstream.address().port}/v1`;
+  input.config.model_providers.fixture.base_url = endpoint;
+  await fs.writeFile(join(input.source, "config.toml"), stringify(input.config));
+  await service.initializeFromSource({ codexHome: input.source });
+  const profile = await service.refresh("codex");
+  const provider = await service.resolveProvider(profile.identityRevision);
+  const context = { userId: "owner", instanceId: "user-owner", generation: 3 };
+  const logs = [];
+  const broker = new ModelBroker({ providers: {}, identify: () => context, logger: event => logs.push(event) });
+  t.after(() => broker.close());
+  broker.replaceProviderSnapshot({ name: "codex", expectedRevision: null, identityRevision: profile.identityRevision, provider });
+  await broker.listen({ host: "127.0.0.1", port: 0 });
+  const config = { schema: 1, providers: { codex: provider }, defaultProvider: "codex", defaultModel: "gpt-6.1-sol",
+    mirrorUrl: "http://127.0.0.1:3141" };
+  const tenant = brokerProfile({ config, broker, context, profileRevision: profile.identityRevision });
+  const serialized = JSON.stringify(tenant);
+  assert.equal(tenant.provider.codex.options.baseURL, "http://172.31.240.1:4792/v1");
+  assert.deepEqual(tenant.provider.codex.whitelist, ["gpt-6.1-sol"]);
+  assert.match(tenant.provider.codex.options.apiKey, /^[a-f0-9]{64}$/);
+  for (const forbidden of [endpoint, input.source, "synthetic-service-upstream-key", "unused-host-auth-key", "HOST_", "unapproved-model"])
+    assert(!serialized.includes(forbidden), "Only the scoped broker token may reach the tenant");
+  const send = model => globalThis.fetch(`http://127.0.0.1:${broker.server.address().port}/v1/responses`, {
+    method: "POST", headers: { authorization: `Bearer ${tenant.provider.codex.options.apiKey}`, "content-type": "application/json" },
+    body: JSON.stringify({ model, input: "synthetic", max_output_tokens: 1 }), signal: AbortSignal.timeout(2000) });
+  const allowed = await send("gpt-6.1-sol");
+  assert.equal(allowed.status, 200); await allowed.text();
+  const denied = await send("unapproved-model");
+  assert.equal(denied.status, 403); await denied.text();
+  assert.deepEqual(received, [{ route: "/v1/responses", authorization: "Bearer synthetic-service-upstream-key" }]);
+  assert(logs.some(event => event.upstreamStatus === 200));
+  for (const forbidden of [endpoint, input.source, "synthetic-service-upstream-key", "unused-host-auth-key", "HOST_"])
+    assert(!JSON.stringify(logs).includes(forbidden));
 });

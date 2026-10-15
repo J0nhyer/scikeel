@@ -58,10 +58,11 @@ export function validateBrokerConfiguration(config) {
   if (!config.providers[config.defaultProvider]?.enabledModels.includes(config.defaultModel)) throw new Error("invalid managed default model");
   return config;
 }
-export function brokerProfile({ config, broker, context, model, now = Date.now() }) {
+export function brokerProfile({ config, broker, context, model, profileRevision, now = Date.now() }) {
   validateBrokerConfiguration(config);
   const name = config.defaultProvider; const provider = config.providers[name];
-  const token = broker.issue({ ...context, provider: name, models: provider.enabledModels, routes: provider.routes, expiresAt: now + 900000 });
+  const token = broker.issue({ ...context, provider: name, models: provider.enabledModels, routes: provider.routes,
+    ...(profileRevision !== undefined ? { profileRevision } : {}), expiresAt: now + 900000 });
   const selected = provider.enabledModels.some(id => `${name}/${id}` === model) ? model : `${name}/${config.defaultModel}`;
   return { ...(config.searchProvider ? { searchProvider: config.searchProvider } : {}), model: selected, enabled_providers: [name], provider: {
     [name]: { npm: provider.authMode === "x-api-key" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible", name,
