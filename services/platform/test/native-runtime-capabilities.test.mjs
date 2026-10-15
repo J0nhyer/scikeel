@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, mkdtemp, mkdir, writeFile, rm, access, symlink } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { capabilityResult, nativePin, responsesFrame } from "../fixtures/native-protocol.mjs";
@@ -130,4 +131,13 @@ test("native release lock reconciliation changes only local workspace versions a
   assert.deepEqual(reconciled.package[0].dependencies, lock.package[0].dependencies);
   assert.throws(() => integration.reconcileWorkspaceVersions({ ...lock, package: lock.package.slice(1) }), /workspace version/);
   assert.throws(() => integration.reconcileWorkspaceVersions({ ...lock, version: 3 }), /workspace version/);
+});
+
+test("the native CI parser install retains frozen platform dependency and override metadata", async () => {
+  const { load } = createRequire(import.meta.url)("js-yaml");
+  const rootPackage = JSON.parse(await readFile(new URL("../../../package.json", import.meta.url), "utf8"));
+  const lock = load(await readFile(new URL("../../../pnpm-lock.yaml", import.meta.url), "utf8"));
+  assert.equal(lock.importers["services/platform"].dependencies["js-yaml"].specifier, rootPackage.pnpm.overrides["js-yaml@4"]);
+  assert.equal(lock.importers["services/platform"].dependencies["js-yaml"].version, "4.3.1");
+  assert.equal(lock.importers["services/platform"].dependencies["smol-toml"].version, "1.9.0");
 });
