@@ -18,6 +18,8 @@ This is product-level continuity, not lossless native-session migration. Model c
 
 Read-only investigation compared historical specifications and commits with the deployed source at `2026-10-14T13-10-17-696Z-cd4c7c5e` and the isolated recovery branch. Main-checkout changes are not evidence of deployed behavior.
 
+The product already has `ManagedAgentsCard`, authenticated Admin runtime APIs, `CliProfileResolver`, model configuration, and `RuntimePicker` with per-user assistant selection. Reuse these existing entry points and stores. This work fills deployed Codex/runtime and safe service-profile integration gaps, then changes the existing per-user selection contract to administrator-only deployment-wide selection. It does not introduce switching/configuration from scratch or justify a duplicate settings surface or unrelated broad rewrite.
+
 - The October 4 collaboration specification separates research decisions from tool authorization and requires durable decisions, session ownership, and scope boundaries.
 - October 8 commits `71db062` and `e77b50c` establish automatic Web tool execution at the session execution boundary, while retaining outside-workspace denial and designated built-in Skill access. The startup profile still uses `ask`; inspecting it alone does not establish effective session permissions.
 - October 11 commit `3f5c820` repairs OpenCode child-session authorization and adds automatic approval of owned sandbox Codex requests. Automatic approval is an intentional Web behavior, not a newly discovered permission defect to replace with manual prompts.

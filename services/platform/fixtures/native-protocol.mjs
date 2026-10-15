@@ -103,14 +103,16 @@ timeout = 5
 `);
 }
 
-export function orderedNativeToolEvidence(frames, threadId, turnId) {
-  const started = new Set();
+export function orderedNativeToolEvidence(frames, threadId, turnId, expected) {
   const types = ["commandExecution", "fileChange", "dynamicToolCall"];
+  if (typeof expected?.callId !== "string" || !expected.callId || !types.includes(expected.itemType)) return false;
+  let started = false;
   for (const frame of frames) {
     const params = frame.params;
-    if (params?.threadId !== threadId || params?.turnId !== turnId || !types.includes(params.item?.type) || typeof params.item.id !== "string") continue;
-    if (frame.method === "item/started") started.add(params.item.id);
-    else if (frame.method === "item/completed" && started.has(params.item.id)) return true;
+    if (params?.threadId !== threadId || params?.turnId !== turnId ||
+        params.item?.type !== expected.itemType || params.item.id !== expected.callId) continue;
+    if (frame.method === "item/started") started = true;
+    else if (frame.method === "item/completed" && started) return true;
   }
   return false;
 }
@@ -327,7 +329,8 @@ export async function runNativeProtocolProbe() {
           : kind === "custom" ? connection.customEffects === 1 : file?.trim() === "verified-native-write";
         record.nativeToolStarted = connection.frames.some(frame => frame.method === "item/started");
         record.nativeToolCompleted = connection.frames.some(frame => frame.method === "item/completed");
-        record.orderedToolEvidence = orderedNativeToolEvidence(connection.frames, connection.thread, connection.turn);
+        record.orderedToolEvidence = orderedNativeToolEvidence(connection.frames, connection.thread, connection.turn,
+          { callId, itemType: { command: "commandExecution", edit: "fileChange", custom: "dynamicToolCall" }[kind] });
         record.toolCatalog = current.toolCatalog;
         record.toolResults = current.toolResults?.map(output => output.replaceAll(directory, "[fixture]").replaceAll("synthetic-not-a-real-key", "[redacted]"));
         // A crashing guard is not an allow decision, even when native execution continues.

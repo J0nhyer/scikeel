@@ -166,11 +166,23 @@ test("native effect evidence requires the owned item start before its completion
   assert.equal(typeof protocol.orderedNativeToolEvidence, "function");
   const start = { method: "item/started", params: { threadId: "owned-thread", turnId: "owned-turn", item: { id: "tool-1", type: "commandExecution" } } };
   const complete = { ...start, method: "item/completed" };
-  assert.equal(protocol.orderedNativeToolEvidence([start, complete], "owned-thread", "owned-turn"), true);
+  const expected = { callId: "tool-1", itemType: "commandExecution" };
+  assert.equal(protocol.orderedNativeToolEvidence([start, complete], "owned-thread", "owned-turn", expected), true);
   for (const frames of [[complete, start], [start], [complete], [
     { ...start, params: { ...start.params, threadId: "foreign" } }, complete], [start,
     { ...complete, params: { ...complete.params, item: { id: "foreign", type: "commandExecution" } } }]])
-    assert.equal(protocol.orderedNativeToolEvidence(frames, "owned-thread", "owned-turn"), false);
+    assert.equal(protocol.orderedNativeToolEvidence(frames, "owned-thread", "owned-turn", expected), false);
+});
+
+test("native effect events cannot substitute another call or tool type in the same owned turn", () => {
+  const start = { method: "item/started", params: { threadId: "owned-thread", turnId: "owned-turn", item: { id: "owned-call", type: "commandExecution" } } };
+  const complete = { ...start, method: "item/completed" };
+  for (const expected of [undefined, {}, { callId: "different-call", itemType: "commandExecution" },
+    { callId: "owned-call", itemType: "fileChange" }])
+    assert.equal(protocol.orderedNativeToolEvidence([start, complete], "owned-thread", "owned-turn", expected), false);
+  assert.equal(protocol.orderedNativeToolEvidence([start, { ...complete, params: { ...complete.params,
+    item: { id: "owned-call", type: "fileChange" } } }], "owned-thread", "owned-turn",
+    { callId: "owned-call", itemType: "commandExecution" }), false);
 });
 
 test("native parser regressions require actual Rust RED and GREEN before publishing a binary", async () => {
