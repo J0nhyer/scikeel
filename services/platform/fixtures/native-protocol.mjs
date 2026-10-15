@@ -1,0 +1,219 @@
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+
+export const nativePin = Object.freeze({ version: "0.157.1", sourceCommit: "36650394c5b38c2990ccf2a3457165ca3e9d9726" });
+const fixture = fileURLToPath(import.meta.url);
+const binary = "/opt/scikeel/tools/bin/codex";
+const node = "/opt/scikeel/tools/bin/node";
+const root = "/fixture/native";
+const port = 48177;
+
+export function responsesFrame(item, id = "fixture-response") {
+  return [
+    { type: "response.created", response: { id } },
+    { type: "response.output_item.done", item },
+    { type: "response.completed", response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } },
+  ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
+}
+
+export function capabilityResult(cases) {
+  const required = ["denied-command", "allowed-command", "denied-edit", "allowed-edit",
+    "denied-custom", "allowed-custom", "crashed-command", "crashed-edit", "crashed-custom"];
+  const checks = Object.fromEntries(required.map(name => [name, cases.some(value => value.name === name && value.passed === true)]));
+  return { checks, activationEligible: Object.values(checks).every(Boolean) };
+}
+
+async function hook() {
+  let text = "";
+  for await (const chunk of process.stdin) {
+    text += chunk;
+    if (Buffer.byteLength(text) > 1024 ** 2) process.exit(1);
+  }
+  const input = JSON.parse(text);
+  const response = await fetch(`http://127.0.0.1:${port}/guard`, {
+    method: "POST", body: JSON.stringify({ tool: input.tool_name, callId: input.tool_use_id }),
+    signal: AbortSignal.timeout(2000),
+  });
+  const { mode } = await response.json();
+  if (mode === "crash") process.exit(1);
+  console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse",
+    ...(mode === "deny" ? { permissionDecision: "deny", permissionDecisionReason: "Pending research decision" } : {}) } }));
+}
+
+export async function prepareNativeProbe() {
+  if (process.env.CI !== "true") throw new Error("dedicated CI fixture preparation required");
+  await mkdir(".deploy/native-capabilities/config", { recursive: true });
+  await mkdir(".deploy/native-capabilities/output", { recursive: true });
+  // A managed, read-only requirement is stronger than trusting tenant hooks.json.
+  await writeFile(".deploy/native-capabilities/config/requirements.toml", `
+[hooks]
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "${node} /fixture/repo/services/platform/fixtures/native-protocol.mjs --guard"
+timeout = 5
+`);
+}
+
+class NativeConnection {
+  pending = new Map(); frames = []; next = 1; unexpectedRequests = 0; customEffects = 0;
+  constructor(child, mode) {
+    this.child = child; this.mode = mode;
+    this.failure = new Promise((_, reject) => this.reject = reject);
+    this.failure.catch(() => {});
+    child.once("error", () => this.reject(new Error("native process spawn failed")));
+    child.once("close", () => this.reject(new Error("native process closed before completion")));
+    createInterface({ input: child.stdout }).on("line", line => {
+      try { this.receive(JSON.parse(line)); } catch { this.reject(new Error("invalid native protocol frame")); }
+    });
+    child.stdin.on("error", () => {});
+    child.stderr.resume();
+  }
+  write(value) { this.child.stdin.write(JSON.stringify(value) + "\n"); }
+  receive(frame) {
+    this.frames.push(frame);
+    if (this.frames.length > 2000) throw new Error("native frame limit");
+    if (frame.id !== undefined && !frame.method) {
+      const pending = this.pending.get(frame.id);
+      if (!pending) throw new Error("unmatched native response");
+      this.pending.delete(frame.id);
+      frame.error ? pending.reject(new Error(`native request rejected: ${pending.method}`)) : pending.resolve(frame.result);
+    } else if (frame.id !== undefined) {
+      if (frame.method === "item/tool/call" && frame.params?.threadId === this.thread &&
+          frame.params?.tool === "research_checkpoint" && typeof frame.params?.turnId === "string") {
+        // The client boundary independently denies dispatch while a decision is pending.
+        const success = this.mode === "allow";
+        if (success) this.customEffects++;
+        this.write({ id: frame.id, result: { contentItems: [{ type: "inputText", text: success ? "Recorded" : "Decision required" }], success } });
+      } else {
+        this.unexpectedRequests++;
+        this.write({ id: frame.id, error: { code: -32601, message: "Fixture denies unrecognized authority" } });
+      }
+    }
+  }
+  request(method, params) {
+    const id = this.next++;
+    const promise = new Promise((resolve, reject) => { this.pending.set(id, { method, resolve, reject }); this.write({ id, method, params }); });
+    return Promise.race([promise, this.failure, new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error(`native request timed out: ${method}`)), 10000); timer.unref();
+      promise.finally(() => clearTimeout(timer)).catch(() => {});
+    })]);
+  }
+  async completed() {
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const frame = this.frames.find(value => value.method === "turn/completed");
+      if (frame) return frame.params.turn;
+      await Promise.race([this.failure, new Promise(resolve => setTimeout(resolve, 20))]);
+    }
+    throw new Error("native turn did not complete");
+  }
+  async close() {
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+    const stopped = new Promise(resolve => this.child.once("close", resolve));
+    this.child.kill("SIGTERM");
+    const timer = setTimeout(() => this.child.kill("SIGKILL"), 2000);
+    await stopped; clearTimeout(timer);
+  }
+}
+
+export async function runNativeProtocolProbe() {
+  if (process.env.CI !== "true" || process.env.SCIKEEL_NATIVE_CAPABILITY_CONTAINER !== "1" ||
+      process.getuid() === 0 || !fixture.startsWith("/fixture/repo/")) throw new Error("disposable CI container required");
+  const version = spawnSync(binary, ["--version"], { encoding: "utf8", timeout: 10000 });
+  if (version.status !== 0 || !version.stdout.includes(nativePin.version)) throw new Error("native binary pin mismatch");
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(binary)) hash.update(chunk);
+  const report = { schema: 1, source: process.env.GITHUB_SHA, native: { ...nativePin, sha256: hash.digest("hex") },
+    productionChanged: false, liveInference: false, cases: [] };
+  let current;
+  const server = createServer(async (request, response) => {
+    try {
+      let bytes = "";
+      for await (const chunk of request) {
+        bytes += chunk;
+        if (Buffer.byteLength(bytes) > 2 * 1024 ** 2) throw new Error("fixture request limit");
+      }
+      if (request.url === "/guard") {
+        const value = JSON.parse(bytes); current.guards.push(value);
+        response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ mode: current.mode })); return;
+      }
+      if (request.url === "/v1/responses") {
+        const value = JSON.parse(bytes); current.requests++;
+        if (current.requests > 3) throw new Error("unexpected native model loop");
+        if (current.requests === 1) current.tools = value.tools;
+        else current.toolOutput = value.input;
+        const item = current.requests === 1 ? current.item : { type: "message", role: "assistant", id: "fixture-message",
+          content: [{ type: "output_text", text: "Fixture complete" }] };
+        response.setHeader("content-type", "text/event-stream"); response.end(responsesFrame(item, `fixture-${current.requests}`)); return;
+      }
+      response.writeHead(404).end();
+    } catch { response.writeHead(400).end(); }
+  });
+  await new Promise(resolve => server.listen(port, "127.0.0.1", resolve));
+  try {
+    for (const kind of ["command", "edit", "custom"]) for (const mode of ["deny", "allow", "crash"]) {
+      const name = `${mode === "deny" ? "denied" : mode === "allow" ? "allowed" : "crashed"}-${kind}`;
+      const directory = `${root}/${name}`;
+      await mkdir(`${directory}/workspace`, { recursive: true }); await mkdir(`${directory}/home`);
+      const marker = `${directory}/workspace/result.txt`;
+      const callId = `call-${name}`;
+      const item = kind === "edit" ? { type: "custom_tool_call", call_id: callId, name: "apply_patch",
+        input: "*** Begin Patch\n*** Add File: result.txt\n+verified-native-write\n*** End Patch" } : {
+        type: "function_call", call_id: callId, name: kind === "command" ? "exec_command" : "research_checkpoint",
+        arguments: JSON.stringify(kind === "command" ? { cmd: "printf verified-native-write > result.txt" } : { checkpoint: "fixture" }),
+      };
+      current = { mode, item, guards: [], requests: 0 };
+      const child = spawn(binary, ["app-server", "--listen", "stdio://", "-c", 'model_provider="fixture"', "-c",
+        `model_providers.fixture={name="Fixture",base_url="http://127.0.0.1:${port}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}`,
+        "-c", 'web_search="disabled"', "-c", 'features.hooks=true', "-c", 'features.unified_exec=true'], {
+        cwd: `${directory}/workspace`, env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", HOME: `${directory}/home`,
+          CODEX_HOME: `${directory}/home`, OPENAI_API_KEY: "synthetic-not-a-real-key", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "pipe"],
+      });
+      const connection = new NativeConnection(child, mode);
+      const record = { name, kind, mode, passed: false };
+      try {
+        await connection.request("initialize", { clientInfo: { name: "scikeel-ci-feasibility", version: "1.0.0" }, capabilities: { experimentalApi: true } });
+        connection.write({ method: "initialized" });
+        const started = await connection.request("thread/start", { cwd: `${directory}/workspace`, model: "gpt-6.1-sol",
+          modelProvider: "fixture", approvalPolicy: "on-request", sandbox: "workspace-write", ephemeral: true,
+          dynamicTools: [{ type: "function", name: "research_checkpoint", description: "Synthetic research decision fixture",
+            inputSchema: { type: "object", properties: { checkpoint: { type: "string" } }, required: ["checkpoint"], additionalProperties: false } }] });
+        connection.thread = started.thread.id;
+        const turn = await connection.request("turn/start", { threadId: connection.thread, input: [{ type: "text", text: "Synthetic native protocol test" }],
+          approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite", writableRoots: [`${directory}/workspace`], networkAccess: false,
+            excludeTmpdirEnvVar: true, excludeSlashTmp: true } });
+        record.identity = typeof connection.thread === "string" && typeof turn.turn.id === "string";
+        record.status = (await connection.completed()).status;
+        record.guardCalls = current.guards.length;
+        record.unexpectedRequests = connection.unexpectedRequests;
+        let file;
+        try { file = await readFile(marker, "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+        record.effect = kind === "custom" ? connection.customEffects > 0 : file !== undefined;
+        record.bytesVerified = kind === "custom" ? connection.customEffects === 1 : file?.trim() === "verified-native-write";
+        record.nativeToolStarted = connection.frames.some(frame => frame.method === "item/started");
+        record.nativeToolCompleted = connection.frames.some(frame => frame.method === "item/completed");
+        // A crashing guard is not an allow decision, even when native execution continues.
+        record.passed = record.identity && record.status === "completed" && record.guardCalls > 0 && record.unexpectedRequests === 0 &&
+          (mode === "allow" ? record.effect && record.bytesVerified : !record.effect);
+      } catch (error) { record.failure = error.message; }
+      finally { await connection.close(); }
+      report.cases.push(record);
+    }
+  } finally { await new Promise(resolve => server.close(resolve)); }
+  Object.assign(report, capabilityResult(report.cases));
+  await writeFile("/fixture/output/native-capabilities.json", JSON.stringify(report, null, 2) + "\n");
+  console.log(JSON.stringify(report));
+  if (!report.activationEligible) throw new Error("Pinned native safety/workflow capability gate failed; activation remains blocked");
+}
+
+if (process.argv[1] === fixture) {
+  if (process.argv[2] === "--guard") await hook();
+  else if (process.argv[2] === "--prepare") await prepareNativeProbe();
+  else throw new Error("fixed native fixture operation required");
+}

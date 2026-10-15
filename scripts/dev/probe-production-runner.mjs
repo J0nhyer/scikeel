@@ -1,6 +1,13 @@
 import { spawn, execFileSync } from "node:child_process";
 import { readFile, writeFile, readdir, unlink, symlink, stat } from "node:fs/promises";
-import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
+
+if (process.argv[2] === "--native-capabilities") {
+  const { runNativeProtocolProbe } = await import("/fixture/repo/services/platform/fixtures/native-protocol.mjs");
+  await runNativeProtocolProbe();
+  process.exit(0);
+}
+
+const { default: scienceEnvironment } = await import("/opt/scikeel/tools/science-environment.mjs");
 
 // CI-only acceptance driver; never copied into an installed scientific image.
 const token = "a".repeat(64);

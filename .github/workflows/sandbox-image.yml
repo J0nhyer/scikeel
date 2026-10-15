@@ -18,6 +18,11 @@ on:
       - .github/workflows/sandbox-image.yml
   workflow_dispatch:
     inputs:
+      native_feasibility_only:
+        description: Run only the isolated pinned native capability gate without producing a release image
+        required: false
+        type: boolean
+        default: false
       python_image:
         description: Exact Python 3.12 image tag or digest to select
         required: true
@@ -37,7 +42,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  native-feasibility:
+    if: ${{ inputs.native_feasibility_only }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - name: Stage the integrity-pinned native binary and private synthetic fixtures
+        run: |
+          node scripts/dev/fetch-sandbox-codex.mjs
+          cp "$(command -v node)" .deploy/science-context/tools/bin/node
+          node services/platform/fixtures/native-protocol.mjs --prepare
+          chmod 777 .deploy/native-capabilities/output
+          docker pull python:3.12.12-slim-bookworm
+          docker image inspect --format '{{index .RepoDigests 0}}' python:3.12.12-slim-bookworm > .deploy/native-capabilities/output/container-image.txt
+      - name: Verify real pre-effect guards and file bytes without host credentials or egress
+        run: |
+          timeout --signal=TERM --kill-after=10s 180s docker run --rm --name scikeel-native-capability-test \
+            --network=none --read-only --user 1000:1000 --memory=768m --memory-swap=896m --pids-limit=128 --cpus=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            --tmpfs /fixture/native:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
+            -v "$PWD:/fixture/repo:ro" \
+            -v "$PWD/.deploy/science-context/tools/bin:/opt/scikeel/tools/bin:ro" \
+            -v "$PWD/.deploy/native-capabilities/config/requirements.toml:/etc/codex/requirements.toml:ro" \
+            -v "$PWD/.deploy/native-capabilities/output:/fixture/output:rw" \
+            -e CI=true -e SCIKEEL_NATIVE_CAPABILITY_CONTAINER=1 -e GITHUB_SHA="$GITHUB_SHA" \
+            --entrypoint /opt/scikeel/tools/bin/node "$(cat .deploy/native-capabilities/output/container-image.txt)" \
+            /fixture/repo/scripts/dev/probe-production-runner.mjs --native-capabilities
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-capabilities-${{ github.sha }}
+          path: .deploy/native-capabilities/output/
+          retention-days: 14
+      - name: Clean up the disposable native fixture
+        if: always()
+        run: docker rm -f scikeel-native-capability-test 2>/dev/null || true
   science-probe-image:
+    if: ${{ !inputs.native_feasibility_only }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     env:
