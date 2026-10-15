@@ -700,6 +700,54 @@ export class CliRuntimeManager {
     return policy;
   }
 
+  async admitConversation({ conversations, owner, conversationId, expectedRevision, request }) {
+    await this.init();
+    if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
+    if (!conversations || typeof conversations.previewTurn !== "function") throw issue("assistant_unavailable", "Conversation authority is unavailable", 503);
+    const capturedOwner = structuredClone(owner), capturedInput = structuredClone({ ...request, expectedRevision });
+    const preview = await conversations.previewTurn(capturedOwner, conversationId, capturedInput);
+    // Recovering an existing receipt is a read. It never grants dispatch or a
+    // new lease, including when an earlier delivery has an uncertain result.
+    if (preview.replay) return { replay: true, receipt: preview.receipt, identity: preview.receipt.identity };
+    if (this.#policyStorageUncertain) throw issue("assistant_recovery_required", "Assistant selection requires reconciliation", 503);
+    const lease = await this.assistantPolicy.admit(preview.receipt.identity, async () => {
+      if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
+      const receipt = await conversations.prepareTurn(capturedOwner, conversationId, capturedInput);
+      if (JSON.stringify(receipt.identity) !== JSON.stringify(preview.receipt.identity))
+        throw issue("assistant_identity_conflict", "Conversation execution identity changed", 503);
+      return receipt;
+    });
+    let transitionQueue = Promise.resolve();
+    const serial = run => {
+      const next = transitionQueue.catch(() => {}).then(run); transitionQueue = next; return next;
+    };
+    const transition = async (state, extra = {}) => {
+      if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
+      const current = await conversations.open(capturedOwner, conversationId), receipt = current.turns[capturedInput.requestId];
+      if (!receipt || JSON.stringify(receipt.identity) !== JSON.stringify(lease.reservation.identity))
+        throw issue("assistant_identity_conflict", "Conversation execution identity changed", 503);
+      if (receipt.state === state) {
+        if (extra.nativeAcceptance && JSON.stringify(extra.nativeAcceptance) !== JSON.stringify(receipt.nativeAcceptance))
+          throw issue("assistant_identity_conflict", "Native acceptance identity changed", 503);
+        return receipt;
+      }
+      return conversations.advanceTurn(capturedOwner, conversationId, {
+        requestId: capturedInput.requestId, expectedRevision: current.revision, state, ...extra,
+      });
+    };
+    return { replay: false, identity: structuredClone(lease.reservation.identity), receipt: structuredClone(lease.reservation),
+      submitted: () => serial(() => transition("submitted")),
+      accepted: nativeAcceptance => {
+        const capturedAcceptance = structuredClone(nativeAcceptance);
+        return serial(() => transition("accepted", { nativeAcceptance: capturedAcceptance }));
+      },
+      settle: ({ cleanupVerified } = {}) => serial(async () => {
+        await transition(cleanupVerified === true ? "settled" : "unknown", cleanupVerified === true ? { cleanupVerified: true } : {});
+        await lease.settle({ cleanupVerified: cleanupVerified === true });
+      }),
+    };
+  }
+
   async freshAdminDescribe(operationId) {
     await this.init();
     await this.refreshProfiles();

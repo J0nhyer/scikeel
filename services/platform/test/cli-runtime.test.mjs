@@ -10,6 +10,7 @@ import { afterEach, test } from "node:test";
 
 import { CliRuntimeManager, handoverText } from "../src/cli-runtime.mjs";
 import { CliProfileResolver } from "../src/cli-profile.mjs";
+import { ConversationState } from "../src/conversation-state.mjs";
 
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
 const roots = [];
@@ -751,4 +752,88 @@ test('owned fork history retains the original ancestor message and attachment re
   const {workspace}=await historyFixture(manager,root,[{history:[message]},{parentId:parent,history:[message]}]);
   const page=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:child});
   assert.equal(page.session.parentID,parent);assert.deepEqual(page.messages,[message]);
+});
+async function conversationFixture() {
+  const {root,manager,options}=await makeManager('opencode');await manager.init();
+  const workspace=join(root,'workspace');await mkdir(workspace);
+  const owner={userId:'usr_a',instanceId:'user-usr_a',generation:1,workspaceDir:workspace,directory:workspace};
+  const conversations=new ConversationState({rootDir:join(root,'conversation-state'),authorize:async value=>{
+    if(value.userId!==owner.userId || value.instanceId!==owner.instanceId || value.generation!==owner.generation || value.workspaceDir!==workspace)
+      throw Object.assign(Error('Stale context'),{code:'stale_workspace_context'});
+  }});
+  const value=await conversations.create(owner,{conversationId:'public-session',title:'Research',parentId:null,lifecycle:'active'});
+  const input={conversations,owner,conversationId:value.id,expectedRevision:value.revision,
+    request:{requestId:'send-1',payloadHash:'a'.repeat(64),policyRevision:1,runtime:'opencode',generation:1,model:'approved',identityRevision:'profile-1'}};
+  return {root,manager,options,conversations,owner,input};
+}
+test('global admission persists its policy lease before the canonical execution reservation and fences a concurrent switch',async()=>{
+  const {manager,conversations,owner,input}=await conversationFixture();
+  const prepare=conversations.prepareTurn.bind(conversations);let entered,release;
+  const ready=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  conversations.prepareTurn=async(...args)=>{
+    const data=JSON.parse(await readFile(manager.configPath,'utf8'));
+    assert.equal(Object.values(data.assistantPolicy.executions)[0].identity.execution,1);
+    entered();await gate;return prepare(...args);
+  };
+  const pending=manager.admitConversation(input);await ready;
+  const switching=manager.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'switch-during-send'});
+  release();const admitted=await pending;
+  await assert.rejects(switching,{code:'assistant_busy'});
+  assert.equal(admitted.identity.execution,1);assert.equal(admitted.identity.generation,1);
+  assert.equal((await conversations.open(owner,input.conversationId)).execution,1);
+  await admitted.settle({cleanupVerified:true});
+  assert.equal((await conversations.open(owner,input.conversationId)).turns['send-1'].state,'settled');
+  assert.equal((await manager.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'switch-after-cleanup'})).revision,2);
+  await manager.close();
+});
+test('delivery loss retains both durable fences and duplicate request recovery never submits a new execution',async()=>{
+  const {manager,conversations,owner,input}=await conversationFixture();
+  const admitted=await manager.admitConversation(input);await admitted.submitted();
+  await admitted.settle({cleanupVerified:false});
+  const replay=await manager.admitConversation(input);
+  assert.equal(replay.replay,true);assert.equal(replay.receipt.state,'unknown');assert.equal(replay.identity.execution,1);
+  assert.equal(typeof replay.submitted,'undefined');
+  await assert.rejects(manager.admitConversation({...input,expectedRevision:4,request:{...input.request,requestId:'send-again'}}),{code:'assistant_recovery_required'});
+  await assert.rejects(manager.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'blocked-switch'}),{code:'assistant_recovery_required'});
+  const saved=JSON.parse(await readFile(manager.configPath,'utf8'));assert.equal(Object.values(saved.assistantPolicy.executions)[0].status,'unknown');
+  assert.equal((await conversations.open(owner,input.conversationId)).turns['send-1'].state,'unknown');
+  await manager.close();
+});
+test('malformed, stale and conflicting requests cannot create policy leases or consume conversation executions',async()=>{
+  for(const patch of [{runtime:'codex'},{generation:2},{policyRevision:2},{model:'bad\nmodel'},{payloadHash:'invalid'},{extra:'untrusted'}]) {
+    const {manager,conversations,owner,input}=await conversationFixture();
+    await assert.rejects(manager.admitConversation({...input,request:{...input.request,...patch}}));
+    assert.equal((await conversations.open(owner,input.conversationId)).execution,0);
+    assert.deepEqual(JSON.parse(await readFile(manager.configPath,'utf8')).assistantPolicy.executions,{});
+    await manager.close();
+  }
+});
+test('a settled replay preserves the execution counter and changed payload cannot reuse its receipt',async()=>{
+  const {manager,conversations,owner,input}=await conversationFixture();
+  const admitted=await manager.admitConversation(input);await admitted.settle({cleanupVerified:true});
+  const replay=await manager.admitConversation(input);assert.equal(replay.replay,true);assert.equal(replay.receipt.state,'settled');
+  await assert.rejects(manager.admitConversation({...input,request:{...input.request,payloadHash:'b'.repeat(64)}}),{code:'conversation_request_conflict'});
+  const current=await conversations.open(owner,input.conversationId);
+  const second=await manager.admitConversation({...input,expectedRevision:current.revision,request:{...input.request,requestId:'send-2'}});
+  assert.equal(second.identity.execution,2);await second.settle({cleanupVerified:true});await manager.close();
+});
+test('a canonical persistence failure after global reservation retains uncertainty through restart',async()=>{
+  const {manager,options,conversations,input}=await conversationFixture();
+  conversations.beforeCommit=async()=>{throw Error('Persistence acknowledgement lost');};
+  await assert.rejects(manager.admitConversation(input),/Persistence acknowledgement lost/);
+  assert.equal(Object.values(JSON.parse(await readFile(manager.configPath,'utf8')).assistantPolicy.executions)[0].status,'unknown');
+  await manager.close();
+  const restarted=new CliRuntimeManager(options);await restarted.init();
+  assert.equal(restarted.assistantSnapshot('usr_a').recoveryRequired,true);
+  await assert.rejects(restarted.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'restart-must-not-clear'}),{code:'assistant_recovery_required'});
+  await restarted.close();
+});
+test('native acceptance cannot be inferred from HTTP submission and cleanup transition serialization rejects late old states',async()=>{
+  const {manager,conversations,owner,input}=await conversationFixture();
+  const admitted=await manager.admitConversation(input);await admitted.submitted();
+  await assert.rejects(admitted.accepted({runtime:'opencode',nativeSessionId:'unverified-native',turnId:'turn-1'}),{code:'invalid_conversation_transition'});
+  assert.equal((await conversations.open(owner,input.conversationId)).turns['send-1'].state,'submitted');
+  await admitted.settle({cleanupVerified:true});await admitted.settle({cleanupVerified:true});
+  await assert.rejects(admitted.submitted(),{code:'invalid_conversation_transition'});
+  assert.deepEqual(JSON.parse(await readFile(manager.configPath,'utf8')).assistantPolicy.executions,{});await manager.close();
 });

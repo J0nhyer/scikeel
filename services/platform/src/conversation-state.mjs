@@ -71,7 +71,7 @@ export class ConversationState {
    if(!name(id) || !exact(value,conversationFields) || value.id!==id || value.userId!==userId ||
        !integer(value.revision) || value.revision<1 || !integer(value.sequence) || !Array.isArray(value.events) ||
        value.events.length!==value.sequence || value.sequence>12000 || !Array.isArray(value.bindings) ||
-       !value.bindings.length || value.bindings.length>64 || typeof value.title!=='string' || value.title.length>512 ||
+       value.bindings.length>64 || typeof value.title!=='string' || value.title.length>512 ||
        !['active','archived','trashed'].includes(value.lifecycle) || value.parentId!==null && !name(value.parentId))throw storage();
    ownerInput(value);
    const bindings=new Set();
@@ -84,7 +84,7 @@ export class ConversationState {
     const origin=JSON.stringify([binding.runtime,binding.nativeSessionId]);
     if(origins.has(origin))throw storage();origins.add(origin);
    }
-   if(!bindings.has(value.currentBindingId))throw storage();
+   if(bindings.size ? !bindings.has(value.currentBindingId) : value.currentBindingId!==null || value.events.length)throw storage();
    const events=new Set();
    for(const [index,event] of value.events.entries()) {
     if(!exact(event,[...eventFields,'sequence','bindingId','originKey']) || event.sequence!==index+1 ||
@@ -174,6 +174,26 @@ export class ConversationState {
   owner=await this.#owner(owner);const data=await this.#load(owner.userId),values=[];
   for(const id of Object.keys(data.conversations).sort())values.push(structuredClone(await this.#owned(data,owner,id)));
   return values;
+ }
+ async create(owner,input) {
+  owner=await this.#owner(owner);
+  if(!exact(input,['conversationId','title','parentId','lifecycle']) || !name(input.conversationId) ||
+      typeof input.title!=='string' || input.title.length>512 || input.parentId!==null && !name(input.parentId) ||
+      !['active','archived','trashed'].includes(input.lifecycle))throw invalid();
+  return this.#serialized(owner.userId,async()=>{
+   const data=await this.#load(owner.userId),previous=data.conversations[input.conversationId];
+   if(previous) {
+    await this.#owned(data,owner,input.conversationId);
+    if(previous.directory!==owner.directory || previous.title!==input.title || previous.parentId!==input.parentId ||
+        previous.lifecycle!==input.lifecycle)throw fail('conversation_origin_conflict');
+    return structuredClone(previous);
+   }
+   if(Object.keys(data.conversations).length>=10000)throw fail('conversation_metadata_full',507);
+   if(input.parentId!==null)await this.#owned(data,owner,input.parentId);
+   const value={id:input.conversationId,...ownerInput(owner),title:input.title,parentId:input.parentId,lifecycle:input.lifecycle,
+    revision:1,sequence:0,bindings:[],currentBindingId:null,events:[],execution:0,turns:{}};
+   data.conversations[value.id]=value;await this.#save(data,owner);return structuredClone(value);
+  });
  }
  async pendingExecutions() {
   try {
@@ -285,27 +305,38 @@ export class ConversationState {
    value.currentBindingId=binding.id;value.revision++;await this.#save(data,owner);return structuredClone(value);
   });
  }
- async prepareTurn(owner,id,input) {
-  owner=await this.#owner(owner);
+ #turnInput(owner,input) {
   if(!exact(input,[...turnInputFields,'expectedRevision']) || !name(input.requestId) || !/^[a-f0-9]{64}$/.test(input.payloadHash) ||
       !integer(input.expectedRevision) || !positive(input.policyRevision) || !positive(input.generation) || !runtime(input.runtime) ||
       !model(input.model) || !name(input.identityRevision) || owner.generation!==undefined && owner.generation!==input.generation)throw invalid();
+ }
+ #turnCandidate(owner,value,input) {
+  const previous=value.turns[input.requestId];
+  if(previous) {
+   if(previous.payloadHash!==input.payloadHash || previous.model!==input.model || previous.identityRevision!==input.identityRevision ||
+       ['generation','runtime','policyRevision'].some(key=>previous.identity[key]!==input[key]))throw fail('conversation_request_conflict');
+   return {replay:true,receipt:structuredClone(previous)};
+  }
+  const pending=Object.values(value.turns).filter(turn=>turn.state!=='settled');
+  if(pending.some(turn=>turn.state==='unknown'))throw fail('assistant_recovery_required',503);
+  if(value.revision!==input.expectedRevision)throw fail('conversation_revision_conflict');
+  if(pending.length)throw fail('conversation_execution_busy');
+  if(Object.keys(value.turns).length>=1024 || !Number.isSafeInteger(value.execution+1))throw fail('conversation_metadata_full',507);
+  return {replay:false,receipt:{requestId:input.requestId,payloadHash:input.payloadHash,model:input.model,identityRevision:input.identityRevision,
+   identity:{userId:owner.userId,instanceId:owner.instanceId,generation:input.generation,conversationId:value.id,
+    execution:value.execution+1,requestId:input.requestId,policyRevision:input.policyRevision,runtime:input.runtime},
+   state:'prepared',cleanupVerified:false,nativeAcceptance:null}};
+ }
+ async previewTurn(owner,id,input) {
+  owner=await this.#owner(owner);this.#turnInput(owner,input);
+  return this.#turnCandidate(owner,await this.#owned(await this.#load(owner.userId),owner,id),input);
+ }
+ async prepareTurn(owner,id,input) {
+  owner=await this.#owner(owner);this.#turnInput(owner,input);
   return this.#serialized(owner.userId,async()=>{
-   const data=await this.#load(owner.userId),value=await this.#owned(data,owner,id),previous=value.turns[input.requestId];
-   if(previous) {
-    if(previous.payloadHash!==input.payloadHash || previous.model!==input.model || previous.identityRevision!==input.identityRevision ||
-        ['generation','runtime','policyRevision'].some(key=>previous.identity[key]!==input[key]))throw fail('conversation_request_conflict');
-    return structuredClone(previous);
-   }
-   if(value.revision!==input.expectedRevision)throw fail('conversation_revision_conflict');
-   const pending=Object.values(value.turns).filter(turn=>turn.state!=='settled');
-   if(pending.some(turn=>turn.state==='unknown'))throw fail('assistant_recovery_required',503);
-   if(pending.length)throw fail('conversation_execution_busy');
-   if(Object.keys(value.turns).length>=1024 || !Number.isSafeInteger(value.execution+1))throw fail('conversation_metadata_full',507);
-   const turn={requestId:input.requestId,payloadHash:input.payloadHash,model:input.model,identityRevision:input.identityRevision,
-    identity:{userId:owner.userId,instanceId:owner.instanceId,generation:input.generation,conversationId:id,
-      execution:++value.execution,requestId:input.requestId,policyRevision:input.policyRevision,runtime:input.runtime},
-    state:'prepared',cleanupVerified:false,nativeAcceptance:null};
+   const data=await this.#load(owner.userId),value=await this.#owned(data,owner,id),candidate=this.#turnCandidate(owner,value,input);
+   if(candidate.replay)return candidate.receipt;
+   const turn=candidate.receipt;value.execution=turn.identity.execution;
    value.turns[input.requestId]=turn;value.revision++;await this.#save(data,owner);return structuredClone(turn);
   });
  }

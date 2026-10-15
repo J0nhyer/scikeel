@@ -220,6 +220,8 @@ The operator synchronization command changes the private store only. Before prod
 
 ### Task 5: Give Conversations Stable Identity and Versioned Native Bindings
 
+Cross-task admission evidence, October 16: new canonical conversations can exist before a verified native binding, without invented native IDs. The existing CLI manager now coordinates a read-only canonical reservation preview, durable global lease, and then the canonical execution counter under policy-to-conversation lock order. Duplicate receipts return read-only recovery data with no dispatch methods, including unknown delivery. Submitted, accepted and verified-cleanup transitions retain both fences on failure; native acceptance requires the actual owned binding rather than an HTTP acknowledgement. Five observed RED admission contracts, three unbound-conversation contracts, and further native-identity/transition checks pass in the 139-test guarded union with zero skips, including an actual replacement manager after persistence failure. HTTP/background dispatch, native acceptance callbacks and verified generation cleanup reconciliation are not integrated yet; Task 3 and Task 5 remain incomplete.
+
 **Create:** `services/platform/src/conversation-state.mjs`, `services/platform/test/conversation-state.test.mjs`.
 **Modify:** `services/platform/src/{cli-runtime,session-authority,tenant-policy,workspace-management}.mjs` and their tests.
 

@@ -16,6 +16,32 @@ async function fixture(t,options={}) {
  return {rootDir,authorize,state:new ConversationState({rootDir,authorize,...options})};
 }
 const imported={conversationId:'public-conversation',expectedRevision:0,title:'Existing research',parentId:null,lifecycle:'active',binding,events:[event],cursor:'page-1'};
+test('new public conversations exist durably before any target-native identity is known',async t=>{
+ const {state,rootDir,authorize}=await fixture(t);
+ const input={conversationId:'new-conversation',title:'New research',parentId:null,lifecycle:'active'};
+ const value=await state.create(owner,input);
+ assert.equal(value.currentBindingId,null);assert.deepEqual(value.bindings,[]);assert.equal(value.execution,0);
+ assert.equal(value.sequence,0);assert.equal(value.revision,1);
+ assert.deepEqual(await new ConversationState({rootDir,authorize}).open(owner,value.id),value);
+ assert.deepEqual(await state.create(owner,input),value);
+ await assert.rejects(state.create(owner,{...input,title:'Replacement'}),{code:'conversation_origin_conflict'});
+});
+test('unbound public conversations reserve a durable execution without fabricating a native binding',async t=>{
+ const {state}=await fixture(t);const value=await state.create(owner,{conversationId:'unbound',title:'Research',parentId:null,lifecycle:'active'});
+ const prepared=await state.prepareTurn({...owner,generation:3},value.id,{...turn,generation:3,expectedRevision:1});
+ assert.equal(prepared.identity.execution,1);assert.equal(prepared.nativeAcceptance,null);
+ const stored=await state.open(owner,value.id);assert.deepEqual(stored.bindings,[]);assert.equal(stored.currentBindingId,null);
+ const bound=await state.bind(owner,value.id,{expectedRevision:stored.revision,binding:{...binding,representedSequence:0}});
+ assert.equal(bound.bindings.length,1);assert.equal(bound.currentBindingId,bound.bindings[0].id);
+});
+test('new conversations validate owned parent ancestry and cannot append events under an invented binding',async t=>{
+ const {state}=await fixture(t);
+ await assert.rejects(state.create(owner,{conversationId:'orphan',title:'Research',parentId:'missing',lifecycle:'active'}),{code:'conversation_not_found'});
+ const parent=await state.create(owner,{conversationId:'parent',title:'Research',parentId:null,lifecycle:'active'});
+ const child=await state.create(owner,{conversationId:'child',title:'Research fork',parentId:parent.id,lifecycle:'active'});
+ assert.equal(child.parentId,parent.id);
+ await assert.rejects(state.appendEvent(owner,child.id,{expectedRevision:child.revision,bindingId:'invented-binding',event}),{code:'native_binding_conflict'});
+});
 test('imported conversations retain public identity, origin mapping and read access across restart and assistant binding changes',async t=>{
  const {rootDir,state,authorize}=await fixture(t);
  const first=await state.importNative(owner,imported);
