@@ -30,11 +30,13 @@ pub enum Operation {
     Start { instance_id: String, generation: u64, image_digest: String },
     Stop { instance_id: String, generation: u64, reason: String },
     Inspect { instance_id: String },
+    Inventory {},
 }
 impl Operation {
-    pub fn instance_id(&self) -> &str {
+    pub fn instance_id(&self) -> Option<&str> {
         match self { Self::Register { instance_id, .. } | Self::Start { instance_id, .. }
-            | Self::Stop { instance_id, .. } | Self::Inspect { instance_id } => instance_id }
+            | Self::Stop { instance_id, .. } | Self::Inspect { instance_id } => Some(instance_id),
+            Self::Inventory {} => None }
     }
 }
 #[derive(Debug)]
@@ -50,7 +52,7 @@ pub fn parse(bytes: &[u8], peer_uid: u32, platform_uid: u32) -> Result<Request> 
     if frame.schema != 1 || !identifier(&frame.request_id, 128) { return Err("invalid_frame"); }
     let operation: Operation = serde_json::from_value(serde_json::json!({"op": frame.op, "args": frame.args}))
         .map_err(|_| "invalid_operation")?;
-    if !identifier(operation.instance_id(), 64) { return Err("invalid_instance"); }
+    if operation.instance_id().is_some_and(|id| !identifier(id,64)) { return Err("invalid_instance"); }
     match &operation {
         Operation::Register { user_id, .. } if !identifier(user_id, 64) => return Err("invalid_user"),
         Operation::Start { generation, image_digest, .. } if *generation == 0 || *generation > 9_007_199_254_740_991 || !digest(image_digest) => return Err("invalid_start"),
@@ -85,6 +87,15 @@ mod tests {
     use super::*;
     fn frame(op: &str, args: Value) -> Vec<u8> {
         (serde_json::json!({"schema":1,"requestId":"request-a","op":op,"args":args}).to_string()+"\n").into_bytes()
+    }
+    #[test]
+    fn read_only_inventory_has_no_tenant_arguments_and_still_requires_platform_peer() {
+        assert!(parse(&frame("inventory",serde_json::json!({})),1000,1000).is_ok());
+        for args in [serde_json::json!({"instanceId":"a"}),serde_json::json!({"userId":"a"}),
+            serde_json::json!({"command":"id"})] {
+            assert!(parse(&frame("inventory",args),1000,1000).is_err());
+        }
+        assert_eq!(parse(&frame("inventory",serde_json::json!({})),0,1000).unwrap_err(),"unauthorized_peer");
     }
     #[test]
     fn fixed_operations_reject_execution_mount_injection_and_unknown_fields() {

@@ -3,6 +3,19 @@ import { WorkspaceRecovery, recoveryError } from "./workspace-recovery.mjs";
 
 const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
 const unavailable = (message) => Object.assign(new Error(message), { statusCode: 503, retryable: true });
+async function inventoryStatus(response) {
+  if(!response.body?.getReader)return response.json();
+  const reader=response.body.getReader(),chunks=[];let length=0;
+  try {
+    for(;;) {
+      const {value,done}=await reader.read();if(done)break;
+      length+=value.byteLength;if(length>1024*1024)throw unavailable("assistant status exceeds limit");
+      chunks.push(Buffer.from(value));
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  }catch(error){await reader.cancel().catch(()=>{});throw error;}
+  finally{reader.releaseLock();}
+}
 export class ManagedWorkerManager {
   #workers = new Map(); #starting = new Map(); #queue = Promise.resolve(); #closed = false; #admissions = new Map();
   constructor({ rootDir, instancesDir = posix.join(rootDir ?? "", "instances"), imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker, admitWorker, refreshWorker, now = Date.now } = {}) {
@@ -14,6 +27,65 @@ export class ManagedWorkerManager {
     this.recovery = new WorkspaceRecovery({ rootDir, now, probe: (context, options) => this.#probe(context, options) });
   }
   async init() { if (this.#closed) throw unavailable("worker manager closed"); }
+  async assistantInventory() {
+    const failure=()=>Object.assign(unavailable("assistant inventory unavailable"),{code:"assistant_inventory_unavailable"});
+    let accounts;
+    try {({accounts}=await this.client.inventory({timeoutMs:3000}));}
+    catch {throw failure();}
+    if(this.#closed || !Array.isArray(accounts) || accounts.length>253)throw failure();
+    const activeExecutions=[],uncertainEffects=[],seen=new Set(),owners=new Set();
+    for(const account of accounts) {
+      if(!account || Object.keys(account).sort().join(",")!=="generation,instanceId,status,userId" ||
+          !identifier(account.instanceId) || !identifier(account.userId) || !Number.isSafeInteger(account.generation) || account.generation<1 ||
+          !["registered","stopped","starting","ready","unavailable"].includes(account.status) ||
+          seen.has(account.instanceId) || owners.has(account.userId))throw failure();
+      seen.add(account.instanceId);owners.add(account.userId);
+      const context={source:"worker",userId:account.userId,instanceId:account.instanceId,generation:account.generation};
+      const record=this.#workers.get(account.instanceId);
+      if(record && (record.userId!==account.userId || record.generation!==account.generation || record.cleanupUnverified)){
+        uncertainEffects.push(context);continue;
+      }
+      if(this.#starting.has(account.instanceId) || record?.maintenance || record?.activeMutations) {
+        activeExecutions.push(context);continue;
+      }
+      if(["registered","stopped"].includes(account.status)) {
+        if(record && record.status!=="stopped")uncertainEffects.push(context);
+        continue;
+      }
+      // Cold live generations are not adopted or reconfigured merely to inspect them.
+      if(account.status!=="ready" || !record || record.status!=="running") {uncertainEffects.push(context);continue;}
+      try {
+        const inspected=await this.client.inspect({instanceId:account.instanceId},{timeoutMs:3000});
+        if(inspected.instanceId!==account.instanceId || inspected.generation!==account.generation || inspected.status!=="ready" ||
+            typeof this.inspectNative!=="function")throw failure();
+        const native=await this.inspectNative(context);
+        if(!native || Object.keys(native).sort().join(",")!=="busy,jobs,starting" || typeof native.busy!=="boolean" ||
+            typeof native.starting!=="boolean" || !Array.isArray(native.jobs) || native.jobs.length>16)throw failure();
+        const jobs=new Set();let nativeActive=native.starting;
+        for(const job of native.jobs) {
+          if(!job || Object.keys(job).sort().join(",")!=="jobId,sessionId,status" || !/^[a-f0-9]{64}$/.test(job.jobId) ||
+              typeof job.sessionId!=="string" || !/^[A-Za-z0-9_-]{1,128}$/.test(job.sessionId) ||
+              !["running","settling","completed","failed","cancelled"].includes(job.status) || jobs.has(job.jobId))throw failure();
+          jobs.add(job.jobId);nativeActive ||= ["running","settling"].includes(job.status);
+        }
+        if(nativeActive && !native.busy)throw failure();
+        const response=await this.fetchImpl(`${record.url}/session/status`,{headers:{
+          authorization:`Basic ${Buffer.from(`opencode:${record.token}`).toString("base64")}`},signal:AbortSignal.timeout(3000)});
+        if(!response.ok)throw failure();
+        const statuses=await inventoryStatus(response);
+        if(!statuses || typeof statuses!=="object" || Array.isArray(statuses) || Object.keys(statuses).length>10000 ||
+            Object.values(statuses).some(status=>!status || !["idle","busy","retry"].includes(status.type)))throw failure();
+        const current=await this.client.inspect({instanceId:account.instanceId},{timeoutMs:3000});
+        if(current.instanceId!==account.instanceId || current.generation!==account.generation || current.status!=="ready" ||
+            record.generation!==account.generation || record.status!=="running" || record.cleanupUnverified)throw failure();
+        if(native.busy || record.activeMutations || record.maintenance || this.#starting.has(account.instanceId) ||
+            Object.values(statuses).some(status=>status.type!=="idle"))activeExecutions.push(context);
+      }catch {uncertainEffects.push(context);}
+    }
+    for(const record of this.#workers.values())if(!seen.has(record.id) && (record.generation!==null || this.#starting.has(record.id)))
+      uncertainEffects.push({source:"worker",userId:record.userId,instanceId:record.id,generation:record.generation});
+    return {activeExecutions,uncertainEffects};
+  }
   #serialized(operation) {
     const pending = this.#queue.then(operation); this.#queue = pending.catch(() => {}); return pending;
   }

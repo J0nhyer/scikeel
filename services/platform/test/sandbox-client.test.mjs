@@ -37,6 +37,30 @@ test("launcher requests have fixed operations and exact argument schemas", () =>
     assert.throws(() => launcherRequest(op, args, "request-a"));
 });
 
+test("read-only launcher inventory includes dormant owners without tokens or arbitrary filters",async()=>{
+  const accounts=[{instanceId:"historical-instance",userId:"removed-owner",generation:4,status:"stopped"},
+    {instanceId:"user-current",userId:"current",generation:2,status:"ready"}];
+  assert.deepEqual(launcherRequest("inventory",{},"request-a"),{schema:1,requestId:"request-a",op:"inventory",args:{}});
+  for(const args of [{instanceId:"user-current"},{userId:"current"},{command:"id"}])
+    assert.throws(()=>launcherRequest("inventory",args,"request-a"));
+  await socketFixture((socket,request)=>{
+    assert.equal(request.op,"inventory");assert.deepEqual(request.args,{});
+    socket.end(response(request,{accounts}));
+  },async client=>assert.deepEqual(await client.inventory(),{accounts}));
+});
+
+test("launcher inventory rejects partial, duplicated or credential-bearing binding summaries",async()=>{
+  const valid={instanceId:"user-a",userId:"a",generation:1,status:"registered"};
+  for(const result of [{accounts:[{...valid,internalToken:"a".repeat(64)}]},
+    {accounts:[{...valid,workspaceDir:"/private"}]},{accounts:[{...valid,generation:0}]},
+    {accounts:[{...valid,status:"other"}]},{accounts:[{...valid,userId:"../peer"}]},
+    {accounts:[valid,valid]},{accounts:[valid,{...valid,instanceId:"user-b"}]},
+    {accounts:[valid],partial:true},{accounts:Array.from({length:254},(_,index)=>({...valid,instanceId:`u-${index}`,userId:`u-${index}`}))}]){
+    await socketFixture((socket,request)=>socket.end(response(request,result)),
+      async client=>assert.rejects(client.inventory()));
+  }
+});
+
 test("partial frames work and stale or foreign start responses are rejected", async () => {
   await socketFixture((socket, request) => {
     const line = response(request, { instanceId: "user-a", generation: 1 });
