@@ -883,8 +883,12 @@ export class PlatformServer {
       value=await this.conversationRouter.list(owner,{limit:number("limit",200),cursor:number("cursor",null),
         search:parsed.searchParams.get("search")??"",...(input.directory===undefined?{}:{directory})});
     }else {
-      const session=await this.conversationRouter.read(owner,sessionId);
+      let session=await this.conversationRouter.read(owner,sessionId);
       if(input.directory!==undefined&&directory!==session.directory)throw workspaceError("conversation_denied",403);
+      if(typeof this.conversationRouter.index==="function") {
+        await this.conversationRouter.index(owner,sessionId);
+        session=await this.conversationRouter.read(owner,sessionId);
+      }
       this.tenantPolicy.registerSession(context,{id:sessionId,directory:session.directory,parentID:session.parentID});
       if(operation.operation==="sessionRead")value=session;
       else if(operation.operation==="sessionChildren") {

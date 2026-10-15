@@ -1347,11 +1347,12 @@ test('managed history reads use owned public routing before assistant-specific d
   const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
   policy.registerAccount({userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir});
   f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
-  let reads=0;
+  let reads=0,indexes=0;
   f.server.conversationRouter={
+    index:async()=>{indexes++;},
     list:async owner=>{assert.equal(owner.userId,user.id);return[{id:'retained',title:'Retained',directory:worker.workspaceDir}];},
     read:async(owner,id)=>{assert.equal(owner.generation,1);return{id,title:'Retained',directory:worker.workspaceDir};},
-    messages:async(_owner,id)=>{reads++;return[{info:{id:'retained-message',sessionID:id,role:'assistant'},parts:[]}];},
+    messages:async(_owner,id)=>{assert(indexes>0);reads++;return[{info:{id:'retained-message',sessionID:id,role:'assistant'},parts:[]}];},
   };
   const listed=await client.request('/experimental/session?limit=200');assert.equal(listed.status,200);
   assert.equal((await listed.json())[0].id,'retained');
