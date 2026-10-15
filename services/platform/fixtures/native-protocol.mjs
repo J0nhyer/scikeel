@@ -23,7 +23,8 @@ export function responsesFrame(item, id = "fixture-response") {
 
 export function capabilityResult(cases) {
   const required = ["denied-command", "allowed-command", "denied-edit", "allowed-edit",
-    "denied-custom", "allowed-custom", "crashed-command", "crashed-edit", "crashed-custom"];
+    "denied-custom", "allowed-custom", "crashed-command", "crashed-edit", "crashed-custom",
+    ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
   const checks = Object.fromEntries(required.map(name => [name, cases.some(value => value.name === name && value.passed === true)]));
   return { checks, activationEligible: Object.values(checks).every(Boolean) };
 }
@@ -49,8 +50,11 @@ async function hook() {
   });
   const { mode } = await response.json();
   if (mode === "crash") process.exit(1);
+  if (mode === "timeout") await new Promise(resolve => setTimeout(resolve, 10000));
+  if (mode === "malformed") { console.log('{"hookSpecificOutput":'); return; }
+  if (mode === "empty") return;
   console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse",
-    ...(mode === "deny" ? { permissionDecision: "deny", permissionDecisionReason: "Pending research decision" } : {}) } }));
+    ...(mode === "deny" ? { permissionDecision: "deny", permissionDecisionReason: "Pending research decision" } : { permissionDecision: "allow" }) } }));
 }
 
 export async function prepareNativeProbe() {
@@ -79,7 +83,7 @@ timeout = 5
 }
 
 class NativeConnection {
-  pending = new Map(); frames = []; next = 1; unexpectedRequests = 0; customEffects = 0;
+  pending = new Map(); frames = []; next = 1; unexpectedRequests = 0; customEffects = 0; customCalls = 0;
   constructor(child, mode) {
     this.child = child; this.mode = mode;
     this.failure = new Promise((_, reject) => this.reject = reject);
@@ -105,6 +109,7 @@ class NativeConnection {
       if (frame.method === "item/tool/call" && frame.params?.threadId === this.thread &&
           frame.params?.tool === "research_checkpoint" && typeof frame.params?.turnId === "string") {
         // The client boundary independently denies dispatch while a decision is pending.
+        this.customCalls++;
         const success = this.mode === "allow";
         if (success) this.customEffects++;
         this.write({ id: frame.id, result: { contentItems: [{ type: "inputText", text: success ? "Recorded" : "Decision required" }], success } });
@@ -167,6 +172,11 @@ export async function runNativeProtocolProbe() {
     commandApproval: !!command.threadId && !!command.turnId, editApproval: !!edit.threadId && !!edit.turnId };
   const report = { schema: 1, source: process.env.GITHUB_SHA, native: { ...nativePin, sha256: hash.digest("hex"), bwrapSha256: resourceHash.digest("hex") },
     schemaFacts, productionChanged: false, liveInference: false, syntheticCatalog: true, fixtureModelMetadata: "gpt-5.4 tool schema only", cases: [] };
+  const integration = JSON.parse(await readFile("/opt/scikeel/tools/bin/native-integration.json", "utf8"));
+  if (integration.policy !== "required-effect-guard-v1" || integration.upstreamCommit !== nativePin.sourceCommit ||
+      integration.binarySha256 !== report.native.sha256 || integration.bwrapSha256 !== report.native.bwrapSha256 || integration.source !== report.source)
+    throw new Error("Pinned Web native integration identity mismatch");
+  report.integration = integration;
   let current;
   const server = createServer(async (request, response) => {
     try {
@@ -194,8 +204,9 @@ export async function runNativeProtocolProbe() {
   });
   await new Promise(resolve => server.listen(port, "127.0.0.1", resolve));
   try {
-    for (const kind of ["command", "edit", "custom"]) for (const mode of ["deny", "allow", "crash"]) {
-      const name = `${mode === "deny" ? "denied" : mode === "allow" ? "allowed" : "crashed"}-${kind}`;
+    for (const kind of ["command", "edit", "custom"]) for (const mode of ["deny", "allow", "crash", "malformed", "empty", "timeout", "missing"]) {
+      const label = { deny: "denied", allow: "allowed", crash: "crashed", timeout: "timedout" }[mode] ?? mode;
+      const name = `${label}-${kind}`;
       const directory = `${root}/${name}`;
       await mkdir(`${directory}/workspace`, { recursive: true }); await mkdir(`${directory}/home`);
       const marker = `${directory}/workspace/result.txt`;
@@ -208,7 +219,7 @@ export async function runNativeProtocolProbe() {
       current = { mode, item, guards: [], requests: 0 };
       const child = spawn(binary, ["app-server", "--listen", "stdio://", "-c", 'model_provider="fixture"', "-c",
         `model_providers.fixture={name="Fixture",base_url="http://127.0.0.1:${port}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}`,
-        "-c", 'model_catalog_json="/fixture/config/models.json"', "-c", 'web_search="disabled"', "-c", 'features.hooks=true', "-c", 'features.unified_exec=true'], {
+        "-c", 'model_catalog_json="/fixture/config/models.json"', "-c", 'web_search="disabled"', "-c", `features.hooks=${mode !== "missing"}`, "-c", 'features.unified_exec=true'], {
         cwd: `${directory}/workspace`, env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", HOME: `${directory}/home`,
           CODEX_HOME: `${directory}/home`, OPENAI_API_KEY: "synthetic-not-a-real-key", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "pipe"],
       });
@@ -230,6 +241,7 @@ export async function runNativeProtocolProbe() {
         record.status = (await connection.completed()).status;
         record.guardCalls = current.guards.length;
         record.unexpectedRequests = connection.unexpectedRequests;
+        record.customDispatches = connection.customCalls;
         let file;
         try { file = await readFile(marker, "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
         record.effect = kind === "custom" ? connection.customEffects > 0 : file !== undefined;
@@ -239,8 +251,9 @@ export async function runNativeProtocolProbe() {
         record.toolCatalog = current.toolCatalog;
         record.toolResults = current.toolResults?.map(output => output.replaceAll(directory, "[fixture]").replaceAll("synthetic-not-a-real-key", "[redacted]"));
         // A crashing guard is not an allow decision, even when native execution continues.
-        record.passed = record.identity && record.status === "completed" && record.guardCalls > 0 && record.unexpectedRequests === 0 &&
-          (mode === "allow" ? record.effect && record.bytesVerified : !record.effect);
+        record.passed = record.identity && record.status === "completed" &&
+          (mode === "missing" ? record.guardCalls === 0 : record.guardCalls > 0) && record.unexpectedRequests === 0 &&
+          (mode === "allow" ? record.effect && record.bytesVerified : !record.effect && record.customDispatches === 0);
       } catch (error) { record.failure = error.message; }
       finally { await connection.close(); }
       report.cases.push(record);

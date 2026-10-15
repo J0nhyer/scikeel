@@ -2,11 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile, mkdtemp, mkdir, writeFile, rm, access, symlink } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { capabilityResult, nativePin, responsesFrame } from "../fixtures/native-protocol.mjs";
 import * as protocol from "../fixtures/native-protocol.mjs";
 import { extractCodexArchive } from "../../../scripts/dev/fetch-sandbox-codex.mjs";
+import { validateGuardLock, buildGuardRuntime } from "../../../scripts/dev/build-codex-guard-runtime.mjs";
 
 const workflow = new URL("../../../.github/workflows/sandbox-image.yml", import.meta.url);
 
@@ -51,7 +53,8 @@ test("pinned staging rejects a symlinked sandbox helper before writing executabl
 
 test("the native gate cannot pass with any missing, skipped or failed pre-effect check", () => {
   const names = ["denied-command", "allowed-command", "denied-edit", "allowed-edit", "denied-custom", "allowed-custom",
-    "crashed-command", "crashed-edit", "crashed-custom"];
+    "crashed-command", "crashed-edit", "crashed-custom",
+    ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
   const cases = names.map(name => ({ name, passed: true }));
   assert.equal(capabilityResult(cases).activationEligible, true);
   for (const name of names) {
@@ -59,6 +62,20 @@ test("the native gate cannot pass with any missing, skipped or failed pre-effect
     assert.equal(capabilityResult(cases.map(value => value.name === name ? { ...value, passed: false } : value)).activationEligible, false);
     assert.equal(capabilityResult(cases.map(value => value.name === name ? { ...value, passed: undefined, skipped: true } : value)).activationEligible, false);
   }
+});
+
+test("the integrated native guard patch is immutable and requires explicit allow, not hook process success", async () => {
+  const lock = JSON.parse(await readFile(new URL("../../../runtime/codex-patches/required-effect-guard.lock.json", import.meta.url), "utf8"));
+  const patch = await readFile(new URL("../../../runtime/codex-patches/required-effect-guard.patch", import.meta.url), "utf8");
+  assert.equal(lock.patchSha256, createHash("sha256").update(patch).digest("hex"));
+  assert.ok(patch.includes('+    let mut should_block = true;'));
+  assert.ok(patch.includes('== Some("allow")'));
+  assert.ok(patch.includes('required_guard_count > 0'));
+  assert.ok(patch.includes('hook_events.len() == required_guard_count'));
+  assert.deepEqual(validateGuardLock(lock), lock);
+  for (const key of ["policy", "upstreamCommit", "upstreamVersion", "rustVersion", "patchSha256", "bwrapSha256"])
+    assert.throws(() => validateGuardLock({ ...lock, [key]: "foreign" }), /Invalid pinned/);
+  if (process.env.CI !== "true") await assert.rejects(buildGuardRuntime(), /Dedicated native CI required/);
 });
 
 test("fixture Responses frames exercise native tool dispatch rather than a text-only model success", () => {
@@ -87,4 +104,14 @@ test("feasibility uses the repository download pin and never a host Codex instal
   assert.ok(source.includes("--cap-drop=ALL --security-opt no-new-privileges"), "CI must retain the production zero-capability/no-new-privileges boundary");
   assert.ok(source.includes("persist-credentials: false"));
   assert.ok(!source.includes("--privileged"));
+});
+
+test("Web native integration requires an explicit successful guard and cannot compile on this small host", async () => {
+  const path = new URL("../../../scripts/dev/build-codex-guard-runtime.mjs", import.meta.url);
+  const source = await readFile(path, "utf8").catch(() => "");
+  assert.ok(source.includes("required-effect-guard-v1"), "the fail-open native pin requires a separate reviewed Web integration");
+  assert.ok(source.includes("totalmem() < 8 * 1024 ** 3"));
+  assert.ok(source.includes("Dedicated native CI required"));
+  const workflowSource = await readFile(workflow, "utf8");
+  assert.ok(workflowSource.includes("pnpm runtime:codex:build"));
 });

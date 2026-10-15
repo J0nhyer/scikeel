@@ -1,0 +1,70 @@
+diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
+--- a/codex-rs/core/src/hook_runtime.rs
++++ b/codex-rs/core/src/hook_runtime.rs
+@@ -208,4 +208,5 @@
+     };
+     let hooks = sess.hooks();
+     let preview_runs = hooks.preview_pre_tool_use(&request);
++    let required_guard_count = preview_runs.len();
+     emit_hook_started_events(sess, turn_context, preview_runs).await;
+@@ -217,5 +218,13 @@
+         additional_contexts,
+         updated_input,
+     } = hooks.run_pre_tool_use(request).await;
++    let guards_complete = required_guard_count > 0
++        && hook_events.len() == required_guard_count
++        && hook_events.iter().all(|event| {
++            matches!(
++                event.run.status,
++                HookRunStatus::Completed | HookRunStatus::Blocked
++            )
++        });
+     emit_hook_completed_events(sess, turn_context, hook_events).await;
+     record_additional_contexts(sess, turn_context, additional_contexts).await;
+@@ -223,3 +232,10 @@
++    // This Web-only binary requires the managed guard before every tool effect.
++    if !guards_complete {
++        return PreToolUseHookResult::Blocked(
++            "SciKeel execution authority is unavailable; no tool effect was authorized".to_string(),
++        );
++    }
++
+     if !should_block {
+         return PreToolUseHookResult::Continue { updated_input };
+     }
+diff --git a/codex-rs/hooks/src/events/pre_tool_use.rs b/codex-rs/hooks/src/events/pre_tool_use.rs
+--- a/codex-rs/hooks/src/events/pre_tool_use.rs
++++ b/codex-rs/hooks/src/events/pre_tool_use.rs
+@@ -197,7 +197,10 @@
+ ) -> dispatcher::ParsedHandler<PreToolUseHandlerData> {
+     let mut entries = Vec::new();
+     let mut status = HookRunStatus::Completed;
+-    let mut should_block = false;
+-    let mut block_reason = None;
++    // A missing, failed, empty or malformed guard response is never an allow.
++    let mut should_block = true;
++    let mut block_reason = Some(
++        "SciKeel execution authority did not return an explicit allow decision".to_string(),
++    );
+     let mut additional_contexts_for_model = Vec::new();
+     let mut updated_input = None;
+@@ -247,6 +250,19 @@
+                                 text: reason,
+                             });
+                         } else {
++                            let explicit_allow = serde_json::from_str::<Value>(&run_result.stdout)
++                                .ok()
++                                .is_some_and(|value| {
++                                    value["hookSpecificOutput"]["hookEventName"].as_str()
++                                        == Some("PreToolUse")
++                                        && value["hookSpecificOutput"]["permissionDecision"]
++                                            .as_str()
++                                            == Some("allow")
++                                });
++                            if explicit_allow {
++                                should_block = false;
++                                block_reason = None;
++                            }
+                             updated_input = parsed.updated_input;
+                         }
+                     }

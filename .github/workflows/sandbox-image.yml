@@ -45,7 +45,7 @@ jobs:
   native-feasibility:
     if: ${{ inputs.native_feasibility_only }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,6 +53,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.3
+      - uses: pnpm/action-setup@v4
+      - name: Check out the exact native integration source without credentials
+        uses: actions/checkout@v4
+        with:
+          repository: openai/codex
+          ref: 36650394c5b38c2990ccf2a3457165ca3e9d9726
+          path: .deploy/codex-source
+          persist-credentials: false
       - name: Stage the integrity-pinned native binary and private synthetic fixtures
         run: |
           node scripts/dev/fetch-sandbox-codex.mjs
@@ -61,6 +69,10 @@ jobs:
           chmod 777 .deploy/native-capabilities/output
           docker pull python:3.12.12-slim-bookworm
           docker image inspect --format '{{index .RepoDigests 0}}' python:3.12.12-slim-bookworm > .deploy/native-capabilities/output/container-image.txt
+      - name: Build only the pinned Web guard integration on dedicated CI
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          pnpm runtime:codex:build
       - name: Verify real pre-effect guards and file bytes without host credentials or egress
         run: |
           # Match backend.rs: zero capabilities/no-new-privileges and no outer

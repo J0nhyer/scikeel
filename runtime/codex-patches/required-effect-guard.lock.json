@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "policy": "required-effect-guard-v1",
+  "upstreamVersion": "0.157.1",
+  "upstreamCommit": "36650394c5b38c2990ccf2a3457165ca3e9d9726",
+  "patchSha256": "5773f7feb076bae81330381d8f6a3d8375da1eec82327ef583eccdb933cf10e5",
+  "rustVersion": "1.95.0",
+  "bwrapSha256": "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c"
+}
