@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile, chmod, symlink, link } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -666,4 +666,89 @@ test('native runtime lifecycle hides trashed projects and denies owned direct ac
  assert.equal((await manager.ensureUser('usr_a')).sessions.has(session.id),true);
  trashed=false;assert.equal((await manager.getOwnedSession('usr_a',session.id)).session.id,session.id);
  await manager.close();
+});
+
+async function historyFixture(manager, root, sessions, {legacy=false}={}) {
+  const workspace=join(root,'workspace');await mkdir(workspace,{recursive:true});
+  const folder=join(manager.rootDir,legacy?'users':'metadata','usr_a');await mkdir(folder,{recursive:true,mode:0o700});
+  const path=join(folder,'sessions.json');
+  const records=sessions.map((session,index)=>({id:`ses_cli_${String(index).padStart(16,'0')}`,userId:'usr_a',runtime:'codex',
+    directory:workspace,title:'Retained conversation',createdAt:1,updatedAt:2,metadata:{},nativeSessionId:'same-native-id',history:[],...session}));
+  await writeFile(path,JSON.stringify({version:1,sessions:records}),{mode:0o600});
+  return {workspace,path,records};
+}
+test('managed historical reads retain both inactive assistants and partial payloads without loading or executing them',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const partial={info:{id:'message-partial',role:'assistant',sessionID:'ses_cli_0000000000000000',time:{created:1}},parts:[{type:'text',text:'Partial research'}]};
+  const {workspace,records,path}=await historyFixture(manager,root,[{history:[partial]},{runtime:'claude'}]);
+  manager.workspaceAccess=async(userId,directory)=>{assert.equal(userId,'usr_a');assert.equal(directory,workspace);};
+  manager.profileResolver.refresh=async()=>assert.fail('Historical reads cannot resolve an inference profile');
+  manager.spawnImpl=()=>assert.fail('Historical reads cannot start a host CLI');
+  const original=await readFile(path,'utf8');
+  const listed=await manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace});
+  assert.deepEqual(listed.map(value=>value.id),records.map(value=>value.id));
+  const page=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,limit:1});
+  assert.deepEqual(page.messages,[partial]);assert.equal(page.nextCursor,null);assert.equal(page.session.runtime,'codex');
+  assert.equal(manager.userStates.size,0);assert.equal(await readFile(path,'utf8'),original);
+  await assert.rejects(manager.readHistoricalMessages({userId:'usr_b',workspaceDir:workspace,sessionId:records[0].id}),{code:'unknown_session'});
+});
+test('historical pagination binds its cursor to the exact source and never treats unfinished turns as completed',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const messages=Array.from({length:3},(_,index)=>({info:{id:`message-${index}`,role:index?'assistant':'user',time:{created:1}},parts:[{type:'text',text:`text-${index}`}]}));
+  const {workspace,records,path}=await historyFixture(manager,root,[{history:messages}]);
+  const first=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,limit:1});
+  const second=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,limit:2,cursor:first.nextCursor});
+  assert.deepEqual(second.messages,messages.slice(1));assert.equal(second.nextCursor,null);
+  assert.equal(second.messages[0].info.time.completed,undefined);
+  await assert.rejects(manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,cursor:'invented'}),{code:'historical_cursor_changed'});
+  records[0].history.push({...messages[0],info:{...messages[0].info,id:'message-4'}});
+  await writeFile(path,JSON.stringify({version:1,sessions:records}));
+  await assert.rejects(manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,cursor:first.nextCursor}),{code:'historical_cursor_changed'});
+});
+test('legacy native metadata remains readable without a managed metadata directory and duplicate public origins fail closed',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const {workspace}=await historyFixture(manager,root,[{}],{legacy:true});
+  assert.equal((await manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace})).length,1);
+  await assert.rejects(readFile(join(manager.rootDir,'metadata','usr_a','sessions.json')),{code:'ENOENT'});
+  await historyFixture(manager,root,[{title:'Conflicting imported origin'}]);
+  await assert.rejects(manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace}),{code:'historical_source_conflict'});
+});
+test('historical sources validate owners, parent ancestry and workspace even for inactive runtimes',async()=>{
+  for(const change of [{userId:'usr_b'},{directory:'/foreign/workspace'},{parentId:'ses_cli_0000000000000000'}]) {
+    const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+    const {workspace,path}=await historyFixture(manager,root,[change]);const original=await readFile(path,'utf8');
+    await assert.rejects(manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace}),{code:'historical_source_unavailable'});
+    assert.equal(await readFile(path,'utf8'),original);
+  }
+});
+test('historical reads preserve trash state and deny direct archived workspace access without deleting data',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const {workspace,path,records}=await historyFixture(manager,root,[{}]);const original=await readFile(path,'utf8');
+  manager.workspaceAccess=async()=>{throw Object.assign(Error('Project trashed'),{code:'project_trashed',status:409});};
+  const listed=await manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace});assert.equal(listed[0].lifecycle,'trashed');
+  await assert.rejects(manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id}),{code:'project_trashed'});
+  assert.equal(await readFile(path,'utf8'),original);
+});
+test('unknown schema and linked or public native history files fail closed and preserve the source',async()=>{
+  for(const kind of ['schema','malformed','symlink','hardlink','public']) {
+    const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+    const {workspace,path}=await historyFixture(manager,root,[{}]);
+    if(kind==='schema')await writeFile(path,JSON.stringify({version:99,sessions:[]}));
+    if(kind==='malformed')await writeFile(path,'{"version":1,');
+    if(kind==='symlink'){const target=join(root,'source.json');await writeFile(target,await readFile(path),{mode:0o600});await rm(path);await symlink(target,path);}
+    if(kind==='hardlink')await link(path,join(root,'hardlinked.json'));
+    if(kind==='public')await chmod(path,0o644);
+    const original=await readFile(path,'utf8');
+    await assert.rejects(manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace}),{code:'historical_source_unavailable'});
+    assert.equal(await readFile(path,'utf8'),original);
+  }
+});
+test('owned fork history retains the original ancestor message and attachment references',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const parent='ses_cli_0000000000000000',child='ses_cli_0000000000000001';
+  const message={info:{id:'message-from-parent',role:'user',sessionID:parent,time:{created:1,completed:1}},
+    parts:[{type:'file',url:'attachment://owned-reference',filename:'results.csv'}],attachments:{source:'owned-attachment'}};
+  const {workspace}=await historyFixture(manager,root,[{history:[message]},{parentId:parent,history:[message]}]);
+  const page=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:child});
+  assert.equal(page.session.parentID,parent);assert.deepEqual(page.messages,[message]);
 });

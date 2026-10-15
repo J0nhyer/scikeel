@@ -1,5 +1,5 @@
 import { claudeUserInput, codexImageArgs } from "./attachment-input.mjs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn as nodeSpawn, execFile } from "node:child_process";
 import { constants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
@@ -17,6 +17,48 @@ const DEFAULT_TURN_TIMEOUT_MS = 20 * 60 * 1_000;
 const MAX_HISTORY_MESSAGES = 500;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_MODEL_ID_LENGTH = 160;
+const HISTORY_SOURCE_LIMIT = 16 * 1024 * 1024;
+const historyFailure = () => issue("historical_source_unavailable", "Conversation history is temporarily unavailable", 503);
+const historyHash = value => createHash("sha256").update(value).digest("hex");
+const privateHistoryEntry = (entry, directory = false) => (directory ? entry.isDirectory() : entry.isFile() && entry.nlink === 1n) &&
+  (typeof process.getuid !== "function" || entry.uid === BigInt(process.getuid())) && (entry.mode & 0o077n) === 0n;
+const sameHistoryEntry = (left, right) => ["dev", "ino", "size", "mtimeNs", "ctimeNs"].every(key => left[key] === right[key]);
+
+// This reader never invokes the loading/recovery path or discovers a provider.
+async function readPrivateHistory(root, branch, userId) {
+  try {
+    const directories = [];
+    for (const path of [root, join(root, branch), join(root, branch, userId)]) {
+      let entry;
+      try { entry = await fs.lstat(path, { bigint: true }); }
+      catch (error) { if (error.code === "ENOENT") return null; throw error; }
+      if (!privateHistoryEntry(entry, true)) throw historyFailure();
+      directories.push([path, entry]);
+    }
+    const path = join(root, branch, userId, "sessions.json");
+    let file;
+    try { file = await fs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    let bytes;
+    if (file) try {
+      const before = await file.stat({ bigint: true });
+      if (!privateHistoryEntry(before) || before.size > BigInt(HISTORY_SOURCE_LIMIT)) throw historyFailure();
+      const buffer = Buffer.alloc(Number(before.size) + 1); let length = 0;
+      while (length < buffer.length) {
+        const read = await file.read(buffer, length, buffer.length - length, null);
+        if (!read.bytesRead) break; length += read.bytesRead;
+      }
+      if (!sameHistoryEntry(before, await file.stat({ bigint: true })) || !sameHistoryEntry(before, await fs.lstat(path, { bigint: true }))) throw historyFailure();
+      bytes = buffer.subarray(0, length);
+    } finally { await file.close(); }
+    for (const [path, before] of directories) if (!sameHistoryEntry(before, await fs.lstat(path, { bigint: true }))) throw historyFailure();
+    if (!bytes) return null;
+    const data = JSON.parse(bytes.toString("utf8"));
+    if (!data || Object.keys(data).sort().join(",") !== "sessions,version" || data.version !== 1 ||
+        !Array.isArray(data.sessions) || data.sessions.length > 10000) throw historyFailure();
+    return { sessions: data.sessions, revision: historyHash(bytes) };
+  } catch { throw historyFailure(); }
+}
 
 function now() {
   return Date.now();
@@ -688,6 +730,72 @@ export class CliRuntimeManager {
       claudeConfig: join(nativeRoot, "claude-config"),
       codexHome: join(nativeRoot, "codex-home"),
     };
+  }
+
+  async #historicalSources({ userId, workspaceDir }) {
+    assertUserId(userId);
+    if (typeof workspaceDir !== "string" || !isAbsolute(workspaceDir) || resolve(workspaceDir) !== workspaceDir) throw historyFailure();
+    const sessions = new Map(), revisions = [];
+    for (const branch of this.sandboxJobs ? ["metadata", "users"] : ["users"]) {
+      const source = await readPrivateHistory(this.rootDir, branch, userId);
+      revisions.push([branch, source?.revision ?? null]);
+      if (!source) continue;
+      for (const session of source.sessions) {
+        if (!session || session.userId !== userId || !SESSION_ID.test(session.id) || !MANAGED_RUNTIMES.has(session.runtime) ||
+            typeof session.directory !== "string" || resolve(session.directory) !== session.directory || !isWithin(workspaceDir, session.directory) ||
+            typeof session.title !== "string" || session.title.length > 512 || !Array.isArray(session.history) || session.history.length > 12000 ||
+            session.parentId !== undefined && (!SESSION_ID.test(session.parentId) || session.parentId === session.id)) throw historyFailure();
+        const messages = new Set();
+        for (const message of session.history) {
+          if (!message || typeof message.info?.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(message.info.id) ||
+              messages.has(message.info.id) || !["user", "assistant"].includes(message.info.role) || !Array.isArray(message.parts) ||
+              message.parts.length > 10000) throw historyFailure();
+          messages.add(message.info.id);
+        }
+        if (sessions.has(session.id)) throw issue("historical_source_conflict", "Conversation history has conflicting origins", 503);
+        sessions.set(session.id, session);
+      }
+    }
+    for (const session of sessions.values()) {
+      const visited = new Set(); let current = session;
+      while (current) {
+        if (visited.has(current.id) || visited.size >= 20 || current.directory !== session.directory) throw historyFailure();
+        visited.add(current.id);
+        if (!current.parentId) break;
+        current = sessions.get(current.parentId); if (!current) throw historyFailure();
+      }
+      if (session.history.some(message => message.info.sessionID !== undefined && !visited.has(message.info.sessionID))) throw historyFailure();
+    }
+    return { sessions, revision: historyHash(JSON.stringify([userId, workspaceDir, revisions])) };
+  }
+
+  async readHistoricalSessions(input) {
+    const { sessions } = await this.#historicalSources(input), visible = [];
+    for (const session of sessions.values()) {
+      let lifecycle = session.metadata?.archived ? "archived" : "active";
+      try { await this.workspaceAccess?.(input.userId, session.directory); }
+      catch (error) { if (error.code !== "project_trashed") throw error; lifecycle = "trashed"; }
+      visible.push({ ...publicSession(session), runtime: session.runtime, lifecycle });
+    }
+    return visible;
+  }
+
+  async readHistoricalMessages({ userId, workspaceDir, sessionId, cursor = null, limit = 200 }) {
+    assertSessionId(sessionId);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw issue("invalid_history_limit", "Invalid history page size");
+    const { sessions, revision } = await this.#historicalSources({ userId, workspaceDir });
+    const session = sessions.get(sessionId); if (!session) throw issue("unknown_session", "Conversation not found", 404);
+    await this.workspaceAccess?.(userId, session.directory);
+    const identity = historyHash(JSON.stringify([revision, sessionId])); let offset = 0;
+    if (cursor !== null) {
+      const parsed = typeof cursor === "string" && cursor.match(/^history_([a-f0-9]{64})_([0-9]{1,5})$/);
+      if (!parsed || parsed[1] !== identity || Number(parsed[2]) > session.history.length) throw issue("historical_cursor_changed", "Conversation changed; restart history indexing", 409);
+      offset = Number(parsed[2]);
+    }
+    const end = Math.min(offset + limit, session.history.length);
+    return structuredClone({ session: { ...publicSession(session), runtime: session.runtime, nativeSessionId: session.nativeSessionId ?? null,
+      identityRevision: session.identityRevision ?? null }, messages: session.history.slice(offset, end),
+      nextCursor: end < session.history.length ? `history_${identity}_${end}` : null, sourceRevision: identity });
   }
 
   async ensureUser(userId) {
