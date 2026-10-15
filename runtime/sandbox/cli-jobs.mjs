@@ -242,7 +242,7 @@ function validAnswers(value) {
 }
 export function jobRequest(value) {
   const fields={start:["operation","sessionId","project","model","text","images","nativeSessionId"],
-    events:["operation","jobId","after"],approve:["operation","jobId","id","decision"],answer:["operation","jobId","id","answers","reject"],abort:["operation","jobId"]};
+    inspect:["operation"],events:["operation","jobId","after"],approve:["operation","jobId","id","decision"],answer:["operation","jobId","id","answers","reject"],abort:["operation","jobId"]};
   const allowed=fields[value?.operation];
   if(!value || typeof value!=="object" || Array.isArray(value) || !allowed || Object.keys(value).some(key=>!allowed.includes(key)))
     throw new Error("invalid managed job operation");
@@ -253,7 +253,7 @@ export function jobRequest(value) {
         (value.nativeSessionId!==undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(value.nativeSessionId)) ||
         (value.images!==undefined && (!Array.isArray(value.images) || value.images.length>10 || value.images.some(url=>typeof url!=="string" ||
           !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(url) || Buffer.byteLength(url)>768*1024))))throw new Error("invalid managed job input");
-  } else {
+  } else if(value.operation!=="inspect") {
     if(!/^[a-f0-9]{64}$/.test(value.jobId??""))throw new Error("invalid managed job identity");
     if(value.operation==="events" && (!Number.isSafeInteger(value.after) || value.after<0))throw new Error("invalid managed event cursor");
     if(value.operation==="answer" && (!/^[a-f0-9]{64}$/.test(value.id??"") || (value.reject!==undefined && typeof value.reject!=="boolean") ||
@@ -264,19 +264,24 @@ export function jobRequest(value) {
   return {...value};
 }
 export class CliJobs {
-  #jobs=new Map(); #starting=false;
+  #jobs=new Map(); #starting=false; #closing=false;
   constructor({manifest,environments,imageDigest,spawnImpl=spawn,nativeFactory=options=>new CodexAppServer(options)}) {
     if(!manifest || !environments || !/^sha256:[a-f0-9]{64}$/.test(imageDigest??"") || typeof nativeFactory!=="function")throw new Error("invalid managed jobs integration");
     Object.assign(this,{manifest,environments,imageDigest,spawnImpl,nativeFactory});
   }
   configure(profile) {this.profile=profile;}
-  get busy() {return this.#starting || [...this.#jobs.values()].some(job=>["running","settling"].includes(job.status));}
+  get busy() {return this.#starting || this.#closing || [...this.#jobs.values()].some(job=>["running","settling"].includes(job.status));}
   async call(value,{signal}={}) {
     const request=jobRequest(value);
     if(signal?.aborted)throw new Error("managed job request cancelled");
+    if(request.operation==="inspect")return {busy:this.busy,starting:this.#starting,
+      jobs:[...this.#jobs.values()].map(job=>({jobId:job.id,sessionId:job.sessionId,status:job.status}))};
     if(request.operation==="start")return this.#start(request,signal);
     const job=this.#jobs.get(request.jobId);if(!job)throw new Error("managed job not found");
-    if(request.operation==="abort"){await job.native.close();job.status="cancelled";return {stopped:true};}
+    if(request.operation==="abort"){
+      job.status="settling";job.approvals.clear();job.questions.clear();
+      await job.native.close();job.status="cancelled";return {stopped:true};
+    }
     if(request.operation==="answer") {
       const pending=job.questions.get(request.id);if(!pending || job.status!=="running")throw new Error("managed question unavailable");
       job.questions.delete(request.id);job.native.answer({id:pending,answers:request.answers,reject:request.reject??false});return {replied:true};
@@ -327,5 +332,15 @@ export class CliJobs {
       } catch {await job.native.close();job.status="failed";job.approvals.clear();job.questions.clear();throw new Error("managed native turn unavailable");}
     } finally{this.#starting=false;}
   }
-  async close() {await Promise.allSettled([...this.#jobs.values()].map(job=>job.native.close()));this.#jobs.clear();}
+  async close() {
+    if(this.#starting || this.#closing)throw new Error("managed native cleanup unverified");
+    this.#closing=true;
+    try {
+      const results=await Promise.allSettled([...this.#jobs.values()].map(async job=>{
+        job.status="settling";job.approvals.clear();job.questions.clear();await job.native.close();
+      }));
+      if(results.some(result=>result.status==="rejected"))throw new Error("managed native cleanup unverified");
+      this.#jobs.clear();
+    }finally{this.#closing=false;}
+  }
 }
