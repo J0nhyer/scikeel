@@ -66,8 +66,8 @@ const cliRuntime = new CliRuntimeManager({
   sandboxJobs:controlPlane?.nativeJobs,
   profileResolver:controlPlane?.nativeProfileResolver,
   resourcesDir: env("OSD_RESOURCES") || null,
-  // OpenCode remains every user's default. Claude Code and Codex are optional
-  // per-user selections; no environment variable may flip the whole platform.
+  // Only a durable administrator selection may change the deployment assistant.
+  // A first installation retains OpenCode until all target gates are verified.
   runtime: "opencode",
   claudeCommand: env("PLATFORM_CLAUDE_BIN", "claude"),
   claudeArgs: optionalJsonArray("PLATFORM_CLAUDE_ARGS_JSON"),
@@ -100,6 +100,7 @@ const platform = new PlatformServer({
 });
 
 if(controlPlane) {
+  controlPlane.assistantPolicy=context=>cliRuntime.assistantSnapshot(context.userId);
   controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
   controlPlane.model.networkHandler=(context,body)=>platform.runtimeNetwork(context,body);
   controlPlane.revokeNetwork=async(context)=>{

@@ -4,7 +4,9 @@ import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { CliRuntimeManager } from "../src/cli-runtime.mjs";
+import { ModelBroker } from "../src/model-broker.mjs";
 
 for (const version of [1, 2, 3, 4]) test(`runtime format ${version} migration keeps one configured default despite historical user choices`, async t => {
   const rootDir = await mkdtemp(join(tmpdir(), "scikeel-assistant-migration-"));
@@ -79,6 +81,62 @@ test("an Admin description queued during cutover reports one consistent committe
   assert.equal(description.revision, 2);
   assert.deepEqual(description.assistantEnabled, { claude: false, codex: true });
   assert.deepEqual(description.available.filter(option => option.enabled).map(option => option.runtime), ["codex"]);
+});
+
+test("the synchronous broker snapshot fails closed for pending cutover, unknown owned effects and shutdown", async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const revoking = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(t, { revoke: async () => { entered(); await gate; } });
+  assert.equal(typeof f.manager.assistantSnapshot, "function", "Broker checks need committed policy, not a caller-supplied selection");
+  assert.deepEqual(f.manager.assistantSnapshot("owner_a"), { activeRuntime: "opencode", revision: 1, recoveryRequired: false });
+  const switching = f.manager.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "snapshot-cutover" });
+  await revoking;
+  assert.deepEqual(f.manager.assistantSnapshot("owner_a"), { activeRuntime: "opencode", revision: 1, recoveryRequired: true });
+  release(); await switching;
+  const lease = await f.manager.assistantPolicy.admit({ userId: "owner_a", instanceId: "instance_a", generation: 1,
+    conversationId: "conversation_a", execution: 1, requestId: "request_a", policyRevision: 2, runtime: "codex" }, async () => ({}));
+  await lease.settle({ cleanupVerified: false });
+  assert.equal(f.manager.assistantSnapshot("owner_a").recoveryRequired, true);
+  assert.equal(f.manager.assistantSnapshot("owner_b").recoveryRequired, false, "Owned uncertainty does not disable other accounts");
+  await f.manager.close();
+  assert.equal(f.manager.assistantSnapshot("owner_b").recoveryRequired, true);
+});
+
+test("durable global selection revokes actual broker inference without reviving old grants on switch-back", async t => {
+  let broker, contacts = 0;
+  const f = await fixture(t, { revoke: input => broker.revokeAssistant(input),
+    inventory: async () => ({ activeExecutions: broker?.inferenceInventory() ?? [], uncertainEffects: [] }) });
+  const upstream = createServer((_req, res) => { contacts++; res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); });
+  await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => { upstream.closeAllConnections(); return new Promise(resolve => upstream.close(resolve)); });
+  const context = { userId: "owner_a", instanceId: "instance_a", generation: 1 };
+  broker = new ModelBroker({ identify: () => context, assistantPolicy: owned => f.manager.assistantSnapshot(owned.userId),
+    logger: () => {}, providers: { fixture: { baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`,
+      credential: "synthetic-integration-canary", enabledModels: ["gpt-6.1-sol"], routes: ["/v1/responses"] } } });
+  t.after(() => broker.close());
+  await broker.listen({ host: "127.0.0.1", port: 0 });
+  const issue = (runtime, policyRevision) => broker.issue({ ...context, runtime, policyRevision,
+    provider: "fixture", models: ["gpt-6.1-sol"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 });
+  const request = async (token, path = "/v1/responses") => {
+    const response = await fetch(`http://127.0.0.1:${broker.server.address().port}${path}`, { method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(path === "/v1/responses" ? { model: "gpt-6.1-sol", max_output_tokens: 1 } : { action: "state", sessionId: "owned" }) });
+    await response.text(); return response.status;
+  };
+  const original = issue("opencode", 1);
+  assert.equal(await request(original), 200);
+  await f.manager.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "broker-codex" });
+  assert.equal(await request(original), 403);
+  broker.renew(original, context);
+  broker.collaborationHandler = async () => ({ state: "readable" });
+  assert.equal(await request(original, "/collaboration"), 200);
+  const codex = issue("codex", 2);
+  assert.equal(await request(codex), 200);
+  await f.manager.selectAssistant({ runtime: "opencode", expectedRevision: 2, operationId: "broker-return" });
+  assert.equal(await request(original), 403); assert.equal(await request(codex), 403);
+  assert.equal(await request(issue("opencode", 3)), 200);
+  assert.equal(contacts, 3);
 });
 
 test("an unfinished manager cutover is durable before revocation and reconciles before reopening admission", async t => {

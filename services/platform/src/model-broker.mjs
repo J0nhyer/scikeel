@@ -65,6 +65,7 @@ function identity(context) {
 }
 export function authorizeModelRequest({ capability, request, policy, now }) {
   if (!capability || !request || !policy || !Number.isSafeInteger(now) ||
+      capability.bridgeOnly === true || capability.inferenceRevoked === true ||
       identity(capability) !== identity(request) || capability.provider !== request.provider ||
       !validName(capability.provider) || !Number.isSafeInteger(capability.expiresAt) || now >= capability.expiresAt ||
       policy.revoked !== false || request.method !== "POST" || !ROUTES.has(request.path) ||
@@ -94,10 +95,13 @@ function wait(operation, signal) {
 }
 export class ModelBroker {
   #providers = new Map(); #grants = new Map(); #operations = new Set(); #expiredRequests = new Map();
+  #assistantPolicy; #revokedAssistantRevisions = new Map();
   constructor({ providers, identify, now = Date.now, timeoutMs, firstByteTimeoutMs, idleTimeoutMs, totalTimeoutMs,
     maxBodyBytes = 2 * 1024 ** 2, maxResponseBytes = 16 * 1024 ** 2, maxConnections = 4,
-    maxOutputTokens = 32768, maxGrants = 1024, logger = event => console.log(JSON.stringify(event)) } = {}) {
-    if (!providers || typeof identify !== "function" || typeof now !== "function" || typeof logger !== "function") throw new Error("invalid model broker configuration");
+    maxOutputTokens = 32768, maxGrants = 1024, assistantPolicy = null, logger = event => console.log(JSON.stringify(event)) } = {}) {
+    if (!providers || typeof identify !== "function" || typeof now !== "function" || typeof logger !== "function" ||
+        assistantPolicy !== null && typeof assistantPolicy !== "function") throw new Error("invalid model broker configuration");
+    this.#assistantPolicy = assistantPolicy;
     const legacyTimeout = timeoutMs;
     firstByteTimeoutMs ??= legacyTimeout ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
     idleTimeoutMs ??= legacyTimeout ?? DEFAULT_IDLE_TIMEOUT_MS;
@@ -119,6 +123,43 @@ export class ModelBroker {
     this.server.on("clientError", (_error, socket) => socket.destroy());
     this.server.on("connect", (_req, socket) => socket.destroy());
     this.server.on("upgrade", (_req, socket) => socket.destroy());
+  }
+  #inferenceAllowed(capability) {
+    if (capability.bridgeOnly === true || capability.inferenceRevoked === true) return false;
+    if (!this.#assistantPolicy) return true;
+    try {
+      const current = this.#assistantPolicy({ userId: capability.userId, instanceId: capability.instanceId,
+        generation: capability.generation, runtime: capability.runtime, policyRevision: capability.policyRevision });
+      return current?.recoveryRequired === false && ["opencode", "codex", "claude"].includes(capability.runtime) &&
+        Number.isSafeInteger(capability.policyRevision) && capability.policyRevision > 0 &&
+        capability.policyRevision > (this.#revokedAssistantRevisions.get(capability.runtime) ?? 0) &&
+        current.activeRuntime === capability.runtime && current.revision === capability.policyRevision;
+    } catch { return false; }
+  }
+  #requireInference(grantKey, operation) {
+    const current = this.#grants.get(grantKey);
+    if (!current || !this.#inferenceAllowed(current)) throw failure("model_request_denied");
+    operation.inference = true;
+  }
+  async revokeAssistant({ runtime, policyRevision }) {
+    if (!["opencode", "codex", "claude"].includes(runtime) || !Number.isSafeInteger(policyRevision) || policyRevision < 1)
+      throw failure("model_grant_denied");
+    this.#revokedAssistantRevisions.set(runtime, Math.max(policyRevision, this.#revokedAssistantRevisions.get(runtime) ?? 0));
+    const revoked = new Set();
+    for (const [key, grant] of this.#grants) if (grant.runtime === runtime && grant.policyRevision <= policyRevision) {
+      this.#grants.set(key, Object.freeze({ ...grant, inferenceRevoked: true })); revoked.add(key);
+    }
+    const draining = [...this.#operations].filter(operation => operation.inference && revoked.has(operation.grantKey));
+    for (const operation of draining) operation.controller.abort(failure("model_grant_revoked"));
+    let timer;
+    try {
+      await Promise.race([Promise.all(draining.map(operation => operation.done)), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(failure("model_revocation_unverified", 503)), 5000);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+  inferenceInventory() {
+    return [...this.#operations].filter(operation => operation.inference).map(operation => ({ ...operation.context }));
   }
   replaceProviderSnapshot({ name, expectedRevision, identityRevision, provider, createOnly = false }) {
     const current = this.#providers.get(name);
@@ -142,6 +183,8 @@ export class ModelBroker {
   }
   issue(capability) {
     identity(capability);
+    if (capability.bridgeOnly !== undefined && typeof capability.bridgeOnly !== "boolean" ||
+        capability.bridgeOnly !== true && !this.#inferenceAllowed(capability)) throw failure("model_grant_denied");
     const policy = this.#providers.get(capability.provider);
     if (!policy || policy.revoked || (policy.identityRevision != null && capability.profileRevision !== policy.identityRevision) ||
         !Number.isSafeInteger(capability.expiresAt) || capability.expiresAt <= this.now() ||
@@ -153,6 +196,9 @@ export class ModelBroker {
     const token = randomBytes(32).toString("hex");
     this.#grants.set(hash(token), Object.freeze({ userId: capability.userId, instanceId: capability.instanceId,
       generation: capability.generation, provider: capability.provider, expiresAt: capability.expiresAt,
+      ...(capability.runtime !== undefined ? { runtime: capability.runtime } : {}),
+      ...(capability.policyRevision !== undefined ? { policyRevision: capability.policyRevision } : {}),
+      ...(capability.bridgeOnly === true ? { bridgeOnly: true } : {}),
       ...(policy.identityRevision != null ? { profileRevision: policy.identityRevision } : {}),
       models: Object.freeze([...capability.models]), routes: Object.freeze([...capability.routes]) }));
     return token;
@@ -205,7 +251,8 @@ export class ModelBroker {
   }
   async #handle(req, res) {
     const startedAt = performance.now(); const correlationId = randomBytes(16).toString("hex");
-    const controller = new AbortController(); const operation = { controller };
+    let finished;
+    const controller = new AbortController(); const operation = { controller, done: new Promise(resolve => { finished = resolve; }) };
     let collaborationCorrelation; let networkCorrelation; let context;
     let modelRequest = false; let streaming = false; let eventBoundary = true; let trailing = Buffer.alloc(0);
     let responseBytes = 0; let forwardedBytes = 0; let firstDataAt; let lastDataAt;
@@ -249,6 +296,7 @@ export class ModelBroker {
       operation.grantKey = grantKey;
       context = await wait(() => this.identify(req), controller.signal);
       if (identity(context) !== identity(capability) || capability.expiresAt <= this.now()) throw failure("model_grant_denied");
+      operation.context = { ...context, runtime: capability.runtime, policyRevision: capability.policyRevision };
       operation.armExpiry = expiresAt => {
         clearTimeout(operation.expiration);
         operation.expiration = setTimeout(() => controller.abort(failure("model_grant_expired")), Math.max(1, expiresAt - this.now()));
@@ -271,7 +319,14 @@ export class ModelBroker {
             !["webfetch", "websearch"].includes(body.tool) || !Array.isArray(body.origins) || body.origins.length !== 1 || typeof body.origins[0] !== "string" || body.origins[0].length > 2048)) throw failure("model_request_denied");
         if ((body.action !== "authorize" || body.operationId !== undefined) && !validName(body.operationId)) throw failure("model_request_denied");
         networkCorrelation = body.callId ?? `network_${randomBytes(16).toString("hex")}`;
-        const result = await wait(() => this.networkHandler(context, body), controller.signal);
+        if (body.action === "authorize") this.#requireInference(grantKey, operation);
+        const work = Promise.resolve().then(() => {
+          controller.signal.throwIfAborted();
+          if (operation.inference) this.#requireInference(grantKey, operation);
+          return this.networkHandler(context, body);
+        });
+        if (operation.inference) operation.effect = work;
+        const result = await wait(() => work, controller.signal);
         res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
         res.end(JSON.stringify(result)); return;
       }
@@ -280,11 +335,19 @@ export class ModelBroker {
             !validName(body.sessionId) || (body.callId !== undefined && !isToolCallId(body.callId)) || Object.keys(body).some(key => !["action", "sessionId", "kind", "question", "suggestedAnswer", "execution", "operation", "inputs", "deliverables", "callId"].includes(key)))
           throw failure("model_request_denied");
         collaborationCorrelation = body.callId ?? `collab_${randomBytes(16).toString("hex")}`;
-        const result = await wait(() => this.collaborationHandler(context, body), controller.signal);
+        if (["checkpoint", "delivery"].includes(body.action)) this.#requireInference(grantKey, operation);
+        const work = Promise.resolve().then(() => {
+          controller.signal.throwIfAborted();
+          if (operation.inference) this.#requireInference(grantKey, operation);
+          return this.collaborationHandler(context, body);
+        });
+        if (operation.inference) operation.effect = work;
+        const result = await wait(() => work, controller.signal);
         res.writeHead(200, {"content-type":"application/json", "cache-control":"no-store"});
         res.end(JSON.stringify(result)); return;
       }
       const provider = this.#providers.get(capability.provider);
+      this.#requireInference(grantKey, operation);
       authorizeModelRequest({ capability, policy: provider, now: this.now(), request: {
         ...context, provider: capability.provider, method: req.method, path: req.url, model: body.model,
         ...(Object.hasOwn(body, "upstream") ? { upstream: body.upstream } : {}) } });
@@ -402,6 +465,8 @@ export class ModelBroker {
       } else sendFailure(res, error);
     } finally {
       clearTimeout(lifecycleTimer); clearModelTimers(); clearTimeout(operation.expiration);
+      // A cancelled HTTP wait is not evidence that its effectful handler stopped.
+      if (operation.effect) await operation.effect.catch(() => {});
       req.off("aborted", aborted); res.off("close", aborted); this.#operations.delete(operation);
       controller.signal.removeEventListener("abort", stopRead);
       if (!controller.signal.aborted) controller.abort(failure("model_request_finished"));
@@ -414,6 +479,7 @@ export class ModelBroker {
           firstByteTimeoutMs: this.firstByteTimeoutMs, idleTimeoutMs: this.idleTimeoutMs, totalTimeoutMs: this.totalTimeoutMs,
           headersSent: res.headersSent, downstreamBlocked, terminalErrorDelivered }); } catch { /* Logging must not retain a slot. */ }
       }
+      finished();
     }
   }
 }

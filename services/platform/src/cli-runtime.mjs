@@ -639,6 +639,15 @@ export class CliRuntimeManager {
     await this.refreshProfiles();
     return this.describe(userId, await this.assistantPolicy.describe());
   }
+  assistantSnapshot(userId) {
+    const state = this.#policyState;
+    const ownedUnknown = Object.values(state?.executions ?? {}).some(execution => execution.status === "unknown" &&
+      (userId === undefined || execution.identity.userId === userId));
+    return { activeRuntime: state?.activeRuntime ?? this.defaultRuntime, revision: state?.revision ?? null,
+      recoveryRequired: !this.initialized || this.closed || this.#policyStorageUncertain || !!state?.transition ||
+        ownedUnknown || userId !== undefined && (typeof userId !== "string" || !USER_ID.test(userId)) };
+  }
+
   async assertAssistantRevision(revision) {
     await this.init();
     const policy = await this.assistantPolicy.describe();

@@ -28,6 +28,8 @@ test("inference capabilities bind account, generation, provider, model, route an
   assert.throws(() => authorizeModelRequest({ ...args, now: 2000 }));
   assert.throws(() => authorizeModelRequest({ ...args, policy: { ...policy, revoked: true } }));
   assert.throws(() => authorizeModelRequest({ ...args, policy: { ...policy, enabledModels: [] } }));
+  for (const patch of [{ bridgeOnly: true }, { inferenceRevoked: true }])
+    assert.throws(() => authorizeModelRequest({ ...args, capability: { ...capability, ...patch } }), { code: "model_request_denied" });
 });
 
 test("revoking a private provider removes its grants and safe recovery cannot revive them", async t => {
@@ -83,7 +85,7 @@ test("model request authorization independently rejects an obsolete profile iden
 });
 
 async function fixture(t, handler, options = {}) {
-  const { basePath = "", authMode = "bearer", providerId = "fixture", enabledModels = ["approved"], ...limits } = options;
+  const { basePath = "", authMode = "bearer", providerId = "fixture", enabledModels = ["approved"], grantScope = {}, ...limits } = options;
   const upstream = createServer(handler);
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   t.after(() => { upstream.closeAllConnections(); return new Promise((resolve) => upstream.close(resolve)); });
@@ -93,7 +95,7 @@ async function fixture(t, handler, options = {}) {
   } }, ...limits });
   t.after(() => broker.close());
   await broker.listen({ host: "127.0.0.1", port: 0 });
-  const token = broker.issue({ ...context, provider: providerId, models: enabledModels, routes: ["/v1/responses", "/v1/chat/completions", "/v1/messages"], expiresAt: Date.now() + 60000 });
+  const token = broker.issue({ ...context, provider: providerId, models: enabledModels, routes: ["/v1/responses", "/v1/chat/completions", "/v1/messages"], expiresAt: Date.now() + 60000, ...grantScope });
   const fetch = (body = { model: "approved", input: "synthetic", max_output_tokens: 16 }, { grant = token, path = "/v1/responses", apiKeyHeader = false, headers: extraHeaders = {} } = {}) => new Promise((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port: broker.server.address().port, method: "POST", path, agent: false,
       headers: { ...(apiKeyHeader ? { "x-api-key": grant } : { authorization: `Bearer ${grant}` }), "content-type": "application/json", cookie: "private", "x-forwarded-for": "peer", ...extraHeaders } }, (res) => {
@@ -104,6 +106,95 @@ async function fixture(t, handler, options = {}) {
   });
   return { broker, token, fetch, upstream };
 }
+
+test("managed inference grants bind the deployment assistant revision before any upstream contact", async t => {
+  let current = { activeRuntime: "opencode", revision: 1, recoveryRequired: false }, contacts = 0;
+  const f = await fixture(t, (_req, res) => { contacts++; res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); },
+    { assistantPolicy: () => current, grantScope: { runtime: "opencode", policyRevision: 1 } });
+  const grant = { ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 };
+  for (const scope of [{}, { runtime: "codex", policyRevision: 1 }, { runtime: "opencode", policyRevision: 2 },
+    { runtime: "opencode", policyRevision: "1" }])
+    assert.throws(() => f.broker.issue({ ...grant, ...scope }), { code: "model_grant_denied" });
+  assert.equal((await f.fetch()).status, 200);
+  current = { activeRuntime: "codex", revision: 2, recoveryRequired: false };
+  assert.equal((await f.fetch()).status, 403);
+  assert.equal(contacts, 1);
+  const next = f.broker.issue({ ...grant, runtime: "codex", policyRevision: 2 });
+  assert.equal((await f.fetch(undefined, { grant: next })).status, 200);
+  for (const value of [null, { ...current, recoveryRequired: true }, Promise.resolve(current)]) {
+    current = value;
+    assert.equal((await f.fetch(undefined, { grant: next })).status, 403);
+    assert.throws(() => f.broker.issue({ ...grant, runtime: "codex", policyRevision: 2 }), { code: "model_grant_denied" });
+  }
+  assert.equal(contacts, 2);
+});
+
+test("revoking assistant inference drains the actual stream without destroying its read-only bridge", async t => {
+  let current = { activeRuntime: "opencode", revision: 1, recoveryRequired: false }, contacts = 0, closed;
+  const upstreamClosed = new Promise(resolve => { closed = resolve; });
+  const f = await fixture(t, (_req, res) => {
+    contacts++; res.once("close", closed); res.writeHead(200, { "content-type": "text/event-stream" }); res.write(": running\n\n");
+  }, { assistantPolicy: () => current, grantScope: { runtime: "opencode", policyRevision: 1 } });
+  f.broker.collaborationHandler = async () => ({ state: "read-only" });
+  const response = await globalThis.fetch(`http://127.0.0.1:${f.broker.server.address().port}/v1/responses`, {
+    method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: "approved", stream: true, max_output_tokens: 1 }), signal: AbortSignal.timeout(5000) });
+  const reader = response.body.getReader();
+  await reader.read();
+  assert.equal(typeof f.broker.revokeAssistant, "function", "Cutover must cancel old direct model calls, not merely reroute the UI");
+  await f.broker.revokeAssistant({ runtime: "opencode", policyRevision: 1 });
+  assert.throws(() => f.broker.issue({ ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"],
+    runtime: "opencode", policyRevision: 1, expiresAt: Date.now() + 60000 }), { code: "model_grant_denied" });
+  let timer;
+  try { await Promise.race([upstreamClosed, new Promise((_, reject) => { timer = setTimeout(() => reject(Error("Old inference is still running")), 1000); })]); }
+  finally { clearTimeout(timer); await reader.cancel().catch(() => {}); }
+  f.broker.renew(f.token, context);
+  assert.equal((await f.fetch()).status, 403, "Renewal cannot restore revoked inference");
+  assert.equal((await f.fetch({ action: "state", sessionId: "owned" }, { path: "/collaboration" })).status, 200);
+  assert.equal((await f.fetch({ action: "checkpoint", sessionId: "owned", kind: "plan", question: "Old proposal" }, { path: "/collaboration" })).status, 403);
+  current = { activeRuntime: "opencode", revision: 3, recoveryRequired: false };
+  assert.equal((await f.fetch()).status, 403, "Switch-back cannot revive a previous revision");
+  assert.equal(contacts, 1);
+});
+
+test("explicit bridge-only grants cannot infer or create new runtime effects even when renewed", async t => {
+  let contacts = 0, writes = 0;
+  const current = { activeRuntime: "codex", revision: 2, recoveryRequired: false };
+  const f = await fixture(t, (_req, res) => { contacts++; res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); },
+    { assistantPolicy: () => current, grantScope: { runtime: "opencode", bridgeOnly: true } });
+  f.broker.collaborationHandler = async (_context, body) => { if (["checkpoint", "delivery"].includes(body.action)) writes++; return { ready: true }; };
+  f.broker.networkHandler = async () => { writes++; return { authorized: true }; };
+  f.broker.renew(f.token, context);
+  assert.equal((await f.fetch()).status, 403);
+  for (const action of ["state", "guard", "capability"])
+    assert.equal((await f.fetch({ action, sessionId: "owned" }, { path: "/collaboration" })).status, 200);
+  for (const action of ["checkpoint", "delivery"])
+    assert.equal((await f.fetch({ action, sessionId: "owned", execution: 1 }, { path: "/collaboration" })).status, 403);
+  assert.equal((await f.fetch({ version: 1, action: "authorize", sessionId: "owned", callId: "call_one", execution: 1,
+    tool: "webfetch", origins: ["https://example.test"] }, { path: "/network" })).status, 403);
+  assert.equal(contacts, 0); assert.equal(writes, 0);
+});
+
+test("an HTTP handler timeout is not evidence that its already-started runtime effect has drained", async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(t, (_req, res) => res.end("{}"), {
+    assistantPolicy: () => ({ activeRuntime: "opencode", revision: 1, recoveryRequired: false }),
+    grantScope: { runtime: "opencode", policyRevision: 1 }, timeoutMs: 40,
+  });
+  f.broker.collaborationHandler = async () => { entered(); await gate; return { complete: true }; };
+  const posting = f.fetch({ action: "delivery", sessionId: "owned", execution: 1 }, { path: "/collaboration" });
+  await started;
+  assert.equal((await posting).status, 504);
+  assert.equal(f.broker.inferenceInventory().length, 1);
+  let drained = false;
+  const revoking = f.broker.revokeAssistant({ runtime: "opencode", policyRevision: 1 }).then(() => { drained = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false);
+  release(); await revoking;
+  assert.equal(f.broker.inferenceInventory().length, 0);
+});
 
 test("provider replacement cancels the old real stream and old tokens cannot contact either snapshot", async t => {
   const credentials = [];

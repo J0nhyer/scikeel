@@ -59,11 +59,14 @@ export function validateBrokerConfiguration(config) {
   if (!config.providers[config.defaultProvider]?.enabledModels.includes(config.defaultModel)) throw new Error("invalid managed default model");
   return config;
 }
-export function brokerProfile({ config, broker, context, model, profileRevision, now = Date.now() }) {
+export function brokerProfile({ config, broker, context, model, profileRevision, assistantPolicy, now = Date.now() }) {
   validateBrokerConfiguration(config);
   const name = config.defaultProvider; const provider = config.providers[name];
+  const scope = assistantPolicy === undefined ? {} : assistantPolicy?.activeRuntime === "opencode" &&
+    assistantPolicy.recoveryRequired === false && Number.isSafeInteger(assistantPolicy.revision) && assistantPolicy.revision > 0
+    ? { runtime: "opencode", policyRevision: assistantPolicy.revision } : { runtime: "opencode", bridgeOnly: true };
   const token = broker.issue({ ...context, provider: name, models: provider.enabledModels, routes: provider.routes,
-    ...(profileRevision !== undefined ? { profileRevision } : {}), expiresAt: now + 900000 });
+    ...scope, ...(profileRevision !== undefined ? { profileRevision } : {}), expiresAt: now + 900000 });
   const selected = provider.enabledModels.some(id => `${name}/${id}` === model) ? model : `${name}/${config.defaultModel}`;
   return { ...(config.searchProvider ? { searchProvider: config.searchProvider } : {}), model: selected, enabled_providers: [name], provider: {
     [name]: { npm: provider.authMode === "x-api-key" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible", name,
@@ -119,7 +122,8 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     if (!account) throw new Error("unknown sandbox identity");
     return account.context;
   };
-  const model = new ModelBroker({ providers: config.providers, identify });
+  const model = new ModelBroker({ providers: config.providers, identify,
+    assistantPolicy: context => plane?.assistantPolicy?.(context) });
   const egress = new EgressBroker({ identify });
   const packageGrants = new PackageGrants();
   const packages = new PackageBroker({ mirrorUrl: config.mirrorUrl, identify,
@@ -135,7 +139,8 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       if (accounts.has(address)) throw new Error("sandbox identity collision");
       accounts.set(address, { context });
       const savedModel = await readManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId });
-      const profile = brokerProfile({ config, broker: model, context, model: savedModel });
+      const profile = brokerProfile({ config, broker: model, context, model: savedModel,
+        assistantPolicy: plane?.assistantPolicy?.(context) ?? null });
       const token = profile.provider[config.defaultProvider].options.apiKey;
       const response = await fetch(`${access.runnerUrl}/profile`, { method: "POST", headers: {
         authorization: `Bearer ${access.token}`, "content-type": "application/json" },

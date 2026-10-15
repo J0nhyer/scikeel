@@ -29,6 +29,23 @@ test("the sandbox profile contains only scoped broker credentials and manual too
   assert.equal(calls[0].generation, 1); assert.ok(calls[0].expiresAt <= 901000);
 });
 
+test("managed worker profiles bind current OpenCode inference or become explicitly bridge-only", () => {
+  const grants = [];
+  const broker = { issue: grant => { grants.push(grant); return "a".repeat(64); } };
+  brokerProfile({ config, broker, context, assistantPolicy: { activeRuntime: "opencode", revision: 4, recoveryRequired: false } });
+  assert.equal(grants[0].runtime, "opencode"); assert.equal(grants[0].policyRevision, 4);
+  assert.equal(grants[0].bridgeOnly, undefined);
+  for (const assistantPolicy of [null, { activeRuntime: "codex", revision: 5, recoveryRequired: false },
+    { activeRuntime: "opencode", revision: 4, recoveryRequired: true }]) {
+    const profile = brokerProfile({ config, broker, context, assistantPolicy });
+    const grant = grants.at(-1);
+    assert.equal(grant.runtime, "opencode"); assert.equal(grant.bridgeOnly, true);
+    assert.equal(grant.policyRevision, undefined);
+    assert(!JSON.stringify(profile).includes("upstream-secret"));
+    assert.equal(profile.permission.external_directory, "deny");
+  }
+});
+
 test("fixed administrator HTTP providers remain compatible without accepting tenant URL overrides",()=>{
   const configured={...config,providers:{fixture:{...config.providers.fixture,baseUrl:"http://47.109.76.66:18001/v1"}}};
   assert.equal(validateBrokerConfiguration(configured),configured);
