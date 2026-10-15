@@ -26,6 +26,29 @@ test('new public conversations exist durably before any target-native identity i
  assert.deepEqual(await state.create(owner,input),value);
  await assert.rejects(state.create(owner,{...input,title:'Replacement'}),{code:'conversation_origin_conflict'});
 });
+test('owned partial native origins can finalize once without adding sequence or changing public identity',async t=>{
+ const {state,rootDir,authorize}=await fixture(t);
+ const partial={...event,role:'assistant',state:'partial'};
+ const first=await state.importNative(owner,{...imported,events:[partial]});
+ const completed={...partial,state:'completed',contentHash:'b'.repeat(64)};
+ const final=await state.importNative(owner,{...imported,expectedRevision:first.revision,events:[completed],cursor:'complete-page'});
+ assert.equal(final.sequence,1);assert.equal(final.events[0].publicMessageId,partial.publicMessageId);
+ assert.equal(final.events[0].state,'completed');assert.equal(final.events[0].contentHash,completed.contentHash);
+ assert.deepEqual(await new ConversationState({rootDir,authorize}).open(owner,final.id),final);
+ await assert.rejects(state.importNative(owner,{...imported,expectedRevision:final.revision,events:[partial],cursor:'late-partial'}),{code:'conversation_origin_conflict'});
+ await assert.rejects(state.importNative(owner,{...imported,expectedRevision:final.revision,events:[{...completed,contentHash:'c'.repeat(64)}]}),{code:'conversation_origin_conflict'});
+ assert.deepEqual(await state.open(owner,final.id),final);
+});
+test('partial native updates cannot rewrite another role, message mapping or public identity',async t=>{
+ const {state}=await fixture(t),partial={...event,role:'assistant',state:'partial'};
+ const first=await state.importNative(owner,{...imported,events:[partial]});
+ for(const mutation of [{role:'user'},{publicMessageId:'foreign-public'},{nativeMessageId:'foreign-native'}])
+  await assert.rejects(state.appendEvent(owner,first.id,{expectedRevision:first.revision,bindingId:first.currentBindingId,
+   event:{...partial,...mutation,state:'completed',contentHash:'b'.repeat(64)}}),{code:'conversation_origin_conflict'});
+ const updated=await state.appendEvent(owner,first.id,{expectedRevision:first.revision,bindingId:first.currentBindingId,
+  event:{...partial,contentHash:'b'.repeat(64)}});
+ assert.equal(updated.sequence,1);assert.equal(updated.revision,first.revision+1);
+});
 test('unbound public conversations reserve a durable execution without fabricating a native binding',async t=>{
  const {state}=await fixture(t);const value=await state.create(owner,{conversationId:'unbound',title:'Research',parentId:null,lifecycle:'active'});
  const prepared=await state.prepareTurn({...owner,generation:3},value.id,{...turn,generation:3,expectedRevision:1});

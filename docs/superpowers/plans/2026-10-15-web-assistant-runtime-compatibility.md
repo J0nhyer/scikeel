@@ -239,6 +239,8 @@ Further Task 5 evidence, October 16: the existing CLI manager now provides bound
 
 ### Task 6: Route Existing Conversation APIs and Events Through Bindings
 
+Partial-history indexing correction, October 16: two actual RED tests demonstrated that immutable origin checks also rejected legitimate partial-to-completed native history. Expected-revision updates now permit only partial state/content-hash progression at the same origin and sequence; role, native/public mappings and completed payloads remain immutable, including after restart. The 102-test guarded conversation/router/policy/CLI union passes with zero skips. This does not complete imports or handover.
+
 Read-only integration evidence, October 16: the production managed path now resolves list/read/history/children and individual message reads before active-assistant dispatch. The router combines private inactive CLI readers with bounded OpenCode bridge reads, validates current ownership and ancestry, rejects public/native-origin collisions and foreign message/part identities, and retains source-bound CLI paging without model calls or host CLI execution. A black-box HTTP regression verified this earlier routing and revealed a denial incorrectly returned as 500; explicit safe status handling now returns 403 and rejects duplicate queries. The 142-test guarded union passes with zero skips. Multiple bindings currently require an origin index rather than returning an incomplete transcript; indexing, all writes, event normalization and lazy handover remain incomplete. No assistant has been activated or release published.
 
 **Create:** `services/platform/src/conversation-router.mjs`, `services/platform/test/conversation-router.test.mjs`.

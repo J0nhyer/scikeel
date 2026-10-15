@@ -225,8 +225,10 @@ export class ConversationState {
  #append(value,bindingId,event) {
   const key=originKey(bindingId,event),previous=value.events.find(item=>item.originKey===key);
   if(previous) {
-   if(eventFields.some(field=>previous[field]!==event[field]))throw fail('conversation_origin_conflict');
-   return false;
+   const changed=eventFields.filter(field=>previous[field]!==event[field]);
+   if(!changed.length)return false;
+   if(previous.state!=='partial'||changed.some(field=>!['state','contentHash'].includes(field)))throw fail('conversation_origin_conflict');
+   previous.state=event.state;previous.contentHash=event.contentHash;return true;
   }
   if(value.events.length>=12000)throw fail('conversation_metadata_full',507);
   value.events.push({...event,sequence:++value.sequence,bindingId,originKey:key});return true;
