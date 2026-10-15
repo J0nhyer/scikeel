@@ -103,3 +103,21 @@ test('actual archival indexing and multiple native bindings retain one ordered p
  ]:read(context,path);
  await assert.rejects(router.messages(owner,first.id),{code:'conversation_history_changed'});
 });
+test('trashed native and historical projects do not hide unrelated history or lose restored origins',async()=>{
+ const {router}=fixture({cli:{readHistoricalSessions:async()=>[{...row('trashed-cli'),directory:owner.workspaceDir+'/trashed',runtime:'claude',lifecycle:'trashed'}]}});
+ let trashed=true;
+ router.authorize=async value=>{if(trashed&&value.directory.endsWith('/trashed'))throw Object.assign(Error('Trashed'),{code:'project_trashed',statusCode:409});};
+ const read=router.readOpenCode;
+ router.readOpenCode=(context,path)=>path.startsWith('/experimental/session')?[row('old-opencode'),{...row('trashed-native'),directory:owner.workspaceDir+'/trashed'}]:read(context,path);
+ assert.deepEqual((await router.list(owner)).map(value=>value.id),['old-opencode']);
+ trashed=false;assert.equal((await router.list(owner)).length,3);
+});
+test('completed attachment references are included in canonical history integrity',async t=>{
+ const rootDir=await mkdtemp(join(tmpdir(),'conversation-attachment-index-'));t.after(()=>rm(rootDir,{recursive:true,force:true}));
+ let attachment='original.pdf';
+ const {router}=fixture({cli:{readHistoricalMessages:async({sessionId})=>({session:row(sessionId),sourceRevision:'stable-source',nextCursor:null,
+  messages:[{info:{id:'owned-message',role:'user',sessionID:sessionId},parts:[],attachments:[{id:'owned-attachment',name:attachment}]}]})}});
+ router.conversations=new ConversationState({rootDir,authorize:router.authorize});
+ await router.index(owner,'old-cli');assert.equal((await router.messages(owner,'old-cli'))[0].attachments[0].name,'original.pdf');
+ attachment='changed.pdf';await assert.rejects(router.messages(owner,'old-cli'),{code:'conversation_history_changed'});
+});

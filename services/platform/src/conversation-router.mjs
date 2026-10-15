@@ -5,7 +5,7 @@ const id=value=>typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.t
 const runtimes=new Set(['opencode','codex','claude']);
 const clone=structuredClone;
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const messageHash=message=>hash({role:message.info.role,parts:message.parts});
+const messageHash=message=>hash({role:message.info.role,parts:message.parts,attachments:message.attachments??[],error:message.info.error??null});
 const messageState=message=>message.info.error?'failed':message.info.role==='user'||Number.isFinite(message.info.time?.completed)?'completed':'partial';
 /** Owned conversation references and history, independent of active inference. */
 export class ConversationRouter {
@@ -31,11 +31,13 @@ export class ConversationRouter {
   const sources=new Map(),hidden=new Set();
   for(const row of cli) {
    if(!runtimes.has(row.runtime)||row.runtime==='opencode')throw fail('conversation_history_invalid');
-   await this.#row(owner,row);if(sources.has(row.id))throw fail('conversation_origin_conflict');
+   try {await this.#row(owner,row);}catch(error){if(error.code==='project_trashed')continue;throw error;}
+   if(sources.has(row.id))throw fail('conversation_origin_conflict');
    sources.set(row.id,{row,runtime:row.runtime,sourceId:row.id});
   }
   for(const row of native) {
-   await this.#row(owner,row);if(sources.has(row.id))throw fail('conversation_origin_conflict');
+   try {await this.#row(owner,row);}catch(error){if(error.code==='project_trashed')continue;throw error;}
+   if(sources.has(row.id))throw fail('conversation_origin_conflict');
    sources.set(row.id,{row,runtime:'opencode',sourceId:row.id});
   }
   const rawSources=[...sources.values()];

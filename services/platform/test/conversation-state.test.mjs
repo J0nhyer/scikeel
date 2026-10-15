@@ -58,6 +58,18 @@ test('new public conversations exist durably before any target-native identity i
  assert.deepEqual(await state.create(owner,input),value);
  await assert.rejects(state.create(owner,{...input,title:'Replacement'}),{code:'conversation_origin_conflict'});
 });
+test('a trashed project hides only its conversation view and keeps references for restore and inventory',async t=>{
+ let trashed=false;const {state,rootDir}=await fixture(t,{authorize:async value=>{
+  if(trashed&&value.directory==='/tenant/workspace/project')throw Object.assign(Error('Trashed'),{code:'project_trashed',statusCode:409});
+ }});
+ await state.importHistorical(owner,{conversationId:'trashed',expectedRevision:0,title:'Old project',parentId:null,lifecycle:'active',
+  source:{runtime:'codex',sessionId:'old-project'},events:[event],cursor:null});
+ const visible={...owner,directory:'/tenant/workspace/visible'};
+ await state.create(visible,{conversationId:'visible',title:'Visible project',parentId:null,lifecycle:'active'});
+ const path=join(rootDir,owner.userId,'conversations.json'),bytes=await readFile(path,'utf8');trashed=true;
+ assert.deepEqual((await state.list(visible)).map(value=>value.id),['visible']);assert.equal(await readFile(path,'utf8'),bytes);
+ trashed=false;assert.equal((await state.list(visible)).length,2);
+});
 test('owned partial native origins can finalize once without adding sequence or changing public identity',async t=>{
  const {state,rootDir,authorize}=await fixture(t);
  const partial={...event,role:'assistant',state:'partial'};

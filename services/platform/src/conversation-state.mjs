@@ -193,7 +193,10 @@ export class ConversationState {
  async open(owner,id) {owner=await this.#owner(owner);return structuredClone(await this.#owned(await this.#load(owner.userId),owner,id));}
  async list(owner) {
   owner=await this.#owner(owner);const data=await this.#load(owner.userId),values=[];
-  for(const id of Object.keys(data.conversations).sort())values.push(structuredClone(await this.#owned(data,owner,id)));
+  for(const id of Object.keys(data.conversations).sort()) {
+   try {values.push(structuredClone(await this.#owned(data,owner,id)));}
+   catch(error){if(error.code!=='project_trashed')throw error;}
+  }
   return values;
  }
  async create(owner,input) {

@@ -105,8 +105,9 @@ test("aborting research stops both the CLI and its workspace child process", asy
   await manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: `SciKeel research task (version 1).\n${JSON.stringify(task)}` });
   let pid;
   for (let n = 0; n < 50; n++) {
-    try { pid = Number(await readFile(join(workspace, "child.pid"), "utf8")); break; }
-    catch { await new Promise((done) => setTimeout(done, 20)); }
+    try { pid = Number(await readFile(join(workspace, "child.pid"), "utf8")); if(Number.isSafeInteger(pid)&&pid>1)break; }
+    catch { /* The fixture may still be creating its child readiness file. */ }
+    await new Promise((done) => setTimeout(done, 20));
   }
   assert.ok(pid);
   process.kill(pid, 0);
