@@ -692,12 +692,16 @@ export class CliRuntimeManager {
 
   async assertAssistantRevision(revision) {
     await this.init();
-    const policy = await this.assistantPolicy.describe();
+    const policy = this.assistantPolicy.committedSnapshot();
     if (this.closed || policy.recoveryRequired || this.#policyStorageUncertain)
       throw Object.assign(issue("assistant_recovery_required", "Assistant recovery is required", 503), { statusCode: 503 });
     if (revision !== String(policy.revision))
       throw Object.assign(issue("assistant_revision_conflict", "The deployment assistant changed; reload before continuing", 409), { statusCode: 409 });
     return policy;
+  }
+  async admitWorkspace({userId,revision},reserve) {
+    const policy=await this.assertAssistantRevision(revision);
+    return this.assistantPolicy.admitWorkspace({userId,policyRevision:policy.revision},reserve);
   }
 
   async admitConversation({ conversations, owner, conversationId, expectedRevision, request }) {

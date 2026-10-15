@@ -146,6 +146,29 @@ export class AssistantPolicy {
     return Object.entries(this.#state.executions).filter(([id, execution]) => this.#live.has(id) && execution.status === "active")
       .map(([, execution]) => structuredClone(execution.identity));
   }
+  committedSnapshot() {
+    return {activeRuntime:this.#state.activeRuntime,revision:this.#state.revision,
+      recoveryRequired:!this.#initialized||this.#uncertain||!!this.#state.transition};
+  }
+  // Reserve the existing workspace queue synchronously under policy ordering.
+  // The operation's completion is deliberately outside this brief critical section;
+  // durable native turns still require admit(), and workspace journals own uncertain mutations.
+  async admitWorkspace(input,reserve) {
+    return this.#serial(async()=>{
+      this.#assertAvailable();
+      if(!exact(input,'policyRevision,userId')||!name(input.userId)||!integer(input.policyRevision)||typeof reserve!=='function')
+        throw error('invalid_assistant_reservation',400);
+      if(input.policyRevision!==this.#state.revision)throw error('assistant_revision_conflict');
+      const inventory=await this.#inventory();
+      if(inventory.uncertainEffects.some(effect=>!effect.userId||effect.userId===input.userId)||
+          Object.values(this.#state.executions).some(execution=>execution.status==='unknown'&&execution.identity.userId===input.userId))
+        throw error('assistant_recovery_required',503);
+      const completion=reserve();
+      if(!completion||typeof completion.then!=='function')throw error('invalid_assistant_reservation',400);
+      completion.catch(()=>{});
+      return {completion};
+    });
+  }
   async #commitTransition() {
     const transition = this.#state.transition, inventory = await this.#inventory();
     if (inventory.uncertainEffects.length) throw error("assistant_recovery_required", 503);

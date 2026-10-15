@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { AssistantPolicy } from "../src/assistant-policy.mjs";
+import { WorkspaceAdmission } from "../src/workspace-admission.mjs";
 
 async function policyFixture(options = {}) {
   const events = [];
@@ -21,6 +22,29 @@ async function policyFixture(options = {}) {
 const turn = { userId: "owner_a", instanceId: "instance_a", generation: 2, conversationId: "conversation_a",
   execution: 3, requestId: "send_a", policyRevision: 1, runtime: "opencode" };
 const selection = { runtime: "codex", expectedRevision: 1, operationId: "select_codex" };
+test('workspace reservation captures policy before queue entry without holding the global queue for the operation',async()=>{
+ const workspace=new WorkspaceAdmission({resolveExecution:async()=>false});
+ const {policy}=await policyFixture({inventory:async()=>({activeExecutions:workspace.activeAdmissions(),uncertainEffects:[]})});
+ assert.equal(typeof policy.admitWorkspace,'function');
+ let release,entered;const ready=new Promise(resolve=>entered=resolve);
+ const admission=await policy.admitWorkspace({userId:'owner_a',policyRevision:1},()=>workspace.start('owner_a',async()=>{
+  entered();await new Promise(resolve=>release=resolve);return 42;
+ }));
+ await ready;
+ await assert.rejects(policy.select(selection),{code:'assistant_busy'});
+ assert.deepEqual(policy.committedSnapshot(),{activeRuntime:'opencode',revision:1,recoveryRequired:false});
+ release();assert.equal(await admission.completion,42);
+ assert.equal((await policy.select(selection)).revision,2);
+ let effects=0;
+ await assert.rejects(policy.admitWorkspace({userId:'owner_a',policyRevision:1},()=>{effects++;return Promise.resolve();}),{code:'assistant_revision_conflict'});
+ assert.equal(effects,0);
+});
+test('a workspace request queued after a committed switch cannot reserve old-assistant work',async()=>{
+ const {policy}=await policyFixture();assert.equal(typeof policy.admitWorkspace,'function');
+ const selected=policy.select(selection);let effects=0;
+ const queued=policy.admitWorkspace({userId:'owner_a',policyRevision:1},()=>{effects++;return Promise.resolve();});
+ await selected;await assert.rejects(queued,{code:'assistant_revision_conflict'});assert.equal(effects,0);
+});
 
 test("exclusive policy selection cannot pass an admitted execution until verified cleanup settles its lease", async () => {
   const { policy, saved } = await policyFixture();

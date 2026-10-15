@@ -511,7 +511,7 @@ export class PlatformServer {
       roots:{research:this.researchTasks.rootDir,collaboration:this.collaboration.rootDir},
       records:{research:this.researchTasks.records,collaboration:this.collaboration.records},
     });
-    const activeExecutions=[...workers.activeExecutions,...ledgers.activeExecutions];
+    const activeExecutions=[...workers.activeExecutions,...ledgers.activeExecutions,...this.workspaceAdmission?.activeAdmissions()??[]];
     const uncertainEffects=[...workers.uncertainEffects,...ledgers.uncertainEffects,
       ...await this.workspaceManagement?.state.pendingRuntimeEffects()??[]];
     const conversations = await this.conversations.pendingExecutions();
@@ -2025,9 +2025,10 @@ export class PlatformServer {
       const parsed = new URL(request.url ?? "/", "http://platform.invalid");
       const path = parsed.pathname;
       const stopping=classifyRuntimeRoute(request.method,path)?.operation==="sessionAbort";
-      if(this.workspaceAdmission && !["GET","HEAD"].includes(request.method) && !stopping && !request.workspaceAdmitted && !path.startsWith("/api/workspace/") && !path.startsWith("/auth/")) {
+      if(this.workspaceAdmission && !["GET","HEAD"].includes(request.method) && !stopping && !request.workspaceAdmitted &&
+          !path.startsWith("/api/workspace/") && !path.startsWith("/auth/") && !path.startsWith("/api/admin/")) {
         const admittedUser=await this.#currentUser(request);
-        if(admittedUser){request.workspaceAdmitted=true;await this.workspaceAdmission.start(admittedUser.id,async()=>{
+        if(admittedUser){const reserve=()=>{request.workspaceAdmitted=true;return this.workspaceAdmission.start(admittedUser.id,async()=>{
           if(request.aborted || response.destroyed || response.writableEnded)return;
           let complete;const completed=new Promise(done=>{complete=done;response.once("finish",done);response.once("close",done);});
           try{
@@ -2039,7 +2040,13 @@ export class PlatformServer {
             // Legacy streaming proxies return before their worker response ends.
             await this.#handle(request,response);await completed;
           }finally{response.off("finish",complete);response.off("close",complete);}
-        });return;}
+        });};
+          if(this.tenantPolicy&&this.cliRuntime&&classifyRuntimeRoute(request.method,path)) {
+            const admission=await this.cliRuntime.admitWorkspace({userId:admittedUser.id,revision:request.headers["x-scikeel-assistant-revision"]},reserve);
+            await admission.completion;
+          }else await reserve();
+          return;
+        }
       }
 
       if (request.method === "GET" && path === "/health") {

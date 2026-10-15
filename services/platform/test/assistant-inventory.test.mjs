@@ -9,6 +9,17 @@ import {WorkspaceState} from '../src/workspace-state.mjs';
 import {ConversationState} from '../src/conversation-state.mjs';
 import {TenantPolicy} from '../src/tenant-policy.mjs';
 import {AssistantPolicy} from '../src/assistant-policy.mjs';
+import {WorkspaceAdmission} from '../src/workspace-admission.mjs';
+test('all-account inventory sees workspace reservations before their mutation begins',async t=>{
+ const {root}=await fixture(t);
+ const platform=new PlatformServer({authStore:{},workerManager:{rootDir:join(root,'workers'),
+  assistantInventory:async()=>({activeExecutions:[],uncertainEffects:[]})}});
+ platform.workspaceAdmission=new WorkspaceAdmission({resolveExecution:async()=>false});let release;
+ const pending=platform.workspaceAdmission.start('queued-owner',()=>new Promise(resolve=>release=resolve));
+ t.after(async()=>{release?.();await pending;});
+ const result=await platform.assistantExecutionInventory();
+ assert(result.activeExecutions.some(value=>value.source==='workspace-admission'&&value.userId==='queued-owner'));
+});
 const owner={userId:'cold-owner',sessionId:'owned-session',instanceId:'historical-instance',generation:4,runtime:'codex',execution:3};
 async function fixture(t) {
  const root=await mkdtemp(join(tmpdir(),'assistant-ledger-'));t.after(()=>rm(root,{recursive:true,force:true}));

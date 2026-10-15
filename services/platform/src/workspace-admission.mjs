@@ -6,6 +6,7 @@ export class WorkspaceAdmission {
   #counts=new Map();
   #owner=new AsyncLocalStorage();
   constructor({resolveExecution,maxQueued=64}) {Object.assign(this,{resolveExecution,maxQueued});}
+  activeAdmissions() {return [...this.#counts.keys()].map(userId=>({source:'workspace-admission',userId}));}
   async #serial(userId,run) {
     const owner=this.#owner.getStore();
     if(owner?.userId===userId && owner.active)return run();

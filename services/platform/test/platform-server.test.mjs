@@ -14,6 +14,7 @@ import { WorkerManager } from "../src/worker-manager.mjs";
 import { TenantPolicy } from "../src/tenant-policy.mjs";
 import { WorkspaceRpc } from "../src/workspace-rpc.mjs";
 import { recoveryError } from "../src/workspace-recovery.mjs";
+import { WorkspaceAdmission } from "../src/workspace-admission.mjs";
 
 const fakeOsd = fileURLToPath(new URL("../fixtures/fake-osd.mjs", import.meta.url));
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
@@ -1360,6 +1361,26 @@ test('managed history reads use owned public routing before assistant-specific d
   assert.equal((await history.json())[0].info.id,'retained-message');assert.equal(reads,1);
   assert.equal((await client.request('/experimental/session?directory=%2Fetc')).status,403);
   assert.equal((await client.request('/experimental/session?limit=1&limit=2')).status,400);
+});
+
+test('managed runtime mutation policy admission precedes the workspace queue and Admin selection bypasses its own tenant queue',async()=>{
+ const policy=new TenantPolicy(),f=await makeFixture({tenantPolicy:policy}),client=makeClient(f.base);
+ const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+ const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+ policy.registerAccount({userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir});
+ f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+ f.server.workspaceAdmission=new WorkspaceAdmission({resolveExecution:async()=>false});
+ let queued=0;const start=f.server.workspaceAdmission.start.bind(f.server.workspaceAdmission);
+ f.server.workspaceAdmission.start=(...args)=>{queued++;return start(...args);};
+ let captures=0;
+ f.server.cliRuntime={isManaged:()=>false,assertAssistantRevision:async()=>({revision:1}),
+  admitWorkspace:async()=>{captures++;throw Object.assign(Error('Stale policy'),{code:'assistant_revision_conflict',statusCode:409});},
+  selectAssistant:async()=>({activeRuntime:'codex',revision:2,operationId:'selection_fixture'})};
+ const stale=await client.request('/session/owned',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({title:'Changed'})});
+ assert.equal(stale.status,409);assert.equal((await stale.json()).code,'assistant_revision_conflict');assert.equal(captures,1);assert.equal(queued,0);
+ const admin=await client.request('/api/admin/runtime',{method:'POST',headers:{'content-type':'application/json'},
+  body:JSON.stringify({runtime:'codex',expectedRevision:1,operationId:'selection_fixture'})});
+ assert.equal(admin.status,200);assert.equal(queued,0);assert.equal(captures,1);
 });
 
 test('automatic search authorization cannot redirect to a different backend', async () => {

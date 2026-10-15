@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 const {WorkspaceAdmission}=await import('../src/workspace-admission.mjs').catch(()=>({}));
+test('current queued workspace admissions are visible before execution and remain read-only snapshots',async()=>{
+ const admission=new WorkspaceAdmission({resolveExecution:async()=>false});let release;
+ const pending=admission.start('account',()=>new Promise(resolve=>release=resolve));
+ assert.equal(typeof admission.activeAdmissions,'function');
+ const snapshot=admission.activeAdmissions();assert.deepEqual(snapshot,[{source:'workspace-admission',userId:'account'}]);
+ snapshot[0].userId='foreign';assert.equal(admission.activeAdmissions()[0].userId,'account');
+ await new Promise(resolve=>setImmediate(resolve));release();await pending;
+ assert.deepEqual(admission.activeAdmissions(),[]);
+});
 test('mutation waits behind admitted start and rechecks execution',async()=>{
   let release;let busy=false;let changed=false;
   const admission=new WorkspaceAdmission({resolveExecution:async()=>busy});
