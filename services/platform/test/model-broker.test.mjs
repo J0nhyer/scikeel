@@ -30,6 +30,26 @@ test("inference capabilities bind account, generation, provider, model, route an
   assert.throws(() => authorizeModelRequest({ ...args, policy: { ...policy, enabledModels: [] } }));
 });
 
+test("revoking a private provider removes its grants and safe recovery cannot revive them", async t => {
+  const broker = new ModelBroker({ providers: {}, identify: () => context, logger: () => {} });
+  t.after(() => broker.close());
+  const provider = { baseUrl: "http://127.0.0.1:1/v1", credential: "synthetic-revocation-key",
+    authMode: "bearer", enabledModels: ["approved"], routes: ["/v1/responses"] };
+  broker.replaceProviderSnapshot({ name: "managed", expectedRevision: null, identityRevision: "profile-one", provider });
+  const capability = { ...context, provider: "managed", profileRevision: "profile-one", models: ["approved"],
+    routes: ["/v1/responses"], expiresAt: Date.now() + 60000 };
+  const token = broker.issue(capability);
+  assert.equal(typeof broker.revokeProvider, "function", "Private provider revocation must revoke issued authority");
+  broker.revokeProvider("managed");
+  assert.throws(() => broker.issue(capability), { code: "model_grant_denied" });
+  assert.throws(() => broker.renew(token, context), { code: "model_grant_denied" });
+  assert.throws(() => broker.replaceProviderSnapshot({ name: "managed", expectedRevision: "profile-one", identityRevision: "profile-one",
+    provider: { ...provider, credential: "cannot-change-under-old-identity" } }), { code: "model_profile_revision_conflict" });
+  broker.replaceProviderSnapshot({ name: "managed", expectedRevision: "profile-one", identityRevision: "profile-one", provider });
+  assert.throws(() => broker.renew(token, context), { code: "model_grant_denied" });
+  assert.match(broker.issue(capability), /^[a-f0-9]{64}$/);
+});
+
 test("a revisioned provider snapshot cannot authorize a missing or stale profile grant", async t => {
   const broker = new ModelBroker({ providers: {}, identify: () => context, now: () => 1000 });
   t.after(() => broker.close());

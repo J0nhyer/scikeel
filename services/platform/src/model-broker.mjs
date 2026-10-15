@@ -122,15 +122,23 @@ export class ModelBroker {
   }
   replaceProviderSnapshot({ name, expectedRevision, identityRevision, provider }) {
     const current = this.#providers.get(name);
-    if (!validName(identityRevision) || expectedRevision !== (current?.identityRevision ?? null) || identityRevision === current?.identityRevision)
+    if (!validName(identityRevision) || expectedRevision !== (current?.identityRevision ?? null))
       throw failure("model_profile_revision_conflict", 409);
     const next = fixedProvider(name, provider, identityRevision);
+    if (identityRevision === current?.identityRevision && (!current.revoked ||
+        JSON.stringify({ ...current, revoked: false }) !== JSON.stringify(next)))
+      throw failure("model_profile_revision_conflict", 409);
+    this.revokeProvider(name);
+    this.#providers.set(name, next);
+    return { identityRevision };
+  }
+  revokeProvider(name) {
+    const current = this.#providers.get(name);
+    if (current) current.revoked = true;
     const revoked = new Set();
     for (const [key, grant] of this.#grants) if (grant.provider === name) { this.#grants.delete(key); revoked.add(key); }
     for (const operation of this.#operations) if (revoked.has(operation.grantKey))
       operation.controller.abort(failure("model_grant_revoked"));
-    this.#providers.set(name, next);
-    return { identityRevision };
   }
   issue(capability) {
     identity(capability);

@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { SandboxNativeJobs } from "./sandbox-native-jobs.mjs";
+import { ManagedCodexProfile } from "./cli-profile.mjs";
 import { lstat, readFile } from "node:fs/promises";
 import { ModelBroker } from "./model-broker.mjs";
 import { readManagedModelCatalog, readManagedDefaultModel, saveManagedDefaultModel } from "./managed-model-catalog.mjs";
@@ -81,6 +82,32 @@ export async function readBrokerConfiguration() {
   try { return validateBrokerConfiguration(JSON.parse(await readFile(path, "utf8"))); }
   catch { throw new Error("managed broker configuration unavailable"); }
 }
+export function managedNativeProfileResolver({ configuration, serviceProfile, broker }) {
+  let revision = null, registered = false, pending = Promise.resolve();
+  const unavailable = runtime => ({ runtime, status: "unavailable", enabledByProfile: false,
+    models: [], defaultModel: null, catalogRevision: null });
+  const revoke = () => { if (registered) broker.revokeProvider("scikeel-codex"); registered = false; };
+  const read = async runtime => {
+    if (!["codex", "claude"].includes(runtime)) throw Object.assign(new Error("invalid_runtime"), { code: "invalid_runtime" });
+    if (runtime !== "codex") return unavailable(runtime);
+    if (!configuration.enabledRuntimes?.includes("codex")) { revoke(); return unavailable(runtime); }
+    try {
+      const profile = await serviceProfile.refresh("codex");
+      if (profile.status !== "ready") { revoke(); return unavailable(runtime); }
+      if (!registered || revision !== profile.identityRevision) {
+        const provider = await serviceProfile.resolveProvider(profile.identityRevision);
+        broker.replaceProviderSnapshot({ name: "scikeel-codex", expectedRevision: revision,
+          identityRevision: profile.identityRevision, provider });
+        revision = profile.identityRevision; registered = true;
+      }
+      return profile;
+    } catch (error) { revoke(); throw error; }
+  };
+  return { refresh(runtime) {
+    const next = pending.catch(() => {}).then(() => read(runtime));
+    pending = next; return next;
+  } };
+}
 export async function createSandboxControlPlane({ configuration, dataDir, config }) {
   config = validateBrokerConfiguration(await resolveOpenCodeFreeCatalog(validateBrokerConfiguration(config ?? await readBrokerConfiguration())));
   let environments; let plane;
@@ -138,15 +165,8 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   environments = new SandboxEnvironments({ files, tenantPolicy, packageGrants, imageDigest: configuration.imageDigest,
     acquireMaintenance: (context) => manager.acquireMaintenance(context) });
   const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy});
-  const nativeProfileResolver={refresh:async(runtime)=>{
-    const provider=config.providers[config.defaultProvider];
-    const enabled=Boolean(configuration.enabledRuntimes?.includes(runtime) && runtime==="codex" && provider.authMode==="bearer" && provider.routes.includes("/v1/responses"));
-    const revision=createHash("sha256").update(JSON.stringify({image:configuration.imageDigest,provider:config.defaultProvider,
-      endpoint:provider.baseUrl,models:provider.enabledModels})).digest("hex");
-    return {runtime,identityRevision:revision,catalogRevision:revision,sourceRevision:revision,
-      models:enabled?provider.enabledModels.map(id=>({id,name:id,variants:{},inputModalities:["text","image"]})):[],
-      defaultModel:enabled?config.defaultModel:null,status:enabled?"ready":"unavailable",enabledByProfile:enabled,files:{}};
-  }};
+  const nativeProfileResolver = managedNativeProfileResolver({ configuration, broker: model,
+    serviceProfile: new ManagedCodexProfile({ home: join(dataDir, "codex-service") }) });
   plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, searchProvider: config.searchProvider, nativeJobs, nativeProfileResolver,
     runtimeCatalog: (context, { access }) => readManagedModelCatalog({ config, context, access }),
     saveRuntimeDefaultModel: (context, model) => saveManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId, model }),

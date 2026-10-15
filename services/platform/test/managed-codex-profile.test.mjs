@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import * as profiles from "../src/cli-profile.mjs";
 import { ModelBroker } from "../src/model-broker.mjs";
 import { brokerProfile } from "../src/sandbox-control-plane.mjs";
+import * as controlPlane from "../src/sandbox-control-plane.mjs";
 
 async function fixture(t) {
   const root = await fs.mkdtemp(join(tmpdir(), "scikeel-managed-profile-"));
@@ -296,4 +297,61 @@ test("managed Codex failed explicit synchronization preserves the previous coher
     { code: "service_profile_busy" });
   assert.equal(await fs.readFile(lock, "utf8"), "unknown prior synchronization");
   assert.equal(await fs.readFile(join(input.home, "service-profile.json"), "utf8"), saved);
+});
+
+test("the managed control-plane resolver binds the private service provider, never the infrastructure provider", async t => {
+  const input = await fixture(t), service = resolver(input);
+  await service.initializeFromSource({ codexHome: input.source });
+  const context = { userId: "profile_owner", instanceId: "profile_instance", generation: 1 };
+  const broker = new ModelBroker({ providers: { infrastructure: { baseUrl: "https://infrastructure.invalid/v1",
+    credential: "synthetic-infrastructure-only-key", authMode: "bearer", enabledModels: ["helper-model"], routes: ["/v1/responses"] } },
+    identify: () => context, logger: () => {} });
+  t.after(() => broker.close());
+  assert.equal(typeof controlPlane.managedNativeProfileResolver, "function", "The startup service-profile resolver is missing");
+  const managed = controlPlane.managedNativeProfileResolver({ configuration: { enabledRuntimes: ["opencode", "codex"] },
+    serviceProfile: service, broker });
+  const [first, concurrent] = await Promise.all([managed.refresh("codex"), managed.refresh("codex")]);
+  assert.equal(first.status, "ready");
+  assert.equal(first.identityRevision, concurrent.identityRevision);
+  assert.deepEqual(first.models.map(model => model.id), ["gpt-6.1-sol"]);
+  const capability = { ...context, provider: "scikeel-codex", profileRevision: first.identityRevision,
+    models: ["gpt-6.1-sol"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 };
+  const old = broker.issue(capability);
+  assert.throws(() => broker.issue({ ...capability, models: ["helper-model"] }), { code: "model_grant_denied" });
+  assert.match(broker.issue({ ...capability, provider: "infrastructure", profileRevision: undefined, models: ["helper-model"] }), /^[a-f0-9]{64}$/);
+  input.config.model_providers.fixture.base_url = "http://203.0.113.26:18001/v1";
+  await fs.writeFile(join(input.source, "config.toml"), stringify(input.config));
+  assert.equal((await managed.refresh("codex")).identityRevision, first.identityRevision, "Startup refresh cannot synchronize the personal source");
+  await service.synchronizeFromSource({ codexHome: input.source, expectedRevision: first.sourceRevision });
+  const next = await managed.refresh("codex");
+  assert.notEqual(next.identityRevision, first.identityRevision);
+  assert.throws(() => broker.renew(old, context), { code: "model_grant_denied" });
+  assert.match(broker.issue({ ...capability, profileRevision: next.identityRevision }), /^[a-f0-9]{64}$/);
+  const currentToken = broker.issue({ ...capability, profileRevision: next.identityRevision });
+  const profilePath = join(input.home, "service-profile.json"), coherent = await fs.readFile(profilePath, "utf8");
+  await fs.writeFile(profilePath, "invalid partial service state");
+  await assert.rejects(managed.refresh("codex"), { code: "unsafe_service_profile" });
+  assert.throws(() => broker.renew(currentToken, context), { code: "model_grant_denied" });
+  assert.throws(() => broker.issue({ ...capability, profileRevision: next.identityRevision }), { code: "model_grant_denied" });
+  await fs.writeFile(profilePath, coherent);
+  assert.equal((await managed.refresh("codex")).identityRevision, next.identityRevision);
+  assert.throws(() => broker.renew(currentToken, context), { code: "model_grant_denied" }, "Recovery cannot revive old grants");
+  assert.match(broker.issue({ ...capability, profileRevision: next.identityRevision }), /^[a-f0-9]{64}$/);
+  for (const forbidden of [input.source, "203.0.113", "synthetic-", "HOST_"])
+    assert(!JSON.stringify(first).includes(forbidden));
+  assert.equal(managed.copyForTurn, undefined);
+});
+
+test("a missing image capability or unavailable service never discovers the personal profile or advertises Codex", async t => {
+  const input = await fixture(t), service = resolver(input);
+  assert.equal(typeof controlPlane.managedNativeProfileResolver, "function", "The startup service-profile resolver is missing");
+  const broker = { replaceProviderSnapshot() { throw Error("Unavailable profiles cannot register an inference route"); } };
+  const hidden = controlPlane.managedNativeProfileResolver({ configuration: { enabledRuntimes: ["opencode"] }, broker,
+    serviceProfile: { refresh() { throw Error("An unmeasured image cannot discover a provider"); } } });
+  assert.equal((await hidden.refresh("codex")).status, "unavailable");
+  assert.equal((await hidden.refresh("claude")).status, "unavailable");
+  const missing = controlPlane.managedNativeProfileResolver({ configuration: { enabledRuntimes: ["codex"] }, broker, serviceProfile: service });
+  assert.equal((await missing.refresh("codex")).status, "unavailable");
+  await assert.rejects(fs.lstat(input.home), { code: "ENOENT" });
+  await assert.rejects(missing.refresh("not-a-runtime"), { code: "invalid_runtime" });
 });
