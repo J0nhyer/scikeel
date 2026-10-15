@@ -823,7 +823,8 @@ export class CliRuntimeManager {
       let lifecycle = session.metadata?.archived ? "archived" : "active";
       try { await this.workspaceAccess?.(input.userId, session.directory); }
       catch (error) { if (error.code !== "project_trashed") throw error; lifecycle = "trashed"; }
-      visible.push({ ...publicSession(session), runtime: session.runtime, lifecycle });
+      visible.push({ ...publicSession(session), runtime: session.runtime, lifecycle,
+        nativeSessionId: session.nativeSessionId ?? null, identityRevision: session.identityRevision ?? null });
     }
     return visible;
   }

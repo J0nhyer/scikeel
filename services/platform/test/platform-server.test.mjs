@@ -1341,6 +1341,26 @@ test('automatic search requires the selected backend and an owned running query'
 });
 
 
+test('managed history reads use owned public routing before assistant-specific dispatch',async()=>{
+  const policy=new TenantPolicy(),f=await makeFixture({tenantPolicy:policy}),client=makeClient(f.base);
+  const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+  const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+  policy.registerAccount({userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir});
+  f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+  let reads=0;
+  f.server.conversationRouter={
+    list:async owner=>{assert.equal(owner.userId,user.id);return[{id:'retained',title:'Retained',directory:worker.workspaceDir}];},
+    read:async(owner,id)=>{assert.equal(owner.generation,1);return{id,title:'Retained',directory:worker.workspaceDir};},
+    messages:async(_owner,id)=>{reads++;return[{info:{id:'retained-message',sessionID:id,role:'assistant'},parts:[]}];},
+  };
+  const listed=await client.request('/experimental/session?limit=200');assert.equal(listed.status,200);
+  assert.equal((await listed.json())[0].id,'retained');
+  const history=await client.request('/session/retained/message');assert.equal(history.status,200);
+  assert.equal((await history.json())[0].info.id,'retained-message');assert.equal(reads,1);
+  assert.equal((await client.request('/experimental/session?directory=%2Fetc')).status,403);
+  assert.equal((await client.request('/experimental/session?limit=1&limit=2')).status,400);
+});
+
 test('automatic search authorization cannot redirect to a different backend', async () => {
   const server = Object.create(PlatformServer.prototype);
   server.searchProvider = 'parallel'; server.permissionDecisions = new Map();

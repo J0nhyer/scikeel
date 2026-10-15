@@ -4,6 +4,7 @@ import { pipeline } from "node:stream/promises";
 import { WorkspaceState, workspaceError } from "./workspace-state.mjs";
 import { readAssistantLedgerInventory } from "./assistant-inventory.mjs";
 import { ConversationState } from "./conversation-state.mjs";
+import { ConversationRouter } from "./conversation-router.mjs";
 import { WorkspaceAdmission } from "./workspace-admission.mjs";
 import { WorkspaceFiles } from "./workspace-files.mjs";
 import { WorkspaceUploads } from "./workspace-uploads.mjs";
@@ -344,6 +345,20 @@ export class PlatformServer {
     const resolveContext=async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
       if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("managed worker unavailable");
       return {userId,instanceId:worker.id,generation:worker.generation};};
+    this.conversationRouter = tenantPolicy && cliRuntime?.sandboxJobs &&
+      typeof cliRuntime.readHistoricalSessions === "function" ? new ConversationRouter({
+      conversations: this.conversations, cliRuntime,
+      authorize: async owner => {
+        const current=await resolveContext(owner.userId);
+        if(current.instanceId!==owner.instanceId || current.generation!==owner.generation)throw recoveryError("stale_workspace_context");
+        const account=tenantPolicy.account(owner);
+        if(account.workspaceDir!==owner.workspaceDir)throw workspaceError("conversation_owner_mismatch",403);
+        tenantPolicy.directory(owner,owner.directory);
+        await this.workspaceManagement?.assertAccessible(owner,owner.directory);
+      },
+      readOpenCode:(owner,path)=>this.#workspaceGateway(owner,path+(path.includes("?")?"&":"?")+new URLSearchParams({directory:owner.directory})),
+      listOpenCode:owner=>this.#listConversationSources(owner),
+    }) : null;
     this.researchTasks = new ResearchTasks({
       rootDir: resolve(workerManager.rootDir, "../research"),
       retainUnverifiedExecution:typeof workerManager.assistantInventory==="function",
@@ -827,9 +842,79 @@ export class PlatformServer {
     });
   }
 
+  async #listConversationSources(owner) {
+    const directories=new Set([owner.workspaceDir,...await this.workspaceManagement?.roots(owner)??[]]),rows=new Map();
+    for(const directory of directories) {
+      let cursor=null;
+      for(let page=0;page<61;page++) {
+        const query=new URLSearchParams({directory,limit:"200",...(cursor===null?{}:{cursor:String(cursor)})});
+        const items=await this.#workspaceGateway(owner,"/experimental/session?"+query);
+        if(!Array.isArray(items)||items.length>10000)throw workspaceError("conversation_history_invalid",503);
+        let fresh=0;
+        for(const item of items) {
+          const previous=rows.get(item?.id);
+          if(previous&&JSON.stringify(previous)!==JSON.stringify(item))throw workspaceError("conversation_origin_conflict",503);
+          if(!previous){rows.set(item?.id,item);fresh++;}
+        }
+        if(rows.size>10000)throw workspaceError("conversation_history_limit",503);
+        if(items.length<200)break;
+        const last=items[items.length-1]?.time?.updated;
+        if(!Number.isSafeInteger(last)||last<0||!fresh||cursor!==null&&last+1>=cursor||page===60)
+          throw workspaceError("conversation_history_limit",503);
+        cursor=last+1;
+      }
+    }
+    return [...rows.values()];
+  }
+
+  async #conversationRead(request,response,user,worker) {
+    if(!this.conversationRouter||request.method!=="GET")return false;
+    const parsed=new URL(request.url,"http://platform.invalid"),operation=classifyRuntimeRoute("GET",parsed.pathname);
+    if(!operation||!["sessionList","sessionRead","sessionMessage","sessionMessageRead","sessionChildren"].includes(operation.operation))return false;
+    const input=validateRuntimeInput(operation,{query:parsed.searchParams,headers:request.headers});
+    const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+    this.tenantPolicy.account(context);
+    const directory=this.tenantPolicy.directory(context,input.directory??worker.workspaceDir);
+    const owner={...context,workspaceDir:worker.workspaceDir,directory},sessionId=operation.identifiers.sessionId;
+    let value;
+    if(operation.operation==="sessionList") {
+      const number=(key,fallback)=>{const raw=parsed.searchParams.get(key);if(raw===null)return fallback;
+        if(!/^\d{1,16}$/.test(raw))throw workspaceError("invalid_conversation_query",400);return Number(raw);};
+      value=await this.conversationRouter.list(owner,{limit:number("limit",200),cursor:number("cursor",null),
+        search:parsed.searchParams.get("search")??"",...(input.directory===undefined?{}:{directory})});
+    }else {
+      const session=await this.conversationRouter.read(owner,sessionId);
+      if(input.directory!==undefined&&directory!==session.directory)throw workspaceError("conversation_denied",403);
+      this.tenantPolicy.registerSession(context,{id:sessionId,directory:session.directory,parentID:session.parentID});
+      if(operation.operation==="sessionRead")value=session;
+      else if(operation.operation==="sessionChildren") {
+        value=(await this.conversationRouter.list(owner,{limit:10000})).filter(row=>row.parentID===sessionId);
+      }else {
+        const owned={...owner,directory:session.directory,sessionId};
+        value=await this.conversationRouter.messages(owned,sessionId);
+        value=await this.attachmentTurns.decorate(user,owned,value);
+        const outcomes=await this.toolOutcomes.list({userId:user.id,sessionId});
+        value=await Promise.all(value.map(async message=>({...message,parts:await Promise.all((message.parts??[])
+          .map(part=>this.decorateToolPart(user.id,sessionId,part,outcomes)))})));
+        if(operation.operation==="sessionMessageRead") {
+          value=value.find(message=>message.info?.id===operation.identifiers.messageId);
+          if(!value)throw workspaceError("conversation_message_not_found",404);
+        }
+      }
+    }
+    this.tenantPolicy.account(context);sendJson(response,200,value);return true;
+  }
+
   async #proxy(request, response, access, user, worker) {
     this.#requireWriteContext(request, user, worker);
     await this.#requireAssistantContext(request, response);
+    try {if(await this.#conversationRead(request,response,user,worker))return;}
+    catch(error) {
+      const status=[400,403,404,409,503].includes(error.statusCode??error.status)?(error.statusCode??error.status):503;
+      const code=typeof error.code==="string"&&/^[a-z][a-z0-9_]{0,79}$/.test(error.code)?error.code:
+        status===403?"conversation_denied":"conversation_history_unavailable";
+      sendJson(response,status,{error:code.replaceAll("_"," "),code});return;
+    }
     if(this.workspaceManagement && (request.url??"").startsWith("/v1/")) {
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
       const url=new URL(request.url,"http://platform.invalid");
