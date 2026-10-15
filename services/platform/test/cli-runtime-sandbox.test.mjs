@@ -27,6 +27,28 @@ test("existing Codex conversations use sandbox transport with preserved history 
   await f.manager.sendPrompt({userId:"a",sessionId:f.session.id,text:"Continue"});
   assert.equal(calls[1].nativeSessionId,"native-owned");assert.equal(calls[1].session.directory,f.project);
 });
+test('managed user parts use the actual message identity and continuing history never drops older messages',async t=>{
+ const f=await fixture(t,{run:async args=>{await args.emit({type:'text',text:'Continued'});return{nativeSessionId:'owned'};}});
+ const old=Array.from({length:500},(_,index)=>({info:{id:`old-${index}`,role:'assistant',sessionID:f.session.id,time:{created:1,completed:1}},
+  parts:[{id:`part-${index}`,messageID:`old-${index}`,sessionID:f.session.id,type:'text',text:`Evidence ${index}`}]}));
+ const before=structuredClone(old);f.session.history=old;
+ await f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'Continue'});
+ assert.equal(f.session.history.length,502);assert.deepEqual(f.session.history.slice(0,500),before);
+ const user=f.session.history[500];assert.equal(user.parts[0].messageID,user.info.id);
+});
+test('managed bounded history refuses a new turn before dispatch instead of discarding existing messages',async t=>{
+ let dispatches=0;const f=await fixture(t,{run:async()=>{dispatches++;return{nativeSessionId:'owned'};}});
+ f.session.history=Array.from({length:12000},(_,index)=>({info:{id:`old-${index}`,role:'assistant',sessionID:f.session.id,time:{created:1,completed:1}},parts:[]}));
+ const before=structuredClone(f.session.history);
+ await assert.rejects(f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'Continue'}),{code:'conversation_history_full',status:507});
+ assert.equal(dispatches,0);assert.deepEqual(f.session.history,before);assert.equal(f.session.status,'idle');
+});
+test('managed history retains byte headroom for the bounded native reply before any provider dispatch',async t=>{
+ let dispatches=0;const f=await fixture(t,{run:async()=>{dispatches++;return{nativeSessionId:'owned'};}});
+ const content='x'.repeat(10*1024**2);f.session.history=[{info:{id:'large',role:'assistant',sessionID:f.session.id,time:{completed:1}},parts:[{type:'text',text:content}]}];
+ await assert.rejects(f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'Continue'}),{code:'conversation_history_full',status:507});
+ assert.equal(dispatches,0);assert.equal(f.session.history.length,1);assert.equal(f.session.history[0].parts[0].text,content);
+});
 test("native cancellation closes the owned sandbox job and restores the session to idle",async(t)=>{
   let entered;const ready=new Promise(resolve=>entered=resolve);let cancelled=false;
   const f=await fixture(t,{run:async args=>{entered();await new Promise((resolve,reject)=>{

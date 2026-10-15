@@ -693,6 +693,16 @@ test('managed historical reads retain both inactive assistants and partial paylo
   assert.equal(manager.userStates.size,0);assert.equal(await readFile(path,'utf8'),original);
   await assert.rejects(manager.readHistoricalMessages({userId:'usr_b',workspaceDir:workspace,sessionId:records[0].id}),{code:'unknown_session'});
 });
+test('historical user-part normalization repairs only the known legacy generated ID without rewriting source bytes',async()=>{
+ const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+ const message={info:{id:'actual-message',sessionID:'ses_cli_0000000000000000',role:'user',time:{completed:1}},
+  parts:[{id:'old-part',messageID:'msg_cli_user_12345678-1234-1234-1234-123456789abc',sessionID:'ses_cli_0000000000000000',type:'text',text:'Preserved original prompt'}]};
+ const {workspace,path,records}=await historyFixture(manager,root,[{history:[message]}]);
+ const bytes=await readFile(path,'utf8');
+ const result=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id});
+ assert.equal(result.messages[0].parts[0].messageID,message.info.id);assert.equal(result.messages[0].parts[0].id,'old-part');
+ assert.equal(await readFile(path,'utf8'),bytes);assert.equal(manager.userStates.size,0);
+});
 test('historical pagination binds its cursor to the exact source and never treats unfinished turns as completed',async()=>{
   const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
   const messages=Array.from({length:3},(_,index)=>({info:{id:`message-${index}`,role:index?'assistant':'user',time:{created:1}},parts:[{type:'text',text:`text-${index}`}]}));

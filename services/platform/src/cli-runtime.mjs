@@ -14,7 +14,7 @@ const MANAGED_RUNTIMES = new Set(["claude", "codex"]);
 const USER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const SESSION_ID = /^ses_cli_[A-Za-z0-9_-]{16,80}$/;
 const DEFAULT_TURN_TIMEOUT_MS = 20 * 60 * 1_000;
-const MAX_HISTORY_MESSAGES = 500;
+const MAX_HISTORY_MESSAGES = 12000;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_MODEL_ID_LENGTH = 160;
 const HISTORY_SOURCE_LIMIT = 16 * 1024 * 1024;
@@ -842,8 +842,14 @@ export class CliRuntimeManager {
       offset = Number(parsed[2]);
     }
     const end = Math.min(offset + limit, session.history.length);
+    // Older native writers generated an unrelated UUID for user text parts.
+    // Repair that exact presentation shape in the owned view, preserving disk bytes.
+    const messages=session.history.slice(offset,end).map(message=>message.info.role==='user'?{...message,parts:message.parts.map(part=>
+      part.type==='text'&&part.sessionID===message.info.sessionID&&
+      /^msg_cli_user_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(part.messageID??'')?
+        {...part,messageID:message.info.id}:part)}:message);
     return structuredClone({ session: { ...publicSession(session), runtime: session.runtime, nativeSessionId: session.nativeSessionId ?? null,
-      identityRevision: session.identityRevision ?? null }, messages: session.history.slice(offset, end),
+      identityRevision: session.identityRevision ?? null }, messages,
       nextCursor: end < session.history.length ? `history_${identity}_${end}` : null, sourceRevision: identity });
   }
 
@@ -1143,6 +1149,9 @@ export class CliRuntimeManager {
     const { state, session } = await this.getOwnedSession(userId, sessionId);
     if (session.status === "running" || this.turnReservations.has(session.id)) throw issue("session_busy", "session is already running", 409);
     if (typeof text !== "string" || !text.trim()) throw issue("empty_prompt", "prompt is empty");
+    if(session.history.length>MAX_HISTORY_MESSAGES-2 || this.sandboxJobs &&
+        Buffer.byteLength(JSON.stringify([...state.sessions.values()],null,2))+Buffer.byteLength(text)>HISTORY_SOURCE_LIMIT-6*1024**2)
+      throw issue("conversation_history_full","Conversation history is full; existing messages have been preserved",507);
     const turn = { userId, state, session, text, displayText, model, attachmentInput, workspaceContext, cancelled: false };
     this.turnReservations.set(session.id, turn);
     session.status = "running";
@@ -1216,10 +1225,11 @@ export class CliRuntimeManager {
     if(session.runtime!=="codex")throw issue("runtime_unavailable","sandbox native runtime unavailable",503);
     const controller=new AbortController();this.processes.set(session.id,controller);
     if(turn.cancelled)controller.abort();
-    const timestamp=now();const userMessage={info:{id:attachmentInput?.turn?.messageID??`msg_cli_user_${randomUUID()}`,role:"user",sessionID:session.id,
-      time:{created:timestamp,completed:timestamp}},parts:[textPart(displayText??text,`msg_cli_user_${randomUUID()}`,session.id)],
+    const timestamp=now(),userMessageId=attachmentInput?.turn?.messageID??`msg_cli_user_${randomUUID()}`;
+    const userMessage={info:{id:userMessageId,role:"user",sessionID:session.id,
+      time:{created:timestamp,completed:timestamp}},parts:[textPart(displayText??text,userMessageId,session.id)],
       ...(attachmentInput?{attachments:attachmentInput.metadata}:{})};
-    session.history.push(userMessage);session.history=session.history.slice(-MAX_HISTORY_MESSAGES);await this.persistUser(state);
+    session.history.push(userMessage);await this.persistUser(state);
     const assistant={info:{id:`msg_cli_${randomUUID()}`,role:"assistant",sessionID:session.id,time:{created:timestamp}},parts:[]};
     this.emitMessageUpdated(userId,session,assistant);
     const stale=Boolean(session.nativeSessionId && session.identityRevision!==profile.identityRevision);
@@ -1250,7 +1260,7 @@ export class CliRuntimeManager {
       for(const [id,pending]of this.nativeQuestions)if(pending.userId===userId && pending.sessionID===session.id)this.nativeQuestions.delete(id);
       assistant.info.time.completed=now();
       if(assistant.parts.length || assistant.info.error)session.history.push(assistant);
-      session.history=session.history.slice(-MAX_HISTORY_MESSAGES);session.status="idle";session.updatedAt=now();
+      session.status="idle";session.updatedAt=now();
       this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
       this.emit(userId,{type:"session.idle",properties:{sessionID:session.id}});
     }
@@ -1281,19 +1291,18 @@ export class CliRuntimeManager {
     // ordinary answers and tool results must remain complete and keep cited URLs.
     const diagnostic = (value) => redact(value).slice(0, 2000);
     session._redact = redact;
-    const timestamp = now();
+    const timestamp = now(),userMessageId=attachmentInput?.turn?.messageID ?? `msg_cli_${randomUUID()}`;
     const userMessage = {
       info: {
-        id: attachmentInput?.turn?.messageID ?? `msg_cli_${randomUUID()}`,
+        id: userMessageId,
         role: "user",
         sessionID: session.id,
         time: { created: timestamp, completed: timestamp },
       },
       ...(attachmentInput ? { attachments: attachmentInput.metadata } : {}),
-      parts: [textPart(displayText ?? text, `msg_cli_user_${randomUUID()}`, session.id)],
+      parts: [textPart(displayText ?? text, userMessageId, session.id)],
     };
     session.history.push(userMessage);
-    session.history = session.history.slice(-MAX_HISTORY_MESSAGES);
     session.status = "running";
     session.updatedAt = timestamp;
     await this.persistUser(state);
@@ -1326,7 +1335,6 @@ export class CliRuntimeManager {
       assistantMessage.info.time.completed = completed;
       assistantMessage.info.error = { name: "CliRuntimeError", data: { message } };
       session.history.push(assistantMessage);
-      session.history = session.history.slice(-MAX_HISTORY_MESSAGES);
       session.status = "idle";
       this.turnReservations.delete(session.id);
       session.updatedAt = completed;
@@ -1373,7 +1381,6 @@ export class CliRuntimeManager {
       }
       if (assistantMessage.parts.length > 0 || assistantMessage.info.error) {
         session.history.push(assistantMessage);
-        session.history = session.history.slice(-MAX_HISTORY_MESSAGES);
       }
       if (!errorText && code === 0) {
         session.nativeSessionId = session._pendingNativeSessionId ?? session.nativeSessionId;
