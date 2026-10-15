@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { crc32, inflateSync } from "node:zlib";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { capabilityResult, nativePin, responsesFrame } from "../fixtures/native-protocol.mjs";
@@ -272,6 +273,24 @@ test("native reasoning and attachment evidence observes serialized provider inpu
   assert.equal(facts.imageInput, true);
   assert.ok(!JSON.stringify(facts).includes("synthetic-image-canary"));
   assert.equal(protocol.nativeToolFacts({ input: [] }).imageInput, false);
+});
+
+test("the native image fixture contains a complete decodable PNG with valid chunk checksums", () => {
+  const bytes = Buffer.from(protocol.pixel.slice("data:image/png;base64,".length), "base64");
+  assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  const chunks = [];
+  for (let offset = 8; offset < bytes.length;) {
+    const length = bytes.readUInt32BE(offset), type = bytes.toString("ascii", offset + 4, offset + 8);
+    assert.equal(crc32(bytes.subarray(offset + 4, offset + 8 + length)), bytes.readUInt32BE(offset + 8 + length),
+      `The native decoder must not discard an invalid ${type} fixture chunk`);
+    chunks.push(type);
+    if (type === "IHDR") {
+      assert.equal(bytes.readUInt32BE(offset + 8), 1);
+      assert.equal(bytes.readUInt32BE(offset + 12), 1);
+    } else if (type === "IDAT") assert.equal(inflateSync(bytes.subarray(offset + 8, offset + 8 + length)).length, 3);
+    offset += length + 12;
+  }
+  assert.deepEqual(chunks, ["IHDR", "IDAT", "IEND"]);
 });
 
 test("native fixture cleanup waits for exit and kills an already running child process group", async t => {

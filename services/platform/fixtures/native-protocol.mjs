@@ -13,7 +13,7 @@ const binary = "/opt/scikeel/tools/bin/codex";
 const node = "/opt/scikeel/tools/bin/node";
 const root = "/fixture/native";
 const port = 48177;
-const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBqkAAAAASUVORK5CYII=";
+export const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
 
 export function responsesFrame(item, id = "fixture-response") {
   return [
