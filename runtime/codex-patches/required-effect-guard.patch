@@ -11,7 +11,7 @@ diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.
          additional_contexts,
          updated_input,
      } = hooks.run_pre_tool_use(request).await;
-+    let guards_complete = required_guard_count > 0
++    let guards_complete = required_guard_count == 1
 +        && hook_events.len() == required_guard_count
 +        && hook_events.iter().all(|event| {
 +            matches!(
@@ -23,7 +23,7 @@ diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.
      record_additional_contexts(sess, turn_context, additional_contexts).await;
 @@ -223,3 +232,10 @@
 +    // This Web-only binary requires the managed guard before every tool effect.
-+    if !guards_complete {
++    if !guards_complete || updated_input.is_some() {
 +        return PreToolUseHookResult::Blocked(
 +            "SciKeel execution authority is unavailable; no tool effect was authorized".to_string(),
 +        );
@@ -48,23 +48,103 @@ diff --git a/codex-rs/hooks/src/events/pre_tool_use.rs b/codex-rs/hooks/src/even
 +    );
      let mut additional_contexts_for_model = Vec::new();
      let mut updated_input = None;
-@@ -247,6 +250,19 @@
+@@ -247,6 +250,10 @@
                                  text: reason,
                              });
                          } else {
-+                            let explicit_allow = serde_json::from_str::<Value>(&run_result.stdout)
-+                                .ok()
-+                                .is_some_and(|value| {
-+                                    value["hookSpecificOutput"]["hookEventName"].as_str()
-+                                        == Some("PreToolUse")
-+                                        && value["hookSpecificOutput"]["permissionDecision"]
-+                                            .as_str()
-+                                            == Some("allow")
-+                                });
-+                            if explicit_allow {
++                            if parsed.explicit_allow {
 +                                should_block = false;
 +                                block_reason = None;
 +                            }
                              updated_input = parsed.updated_input;
                          }
                      }
+diff --git a/codex-rs/hooks/src/engine/output_parser.rs b/codex-rs/hooks/src/engine/output_parser.rs
+--- a/codex-rs/hooks/src/engine/output_parser.rs
++++ b/codex-rs/hooks/src/engine/output_parser.rs
+@@ -20,3 +20,4 @@
+     pub updated_input: Option<serde_json::Value>,
+     pub invalid_reason: Option<String>,
++    pub explicit_allow: bool,
+ }
+@@ -138,3 +139,5 @@
+-        if use_hook_specific_decision {
++        if use_hook_specific_decision && (decision.is_some() || reason.is_some()) {
++            Some("SciKeel rejects conflicting legacy and structured decisions".to_string())
++        } else if use_hook_specific_decision {
+             hook_specific_output.and_then(unsupported_pre_tool_use_hook_specific_output)
+         } else {
+@@ -175,2 +178,8 @@
+     Some(PreToolUseOutput {
++        explicit_allow: invalid_reason.is_none()
++            && hook_specific_output.is_some_and(|output| {
++                matches!(output.permission_decision,
++                    Some(PreToolUsePermissionDecisionWire::Allow))
++                    && output.updated_input.is_none()
++            }),
+         universal,
+@@ -444,15 +453,6 @@
+-    if output.updated_input.is_some()
+-        && !matches!(
+-            output.permission_decision,
+-            Some(PreToolUsePermissionDecisionWire::Allow)
+-        )
+-    {
+-        Some("PreToolUse hook returned updatedInput without permissionDecision:allow".to_string())
++    if output.updated_input.is_some() {
++        Some("SciKeel forbids updatedInput after authorization".to_string())
+     } else {
+         match output.permission_decision {
+-            Some(PreToolUsePermissionDecisionWire::Allow) => {
+-                output.updated_input.is_none().then(|| {
+-                    "PreToolUse hook returned unsupported permissionDecision:allow".to_string()
+-                })
+-            }
++            Some(PreToolUsePermissionDecisionWire::Allow) => None,
+             Some(PreToolUsePermissionDecisionWire::Ask) => {
+diff --git a/codex-rs/hooks/src/engine/mod.rs b/codex-rs/hooks/src/engine/mod.rs
+--- a/codex-rs/hooks/src/engine/mod.rs
++++ b/codex-rs/hooks/src/engine/mod.rs
+@@ -228,1 +228,15 @@
++fn scikeel_required_guard_handlers(handlers: &[ConfiguredHandler]) -> bool {
++    let [handler] = handlers else { return false; };
++    handler.event_name == HookEventName::PreToolUse
++        && handler.source == HookSource::System
++        && matches!(&handler.source_path, HandlerSourcePath::Local(path)
++            if path.as_path() == std::path::Path::new("/etc/codex/requirements.toml"))
++        && handler.matcher.is_none()
++        && !handler.builtin
++        && handler.timeout_sec == 5
++        && matches!(&handler.kind, ConfiguredHandlerKind::Command { command, env, r#async: false }
++            if command == "/opt/scikeel/tools/bin/node /opt/scikeel/runtime/required-effect-guard.mjs --guard"
++                && env.is_empty())
++}
++
+ impl ClaudeHooksEngine {
+@@ -260,1 +274,6 @@
++        if !scikeel_required_guard_handlers(&discovered.handlers) {
++            discovered.handlers.clear();
++            discovered.required_load_errors.push(
++                "SciKeel requires exactly its immutable platform guard and forbids extra hooks".to_string());
++        }
+         Self {
+@@ -275,1 +294,7 @@
++        if !executor_hooks.is_empty() {
++            self.handlers.clear();
++            self.required_load_errors.push(
++                "SciKeel forbids executor plugin hooks".to_string());
++            return;
++        }
+         self.handlers.retain(|handler| {
+diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
+--- a/codex-rs/core/src/tools/registry.rs
++++ b/codex-rs/core/src/tools/registry.rs
+@@ -638,3 +638,8 @@
+                 } => {}
+             }
++        } else {
++            // No payload means no input-bound authorization, never an unguarded effect.
++            return Err(FunctionCallError::RespondToModel(
++                "SciKeel requires an authorizable input for this tool".to_string(),
++            ));
+         }

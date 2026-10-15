@@ -18,11 +18,22 @@ export function validateGuardLock(lock) {
   if (lock?.schema !== 1 || lock.policy !== "required-effect-guard-v1" ||
       lock.upstreamVersion !== "0.157.1" || lock.upstreamCommit !== "36650394c5b38c2990ccf2a3457165ca3e9d9726" ||
       lock.rustVersion !== "1.95.0" || !/^[a-f0-9]{64}$/.test(lock.patchSha256 ?? "") ||
+      !/^[a-f0-9]{64}$/.test(lock.testPatchSha256 ?? "") ||
       !/^[a-f0-9]{64}$/.test(lock.upstreamLockSha256 ?? "") || !/^[a-f0-9]{64}$/.test(lock.workspaceLockSha256 ?? "") ||
       lock.lockFormat !== "smol-toml@1.9.0" ||
       lock.bwrapSha256 !== "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c")
     throw new Error("Invalid pinned native guard inputs");
   return lock;
+}
+
+export function validateRustRegression(result, phase) {
+  const output = result.stdout ?? "";
+  const expectedFailures = ["scikeel_required_guard_allow_preserves_original_input", "scikeel_required_guard_rejects_all_input_rewrites"];
+  const valid = !result.error && !result.signal && (phase === "red"
+    ? result.status === 101 && expectedFailures.every(name => output.includes(`${name} ... FAILED`))
+    : phase === "green" && result.status === 0 && output.includes("8 passed; 0 failed"));
+  if (!valid) throw new Error(`Rust regression ${phase} did not produce the required actual parser evidence`);
+  return true;
 }
 
 export function reconcileWorkspaceVersions(lock) {
@@ -55,23 +66,44 @@ export async function buildGuardRuntime() {
     throw new Error("Dedicated native CI required");
   const lock = validateGuardLock(JSON.parse(await readFile(join(patches, "required-effect-guard.lock.json"), "utf8")));
   const patch = join(patches, "required-effect-guard.patch");
+  const testPatch = join(patches, "required-effect-guard-tests.patch");
   if (sha256(await readFile(patch)) !== lock.patchSha256) throw new Error("Native guard patch identity mismatch");
+  if (sha256(await readFile(testPatch)) !== lock.testPatchSha256) throw new Error("Native guard test identity mismatch");
   if (run("git", ["rev-parse", "HEAD"]) !== lock.upstreamCommit || run("git", ["status", "--porcelain"]))
     throw new Error("Fresh pinned native source required");
   if (!run("rustc", ["--version"], join(source, "codex-rs")).startsWith(`rustc ${lock.rustVersion} `))
     throw new Error("Native compiler identity mismatch");
   const bwrapSha256 = await digest(join(output, "codex-resources/bwrap"));
   if (bwrapSha256 !== lock.bwrapSha256) throw new Error("Native sandbox resource identity mismatch");
-  run("git", ["apply", "--check", patch]);
-  run("git", ["apply", patch]);
   const workspaceLock = join(source, "codex-rs/Cargo.lock");
   const originalLock = await readFile(workspaceLock);
   if (sha256(originalLock) !== lock.upstreamLockSha256) throw new Error("Native upstream dependency lock changed");
   const reconciled = stringify(reconcileWorkspaceVersions(parse(originalLock.toString("utf8"))));
   if (sha256(reconciled) !== lock.workspaceLockSha256) throw new Error("Native workspace dependency lock changed");
   await writeFile(workspaceLock, reconciled);
+  const environment = { ...process.env, CARGO_PROFILE_RELEASE_DEBUG: "0", CARGO_PROFILE_RELEASE_LTO: "false",
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16", CARGO_PROFILE_RELEASE_OPT_LEVEL: "1", CODEX_BWRAP_SHA256: bwrapSha256 };
+  const parserIncludes = ["--include=codex-rs/hooks/src/engine/output_parser.rs", "--include=codex-rs/hooks/src/events/pre_tool_use.rs"];
+  run("git", ["apply", "--check", ...parserIncludes, testPatch]);
+  run("git", ["apply", ...parserIncludes, testPatch]);
+  const regressionArgs = ["test", "--locked", "--release", "--jobs", "1", "--package", "codex-hooks", "--lib", "scikeel_required_guard", "--", "--test-threads=1"];
+  const regression = phase => {
+    const result = spawnSync("cargo", regressionArgs, { cwd: join(source, "codex-rs"), env: environment,
+      encoding: "utf8", maxBuffer: 8 * 1024 ** 2 });
+    process.stdout.write(result.stdout ?? ""); process.stderr.write(result.stderr ?? "");
+    validateRustRegression(result, phase);
+  };
+  regression("red");
+  run("git", ["apply", "--check", patch]);
+  run("git", ["apply", patch]);
+  run("git", ["apply", "--include=codex-rs/hooks/src/engine/mod_tests.rs", testPatch]);
+  regression("green");
+  await writeFile(join(repository, ".deploy/native-capabilities/output/rust-regressions.json"),
+    JSON.stringify({ schema: 1, source: process.env.GITHUB_SHA, parserRed: true, parserAndHandlerGreen: true,
+      testsPassed: 8, testPatchSha256: lock.testPatchSha256 }) + "\n");
   const paths = run("git", ["diff", "--name-only"]).split("\n").sort();
-  if (JSON.stringify(paths) !== JSON.stringify(["codex-rs/Cargo.lock", "codex-rs/core/src/hook_runtime.rs", "codex-rs/hooks/src/events/pre_tool_use.rs"]))
+  if (JSON.stringify(paths) !== JSON.stringify(["codex-rs/Cargo.lock", "codex-rs/core/src/hook_runtime.rs", "codex-rs/core/src/tools/registry.rs",
+    "codex-rs/hooks/src/engine/mod.rs", "codex-rs/hooks/src/engine/mod_tests.rs", "codex-rs/hooks/src/engine/output_parser.rs", "codex-rs/hooks/src/events/pre_tool_use.rs"]))
     throw new Error("Unexpected native source changes");
   run("cargo", ["build", "--locked", "--release", "--jobs", "1", "--package", "codex-cli", "--bin", "codex"],
     join(source, "codex-rs"), { CARGO_PROFILE_RELEASE_DEBUG: "0", CARGO_PROFILE_RELEASE_LTO: "false",

@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 export const nativePin = Object.freeze({ version: "0.157.1", sourceCommit: "36650394c5b38c2990ccf2a3457165ca3e9d9726" });
 const fixture = fileURLToPath(import.meta.url);
@@ -37,6 +38,13 @@ export function nativeToolFacts(value) {
   };
 }
 
+export function validNativeGuardInput(value, expected) {
+  return !!value && !!expected && typeof expected.thread === "string" && typeof expected.turn === "string" &&
+    value.session_id === expected.thread && value.turn_id === expected.turn && value.tool_use_id === expected.call &&
+    value.cwd === expected.cwd && value.tool_name === expected.tool && value.hook_event_name === "PreToolUse" &&
+    isDeepStrictEqual(value.tool_input, expected.input);
+}
+
 async function hook() {
   let text = "";
   for await (const chunk of process.stdin) {
@@ -45,10 +53,12 @@ async function hook() {
   }
   const input = JSON.parse(text);
   const response = await fetch(`http://127.0.0.1:${port}/guard`, {
-    method: "POST", body: JSON.stringify({ tool: input.tool_name, callId: input.tool_use_id }),
+    method: "POST", body: JSON.stringify(input),
     signal: AbortSignal.timeout(2000),
   });
+  if (!response.ok) process.exit(1);
   const { mode } = await response.json();
+  if (!["allow", "deny", "crash", "timeout", "malformed", "empty"].includes(mode)) process.exit(1);
   if (mode === "crash") process.exit(1);
   if (mode === "timeout") await new Promise(resolve => setTimeout(resolve, 10000));
   if (mode === "malformed") { console.log('{"hookSpecificOutput":'); return; }
@@ -77,13 +87,26 @@ export async function prepareNativeProbe() {
 [[hooks.PreToolUse]]
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "${node} /fixture/repo/services/platform/fixtures/native-protocol.mjs --guard"
+command = "${node} /opt/scikeel/runtime/required-effect-guard.mjs --guard"
 timeout = 5
 `);
 }
 
-class NativeConnection {
+export function orderedNativeToolEvidence(frames, threadId, turnId) {
+  const started = new Set();
+  const types = ["commandExecution", "fileChange", "dynamicToolCall"];
+  for (const frame of frames) {
+    const params = frame.params;
+    if (params?.threadId !== threadId || params?.turnId !== turnId || !types.includes(params.item?.type) || typeof params.item.id !== "string") continue;
+    if (frame.method === "item/started") started.add(params.item.id);
+    else if (frame.method === "item/completed" && started.has(params.item.id)) return true;
+  }
+  return false;
+}
+
+export class NativeConnection {
   pending = new Map(); frames = []; next = 1; unexpectedRequests = 0; customEffects = 0; customCalls = 0;
+  seenCalls = new Set();
   constructor(child, mode) {
     this.child = child; this.mode = mode;
     this.failure = new Promise((_, reject) => this.reject = reject);
@@ -98,6 +121,7 @@ class NativeConnection {
   }
   write(value) { this.child.stdin.write(JSON.stringify(value) + "\n"); }
   receive(frame) {
+    if (!frame || typeof frame !== "object" || Array.isArray(frame)) throw new Error("invalid native frame");
     this.frames.push(frame);
     if (this.frames.length > 2000) throw new Error("native frame limit");
     if (frame.id !== undefined && !frame.method) {
@@ -107,8 +131,12 @@ class NativeConnection {
       frame.error ? pending.reject(new Error(`native request rejected: ${pending.method}`)) : pending.resolve(frame.result);
     } else if (frame.id !== undefined) {
       if (frame.method === "item/tool/call" && frame.params?.threadId === this.thread &&
-          frame.params?.tool === "research_checkpoint" && typeof frame.params?.turnId === "string") {
+          frame.params?.tool === "research_checkpoint" && frame.params?.turnId === this.turn &&
+          frame.params.callId === this.expectedCallId && typeof this.expectedCallId === "string" &&
+          !this.seenCalls.has(frame.params.callId) && frame.params.arguments?.checkpoint === "fixture" &&
+          Object.keys(frame.params.arguments).length === 1) {
         // The client boundary independently denies dispatch while a decision is pending.
+        this.seenCalls.add(frame.params.callId);
         this.customCalls++;
         const success = this.mode === "allow";
         if (success) this.customEffects++;
@@ -117,6 +145,9 @@ class NativeConnection {
         this.unexpectedRequests++;
         this.write({ id: frame.id, error: { code: -32601, message: "Fixture denies unrecognized authority" } });
       }
+    } else if (frame.method === "turn/started" && frame.params?.threadId === this.thread && typeof frame.params.turn?.id === "string") {
+      if (this.turn && this.turn !== frame.params.turn.id) throw new Error("unexpected native turn identity");
+      this.turn = frame.params.turn.id;
     }
   }
   request(method, params) {
@@ -130,7 +161,7 @@ class NativeConnection {
   async completed() {
     const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
-      const frame = this.frames.find(value => value.method === "turn/completed");
+      const frame = this.frames.find(value => value.method === "turn/completed" && value.params?.threadId === this.thread && value.params.turn?.id === this.turn);
       if (frame) return frame.params.turn;
       await Promise.race([this.failure, new Promise(resolve => setTimeout(resolve, 20))]);
     }
@@ -186,7 +217,10 @@ export async function runNativeProtocolProbe() {
         if (Buffer.byteLength(bytes) > 2 * 1024 ** 2) throw new Error("fixture request limit");
       }
       if (request.url === "/guard") {
-        const value = JSON.parse(bytes); current.guards.push(value);
+        const value = JSON.parse(bytes);
+        const bound = validNativeGuardInput(value, { ...current.expectedGuard, thread: current.connection.thread, turn: current.connection.turn });
+        current.guards.push({ bound });
+        if (!bound) { response.writeHead(403).end(); return; }
         response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ mode: current.mode })); return;
       }
       if (request.url === "/v1/responses") {
@@ -216,7 +250,9 @@ export async function runNativeProtocolProbe() {
         type: "function_call", call_id: callId, name: kind === "command" ? "exec_command" : "research_checkpoint",
         arguments: JSON.stringify(kind === "command" ? { cmd: "printf verified-native-write > result.txt" } : { checkpoint: "fixture" }),
       };
-      current = { mode, item, guards: [], requests: 0 };
+      current = { mode, item, guards: [], requests: 0, expectedGuard: { cwd: `${directory}/workspace`, call: callId,
+        tool: kind === "command" ? "Bash" : kind === "edit" ? "apply_patch" : "research_checkpoint",
+        input: kind === "command" ? { command: "printf verified-native-write > result.txt" } : kind === "edit" ? { command: item.input } : { checkpoint: "fixture" } } };
       const child = spawn(binary, ["app-server", "--listen", "stdio://", "-c", 'model_provider="fixture"', "-c",
         `model_providers.fixture={name="Fixture",base_url="http://127.0.0.1:${port}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}`,
         "-c", 'model_catalog_json="/fixture/config/models.json"', "-c", 'web_search="disabled"', "-c", `features.hooks=${mode !== "missing"}`, "-c", 'features.unified_exec=true'], {
@@ -224,6 +260,8 @@ export async function runNativeProtocolProbe() {
           CODEX_HOME: `${directory}/home`, OPENAI_API_KEY: "synthetic-not-a-real-key", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "pipe"],
       });
       const connection = new NativeConnection(child, mode);
+      current.connection = connection;
+      connection.expectedCallId = callId;
       const record = { name, kind, mode, passed: false };
       try {
         await connection.request("initialize", { clientInfo: { name: "scikeel-ci-feasibility", version: "1.0.0" }, capabilities: { experimentalApi: true } });
@@ -237,9 +275,12 @@ export async function runNativeProtocolProbe() {
         const turn = await connection.request("turn/start", { threadId: connection.thread, input: [{ type: "text", text: "Synthetic native protocol test" }],
           approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite", writableRoots: [`${directory}/workspace`], networkAccess: false,
             excludeTmpdirEnvVar: true, excludeSlashTmp: true } });
+        if (connection.turn && connection.turn !== turn.turn.id) throw new Error("native turn acknowledgement mismatch");
+        connection.turn = turn.turn.id;
         record.identity = typeof connection.thread === "string" && typeof turn.turn.id === "string";
         record.status = (await connection.completed()).status;
         record.guardCalls = current.guards.length;
+        record.boundGuardCalls = current.guards.filter(value => value.bound).length;
         record.unexpectedRequests = connection.unexpectedRequests;
         record.customDispatches = connection.customCalls;
         let file;
@@ -248,11 +289,13 @@ export async function runNativeProtocolProbe() {
         record.bytesVerified = kind === "custom" ? connection.customEffects === 1 : file?.trim() === "verified-native-write";
         record.nativeToolStarted = connection.frames.some(frame => frame.method === "item/started");
         record.nativeToolCompleted = connection.frames.some(frame => frame.method === "item/completed");
+        record.orderedToolEvidence = orderedNativeToolEvidence(connection.frames, connection.thread, connection.turn);
         record.toolCatalog = current.toolCatalog;
         record.toolResults = current.toolResults?.map(output => output.replaceAll(directory, "[fixture]").replaceAll("synthetic-not-a-real-key", "[redacted]"));
         // A crashing guard is not an allow decision, even when native execution continues.
         record.passed = record.identity && record.status === "completed" &&
-          (mode === "missing" ? record.guardCalls === 0 : record.guardCalls > 0) && record.unexpectedRequests === 0 &&
+          record.orderedToolEvidence &&
+          (mode === "missing" ? record.guardCalls === 0 : record.boundGuardCalls > 0 && record.guardCalls === record.boundGuardCalls) && record.unexpectedRequests === 0 &&
           (mode === "allow" ? record.effect && record.bytesVerified : !record.effect && record.customDispatches === 0);
       } catch (error) { record.failure = error.message; }
       finally { await connection.close(); }

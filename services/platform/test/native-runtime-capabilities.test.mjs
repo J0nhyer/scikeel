@@ -4,6 +4,8 @@ import { readFile, mkdtemp, mkdir, writeFile, rm, access, symlink } from "node:f
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { capabilityResult, nativePin, responsesFrame } from "../fixtures/native-protocol.mjs";
@@ -71,8 +73,8 @@ test("the integrated native guard patch is immutable and requires explicit allow
   const patch = await readFile(new URL("../../../runtime/codex-patches/required-effect-guard.patch", import.meta.url), "utf8");
   assert.equal(lock.patchSha256, createHash("sha256").update(patch).digest("hex"));
   assert.ok(patch.includes('+    let mut should_block = true;'));
-  assert.ok(patch.includes('== Some("allow")'));
-  assert.ok(patch.includes('required_guard_count > 0'));
+  assert.ok(patch.includes('parsed.explicit_allow'));
+  assert.ok(patch.includes('required_guard_count == 1'));
   assert.ok(patch.includes('hook_events.len() == required_guard_count'));
   assert.deepEqual(validateGuardLock(lock), lock);
   for (const key of ["policy", "upstreamCommit", "upstreamVersion", "rustVersion", "patchSha256", "bwrapSha256", "lockFormat", "upstreamLockSha256", "workspaceLockSha256"])
@@ -140,4 +142,61 @@ test("the native CI parser install retains frozen platform dependency and overri
   assert.equal(lock.importers["services/platform"].dependencies["js-yaml"].specifier, rootPackage.pnpm.overrides["js-yaml@4"]);
   assert.equal(lock.importers["services/platform"].dependencies["js-yaml"].version, "4.3.1");
   assert.equal(lock.importers["services/platform"].dependencies["smol-toml"].version, "1.9.0");
+});
+
+test("the native fixture denies foreign, replayed and malformed dynamic tool calls before any effect", () => {
+  assert.equal(typeof protocol.NativeConnection, "function");
+  const child = new EventEmitter();
+  Object.assign(child, { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+  const connection = new protocol.NativeConnection(child, "allow");
+  Object.assign(connection, { thread: "owned-thread", turn: "owned-turn", expectedCallId: "owned-call" });
+  const params = { threadId: "owned-thread", turnId: "owned-turn", callId: "owned-call", tool: "research_checkpoint", arguments: { checkpoint: "fixture" } };
+  for (const changed of [{ threadId: "foreign" }, { turnId: "foreign" }, { callId: "foreign" }, { callId: undefined },
+    { arguments: null }, { tool: "exec_command" }]) {
+    connection.receive({ id: 20, method: "item/tool/call", params: { ...params, ...changed } });
+    assert.equal(connection.customEffects, 0);
+  }
+  connection.receive({ id: 21, method: "item/tool/call", params });
+  assert.equal(connection.customEffects, 1);
+  connection.receive({ id: 21, method: "item/tool/call", params });
+  assert.equal(connection.customEffects, 1, "a repeated native call cannot repeat its effect");
+});
+
+test("native effect evidence requires the owned item start before its completion", () => {
+  assert.equal(typeof protocol.orderedNativeToolEvidence, "function");
+  const start = { method: "item/started", params: { threadId: "owned-thread", turnId: "owned-turn", item: { id: "tool-1", type: "commandExecution" } } };
+  const complete = { ...start, method: "item/completed" };
+  assert.equal(protocol.orderedNativeToolEvidence([start, complete], "owned-thread", "owned-turn"), true);
+  for (const frames of [[complete, start], [start], [complete], [
+    { ...start, params: { ...start.params, threadId: "foreign" } }, complete], [start,
+    { ...complete, params: { ...complete.params, item: { id: "foreign", type: "commandExecution" } } }]])
+    assert.equal(protocol.orderedNativeToolEvidence(frames, "owned-thread", "owned-turn"), false);
+});
+
+test("native parser regressions require actual Rust RED and GREEN before publishing a binary", async () => {
+  assert.equal(typeof integration.validateRustRegression, "function");
+  const output = "test engine::output_parser::tests::scikeel_required_guard_allow_preserves_original_input ... FAILED\n" +
+    "test engine::output_parser::tests::scikeel_required_guard_rejects_all_input_rewrites ... FAILED\n";
+  assert.equal(integration.validateRustRegression({ status: 101, stdout: output }, "red"), true);
+  for (const result of [{ status: 0, stdout: output }, { status: 101, stdout: "compiler failed" }, { status: null, stdout: output }])
+    assert.throws(() => integration.validateRustRegression(result, "red"), /Rust regression/);
+  assert.throws(() => integration.validateRustRegression({ status: 0, stdout: "test result: ok. 0 passed; 0 failed" }, "green"), /Rust regression/);
+  const source = await readFile(new URL("../../../scripts/dev/build-codex-guard-runtime.mjs", import.meta.url), "utf8");
+  assert.ok(source.includes('"--package", "codex-hooks", "--lib", "scikeel_required_guard"'));
+  const patch = await readFile(new URL("../../../runtime/codex-patches/required-effect-guard-tests.patch", import.meta.url), "utf8");
+  assert.ok(patch.includes("scikeel_required_guard_allow_preserves_original_input"));
+  assert.ok(patch.includes("scikeel_required_guard_handler_deny_beats_allow_in_either_order"));
+});
+
+test("the native fixture binds hook authority to the exact owned tool input, not hook receipt", () => {
+  assert.equal(typeof protocol.validNativeGuardInput, "function");
+  const expected = { thread: "owned-thread", turn: "owned-turn", call: "owned-call", cwd: "/fixture/workspace", tool: "Bash", input: { command: "printf allowed" } };
+  const input = { session_id: expected.thread, turn_id: expected.turn, tool_use_id: expected.call,
+    cwd: expected.cwd, tool_name: expected.tool, tool_input: expected.input, hook_event_name: "PreToolUse" };
+  assert.equal(protocol.validNativeGuardInput(input, expected), true);
+  for (const changed of [{ session_id: "foreign" }, { turn_id: "foreign" }, { tool_use_id: "foreign" },
+    { cwd: "/host" }, { tool_name: "apply_patch" }, { tool_input: { command: "printf changed" } },
+    { tool_input: { ...expected.input, injected: true } }, { hook_event_name: "PostToolUse" }])
+    assert.equal(protocol.validNativeGuardInput({ ...input, ...changed }, expected), false);
+  assert.equal(protocol.validNativeGuardInput(null, expected), false);
 });
