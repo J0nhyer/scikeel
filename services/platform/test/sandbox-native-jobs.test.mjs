@@ -4,6 +4,14 @@ import {TenantPolicy} from "../src/tenant-policy.mjs";
 import {SandboxNativeJobs} from "../src/sandbox-native-jobs.mjs";
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
+test("native inventory uses the existing read-only runner snapshot without starting a worker or turn",async()=>{
+ const policy=new TenantPolicy({accounts:[context]});let calls=0;
+ const transport=new SandboxNativeJobs({tenantPolicy:policy,workerManager:{ensureWorker:()=>{throw Error("must not start worker");}},
+  files:{job:async(owner,request)=>{calls++;assert.deepEqual(owner,context);assert.deepEqual(request,{operation:"inspect"});return {busy:false,starting:false,jobs:[]};}}});
+ assert.equal(typeof transport.inspect,"function");
+ assert.deepEqual(await transport.inspect(context),{busy:false,starting:false,jobs:[]});assert.equal(calls,1);
+ await assert.rejects(transport.inspect({...context,generation:2}));assert.equal(calls,1);
+});
 test("recovery aborts only the matching generation and releases it only after verified cleanup", async () => {
   const policy = new TenantPolicy({ accounts: [context] }); let released = 0; let stops = 0; let entered;
   const ready = new Promise(resolve => { entered = resolve; });

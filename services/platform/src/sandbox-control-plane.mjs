@@ -170,6 +170,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   environments = new SandboxEnvironments({ files, tenantPolicy, packageGrants, imageDigest: configuration.imageDigest,
     acquireMaintenance: (context) => manager.acquireMaintenance(context) });
   const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy});
+  manager.inspectNative = context => nativeJobs.inspect(context);
   const nativeProfileResolver = managedNativeProfileResolver({ configuration, broker: model,
     serviceProfile: new ManagedCodexProfile({ home: join(dataDir, "codex-service") }) });
   plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, searchProvider: config.searchProvider, nativeJobs, nativeProfileResolver,

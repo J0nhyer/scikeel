@@ -84,6 +84,7 @@ const platform = new PlatformServer({
   authStore,
   workerManager,
   cliRuntime,
+  modelBroker: controlPlane?.model,
   tenantPolicy: controlPlane?.tenantPolicy,
   networkEgress: controlPlane?.egress,
   searchProvider: controlPlane?.searchProvider,
@@ -100,6 +101,7 @@ const platform = new PlatformServer({
 });
 
 if(controlPlane) {
+  cliRuntime.assistantAuthority = { inventory: () => platform.assistantExecutionInventory() };
   controlPlane.assistantPolicy=context=>cliRuntime.assistantSnapshot(context.userId);
   controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
   controlPlane.model.networkHandler=(context,body)=>platform.runtimeNetwork(context,body);

@@ -9,6 +9,12 @@ export class SandboxNativeJobs {
       throw new Error("invalid native job transport");
     Object.assign(this,{files,workerManager,tenantPolicy,delayMs});
   }
+  async inspect(context) {
+    this.tenantPolicy.account(context);
+    const snapshot = await this.files.job(context, { operation: "inspect" });
+    this.tenantPolicy.account(context);
+    return snapshot;
+  }
   async #context(userId,session) {
     const instanceId=`user-${userId}`;
     const worker=await this.workerManager.ensureWorker({instanceId,userId,allowRecovery:false});

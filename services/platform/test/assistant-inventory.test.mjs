@@ -6,6 +6,9 @@ import {join} from 'node:path';
 const {readAssistantLedgerInventory}=await import('../src/assistant-inventory.mjs').catch(()=>({}));
 import {PlatformServer} from '../src/platform-server.mjs';
 import {WorkspaceState} from '../src/workspace-state.mjs';
+import {ConversationState} from '../src/conversation-state.mjs';
+import {TenantPolicy} from '../src/tenant-policy.mjs';
+import {AssistantPolicy} from '../src/assistant-policy.mjs';
 const owner={userId:'cold-owner',sessionId:'owned-session',instanceId:'historical-instance',generation:4,runtime:'codex',execution:3};
 async function fixture(t) {
  const root=await mkdtemp(join(tmpdir(),'assistant-ledger-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -59,6 +62,78 @@ test('platform inventory combines owned worker, cold ledger, workspace and uncon
  assert.equal(result.uncertainEffects.length,3);
  assert.deepEqual(result.uncertainEffects.map(effect=>effect.userId),['cold-owner','third','fourth']);
  assert(!JSON.stringify(result).includes('private-key'));
+});
+test('platform inventory includes durable cold conversations and only safe in-flight broker identities',async t=>{
+ const {root}=await fixture(t);
+ const platform=new PlatformServer({authStore:{},workerManager:{rootDir:join(root,'workers'),
+  assistantInventory:async()=>({activeExecutions:[],uncertainEffects:[]})},
+  modelBroker:{inferenceInventory:()=>[{userId:'model-owner',instanceId:'user-model-owner',generation:2,credential:'fixture-private'}]}});
+ assert.ok(platform.conversations instanceof ConversationState);
+ const historical=new ConversationState({rootDir:platform.conversations.rootDir,authorize:async()=>{}});
+ const owner={userId:'removed-owner',instanceId:'user-removed-owner',generation:4,workspaceDir:'/tenant/workspace',directory:'/tenant/workspace/project'};
+ const value=await historical.create(owner,{conversationId:'old-conversation',title:'Research',parentId:null,lifecycle:'active'});
+ await historical.prepareTurn(owner,value.id,{expectedRevision:value.revision,requestId:'old-request',payloadHash:'a'.repeat(64),
+  policyRevision:1,runtime:'codex',generation:4,model:'gpt-6.1-sol',identityRevision:'private-profile'});
+ const before=await readFile(join(historical.rootDir,owner.userId,'conversations.json'),'utf8');
+ const result=await platform.assistantExecutionInventory();
+ assert.deepEqual(result.activeExecutions,[{source:'model',userId:'model-owner',instanceId:'user-model-owner',generation:2}]);
+ assert.equal(result.uncertainEffects.length,1);assert.equal(result.uncertainEffects[0].userId,owner.userId);
+ assert.equal(result.uncertainEffects[0].conversationId,value.id);
+ assert(!JSON.stringify(result).includes('fixture-private'));assert(!JSON.stringify(result).includes('payloadHash'));
+ assert.equal(await readFile(join(historical.rootDir,owner.userId,'conversations.json'),'utf8'),before);
+ await chmod(join(historical.rootDir,owner.userId,'conversations.json'),0o644);
+ await assert.rejects(platform.assistantExecutionInventory(),{code:'conversation_storage_unavailable',statusCode:503});
+});
+test('production conversation metadata reauthorizes current generation, workspace and accessible directory',async t=>{
+ const {root}=await fixture(t),owner={userId:'owned',instanceId:'user-owned',generation:4,workspaceDir:'/tenant/workspace',directory:'/tenant/workspace/project'};
+ const policy=new TenantPolicy({accounts:[owner]});
+ const platform=new PlatformServer({authStore:{},workerManager:{rootDir:join(root,'workers')},tenantPolicy:policy});
+ assert.ok(platform.conversations instanceof ConversationState);
+ platform.workspaceManagement={assertAccessible:async(_owner,directory)=>{if(directory.endsWith('/trashed'))throw Object.assign(new Error('trashed'),{code:'project_trashed'});}};
+ const input={conversationId:'owned-conversation',title:'Research',parentId:null,lifecycle:'active'};
+ await platform.conversations.create(owner,input);
+ await assert.rejects(platform.conversations.open({...owner,generation:3},input.conversationId));
+ await assert.rejects(platform.conversations.open({...owner,workspaceDir:'/tenant'},input.conversationId));
+ await assert.rejects(platform.conversations.create({...owner,directory:'/tenant/workspace/trashed'},{...input,conversationId:'trashed'}),{code:'project_trashed'});
+ policy.registerAccount({...owner,generation:5});
+ await assert.rejects(platform.conversations.open(owner,input.conversationId));
+ assert.equal((await platform.conversations.open({...owner,generation:5},input.conversationId)).id,input.conversationId);
+});
+test('only an exact live policy lease classifies a durable conversation receipt as active',{timeout:3000},async t=>{
+ const {root}=await fixture(t);
+ const platform=new PlatformServer({authStore:{},workerManager:{rootDir:join(root,'workers'),
+  assistantInventory:async()=>({activeExecutions:[],uncertainEffects:[]})}});
+ const state=new ConversationState({rootDir:join(root,'conversation-state'),authorize:async()=>{}});
+ platform.conversations=state;
+ const owner={userId:'owned',instanceId:'user-owned',generation:4,workspaceDir:'/tenant/workspace',directory:'/tenant/workspace/project'};
+ const conversation=await state.create(owner,{conversationId:'live-conversation',title:'Research',parentId:null,lifecycle:'active'});
+ const input={expectedRevision:conversation.revision,requestId:'live-request',payloadHash:'a'.repeat(64),policyRevision:1,
+  runtime:'codex',generation:4,model:'gpt-6.1-sol',identityRevision:'profile'};
+ const policyPath=join(root,'policy.json');
+ const policy=new AssistantPolicy({state:{schema:1,activeRuntime:'codex',revision:1,transition:null,receipts:[],executions:{}},
+  persist:value=>writeFile(policyPath,JSON.stringify(value),{mode:0o600}),prepare:async()=>{},revoke:async()=>{},
+  inventory:async()=>({activeExecutions:[],uncertainEffects:[]})});
+ await policy.init();platform.cliRuntime={assistantPolicy:policy};
+ const preview=await state.previewTurn(owner,conversation.id,input);
+ const lease=await policy.admit(preview.receipt.identity,()=>state.prepareTurn(owner,conversation.id,input));
+ assert.equal(typeof policy.activeExecutionSnapshot,'function');
+ const active=await platform.assistantExecutionInventory();
+ assert.equal(active.activeExecutions.length,1);assert.equal(active.uncertainEffects.length,0);
+ const exposed=policy.activeExecutionSnapshot();exposed[0].generation++;
+ assert.equal(policy.activeExecutionSnapshot()[0].generation,4);
+ policy.inventory=()=>platform.assistantExecutionInventory();
+ await assert.rejects(policy.select({runtime:'opencode',expectedRevision:1,operationId:'switch-live'}),{code:'assistant_busy'});
+ const current=await state.open(owner,conversation.id);
+ await state.advanceTurn(owner,current.id,{expectedRevision:current.revision,requestId:input.requestId,state:'unknown'});
+ assert.equal((await platform.assistantExecutionInventory()).uncertainEffects.length,1);
+ await assert.rejects(policy.select({runtime:'opencode',expectedRevision:1,operationId:'switch-unknown'}),{code:'assistant_recovery_required'});
+ await lease.settle({cleanupVerified:false});
+ assert.equal((await platform.assistantExecutionInventory()).uncertainEffects.length,1);
+ const recovered=new AssistantPolicy({state:JSON.parse(await readFile(policyPath,'utf8')),persist:async()=>{},prepare:async()=>{},revoke:async()=>{},
+  inventory:async()=>({activeExecutions:[],uncertainEffects:[]})});
+ await recovered.init();platform.cliRuntime.assistantPolicy=recovered;
+ assert.deepEqual(recovered.activeExecutionSnapshot(),[]);
+ assert.equal((await platform.assistantExecutionInventory()).uncertainEffects.length,1);
 });
 for(const kind of ['symlink-root','symlink-account','symlink-record','hardlink','public-mode','invalid-json','future-schema','foreign-owner','temporary','oversized'])
 test(`assistant ledger inventory fails closed and preserves ${kind} state`,async t=>{

@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { WorkspaceState, workspaceError } from "./workspace-state.mjs";
 import { readAssistantLedgerInventory } from "./assistant-inventory.mjs";
+import { ConversationState } from "./conversation-state.mjs";
 import { WorkspaceAdmission } from "./workspace-admission.mjs";
 import { WorkspaceFiles } from "./workspace-files.mjs";
 import { WorkspaceUploads } from "./workspace-uploads.mjs";
@@ -306,6 +307,7 @@ export class PlatformServer {
     authStore,
     workerManager,
     cliRuntime = null,
+    modelBroker = null,
     webRoot = null,
     secureCookies = false,
     maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
@@ -329,6 +331,15 @@ export class PlatformServer {
     this.authStore = authStore;
     this.workerManager = workerManager;
     this.cliRuntime = cliRuntime;
+    this.modelBroker = modelBroker;
+    this.conversations = new ConversationState({ rootDir: resolve(workerManager.rootDir, "../conversation-state"),
+      authorize: async owner => {
+        if (!tenantPolicy) throw workspaceError("conversation_authority_unavailable", 503);
+        const account = tenantPolicy.account(owner);
+        if (owner.workspaceDir !== account.workspaceDir) throw workspaceError("conversation_owner_mismatch", 403);
+        tenantPolicy.directory(owner, owner.directory);
+        await this.workspaceManagement?.assertAccessible(owner, owner.directory);
+      } });
     this.promptAdmissions=new Map();
     const resolveContext=async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
       if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("managed worker unavailable");
@@ -488,6 +499,22 @@ export class PlatformServer {
     const activeExecutions=[...workers.activeExecutions,...ledgers.activeExecutions];
     const uncertainEffects=[...workers.uncertainEffects,...ledgers.uncertainEffects,
       ...await this.workspaceManagement?.state.pendingRuntimeEffects()??[]];
+    const conversations = await this.conversations.pendingExecutions();
+    const live = this.cliRuntime?.assistantPolicy?.activeExecutionSnapshot() ?? [];
+    const fields = ["userId", "instanceId", "generation", "conversationId", "execution", "requestId", "policyRevision", "runtime"];
+    for (const effect of conversations.uncertainEffects) {
+      const owned = effect.deliveryState !== "unknown" && live.some(identity => fields.every(key => identity[key] === effect[key]));
+      (owned ? activeExecutions : uncertainEffects).push(effect);
+    }
+    if (this.modelBroker) {
+      const operations = this.modelBroker.inferenceInventory();
+      if (!Array.isArray(operations) || operations.length > 10000) throw workspaceError("assistant_inventory_unavailable", 503);
+      for (const operation of operations) {
+        if (![operation?.userId, operation?.instanceId].every(value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)) ||
+            !Number.isSafeInteger(operation.generation) || operation.generation < 1) throw workspaceError("assistant_inventory_unavailable", 503);
+        activeExecutions.push({ source: "model", userId: operation.userId, instanceId: operation.instanceId, generation: operation.generation });
+      }
+    }
     for(const held of this.promptAdmissions.values()) {
       const owner=held.owner,effect={source:"prompt",userId:owner.userId,instanceId:owner.instanceId,
         generation:owner.generation,sessionId:owner.sessionId};

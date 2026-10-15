@@ -139,6 +139,13 @@ export class AssistantPolicy {
         recoveryRequired: !this.#initialized || this.#uncertain || !!pending, operation };
     });
   }
+  // Synchronous committed state avoids reentering the policy queue while its
+  // inventory callback identifies receipts owned by this live process.
+  activeExecutionSnapshot() {
+    if (!this.#initialized || this.#uncertain || this.#state.transition) return [];
+    return Object.entries(this.#state.executions).filter(([id, execution]) => this.#live.has(id) && execution.status === "active")
+      .map(([, execution]) => structuredClone(execution.identity));
+  }
   async #commitTransition() {
     const transition = this.#state.transition, inventory = await this.#inventory();
     if (inventory.uncertainEffects.length) throw error("assistant_recovery_required", 503);
