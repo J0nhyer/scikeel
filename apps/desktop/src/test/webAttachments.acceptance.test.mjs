@@ -52,6 +52,10 @@ test.skipIf(!process.env.OSD_ATTACHMENTS_ACCEPTANCE)("uploads, restores, downloa
       const context=await browser.newContext({viewport:{width,height:900},acceptDownloads:true});
       try{
         const login=await context.request.post(`${origin}/auth/login`,{headers:{accept:"application/json"},data:{username:"fixture",password:"fixture-password"}});expect(login.status()).toBe(200);const {user}=await login.json();await cliRuntime.setUserRuntime(user.id,"codex");
+        const instanceId=`user-${user.id}`;
+        await workerManager.ensureWorker({instanceId,userId:user.id});
+        // The legacy HTTP fixture has no native launcher to assign its generation.
+        workerManager.workers.get(instanceId).generation=1;
         const state=await context.storageState();await context.addCookies(state.cookies.map((cookie)=>({...cookie,domain:"scikeel-attachments.test"})));
         await context.addInitScript((locale)=>localStorage.setItem("ai4s.locale",locale),width===390?"zh-Hans":"en");const page=await context.newPage();const errors=[];page.on("pageerror",(e)=>errors.push(e.message));
         await page.goto(`${httpOrigin}/live`);await page.locator("textarea").first().waitFor({state:"visible"});expect(await page.evaluate(()=>isSecureContext)).toBe(false);
@@ -78,7 +82,7 @@ test.skipIf(!process.env.OSD_ATTACHMENTS_ACCEPTANCE)("uploads, restores, downloa
         await expect.poll(async()=>page.getByRole("button",{name:width===390?"发送":"Send",exact:true}).isEnabled()).toBe(true);
         await page.screenshot({ path: resolve(`../../.deploy/verification/attachments-composer-${width}.png`), fullPage: true });
         await page.locator("textarea").first().fill("Read the attachments and calculate the CSV mean.");
-        await page.route("**/prompt_async*", async (route) => { await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Fixture prompt acceptance failed" }) }); }, { times: 2 });
+        await page.route("**/prompt_async*", async (route) => { await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Fixture prompt acceptance failed" }) }); }, { times: 1 });
         const rejected = page.waitForResponse((r) => r.request().method() === "POST" && /\/prompt_async/.test(r.url()));
         await page.getByRole("button", { name: width === 390 ? "发送" : "Send", exact: true }).click(); expect((await rejected).status()).toBe(400);
         await expect.poll(async () => page.getByRole("button", { name: width === 390 ? "发送" : "Send", exact: true }).isEnabled(), { timeout: 10000 }).toBe(true);
