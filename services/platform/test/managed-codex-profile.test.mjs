@@ -7,6 +7,7 @@ import { stringify } from "smol-toml";
 import { createServer } from "node:http";
 import * as profiles from "../src/cli-profile.mjs";
 import { ModelBroker } from "../src/model-broker.mjs";
+import { AssistantPolicy } from "../src/assistant-policy.mjs";
 import { brokerProfile } from "../src/sandbox-control-plane.mjs";
 import * as controlPlane from "../src/sandbox-control-plane.mjs";
 
@@ -36,6 +37,47 @@ function resolver(input) {
   assert.equal(typeof profiles.ManagedCodexProfile, "function", "The isolated service-profile implementation is not present");
   return new profiles.ManagedCodexProfile({ home: input.home, allowedModels: ["gpt-6.1-sol"], environment: input.environment });
 }
+
+test("native service grants use only the private provider and exact execution, with sanitized tenant configuration",async t=>{
+  const input=await fixture(t);let contacts=0;
+  const upstream=createServer((request,response)=>{
+    contacts++;assert.equal(request.headers.authorization,'Bearer synthetic-service-upstream-key');
+    response.writeHead(200,{'content-type':'application/json'});response.end('{}');
+  });
+  await new Promise(resolve=>upstream.listen(0,'127.0.0.1',resolve));
+  t.after(()=>{upstream.closeAllConnections();return new Promise(resolve=>upstream.close(resolve));});
+  input.config.model_providers.fixture.base_url=`http://127.0.0.1:${upstream.address().port}/v1`;
+  await fs.writeFile(join(input.source,'config.toml'),stringify(input.config));
+  const sourceBytes=await fs.readFile(join(input.source,'config.toml'));
+  const service=resolver(input);await service.initializeFromSource({codexHome:input.source});
+  service.copyForTurn=()=>assert.fail('Managed issuance cannot copy a host profile');
+  const context={userId:'native_owner',instanceId:'user-native_owner',generation:1};
+  const turnIdentity={...context,conversationId:'owned_conversation',execution:1,requestId:'owned_request',policyRevision:1,runtime:'codex'};
+  const policy=new AssistantPolicy({state:{schema:1,activeRuntime:'codex',revision:1,transition:null,receipts:[],executions:{}},
+    persist:async()=>{},prepare:async()=>{},revoke:async()=>{},inventory:async()=>({activeExecutions:[],uncertainEffects:[]})});
+  await policy.init();const lease=await policy.admit(turnIdentity,async()=>({}));
+  const broker=new ModelBroker({providers:{},identify:()=>context,logger:()=>{},assistantPolicy:()=>policy.committedSnapshot(),
+    executionAuthority:identity=>policy.isExecutionCurrent(identity)});
+  t.after(()=>broker.close());await broker.listen({host:'127.0.0.1',port:0});
+  const managed=controlPlane.managedNativeProfileResolver({configuration:{enabledRuntimes:['codex']},serviceProfile:service,broker});
+  const profile=await managed.refresh('codex');assert.equal(typeof managed.issueNativeGrant,'function');
+  const request={context,turnIdentity,model:'gpt-6.1-sol',variant:'high',identityRevision:profile.identityRevision};
+  for(const patch of [{model:'unapproved-model'},{variant:'other'},{identityRevision:'stale'},
+    {turnIdentity:{...turnIdentity,execution:2}}])await assert.rejects(managed.issueNativeGrant({...request,...patch}));
+  const grant=await managed.issueNativeGrant(request),config=grant.configuration;
+  assert.deepEqual(Object.keys(config).sort(),['effort','model','modelToken','modelUrl']);
+  assert.equal(config.model,'gpt-6.1-sol');assert.equal(config.effort,'high');
+  assert.equal(config.modelUrl,'http://172.31.240.1:4792/v1');assert.match(config.modelToken,/^[a-f0-9]{64}$/);
+  for(const forbidden of ['synthetic-service','unused-host-auth','HOST_',input.source,'auth.json','plugins','mcp_servers'])
+    assert(!JSON.stringify(config).includes(forbidden));
+  const call=()=>fetch(`http://127.0.0.1:${broker.server.address().port}/v1/responses`,{method:'POST',headers:{
+    'content-type':'application/json',authorization:`Bearer ${config.modelToken}`},body:JSON.stringify({model:config.model,input:'synthetic'})});
+  const accepted=await call();assert.equal(accepted.status,200);await accepted.text();assert.equal(contacts,1);
+  assert(Number.isSafeInteger(grant.renew()));await lease.settle({cleanupVerified:true});
+  assert.throws(()=>grant.renew());const denied=await call();assert.equal(denied.status,403);await denied.text();
+  await grant.revoke();assert.equal(contacts,1);
+  assert.deepEqual(await fs.readFile(join(input.source,'config.toml')),sourceBytes);
+});
 
 test("managed Codex imports only allowed metadata and keeps credentials in an independent private service home", async t => {
   const input = await fixture(t);

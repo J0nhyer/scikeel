@@ -167,6 +167,9 @@ export class ModelBroker {
       this.#grants.set(key, Object.freeze({ ...grant, inferenceRevoked: true })); revoked.add(key);
     }
     const draining = [...this.#operations].filter(operation => operation.inference && revoked.has(operation.grantKey));
+    await this.#drain(draining);
+  }
+  async #drain(draining) {
     for (const operation of draining) operation.controller.abort(failure("model_grant_revoked"));
     let timer;
     try {
@@ -225,6 +228,11 @@ export class ModelBroker {
     if (typeof token !== "string") return;
     const key = hash(token); this.#grants.delete(key);
     for (const operation of this.#operations) if (operation.grantKey === key) operation.controller.abort(failure("model_grant_revoked"));
+  }
+  async revokeAndDrain(token) {
+    if(typeof token!=='string'||!/^[a-f0-9]{64}$/.test(token))throw failure('model_grant_denied');
+    const key=hash(token),draining=[...this.#operations].filter(operation=>operation.grantKey===key);
+    this.revoke(token);await this.#drain(draining);
   }
   renew(token, context) {
     identity(context);

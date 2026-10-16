@@ -195,6 +195,22 @@ test("explicit bridge-only grants cannot infer or create new runtime effects eve
   assert.equal(contacts, 0); assert.equal(writes, 0);
 });
 
+test("revoking one native job grant waits for its real handler while preserving another grant",async t=>{
+  let release,entered;const gate=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
+  const f=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end('{}');},{timeoutMs:50});
+  assert.equal(typeof f.broker.revokeAndDrain,'function');
+  const other=f.broker.issue({...context,provider:'fixture',models:['approved'],routes:['/v1/responses'],expiresAt:Date.now()+60000});
+  f.broker.collaborationHandler=async()=>{entered();await gate;return {completed:true};};
+  const posting=f.fetch({action:'delivery',sessionId:'owned',execution:1},{path:'/collaboration'});await started;
+  let drained=false;const draining=f.broker.revokeAndDrain(f.token).then(()=>drained=true);
+  try {
+    assert.notEqual((await posting).status,200);await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(drained,false);assert.equal(f.broker.inferenceInventory().length,1);
+    assert.equal((await f.fetch(undefined,{grant:other})).status,200);
+  }finally{release();await draining;}
+  assert.equal(f.broker.inferenceInventory().length,0);
+});
+
 test("an HTTP handler timeout is not evidence that its already-started runtime effect has drained", async t => {
   let release, entered;
   const gate = new Promise(resolve => { release = resolve; });

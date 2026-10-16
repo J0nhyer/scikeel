@@ -106,10 +106,29 @@ export function managedNativeProfileResolver({ configuration, serviceProfile, br
       return profile;
     } catch (error) { revoke(); throw error; }
   };
-  return { refresh(runtime) {
-    const next = pending.catch(() => {}).then(() => read(runtime));
-    pending = next; return next;
-  } };
+  const serial=run=>{const next=pending.catch(()=>{}).then(run);pending=next;return next;};
+  return {
+    refresh:runtime=>serial(()=>read(runtime)),
+    issueNativeGrant(input) {
+      const captured=structuredClone(input);
+      return serial(async()=>{
+        const denied=()=>Object.assign(new Error('native_model_grant_denied'),{code:'native_model_grant_denied',statusCode:503});
+        if(!captured||Object.keys(captured).some(key=>!['context','turnIdentity','model','variant','identityRevision'].includes(key))||
+            !captured.context||captured.turnIdentity?.runtime!=='codex')throw denied();
+        const profile=await read('codex'),selected=profile.models.find(model=>model.id===captured.model);
+        if(profile.status!=='ready'||profile.identityRevision!==captured.identityRevision||!selected||
+            captured.variant!=null&&(typeof captured.variant!=='string'||!Object.hasOwn(selected.variants,captured.variant)))throw denied();
+        const context=Object.fromEntries(['userId','instanceId','generation'].map(field=>[field,captured.context[field]]));
+        const token=broker.issue({...context,runtime:'codex',policyRevision:captured.turnIdentity.policyRevision,
+          turnIdentity:captured.turnIdentity,provider:'scikeel-codex',profileRevision:profile.identityRevision,
+          models:[selected.id],routes:['/v1/responses'],expiresAt:Date.now()+900000});
+        const configuration=Object.freeze({model:selected.id,modelToken:token,modelUrl:'http://172.31.240.1:4792/v1',
+          ...(captured.variant!=null?{effort:selected.variants[captured.variant].reasoningEffort}:{})});
+        return Object.freeze({identityRevision:profile.identityRevision,configuration,
+          renew:()=>broker.renew(token,context),revoke:()=>broker.revokeAndDrain(token)});
+      });
+    },
+  };
 }
 export async function createSandboxControlPlane({ configuration, dataDir, config }) {
   config = validateBrokerConfiguration(await resolveOpenCodeFreeCatalog(validateBrokerConfiguration(config ?? await readBrokerConfiguration())));
