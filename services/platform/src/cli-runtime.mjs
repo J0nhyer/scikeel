@@ -793,6 +793,17 @@ export class CliRuntimeManager {
         const capturedAcceptance = structuredClone(nativeAcceptance);
         return serial(() => transition("accepted", { nativeAcceptance: capturedAcceptance }));
       },
+      acceptedNative: nativeAcceptance => {
+        const capturedAcceptance=structuredClone(nativeAcceptance);
+        return serial(async()=>{
+          if(this.closed)throw issue("assistant_closed","Assistant authority is closed",503);
+          const current=await conversations.open(capturedOwner,conversationId),receipt=current.turns[capturedInput.requestId];
+          if(!receipt || JSON.stringify(receipt.identity)!==JSON.stringify(lease.reservation.identity) ||
+              !this.assistantPolicy.isExecutionCurrent(receipt.identity))throw issue("assistant_identity_conflict","Native admission changed",503);
+          return conversations.acceptNativeTurn(capturedOwner,conversationId,{requestId:capturedInput.requestId,
+            expectedRevision:current.revision,nativeAcceptance:capturedAcceptance});
+        });
+      },
       settle: ({ cleanupVerified } = {}) => serial(async () => {
         await transition(cleanupVerified === true ? "settled" : "unknown", cleanupVerified === true ? { cleanupVerified: true } : {});
         await lease.settle({ cleanupVerified: cleanupVerified === true });
@@ -1303,6 +1314,7 @@ export class CliRuntimeManager {
       const result=await this.sandboxJobs.run({userId,session,workspaceContext:turn.workspaceContext,model:chosen,variant:chosenVariant,text:`${stale?handoverText(session.history):""}${text}`,
         turnIdentity:turn.executionAdmission?.identity,identityRevision:profile.identityRevision,
         onCleanup:async({cleanupVerified})=>{turn.nativeCleanupVerified=cleanupVerified===true;},
+        onAccepted:async native=>{if(turn.executionAdmission)await turn.executionAdmission.acceptedNative({runtime:session.runtime,...native});},
         images:(attachmentInput?.images??[]).map(image=>image.url),nativeSessionId:stale?undefined:session.nativeSessionId,signal:controller.signal,
         emit:async event=>{
           if(event.type==="text")this.appendAssistantText(userId,session,assistant,event.text);

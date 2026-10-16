@@ -400,6 +400,28 @@ export class ConversationState {
    value.turns[input.requestId]=turn;value.revision++;await this.#save(data,owner);return structuredClone(turn);
   });
  }
+ // Called only with the runner's actual start acknowledgement. The public
+ // submission response never supplies native acceptance or creates a binding.
+ async acceptNativeTurn(owner,id,input) {
+  owner=await this.#owner(owner);
+  if(!exact(input,['requestId','expectedRevision','nativeAcceptance']) || !name(input.requestId) ||
+      !integer(input.expectedRevision) || !acceptance(input.nativeAcceptance))throw invalid();
+  return this.#serialized(owner.userId,async()=>{
+   const data=await this.#load(owner.userId),value=await this.#owned(data,owner,id),turn=value.turns[input.requestId];
+   if(value.revision!==input.expectedRevision)throw fail('conversation_revision_conflict');
+   if(!turn || turn.state!=='submitted' || input.nativeAcceptance.runtime!==turn.identity.runtime)throw fail('invalid_conversation_transition');
+   const native=bindingInput({runtime:turn.identity.runtime,nativeSessionId:input.nativeAcceptance.nativeSessionId,
+    identityRevision:turn.identityRevision,representedSequence:0});
+   let binding=this.#findBinding(data,id,native);
+   if(!binding){
+    if(value.bindings.length>=64)throw fail('conversation_metadata_full',507);
+    binding={...native,id:bindingId(id,native),importCursor:null};value.bindings.push(binding);
+   }
+   value.currentBindingId=binding.id;
+   turn.state='accepted';turn.nativeAcceptance=structuredClone(input.nativeAcceptance);
+   value.revision++;await this.#save(data,owner);return structuredClone(turn);
+  });
+ }
  async advanceTurn(owner,id,input) {
   owner=await this.#owner(owner);
   if(!record(input) || Object.keys(input).some(key=>!['requestId','expectedRevision','state','cleanupVerified','nativeAcceptance'].includes(key)) ||

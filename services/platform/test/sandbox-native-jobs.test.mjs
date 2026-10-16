@@ -63,8 +63,10 @@ test("actual adapter, runner and platform transport preserve one native turn thr
   const transport=new SandboxNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),delayMs:1,
     workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release:()=>released++})},
     files:{job:async(owner,input,options)=>{assert.equal(owner.generation,1);operations.push(input.operation);return jobs.call(input,options);}}});
-  const result=await transport.run({userId:"a",session,model:"approved",text:"Research",emit:async event=>events.push(event)});
+  const result=await transport.run({userId:"a",session,model:"approved",text:"Research",emit:async event=>events.push(event),
+    onAccepted:async actual=>{assert.deepEqual(actual,acceptance);assert(!operations.includes('events'));operations.push('accepted');}});
   assert.deepEqual(result,acceptance);assert.equal(operations.filter(x=>x==="approve").length,1);
+  assert(operations.indexOf('accepted')>operations.indexOf('start'));assert(operations.indexOf('accepted')<operations.indexOf('approve'));
   assert.equal(events.find(x=>x.type==="text").text,"Actual fixture result");
   assert(events.every(event=>event.nativeSessionId===acceptance.nativeSessionId&&event.turnId===acceptance.turnId));
   assert.equal(released,1);assert.equal((await jobs.call({operation:"inspect"})).busy,false);
@@ -86,6 +88,17 @@ test("native transport rejects changed acceptance or event scopes before automat
     await assert.rejects(transport.run({userId:"a",session,model:"approved",text:"Research",emit:async()=>{}}),/native/);
     assert(!operations.includes("approve"),fault);assert.equal(operations.at(-1),"abort");assert.equal(released,1);
   }
+});
+test('failed native acceptance persistence aborts the job without polling or approving any tool',async()=>{
+ const operations=[];let cleanup;
+ const transport=new SandboxNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),delayMs:1,
+  workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release:()=>{}})},
+  files:{job:async(_context,input)=>{operations.push(input.operation);
+   if(input.operation==='start')return {jobId:'b'.repeat(64),...acceptance};
+   if(input.operation==='abort')return {stopped:true};throw Error('No event poll or approval after failed acknowledgement');}}});
+ await assert.rejects(transport.run({userId:'a',session,model:'approved',text:'Research',emit:async()=>{},
+  onAccepted:async()=>{throw Error('Native binding persistence failed');},onCleanup:async value=>{cleanup=value;}}),/persistence failed/);
+ assert.deepEqual(operations,['start','abort']);assert.deepEqual(cleanup,{cleanupVerified:true});
 });
 test("native inventory uses the existing read-only runner snapshot without starting a worker or turn",async()=>{
  const policy=new TenantPolicy({accounts:[context]});let calls=0;

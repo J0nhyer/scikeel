@@ -212,6 +212,23 @@ test('a generation changed during a queued persistence preparation cannot publis
  assert.equal((await state.open({...owner,generation},first.id)).bindings.length,1);
 });
 const turn={requestId:'request-1',payloadHash:'b'.repeat(64),policyRevision:1,runtime:'opencode',generation:1,model:'approved',identityRevision:'profile-1'};
+test('trusted native acceptance atomically binds the actual session to its submitted receipt and preserves history',async t=>{
+ const {state,rootDir,authorize}=await fixture(t);
+ const first=await state.create(owner,{conversationId:'new-native',title:'Research',parentId:null,lifecycle:'active'});
+ await state.prepareTurn(owner,first.id,{...turn,runtime:'codex',expectedRevision:1});
+ const nativeAcceptance={runtime:'codex',nativeSessionId:'actual-thread',turnId:'actual-turn'};
+ await assert.rejects(state.acceptNativeTurn(owner,first.id,{requestId:turn.requestId,expectedRevision:2,nativeAcceptance}));
+ await state.advanceTurn(owner,first.id,{requestId:turn.requestId,expectedRevision:2,state:'submitted'});
+ await assert.rejects(state.acceptNativeTurn(owner,first.id,{requestId:turn.requestId,expectedRevision:3,nativeAcceptance:{...nativeAcceptance,runtime:'claude'}}));
+ const accepted=await state.acceptNativeTurn(owner,first.id,{requestId:turn.requestId,expectedRevision:3,nativeAcceptance});
+ assert.equal(accepted.state,'accepted');assert.deepEqual(accepted.nativeAcceptance,nativeAcceptance);
+ const restored=await new ConversationState({rootDir,authorize}).open(owner,first.id);
+ assert.equal(restored.bindings.length,1);assert.equal(restored.bindings[0].nativeSessionId,'actual-thread');
+ assert.equal(restored.bindings[0].identityRevision,'profile-1');assert.equal(restored.bindings[0].representedSequence,0);
+ assert.equal(restored.currentBindingId,restored.bindings[0].id);assert.equal(restored.sequence,0);
+ await assert.rejects(state.acceptNativeTurn(owner,first.id,{requestId:turn.requestId,expectedRevision:4,
+  nativeAcceptance:{...nativeAcceptance,nativeSessionId:'changed-thread'}}));
+});
 test('a durable conversation execution counter and receipt survive restart without inferring completion from startup',async t=>{
  const {state,rootDir,authorize}=await fixture(t);const first=await state.importNative(owner,imported);
  assert.equal(typeof state.prepareTurn,'function');

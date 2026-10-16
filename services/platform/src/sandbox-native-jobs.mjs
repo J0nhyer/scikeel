@@ -27,7 +27,7 @@ export class SandboxNativeJobs {
     this.tenantPolicy.registerSession(context,{id:session.id,directory:session.directory});
     return {...context,project};
   }
-  async run({userId,session,model,text,images=[],nativeSessionId,emit,signal,variant,workspaceContext,turnIdentity,identityRevision,onCleanup}) {
+  async run({userId,session,model,text,images=[],nativeSessionId,emit,signal,variant,workspaceContext,turnIdentity,identityRevision,onCleanup,onAccepted}) {
     if(session.runtime!=="codex"||typeof emit!=="function"||!this.issueNativeGrant||!turnIdentity||turnIdentity.runtime!=='codex'||
         turnIdentity.userId!==userId||turnIdentity.conversationId!==session.id||typeof identityRevision!=='string')
       throw new Error("sandbox native execution authority unavailable");
@@ -64,6 +64,9 @@ export class SandboxNativeJobs {
         throw new Error("invalid native runner reply");
       this.tenantPolicy.account(context);
       Object.assign(reservation,{context,jobId:started.jobId});let after=0;
+      if(signal.aborted)throw new Error("native turn cancelled");
+      await onAccepted?.({nativeSessionId:started.nativeSessionId,turnId:started.turnId});
+      if(signal.aborted)throw new Error("native turn cancelled");
       for(;;) {
         if(signal?.aborted)throw new Error("native turn cancelled");
         if(Date.now()-renewedAt>=300000){grant.renew();renewedAt=Date.now();}

@@ -56,6 +56,8 @@ test('an admitted native turn carries its canonical identity and settles only af
    assert.deepEqual(input.turnIdentity,admitted.identity);assert.equal(input.identityRevision,'owned-profile');
    const saved=await conversations.open(owner,f.session.id);assert.equal(saved.turns['http-send'].state,'submitted');
    assert.equal(f.manager.assistantPolicy.isExecutionCurrent(input.turnIdentity),true);
+   await input.onAccepted({nativeSessionId:'actual-native',turnId:'actual-turn'});
+   assert.equal((await conversations.open(owner,f.session.id)).turns['http-send'].state,'accepted');
    await input.emit({type:'text',text:'Result'});await input.onCleanup({cleanupVerified:verified});
    return {nativeSessionId:'actual-native',turnId:'actual-turn'};
   }});
