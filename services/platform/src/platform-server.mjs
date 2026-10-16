@@ -375,7 +375,7 @@ export class PlatformServer {
     this.collaboration = new CollaborationStore({research:this.researchTasks,readLegacy:(o)=>this.researchTasks.get(o.userId,o.sessionId),rootDir:resolve(workerManager.rootDir,"../collaboration"),
       retainUnverifiedExecution:typeof workerManager.assistantInventory==="function",
       applyPermissions:async(owner,mode)=>{
-        if(owner.runtime !== "opencode")return;
+        if(owner.runtime !== "opencode" && !this.cliRuntime?.isManaged(owner.userId))return;
         await this.#workerResearchRequest(owner, `/session/${encodeURIComponent(owner.sessionId)}`, "PATCH", {permission:collaborationPermissions(mode)});
       }, cancel:(owner)=>this.#cancelResearch(owner), running:(owner)=>this.#admissionRunning("collaboration",owner)});
     this.attachments = new AttachmentStore({ rootDir: resolve(workerManager.rootDir, "../attachments"),
@@ -1259,6 +1259,20 @@ export class PlatformServer {
     const worker = this.workerManager.getWorker(workerIdForUser(task.userId));
     if (task.generation !== undefined && (task.instanceId !== worker?.id || task.generation !== worker?.generation || worker?.status !== "running"))
       throw recoveryError("stale_workspace_context");
+    if (this.cliRuntime?.isManaged(task.userId)) {
+      if (!worker || worker.userId !== task.userId || worker.status !== "running") throw recoveryError("stale_workspace_context");
+      const context={userId:task.userId,instanceId:worker.id,generation:worker.generation};
+      this.tenantPolicy?.directory(context,task.directory);
+      await this.workspaceManagement?.assertAccessible(context,task.directory);
+      if(!["GET","HEAD"].includes(method) && !stopping){
+        await this.#assertRuntimeMutation(context);await this.workspaceFiles?.confirmPending(context);
+      }
+      const run=async completed=>{
+        const result=await this.cliRuntime.researchRequest({userId:task.userId,directory:task.directory,path,method,body});
+        completed?.();return result;
+      };
+      return this.workspaceManagement && !["GET","HEAD"].includes(method) && !stopping ? this.#runtimeWrite(context,run):run();
+    }
     const access = this.workerManager.getWorkerAccess(workerIdForUser(task.userId));
     if (!access) throw new Error("research worker is unavailable");
     await this.workspaceManagement?.assertAccessible({userId:task.userId,instanceId:worker.id,generation:worker.generation},task.directory);
@@ -1286,9 +1300,17 @@ export class PlatformServer {
       const { session } = await this.cliRuntime.getOwnedSession(user.id, sessionId);
       if(this.tenantPolicy) {
         const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
-        this.tenantPolicy.directory(context,session.directory);
-        await this.workspaceManagement?.assertAccessible(context,session.directory);
-        this.tenantPolicy.registerSession(context,{id:sessionId,directory:session.directory});
+        const ancestry=[],seen=new Set();let current=session;
+        while(current){
+          if(seen.has(current.id)||ancestry.length>=20)throw recoveryError("session_context_unavailable");
+          seen.add(current.id);
+          this.tenantPolicy.directory(context,current.directory);
+          await this.workspaceManagement?.assertAccessible(context,current.directory);
+          ancestry.push({id:current.id,parentID:current.parentId ?? null,directory:current.directory});
+          current=current.parentId?(await this.cliRuntime.getOwnedSession(user.id,current.parentId)).session:null;
+        }
+        // Validate the entire owned chain before granting authority for a child.
+        this.tenantPolicy.registerSessionList(context,ancestry);
       }
       return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime };
     }
@@ -1521,8 +1543,9 @@ export class PlatformServer {
     if(body.action==="capability"&&["starting","running"].includes(worker.status)){this.collaborationCapabilities.set(context.userId,context.generation);return {ready:true};}
     if(worker.status!=="running")throw new Error("Collaboration worker unavailable");
     const access=this.workerManager.getWorkerAccess(context.instanceId);
-    // Recover roots and descendants through the same current-worker authority.
-    if(this.tenantPolicy)await this.sessionAuthority.ensure(context,body.sessionId);
+    // Native roots and descendants are owned by the native session store; the
+    // OpenCode authority remains responsible for OpenCode sessions only.
+    if(this.tenantPolicy && !this.cliRuntime?.isManaged(context.userId))await this.sessionAuthority.ensure(context,body.sessionId);
     const owner=await this.#collaborationOwner({id:context.userId},body.sessionId,access,worker);
     if(body.action==="checkpoint")return {state:await this.collaboration.checkpoint(owner,body)};
     if(body.action==="state")return {state:await this.collaboration.get(owner)};

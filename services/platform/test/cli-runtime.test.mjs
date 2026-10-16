@@ -848,3 +848,32 @@ test('native acceptance cannot be inferred from HTTP submission and cleanup tran
   await assert.rejects(admitted.submitted(),{code:'invalid_conversation_transition'});
   assert.deepEqual(JSON.parse(await readFile(manager.configPath,'utf8')).assistantPolicy.executions,{});await manager.close();
 });
+
+test('native research reads and permission patches use owned native state and preserve explicit denies',async()=>{
+  const {root,manager,options}=await makeManager('codex');await manager.init();await selectRuntime(manager,'codex');
+  const directory=join(root,'workspace');await mkdir(directory);
+  const session=await manager.createSession({userId:'research-user',workspaceDir:directory});
+  const child=await manager.createSession({userId:'research-user',workspaceDir:directory});
+  child.parentId=session.id;session.nativeSessionId='private-native-id';session.permission=[{permission:'bash',pattern:'*',action:'deny'}];
+  session.history=[{info:{id:'message-owned',role:'user'},parts:[{type:'text',text:'Owned history'}]}];
+  const call=(path,method='GET',body)=>manager.researchRequest({userId:'research-user',directory,path,method,body});
+  const view=await call(`/session/${session.id}`);assert.equal(view.id,session.id);assert.equal(view.nativeSessionId,undefined);
+  const messages=await call(`/session/${session.id}/message`);messages[0].parts[0].text='Mutated';assert.equal(session.history[0].parts[0].text,'Owned history');
+  assert.equal((await call(`/session/${session.id}/children`))[0].id,child.id);
+  const patched=await call(`/session/${session.id}`,'PATCH',{permission:[{permission:'*',pattern:'*',action:'allow'}]});
+  assert.deepEqual(patched.permission,[{permission:'*',pattern:'*',action:'allow'},{permission:'bash',pattern:'*',action:'deny'}]);
+  const policy=[{permission:'*',pattern:'*',action:'allow'},{permission:'external_directory',pattern:'*',action:'deny'},
+    {permission:'external_directory',pattern:'/opt/scikeel/tools/resources/skills-core/*',action:'allow'}];
+  await call(`/session/${session.id}`,'PATCH',{permission:policy});
+  const repeated=await call(`/session/${session.id}`,'PATCH',{permission:policy});
+  assert.equal(repeated.permission.filter(rule=>rule.permission==='external_directory').at(-1).action,'allow');
+  assert.deepEqual(session.permission,[{permission:'bash',pattern:'*',action:'deny'}]);
+  await assert.rejects(call(`/session/${session.id}`,'PATCH',{permission:[{permission:'bash',pattern:'*',action:'invalid'}]}));
+  await assert.rejects(call(`/session/${session.id}`,'PATCH',{directory:'/tmp'}));
+  await assert.rejects(manager.researchRequest({userId:'another-user',directory,path:`/session/${session.id}`}));
+  await assert.rejects(manager.researchRequest({userId:'research-user',directory:join(directory,'other'),path:`/session/${session.id}`}));
+  await assert.rejects(call(`/session/${session.id}/prompt_async`,'POST',{}));
+  await manager.close();const restarted=new CliRuntimeManager(options);await restarted.init();
+  assert.deepEqual((await restarted.researchRequest({userId:'research-user',directory,path:`/session/${session.id}`})).permission,repeated.permission);
+  await restarted.close();
+});

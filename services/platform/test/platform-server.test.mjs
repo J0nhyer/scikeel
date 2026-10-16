@@ -1394,6 +1394,43 @@ test('native HTTP prompt obtains a canonical policy lease before research and at
  assert.equal(scope.generation,1);assert.equal(scope.runtime,'codex');assert.equal(starts,0);
 });
 
+test('native collaboration resolves owned child ancestry without querying the OpenCode worker',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'scikeel-native-collaboration-'));
+ const cliRuntime=new CliRuntimeManager({rootDir:join(root,'native'),sandboxJobs:{run:async()=>{throw Error('Unexpected inference');}},
+  profileResolver:{refresh:async runtime=>({runtime,enabledByProfile:runtime==='codex',models:runtime==='codex'?[{id:'approved',variants:{}}]:[],
+   defaultModel:runtime==='codex'?'approved':null,identityRevision:'service-profile',catalogRevision:'catalog',status:'ready',files:{}})},
+  assistantAuthority:{prepare:async()=>{},revoke:async()=>{},inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}});
+ await cliRuntime.init();await cliRuntime.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'native-collaboration'});
+ const policy=new TenantPolicy(),f=await makeFixture({root,tenantPolicy:policy,cliRuntime}),client=makeClient(f.base);
+ const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+ const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+ f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+ const context={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir};policy.registerAccount(context);
+ const parent=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir});
+ const child=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir});child.parentId=parent.id;
+ const nativeFetch=globalThis.fetch,access=f.manager.getWorkerAccess(instanceId);let workerReads=0;
+ globalThis.fetch=async(input,init)=>{if(new URL(String(input)).origin===new URL(access.url).origin){workerReads++;throw Error('Native collaboration reached OpenCode');}return nativeFetch(input,init);};
+ t.after(()=>{globalThis.fetch=nativeFetch;});
+ const result=await f.server.runtimeCollaboration(context,{action:'state',sessionId:child.id});
+ assert.equal(result.state.sessionId,parent.id);assert.equal(result.state.runtime,'codex');assert.equal(workerReads,0);
+ const owner={...context,sessionId:parent.id,directory:worker.workspaceDir,runtime:'codex'};
+ parent.permission=[{permission:'bash',pattern:'*',action:'deny'}];
+ const started=await f.server.collaboration.begin(owner,result.state.revision);
+ assert.equal(started.phase,'running');assert.ok(parent.permission.some(rule=>rule.permission==='bash'&&rule.action==='deny'));
+ const effective=await cliRuntime.researchRequest({userId:user.id,directory:worker.workspaceDir,path:`/session/${parent.id}`});
+ assert.ok(effective.permission.some(rule=>rule.permission==='*'&&rule.action==='allow'));
+ await assert.rejects(f.server.runtimeCollaboration({...context,generation:2},{action:'state',sessionId:child.id}));
+ await assert.rejects(f.server.runtimeCollaboration(context,{action:'state',sessionId:'foreign-session'}));assert.equal(workerReads,0);
+ const unregistered=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir});
+ unregistered.parentId=unregistered.id;
+ await assert.rejects(f.server.runtimeCollaboration(context,{action:'state',sessionId:unregistered.id}));
+ assert.throws(()=>policy.session(context,unregistered.id));
+ const foreign=await cliRuntime.createSession({userId:'foreign-user',workspaceDir:worker.workspaceDir});
+ unregistered.parentId=foreign.id;
+ await assert.rejects(f.server.runtimeCollaboration(context,{action:'state',sessionId:unregistered.id}));
+ assert.throws(()=>policy.session(context,unregistered.id));assert.equal(workerReads,0);
+});
+
 test('managed runtime mutation policy admission precedes the workspace queue and Admin selection bypasses its own tenant queue',async()=>{
  const policy=new TenantPolicy(),f=await makeFixture({tenantPolicy:policy}),client=makeClient(f.base);
  const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
@@ -1575,6 +1612,14 @@ async function managedPromptFixture(t,{workspaceFiles=null,enableWorkspaceManage
   return {...f,policy,client,user,context,post,state,history,records,monitor,forwarded:()=>forwarded,setBehavior:value=>{behavior=value;}};
 }
 function textPrompt(turnId,revision){return {parts:[{type:"text",text:"Reply once"}],attachmentTurn:{turnId,attachmentIds:[]},collaborationRevision:revision};}
+test('OpenCode prompt keeps its worker path when native admission and runner are present',async t=>{
+  const f=await managedPromptFixture(t);let nativeCalls=0;
+  const forbidden=()=>{nativeCalls++;throw Error('OpenCode entered native execution');};
+  f.server.cliRuntime={isManaged:()=>false,sandboxJobs:{run:forbidden},admitHttpPrompt:forbidden,handle:forbidden,
+    assertAssistantRevision:async()=>({revision:1}),admitWorkspace:async(_input,run)=>({completion:run()})};
+  const response=await f.post('/session/owned/prompt_async',textPrompt('turn_oc_isolated',(await f.state()).revision));
+  assert.equal(response.status,202,await response.text());assert.equal(f.forwarded(),1);assert.equal(nativeCalls,0);
+});
 test("managed preparation rejection releases both locks before immediate explicit retry",async t=>{
   const f=await managedPromptFixture(t);const owner=await f.state();
   await f.server.researchTasks.create(owner,{objective:"Reply",goal:"thesis",mode:"delegated",inputs:[],deliverables:["report.md"],pageId:"page"});

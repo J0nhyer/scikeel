@@ -1120,6 +1120,49 @@ export class CliRuntimeManager {
     return { state, session };
   }
 
+  // Internal research operations share native session storage. This is not an
+  // inference endpoint and cannot dispatch a prompt or select another runtime.
+  async researchRequest({ userId, directory, path, method = "GET", body }) {
+    if (!this.isManaged(userId) || typeof directory !== "string" || resolve(directory) !== directory)
+      throw issue("invalid_research_context", "Native research context is unavailable", 403);
+    const match = typeof path === "string" && path.match(/^\/session\/([A-Za-z0-9_-]+)(?:\/(message|children|abort))?$/);
+    if (!match) throw issue("invalid_research_operation", "Unsupported native research operation", 400);
+    const sessionId = match[1], operation = match[2] ?? "session";
+    if (!(method === "GET" && ["session", "message", "children"].includes(operation) ||
+      method === "PATCH" && operation === "session" || method === "POST" && operation === "abort"))
+      throw issue("invalid_research_operation", "Unsupported native research operation", 400);
+    const input = body === undefined ? undefined : structuredClone(body);
+    const { state, session } = await this.getOwnedSession(userId, sessionId);
+    if (session.directory !== directory)
+      throw issue("invalid_research_context", "Native research directory changed", 403);
+    if (method === "PATCH") {
+      const validRules = rules => Array.isArray(rules) && rules.length <= 256 && rules.every(rule =>
+        rule && typeof rule === "object" && Object.keys(rule).sort().join(",") === "action,pattern,permission" &&
+        ["allow", "ask", "deny"].includes(rule.action) && [rule.permission, rule.pattern].every(value =>
+          typeof value === "string" && value.length > 0 && value.length <= 4096 && !value.includes("\0")));
+      if (!input || Object.keys(input).join(",") !== "permission" || !validRules(input.permission) || !validRules(session.permission ?? []))
+        throw issue("invalid_research_permissions", "Invalid native research permissions", 400);
+      // Keep platform rules separate from explicit session rules. Applying the
+      // next execution's policy must neither erase nor reclassify explicit denies.
+      if (input.permission.length + (session.permission ?? []).length > 256)
+        throw issue("invalid_research_permissions", "Too many native research permissions", 400);
+      session.researchPermission = input.permission;
+      session.updatedAt = now();
+      await this.persistUser(state);
+    }
+    if (operation === "abort") { await this.abortSession(userId, sessionId); return true; }
+    if (operation === "message") return structuredClone(session.history);
+    if (operation === "children") {
+      const children = [];
+      for (const child of state.sessions.values()) if (child.parentId === sessionId && child.runtime === session.runtime) {
+        await this.workspaceAccess?.(userId, child.directory);
+        children.push(publicSession(child));
+      }
+      return children;
+    }
+    return { ...publicSession(session), permission: structuredClone([...(session.researchPermission ?? []), ...(session.permission ?? [])]) };
+  }
+
   async listSessions({ userId, search = "", limit = 200 }) {
     const state = await this.ensureUser(userId);
     const runtime = this.runtimeForUser(userId);

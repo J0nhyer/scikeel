@@ -304,6 +304,8 @@ Approved convergence, October 16: keep static filesystem, configuration and netw
 
 ### Task 9: Connect Native Research and Network Tools to Existing Services
 
+Native-only routing checkpoint, October 16: a black-box native collaboration regression reproduced `session_context_unavailable` because the OpenCode SessionAuthority was still used for Codex. Native research now validates complete owned ancestry before tenant registration and uses native session storage for bounded internal reads, permission updates and abort requests. Explicit session rules remain separate from platform-generated collaboration rules and survive restart; a second RED caught their previous mixing. Foreign, cyclic and wrong-directory ancestry and unsupported inference operations are rejected. The existing OpenCode worker HTTP branch is unchanged, and a black-box prompt test proves that having a native runner/admission available does not route OpenCode through either. Final guarded runs passed 78 targeted platform/sandbox tests and 73 native persistence/permission/collaboration tests, with zero skips, after maintenance restored the unchanged production service. This does not wire native tool schemas or the actual effect guard, begin shared collaboration on native HTTP sends, prove native delivery/network effects, or complete Task 9 or deployment.
+
 **Create:** `runtime/sandbox/native-tools.mjs`, `services/platform/test/native-tools.test.mjs`.
 **Modify:** `runtime/sandbox/{cli-jobs,runner,collaboration}.mjs`, `services/platform/src/{sandbox-native-jobs,platform-server,network-operations,model-broker}.mjs`, relevant fixtures/tests.
 
