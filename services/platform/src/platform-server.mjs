@@ -955,7 +955,7 @@ export class PlatformServer {
       return;
     }
     let gatewayBody;
-    if (this.tenantPolicy) {
+    if (this.tenantPolicy && (request.url ?? "").startsWith("/v1/")) {
       const operation = classifyGatewayRoute(request.method, (request.url ?? "").split("?")[0]);
       if (!operation) { sendJson(response, 404, { error: "not found" }); return; }
       try {
@@ -1014,11 +1014,31 @@ export class PlatformServer {
     let promptBody;
     let serializedBody=gatewayBody===undefined ? undefined : JSON.stringify(gatewayBody);
     let preparedAttachments;
+    let executionAdmission;
     if (promptMatch && request.method === "POST") {
       const sessionId = decodeURIComponent(promptMatch[1]);
       if (promptMatch[2] === "prompt_async") {
         promptBody = await this.#readPayload(request, response);
         if (!promptBody) return;
+        if(this.tenantPolicy && this.cliRuntime?.sandboxJobs) {
+          try {
+            const operation=classifyRuntimeRoute(request.method,parsed.pathname),checked={...promptBody};
+            delete checked.attachmentTurn;delete checked.collaborationRevision;
+            const input=validateRuntimeInput(operation,{query:parsed.searchParams,body:checked,headers:request.headers});
+            const owner=await this.#researchOwner(user,sessionId,access,worker);
+            if(input.directory!==undefined&&input.directory!==owner.directory)throw workspaceError("conversation_owner_mismatch",403);
+            if(!this.conversationRouter)throw workspaceError("conversation_authority_unavailable",503);
+            await this.conversationRouter.index(owner,sessionId);
+            executionAdmission=await this.cliRuntime.admitHttpPrompt({conversations:this.conversations,owner,sessionId,
+              body:promptBody,requestId:request.headers["x-scikeel-request-id"]??promptBody.attachmentTurn?.turnId,
+              policyRevision:request.headers["x-scikeel-assistant-revision"]});
+            if(executionAdmission.replay){sendJson(response,202,{receipt:{requestId:executionAdmission.identity.requestId,state:executionAdmission.receipt.state}});return;}
+            // A rejected preparation has dispatched no model operation. Actual
+            // native dispatch and cleanup are owned by the admitted turn below.
+            response.once("finish",()=>{if(response.statusCode>=400&&!executionAdmission.dispatched)
+              void executionAdmission.settle({cleanupVerified:true}).catch(()=>{});});
+          }catch(error){sendJson(response,error.statusCode??error.status??503,{error:error.message,code:error.code});return;}
+        }
       }
       const task = await this.researchTasks.get(user.id, sessionId);
       if (!task) {
@@ -1097,6 +1117,7 @@ export class PlatformServer {
         workspaceDir: worker.workspaceDir,
         promptBody,
         attachmentInput: preparedAttachments,
+        executionAdmission,
         workspaceContext: this.tenantPolicy ? { instanceId: worker.id, generation: worker.generation } : undefined,
       });
       if (handled) return;

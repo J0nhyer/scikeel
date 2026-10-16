@@ -45,12 +45,13 @@ test("native transport issues an isolated grant before dispatch and holds cleanu
     files:{job:async(_owner,input)=>{operations.push(input.operation);
       if(input.operation==='start'){assert.deepEqual(input.nativeProfile,nativeProfile);assert.deepEqual(input.turnIdentity,turnIdentity);return {jobId:'b'.repeat(64),...acceptance};}
       return {jobId:input.jobId,status:'completed',...acceptance,events:[]};}}});
-  const running=transport.run({userId:'a',session,model:'approved',text:'Research',variant:'high',turnIdentity,identityRevision:'owned-profile',emit:async()=>{}});
+  const running=transport.run({userId:'a',session,model:'approved',text:'Research',variant:'high',turnIdentity,identityRevision:'owned-profile',emit:async()=>{},
+    onCleanup:async value=>{assert.deepEqual(value,{cleanupVerified:true});operations.push('cleanup');}});
   try {
     await Promise.race([draining,running]);assert.deepEqual(issued,{context:{userId:'a',instanceId:'user-a',generation:1},turnIdentity,model:'approved',variant:'high',identityRevision:'owned-profile'});
-    assert(!operations.includes('release'));
+    assert(!operations.includes('release'));assert(!operations.includes('cleanup'));
   }finally{finish();await running;}
-  assert.deepEqual(operations,['issue','start','events','revoke','release']);
+  assert.deepEqual(operations,['issue','start','events','revoke','cleanup','release']);
 });
 test("actual adapter, runner and platform transport preserve one native turn through scoped approval and cleanup",async(t)=>{
   let released=0;const events=[],operations=[];

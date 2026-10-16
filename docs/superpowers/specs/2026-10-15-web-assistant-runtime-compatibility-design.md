@@ -43,6 +43,8 @@ Three approaches were considered:
 
 Reuse the existing platform, SDK, stores, broker, runner, and adapters. Do not introduce another agent framework, database, workflow scheduler, credential editor, or parallel Admin model-management feature. ACP's capability negotiation is a useful design reference; an ACP rewrite is not a prerequisite.
 
+Implementation convergence approved October 16: use fixed native startup for static containment: project cwd, workspace-write limited to the current owned project, no extra temporary writable roots, disabled direct network access, tenant-only CODEX_HOME and token-only broker configuration. Enforce startup configuration restrictions through immutable managed requirements; a private home alone does not disable project configuration or extra MCP/plugin startup. The platform pre-effect guard reuses ExecutionPermissions solely for current execution ownership, explicit denies, Stop and research barriers, binding authorization to the original native call and inputs. Do not build a second native permission framework. Complete shared permissions and HTTP admission first; conversation handover, real byte restoration and compatible rollback remain subsequent mandatory release gates rather than prerequisites for expanding this module. Fixed startup is not evidence that dynamic research/Stop checks have run, and a hook receipt is not proof of a contained effect.
+
 ## 4. Exclusive Administrator Selection
 
 One versioned, durable platform policy determines the active assistant and its allowed model catalog. Per-user preferences cannot override that policy. Readiness and the configured selection are separate facts: an outage must not silently activate another assistant.

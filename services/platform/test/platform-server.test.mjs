@@ -1363,6 +1363,37 @@ test('managed history reads use owned public routing before assistant-specific d
   assert.equal((await client.request('/experimental/session?limit=1&limit=2')).status,400);
 });
 
+test('native HTTP prompt obtains a canonical policy lease before research and attachment preparation',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'scikeel-http-admission-'));
+ let starts=0;
+ const cliRuntime=new CliRuntimeManager({rootDir:join(root,'native'),sandboxJobs:{run:async()=>{starts++;throw Error('Unexpected inference');}},
+  profileResolver:{refresh:async runtime=>({runtime,enabledByProfile:runtime==='codex',models:runtime==='codex'?[{id:'approved',variants:{}}]:[],
+   defaultModel:runtime==='codex'?'approved':null,identityRevision:'service-profile',catalogRevision:'catalog',status:'ready',files:{}})},
+  assistantAuthority:{prepare:async()=>{},revoke:async()=>{},inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}});
+ await cliRuntime.init();await cliRuntime.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'select-http-fixture'});
+ const policy=new TenantPolicy(),f=await makeFixture({root,tenantPolicy:policy,cliRuntime}),client=makeClient(f.base);
+ const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+ const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+ f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+ const owner={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir};
+ policy.registerAccount(owner);
+ const session=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir,title:'Owned'});
+ await f.server.conversations.create(owner,{conversationId:session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ f.server.conversationRouter={index:async()=>f.server.conversations.open(owner,session.id)};
+ let phase,scope;
+ f.server.researchTasks.get=async()=>{
+  const saved=await f.server.conversations.open(owner,session.id),receipt=saved.turns['http-owned'];
+  phase=receipt?.state;scope=receipt?.identity;
+  return null;
+ };
+ f.server.attachmentTurns.prepare=async()=>{throw Object.assign(Error('Synthetic preparation rejection'),{status:400});};
+ const response=await client.request(`/session/${session.id}/prompt_async`,{method:'POST',
+  headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2','x-scikeel-request-id':'http-owned'},
+  body:JSON.stringify({parts:[{type:'text',text:'Research'}],model:{providerID:'codex',modelID:'approved'}})});
+ assert.equal(response.status,400);assert.equal(phase,'prepared');assert.equal(scope.userId,user.id);
+ assert.equal(scope.generation,1);assert.equal(scope.runtime,'codex');assert.equal(starts,0);
+});
+
 test('managed runtime mutation policy admission precedes the workspace queue and Admin selection bypasses its own tenant queue',async()=>{
  const policy=new TenantPolicy(),f=await makeFixture({tenantPolicy:policy}),client=makeClient(f.base);
  const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;

@@ -1534,11 +1534,14 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     collaborationRevision?: number,
   ): Promise<void> {
     const m = parseModel(model);
+    const headers = this.headers(true);
+    if (this.gatewayAssistantRevision !== null)
+      headers["x-scikeel-request-id"] = attachmentContext?.turnId ?? OpenCodeClient.partId().replace(/^prt_/, "req_");
     const res = await this.fetchWithTimeout(
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/prompt_async`,
       {
         method: "POST",
-        headers: this.headers(true),
+        headers,
         body: JSON.stringify({
           // Attachments ride as `file` parts so a vision model actually sees
           // them; the text still names them, so the agent can also open the

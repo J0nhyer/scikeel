@@ -27,7 +27,7 @@ export class SandboxNativeJobs {
     this.tenantPolicy.registerSession(context,{id:session.id,directory:session.directory});
     return {...context,project};
   }
-  async run({userId,session,model,text,images=[],nativeSessionId,emit,signal,variant,workspaceContext,turnIdentity,identityRevision}) {
+  async run({userId,session,model,text,images=[],nativeSessionId,emit,signal,variant,workspaceContext,turnIdentity,identityRevision,onCleanup}) {
     if(session.runtime!=="codex"||typeof emit!=="function"||!this.issueNativeGrant||!turnIdentity||turnIdentity.runtime!=='codex'||
         turnIdentity.userId!==userId||turnIdentity.conversationId!==session.id||typeof identityRevision!=='string')
       throw new Error("sandbox native execution authority unavailable");
@@ -118,7 +118,10 @@ export class SandboxNativeJobs {
       signal.removeEventListener('abort',revoke);
       try {if(grant){revoke();await reservation.revoking;}}
       catch {cleanupVerified=false;throw new Error('native model cleanup unverified; workspace remains reserved');}
-      finally{settled();if(cleanupVerified){lease?.release();if(this.#turns.get(key)===reservation)this.#turns.delete(key);}}
+      finally{
+        try{await onCleanup?.({cleanupVerified});}
+        finally{settled();if(cleanupVerified){lease?.release();if(this.#turns.get(key)===reservation)this.#turns.delete(key);}}
+      }
     }
   }
   interruptGeneration(context) {

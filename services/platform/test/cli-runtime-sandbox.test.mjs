@@ -4,6 +4,7 @@ import {mkdtemp,mkdir,rm,readFile,lstat} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {CliRuntimeManager} from "../src/cli-runtime.mjs";
+import {ConversationState} from "../src/conversation-state.mjs";
 async function fixture(t,jobs) {
   const root=await mkdtemp(join(tmpdir(),"scikeel-native-sandbox-"));t.after(()=>rm(root,{recursive:true,force:true}));
   const workspace=join(root,"workspace");const project=join(workspace,"project");await mkdir(project,{recursive:true});
@@ -17,6 +18,70 @@ async function fixture(t,jobs) {
   const session=await manager.createSession({userId:"a",workspaceDir:workspace,directory:project,title:"Owned"});
   return {manager,session,workspace,project};
 }
+test('HTTP native admission captures the original payload and persists its exact execution lease before preparation',async t=>{
+ const f=await fixture(t,{run:async()=>{throw Error('No inference in admission');}});
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ const body={parts:[{type:'text',text:'Research'}],model:{providerID:'codex',modelID:'approved'}};
+ const args={conversations,owner,sessionId:f.session.id,requestId:'http-send',policyRevision:'2',body};
+ const admitted=await f.manager.admitHttpPrompt(args);
+ assert.equal(admitted.replay,false);assert.equal(admitted.model,'approved');assert.equal(admitted.identityRevision,'owned-profile');
+ assert.equal(f.manager.assistantPolicy.isExecutionCurrent(admitted.identity),true);
+ assert.equal((await conversations.open(owner,f.session.id)).turns['http-send'].state,'prepared');
+ assert.equal(f.session.history.length,0);assert.equal(f.session.status,'idle');
+ body.parts[0].text='Changed after admission';
+ await assert.rejects(f.manager.admitHttpPrompt(args),{code:'conversation_request_conflict'});
+ body.parts[0].text='Research';const replay=await f.manager.admitHttpPrompt(args);
+ assert.equal(replay.replay,true);assert.equal(replay.identity.execution,1);
+ await admitted.settle({cleanupVerified:true});
+ assert.equal(f.manager.assistantPolicy.isExecutionCurrent(admitted.identity),false);
+});
+test('HTTP admission rejects stale selection, unsupported model and missing request identity without reserving work',async t=>{
+ const f=await fixture(t,{run:async()=>{throw Error('No inference in admission');}});
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ const args={conversations,owner,sessionId:f.session.id,requestId:'http-send',policyRevision:'2',body:{parts:[{type:'text',text:'Research'}]}};
+ for(const patch of [{requestId:undefined},{policyRevision:'1'},{body:{...args.body,model:{providerID:'opencode',modelID:'approved'}}},
+   {body:{...args.body,model:{providerID:'codex',modelID:'not-allowed'}}},{body:{...args.body,variant:'unknown'}}]){
+  await assert.rejects(f.manager.admitHttpPrompt({...args,...patch}));
+  assert.equal((await conversations.open(owner,f.session.id)).execution,0);assert.equal(f.session.status,'idle');
+ }
+});
+test('an admitted native turn carries its canonical identity and settles only after verified cleanup',async t=>{
+ for(const verified of [true,false]){
+  let f,admitted;
+  f=await fixture(t,{run:async input=>{
+   assert.deepEqual(input.turnIdentity,admitted.identity);assert.equal(input.identityRevision,'owned-profile');
+   const saved=await conversations.open(owner,f.session.id);assert.equal(saved.turns['http-send'].state,'submitted');
+   assert.equal(f.manager.assistantPolicy.isExecutionCurrent(input.turnIdentity),true);
+   await input.emit({type:'text',text:'Result'});await input.onCleanup({cleanupVerified:verified});
+   return {nativeSessionId:'actual-native',turnId:'actual-turn'};
+  }});
+  const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+  const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+  await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+  admitted=await f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId:'http-send',policyRevision:'2',body:{parts:[{type:'text',text:'Research'}]}});
+  await f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'Research',model:admitted.model,workspaceContext:owner,executionAdmission:admitted});
+  const saved=await conversations.open(owner,f.session.id);
+  assert.equal(saved.turns['http-send'].state,verified?'settled':'unknown');
+  assert.equal(f.manager.assistantSnapshot('a').recoveryRequired,!verified);
+ }
+});
+test('Stop during asynchronous HTTP admission prevents a late native reservation',async t=>{
+ const f=await fixture(t,{run:async()=>{throw Error('No inference after Stop');}});
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ let entered,release;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const refresh=f.manager.profileResolver.refresh;
+ f.manager.profileResolver.refresh=async runtime=>{entered();await gate;return refresh(runtime);};
+ const pending=f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId:'http-send',policyRevision:'2',body:{parts:[{type:'text',text:'Research'}]}});
+ await ready;await f.manager.abortSession('a',f.session.id);release();
+ await assert.rejects(pending,{code:'turn_cancelled'});
+ assert.equal((await conversations.open(owner,f.session.id)).execution,0);assert.equal(f.manager.turnReservations.size,0);
+});
 test("existing Codex conversations use sandbox transport with preserved history and no host credentials or child processes",async(t)=>{
   const calls=[];const f=await fixture(t,{run:async args=>{
     calls.push(args);await args.emit({type:"text",text:"Actual isolated response"});return {nativeSessionId:"native-owned"};}});

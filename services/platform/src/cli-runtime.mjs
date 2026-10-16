@@ -704,6 +704,54 @@ export class CliRuntimeManager {
     return this.assistantPolicy.admitWorkspace({userId,policyRevision:policy.revision},reserve);
   }
 
+  async admitHttpPrompt({conversations,owner,sessionId,requestId,policyRevision,body}) {
+    if(!this.sandboxJobs || typeof requestId!=="string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(requestId) ||
+        typeof policyRevision!=="string" || !/^[1-9][0-9]*$/.test(policyRevision) || !body || typeof body!=="object" || Array.isArray(body))
+      throw issue("invalid_execution_request","A valid execution request identity is required",400);
+    owner=structuredClone(owner);body=structuredClone(body);
+    const payloadHash=historyHash(JSON.stringify(body));
+    const current=await conversations.open(owner,sessionId),previous=current.turns[requestId];
+    // Existing receipts are read-only reconciliation, even after selection or
+    // delivery became uncertain. They cannot refresh a profile or dispatch.
+    if(previous) {
+      const admitted=await this.admitConversation({conversations,owner,conversationId:sessionId,expectedRevision:current.revision,
+        request:{requestId,payloadHash,policyRevision:Number(policyRevision),runtime:previous.identity.runtime,
+          generation:owner.generation,model:previous.model,identityRevision:previous.identityRevision}});
+      return {...admitted,model:previous.model,identityRevision:previous.identityRevision};
+    }
+    const policy=await this.assertAssistantRevision(policyRevision);
+    const {state,session}=await this.getOwnedSession(owner.userId,sessionId);
+    if(session.runtime!==policy.activeRuntime || session.directory!==owner.directory || current.directory!==owner.directory)
+      throw issue("conversation_handover_required","The conversation requires assistant handover",409);
+    if(session.status==="running" || this.turnReservations.has(session.id))throw issue("session_busy","session is already running",409);
+    // Reuse the existing reservation so Stop also owns profile refresh and
+    // attachment/research preparation, before a native process exists.
+    const reservation={userId:owner.userId,state,session,cancelled:false};
+    this.turnReservations.set(session.id,reservation);
+    try {
+    const profile=await this.profileResolver.refresh(session.runtime);
+    if(!profile.enabledByProfile || !this.assistantEnabled[session.runtime])throw issue("runtime_unconfigured","AI assistant is unavailable",503);
+    if(body.model!==undefined && (body.model?.providerID!==session.runtime || typeof body.model.modelID!=="string"))
+      throw issue("invalid_model","model belongs to another AI assistant",400);
+    const model=body.model?.modelID ?? this.modelForUser(owner.userId,session.runtime) ?? profile.defaultModel;
+    const selected=profile.models.find(item=>item.id===model);
+    if(!selected)throw issue("model_not_enabled","model is unavailable",400);
+    if(body.variant!==undefined && body.variant!==null && (typeof body.variant!=="string" || !Object.hasOwn(selected.variants??{},body.variant)))
+      throw issue("invalid_variant","reasoning variant is unavailable for this model",400);
+    if(reservation.cancelled)throw issue("turn_cancelled","Turn was cancelled",409);
+    const admitted=await this.admitConversation({conversations,owner,conversationId:sessionId,expectedRevision:current.revision,
+      request:{requestId,payloadHash,policyRevision:policy.revision,runtime:session.runtime,generation:owner.generation,
+        model,identityRevision:profile.identityRevision}});
+    if(reservation.cancelled){await admitted.settle({cleanupVerified:true});throw issue("turn_cancelled","Turn was cancelled",409);}
+    const result={...admitted,model,identityRevision:profile.identityRevision,reservation,
+      settle:async options=>{
+        try{return await admitted.settle(options);}
+        finally{if(this.turnReservations.get(session.id)===reservation)this.turnReservations.delete(session.id);}
+      }};
+    reservation.executionAdmission=result;return result;
+    }catch(error){if(this.turnReservations.get(session.id)===reservation)this.turnReservations.delete(session.id);throw error;}
+  }
+
   async admitConversation({ conversations, owner, conversationId, expectedRevision, request }) {
     await this.init();
     if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
@@ -1145,18 +1193,23 @@ export class CliRuntimeManager {
     });
   }
 
-  async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput, workspaceContext }) {
+  async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput, workspaceContext, executionAdmission }) {
     await this.init();
     if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
     if (this.#policyStorageUncertain || this.#policyDescription?.recoveryRequired || this.#policyState.transition)
       throw issue("assistant_recovery_required", "Assistant selection requires reconciliation", 503);
     const { state, session } = await this.getOwnedSession(userId, sessionId);
-    if (session.status === "running" || this.turnReservations.has(session.id)) throw issue("session_busy", "session is already running", 409);
+    const reserved=this.turnReservations.get(session.id);
+    if (session.status === "running" || reserved && reserved!==executionAdmission?.reservation) throw issue("session_busy", "session is already running", 409);
+    if(reserved?.cancelled)throw issue("turn_cancelled","Turn was cancelled",409);
     if (typeof text !== "string" || !text.trim()) throw issue("empty_prompt", "prompt is empty");
     if(session.history.length>MAX_HISTORY_MESSAGES-2 || this.sandboxJobs &&
         Buffer.byteLength(JSON.stringify([...state.sessions.values()],null,2))+Buffer.byteLength(text)>HISTORY_SOURCE_LIMIT-6*1024**2)
       throw issue("conversation_history_full","Conversation history is full; existing messages have been preserved",507);
-    const turn = { userId, state, session, text, displayText, model, attachmentInput, workspaceContext, cancelled: false };
+    if(executionAdmission && (executionAdmission.replay || executionAdmission.identity.userId!==userId ||
+        executionAdmission.identity.conversationId!==session.id || !this.assistantPolicy.isExecutionCurrent(executionAdmission.identity)))
+      throw issue("assistant_identity_conflict","Execution admission is no longer current",409);
+    const turn = Object.assign(reserved??{}, { userId, state, session, text, displayText, model, attachmentInput, workspaceContext, executionAdmission, cancelled: false });
     this.turnReservations.set(session.id, turn);
     session.status = "running";
     delete session._pendingNativeSessionId;
@@ -1183,6 +1236,8 @@ export class CliRuntimeManager {
     }
     // Match OpenCode's per-turn contract: omission uses the model default.
     const chosenVariant = variant ?? null;
+    if(executionAdmission && (executionAdmission.identityRevision!==profile.identityRevision || executionAdmission.model!==chosen))
+      throw issue("assistant_identity_conflict","The admitted model profile changed",409);
     if (turn.cancelled) throw issue("turn_cancelled", "turn was cancelled", 409);
     return Object.assign(turn, { profile, chosen, chosenVariant });
     } catch (error) {
@@ -1198,7 +1253,13 @@ export class CliRuntimeManager {
 
   async runReservedPrompt(turn) {
     const pending=this.executeReservedPrompt(turn);this.activeTurns.add(pending);
-    try{return await pending;}finally{this.activeTurns.delete(pending);}
+    let completed=false;
+    try{const result=await pending;completed=true;return result;}
+    finally{
+      try{if(turn.executionAdmission)await turn.executionAdmission.settle({cleanupVerified:completed &&
+        (!turn.executionAdmission.dispatched || turn.nativeCleanupVerified===true)});}
+      finally{this.activeTurns.delete(pending);}
+    }
   }
 
   async executeReservedPrompt(turn) {
@@ -1238,7 +1299,10 @@ export class CliRuntimeManager {
     this.emitMessageUpdated(userId,session,assistant);
     const stale=Boolean(session.nativeSessionId && session.identityRevision!==profile.identityRevision);
     try {
+      if(turn.executionAdmission){await turn.executionAdmission.submitted();turn.executionAdmission.dispatched=true;}
       const result=await this.sandboxJobs.run({userId,session,workspaceContext:turn.workspaceContext,model:chosen,variant:chosenVariant,text:`${stale?handoverText(session.history):""}${text}`,
+        turnIdentity:turn.executionAdmission?.identity,identityRevision:profile.identityRevision,
+        onCleanup:async({cleanupVerified})=>{turn.nativeCleanupVerified=cleanupVerified===true;},
         images:(attachmentInput?.images??[]).map(image=>image.url),nativeSessionId:stale?undefined:session.nativeSessionId,signal:controller.signal,
         emit:async event=>{
           if(event.type==="text")this.appendAssistantText(userId,session,assistant,event.text);
@@ -1549,7 +1613,7 @@ export class CliRuntimeManager {
     escalation.unref();
   }
 
-  async handle(request, response, { userId, workspaceDir, promptBody, attachmentInput, workspaceContext }) {
+  async handle(request, response, { userId, workspaceDir, promptBody, attachmentInput, workspaceContext, executionAdmission }) {
     await this.init();
     if (!this.isManaged(userId)) return false;
     const parsed = new URL(request.url ?? "/", "http://platform.invalid");
@@ -1630,6 +1694,8 @@ export class CliRuntimeManager {
           await this.persistUser(state);
           sendJson(response, 200, true);
         } else if (route === "prompt_async" && request.method === "POST") {
+          if(this.sandboxJobs && workspaceContext && !executionAdmission)
+            throw issue("assistant_admission_required","Canonical execution admission is required",503);
           const body = promptBody ?? await jsonBody(request);
           const text = Array.isArray(body.parts)
             ? body.parts.filter((part) => part?.type === "text" && !part.synthetic).map((part) => part.text ?? "").join("\n")
@@ -1639,7 +1705,7 @@ export class CliRuntimeManager {
             if (body.model?.providerID !== this.runtimeForUser(userId)) throw issue("invalid_model", "model belongs to another AI assistant");
             model = normalizeModelId(body.model.modelID);
           }
-          const turn = await this.reservePrompt({ userId, sessionId, text: body.system ? `${body.system}\n${text || "Attached files"}` : text, displayText: attachmentInput?.displayText ?? (promptBody ? text : undefined), model, variant: body.variant, attachmentInput, workspaceContext });
+          const turn = await this.reservePrompt({ userId, sessionId, text: body.system ? `${body.system}\n${text || "Attached files"}` : text, displayText: attachmentInput?.displayText ?? (promptBody ? text : undefined), model, variant: body.variant, attachmentInput, workspaceContext, executionAdmission });
           void this.runReservedPrompt(turn).catch(() => {
             this.logger({ type: "cli.turn.error", userId, sessionId });
           });
@@ -1648,6 +1714,7 @@ export class CliRuntimeManager {
           await this.abortSession(userId, sessionId);
           sendJson(response, 200, true);
         } else if (route === "command" && request.method === "POST") {
+          if(this.sandboxJobs && workspaceContext)throw issue("assistant_admission_required","Canonical command admission is required",503);
           const body = await jsonBody(request);
           const command = typeof body.command === "string" ? body.command : "";
           const args = typeof body.arguments === "string" ? body.arguments : "";

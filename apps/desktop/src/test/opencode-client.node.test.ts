@@ -26,6 +26,23 @@ async function waitFor(pred: () => boolean, timeout = 3000) {
 }
 
 describe("OpenCodeClient ↔ OpenCode server", () => {
+  it("gives gateway sends a scoped request identity and reuses the attachment turn identity without changing desktop sends", async () => {
+    const requests: RequestInit[] = [];
+    const client = new OpenCodeClient({ baseUrl: "http://gateway.test", fetchImpl: async (_input, init) => {
+      requests.push(init ?? {}); return new Response("{}", { status: 202 });
+    } });
+    await client.sendPrompt("owned", "Research");
+    expect(new Headers(requests[requests.length - 1]?.headers).has("x-scikeel-request-id")).toBe(false);
+    client.setGatewayGeneration(2); client.setGatewayAssistantRevision(3);
+    await client.sendPrompt("owned", "Research");
+    const first = new Headers(requests[requests.length - 1]?.headers).get("x-scikeel-request-id");
+    expect(first).toMatch(/^[A-Za-z0-9_-]{16,160}$/);
+    await client.sendPrompt("owned", "Continue");
+    expect(new Headers(requests[requests.length - 1]?.headers).get("x-scikeel-request-id")).not.toBe(first);
+    await client.sendPrompt("owned", "With files", undefined, undefined, undefined, undefined,
+      { turnId: "attachment-owned", attachmentIds: [] });
+    expect(new Headers(requests[requests.length - 1]?.headers).get("x-scikeel-request-id")).toBe("attachment-owned");
+  });
   it("captures assistant revision alongside generation for mutations without adding either to standalone reads", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const client = new OpenCodeClient({ baseUrl: "http://gateway.test", fetchImpl: async (input, init) => {
