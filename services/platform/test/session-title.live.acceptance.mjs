@@ -17,7 +17,15 @@ const env=Object.fromEntries(raw.split('\0').map(x=>{const i=x.indexOf('=');retu
 const login=await fetch(origin+'/auth/login',{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify({username:env.PLATFORM_ADMIN_USERNAME||'admin',password:env.PLATFORM_ADMIN_PASSWORD})});
 if(!login.ok)throw Error('Verification login failed');
 const headers={origin,'content-type':'application/json',cookie:login.headers.getSetCookie().map(x=>x.split(';')[0]).join('; ')};
-async function json(path,method='GET',body){const r=await fetch(origin+path,{method,headers:{...headers,...(method==='DELETE'?{'x-scikeel-manual-approval':'1'}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(150000)});if(!r.ok)throw Error(`${method} ${path}: ${r.status}`);return r.status===204?null:r.json()}
+let runtimeGeneration=null;
+async function json(path,method='GET',body){
+ const requestHeaders={...headers,...(method!=='GET'&&method!=='HEAD'&&runtimeGeneration!==null?{'x-scikeel-runtime-generation':String(runtimeGeneration)}:{}),...(method==='DELETE'?{'x-scikeel-manual-approval':'1'}:{})};
+ const r=await fetch(origin+path,{method,headers:requestHeaders,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(150000)});
+ const observed=Number(r.headers.get('x-scikeel-runtime-generation'));
+ if(Number.isSafeInteger(observed)&&observed>0)runtimeGeneration=observed;
+ if(!r.ok)throw Error(`${method} ${path}: ${r.status}`);
+ return r.status===204?null:r.json();
+}
 const sessions=[]; let browser;
 try {
  const catalog=await json('/provider');
