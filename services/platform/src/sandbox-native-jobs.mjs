@@ -4,10 +4,11 @@ import {posix} from "node:path";
 // the long-lived worker lease; it never spawns a model process on the platform.
 export class SandboxNativeJobs {
   #turns=new Map();
-  constructor({files,workerManager,tenantPolicy,delayMs=250}) {
+  constructor({files,workerManager,tenantPolicy,issueNativeGrant=null,delayMs=250}) {
     if(!files || !workerManager || !tenantPolicy || !Number.isSafeInteger(delayMs) || delayMs<1 || delayMs>5000)
       throw new Error("invalid native job transport");
-    Object.assign(this,{files,workerManager,tenantPolicy,delayMs});
+    if(issueNativeGrant!==null&&typeof issueNativeGrant!=='function')throw new Error('invalid native grant authority');
+    Object.assign(this,{files,workerManager,tenantPolicy,issueNativeGrant,delayMs});
   }
   async inspect(context) {
     this.tenantPolicy.account(context);
@@ -26,23 +27,37 @@ export class SandboxNativeJobs {
     this.tenantPolicy.registerSession(context,{id:session.id,directory:session.directory});
     return {...context,project};
   }
-  async run({userId,session,model,text,images=[],nativeSessionId,emit,signal,variant,workspaceContext}) {
-    if(session.runtime!=="codex" || typeof emit!=="function" || (variant!==undefined && variant!==null))throw new Error("sandbox native runtime unavailable");
+  async run({userId,session,model,text,images=[],nativeSessionId,emit,signal,variant,workspaceContext,turnIdentity,identityRevision}) {
+    if(session.runtime!=="codex"||typeof emit!=="function"||!this.issueNativeGrant||!turnIdentity||turnIdentity.runtime!=='codex'||
+        turnIdentity.userId!==userId||turnIdentity.conversationId!==session.id||typeof identityRevision!=='string')
+      throw new Error("sandbox native execution authority unavailable");
+    session=structuredClone({id:session.id,runtime:session.runtime,directory:session.directory});
+    turnIdentity=structuredClone(turnIdentity);
     const key=`${userId}/${session.id}`;if(this.#turns.has(key))throw new Error("native session is busy");
     const controller = new AbortController();
     signal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     let settled;
     const reservation={controller,settled:new Promise(resolve=>{settled=resolve;})};
-    this.#turns.set(key,reservation);let lease;let context;let started;let submitted=false;let cleanupVerified=true;
+    this.#turns.set(key,reservation);let lease;let context;let started;let grant;let submitted=false;let cleanupVerified=true;
+    const revoke=()=>{if(!reservation.revoking&&grant){reservation.revoking=Promise.resolve().then(()=>grant.revoke());reservation.revoking.catch(()=>{});}};
     try {
       context=await this.#context(userId,session);
       if (workspaceContext && (context.instanceId !== workspaceContext.instanceId || context.generation !== workspaceContext.generation)) throw new Error("native worker generation changed");
+      if(turnIdentity.instanceId!==context.instanceId||turnIdentity.generation!==context.generation)throw new Error('native execution identity changed');
       reservation.context=context;
       lease=this.workerManager.retainWorker(context.instanceId);
       reservation.lease=lease;
       if(lease.generation!==context.generation)throw new Error("native worker generation changed");
+      signal.throwIfAborted();
+      grant=await this.issueNativeGrant({context:{userId,instanceId:context.instanceId,generation:context.generation},turnIdentity,model,variant,identityRevision});
+      reservation.grant=grant;signal.addEventListener('abort',revoke,{once:true});
+      signal.throwIfAborted();
+      if(grant.identityRevision!==identityRevision||grant.configuration?.model!==model||typeof grant.revoke!=='function'||typeof grant.renew!=='function')
+        throw new Error('invalid native model grant');
+      let renewedAt=Date.now();
       submitted=true;cleanupVerified=false;
       started=await this.files.job(context,{operation:"start",sessionId:session.id,project:context.project,model,text,images,
+        nativeProfile:grant.configuration,turnIdentity,identityRevision,
         ...(nativeSessionId ? {nativeSessionId} : {})},{signal});
       if(!/^[a-f0-9]{64}$/.test(started.jobId??"")||!/^[A-Za-z0-9_-]{1,128}$/.test(started.nativeSessionId??"")||
           !/^[A-Za-z0-9_-]{1,128}$/.test(started.turnId??"")||(nativeSessionId&&started.nativeSessionId!==nativeSessionId))
@@ -51,6 +66,7 @@ export class SandboxNativeJobs {
       Object.assign(reservation,{context,jobId:started.jobId});let after=0;
       for(;;) {
         if(signal?.aborted)throw new Error("native turn cancelled");
+        if(Date.now()-renewedAt>=300000){grant.renew();renewedAt=Date.now();}
         const batch=await this.files.job(context,{operation:"events",jobId:started.jobId,after},{signal});
         this.tenantPolicy.account(context);
         if(batch.jobId!==started.jobId||batch.nativeSessionId!==started.nativeSessionId||batch.turnId!==started.turnId||
@@ -98,7 +114,12 @@ export class SandboxNativeJobs {
         }
       }
       throw error;
-    } finally {settled();if(cleanupVerified){lease?.release();if(this.#turns.get(key)===reservation)this.#turns.delete(key);}}
+    } finally {
+      signal.removeEventListener('abort',revoke);
+      try {if(grant){revoke();await reservation.revoking;}}
+      catch {cleanupVerified=false;throw new Error('native model cleanup unverified; workspace remains reserved');}
+      finally{settled();if(cleanupVerified){lease?.release();if(this.#turns.get(key)===reservation)this.#turns.delete(key);}}
+    }
   }
   interruptGeneration(context) {
     for (const turn of this.#turns.values()) if (turn.context?.userId === context.userId &&
@@ -112,6 +133,7 @@ export class SandboxNativeJobs {
       let timer;
       try { await Promise.race([turn.settled,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error("native cleanup unverified")),3000);})]); }
       finally { clearTimeout(timer); }
+      await turn.grant?.revoke();
       turn.lease?.release(); if(this.#turns.get(key)===turn)this.#turns.delete(key);
     }
   }

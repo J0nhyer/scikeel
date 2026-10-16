@@ -4,13 +4,57 @@ import {spawn} from "node:child_process";
 import {fileURLToPath} from "node:url";
 import {CliJobs} from "../../../runtime/sandbox/cli-jobs.mjs";
 import {TenantPolicy} from "../src/tenant-policy.mjs";
-import {SandboxNativeJobs} from "../src/sandbox-native-jobs.mjs";
+import {SandboxNativeJobs as ManagedNativeJobs} from "../src/sandbox-native-jobs.mjs";
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
 const acceptance={nativeSessionId:"native-owned",turnId:"turn-owned"};
+// Older cleanup/interaction cases use a synthetic authority, never an infrastructure token.
+class SandboxNativeJobs extends ManagedNativeJobs {
+  constructor(options){super({issueNativeGrant:async input=>({identityRevision:input.identityRevision,
+    configuration:{model:input.model,modelToken:'c'.repeat(64),modelUrl:'http://172.31.240.1:4792/v1'},renew:()=>{},revoke:async()=>{}}),...options});}
+  run(input){return super.run({turnIdentity:{userId:'a',instanceId:'user-a',generation:1,conversationId:session.id,execution:1,
+    requestId:'request-owned',policyRevision:1,runtime:'codex'},identityRevision:'owned-profile',...input});}
+}
+test('managed native transport without execution identity or grant authority rejects before worker startup',async()=>{
+ let effects=0;const transport=new ManagedNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),files:{job:()=>effects++},
+   workerManager:{ensureWorker:()=>effects++}});
+ await assert.rejects(transport.run({userId:'a',session,model:'approved',text:'Research',emit:async()=>{}}),/authority/);
+ assert.equal(effects,0);
+});
+test('a failed native credential drain retains admission even after the process reports completion',async()=>{
+ let released=0,failing=true;
+ const transport=new SandboxNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),delayMs:1,
+   issueNativeGrant:async()=>({identityRevision:'owned-profile',configuration:{model:'approved',modelToken:'c'.repeat(64),modelUrl:'http://172.31.240.1:4792/v1'},
+     renew:()=>{},revoke:async()=>{if(failing)throw Error('drain unavailable');}}),
+   workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release:()=>released++})},
+   files:{job:async(_owner,input)=>input.operation==='start'?{jobId:'b'.repeat(64),...acceptance}:{jobId:input.jobId,status:'completed',...acceptance,events:[]}}});
+ const input={userId:'a',session,model:'approved',text:'Research',emit:async()=>{}};
+ await assert.rejects(transport.run(input),/cleanup unverified/);assert.equal(released,0);
+ await assert.rejects(transport.run(input),/busy/);failing=false;
+ await transport.releaseGeneration(context);assert.equal(released,1);
+});
+test("native transport issues an isolated grant before dispatch and holds cleanup until that grant drains",async()=>{
+  let finish,entered;const gate=new Promise(resolve=>finish=resolve),draining=new Promise(resolve=>entered=resolve);
+  const operations=[];let issued;
+  const turnIdentity={userId:'a',instanceId:'user-a',generation:1,conversationId:session.id,execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
+  const nativeProfile={model:'approved',modelToken:'c'.repeat(64),modelUrl:'http://172.31.240.1:4792/v1',effort:'high'};
+  const transport=new SandboxNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),delayMs:1,
+    issueNativeGrant:async input=>{issued=input;operations.push('issue');return {identityRevision:'owned-profile',configuration:nativeProfile,
+      renew:()=>{},revoke:async()=>{operations.push('revoke');entered();await gate;}};},
+    workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release:()=>operations.push('release')})},
+    files:{job:async(_owner,input)=>{operations.push(input.operation);
+      if(input.operation==='start'){assert.deepEqual(input.nativeProfile,nativeProfile);assert.deepEqual(input.turnIdentity,turnIdentity);return {jobId:'b'.repeat(64),...acceptance};}
+      return {jobId:input.jobId,status:'completed',...acceptance,events:[]};}}});
+  const running=transport.run({userId:'a',session,model:'approved',text:'Research',variant:'high',turnIdentity,identityRevision:'owned-profile',emit:async()=>{}});
+  try {
+    await Promise.race([draining,running]);assert.deepEqual(issued,{context:{userId:'a',instanceId:'user-a',generation:1},turnIdentity,model:'approved',variant:'high',identityRevision:'owned-profile'});
+    assert(!operations.includes('release'));
+  }finally{finish();await running;}
+  assert.deepEqual(operations,['issue','start','events','revoke','release']);
+});
 test("actual adapter, runner and platform transport preserve one native turn through scoped approval and cleanup",async(t)=>{
   let released=0;const events=[],operations=[];
-  const jobs=new CliJobs({manifest:{workspaceDir:context.workspaceDir,home:"/tenant/home"},imageDigest:`sha256:${"a".repeat(64)}`,
+  const jobs=new CliJobs({manifest:{instanceId:context.instanceId,generation:context.generation,workspaceDir:context.workspaceDir,home:"/tenant/home"},imageDigest:`sha256:${"a".repeat(64)}`,
     environments:{call:async()=>({owned:true,projectDir:session.directory,venvState:"absent",basePython:"/opt/scikeel/science/bin/python"})},
     spawnImpl:(_command,_args,options)=>spawn(process.execPath,[fileURLToPath(new URL("../fixtures/sandbox-cli.mjs",import.meta.url))],{...options,cwd:undefined})});
   t.after(()=>jobs.close());jobs.configure({enabled_providers:["fixture"],provider:{fixture:{npm:"@ai-sdk/openai-compatible",

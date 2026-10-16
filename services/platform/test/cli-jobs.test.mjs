@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {CliJobs,jobRequest} from "../../../runtime/sandbox/cli-jobs.mjs";
-const manifest={workspaceDir:"/tenant/workspace",home:"/tenant/home"};
+const manifest={instanceId:'user-a',generation:1,workspaceDir:"/tenant/workspace",home:"/tenant/home"};
 const imageDigest=`sha256:${"a".repeat(64)}`;
 const profile={enabled_providers:["fixture"],provider:{fixture:{npm:"@ai-sdk/openai-compatible",models:{approved:{}},options:{apiKey:"b".repeat(64),baseURL:"http://172.31.240.1:4792/v1"}}}};
 function fixture({close,result={nativeSessionId:"native-owned",turnId:"turn-owned"}}={}) {
@@ -12,7 +12,28 @@ function fixture({close,result={nativeSessionId:"native-owned",turnId:"turn-owne
       approve:value=>calls.push(value),close:async()=>{closed++;await close?.();}};}});
   jobs.configure(profile);return {jobs,calls,emit:event=>emit({nativeSessionId:"native-owned",turnId:"turn-owned",...event}),stopped:()=>stopped(),closed:()=>closed};
 }
-const request={operation:"start",sessionId:"owned",project:"project",model:"approved",text:"Research"};
+const request={operation:"start",sessionId:"owned",project:"project",model:"approved",text:"Research",
+  identityRevision:'owned-profile',turnIdentity:{userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'},
+  nativeProfile:{model:'approved',modelToken:'c'.repeat(64),modelUrl:'http://172.31.240.1:4792/v1'}};
+test("native jobs require the per-turn sanitized grant and never inherit the infrastructure profile token",async()=>{
+  const f=fixture();
+  const turnIdentity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
+  const nativeProfile={model:'approved',modelToken:'c'.repeat(64),modelUrl:'http://172.31.240.1:4792/v1',effort:'high'};
+  await f.jobs.call({...request,turnIdentity,identityRevision:'owned-profile',nativeProfile});
+  assert.equal(f.calls[0].brokers.modelToken,nativeProfile.modelToken);assert.equal(f.calls[0].effort,'high');
+  assert.notEqual(f.calls[0].brokers.modelToken,profile.provider.fixture.options.apiKey);
+  await f.jobs.close();
+});
+test('missing, malformed or foreign per-turn grants never reach environment inspection or native start',async()=>{
+ const f=fixture();
+ for(const patch of [{nativeProfile:undefined},{turnIdentity:undefined},{identityRevision:undefined},
+   {nativeProfile:{...request.nativeProfile,auth:{key:'forbidden'}}},
+   {nativeProfile:{...request.nativeProfile,modelUrl:'https://tenant-selected.invalid/v1'}},
+   {turnIdentity:{...request.turnIdentity,instanceId:'foreign'}},{turnIdentity:{...request.turnIdentity,generation:2}},
+   {turnIdentity:{...request.turnIdentity,conversationId:'foreign'}}])
+   await assert.rejects(f.jobs.call({...request,...patch}),/grant/);
+ assert.equal(f.calls.length,0);await f.jobs.close();
+});
 test("native jobs preserve actual acceptance in start, snapshots and events and reject mismatched or late scopes",async()=>{
   const f=fixture();const started=await f.jobs.call(request);
   assert.equal(started.nativeSessionId,"native-owned");assert.equal(started.turnId,"turn-owned");

@@ -105,11 +105,12 @@ export class CodexAppServer {
       try {this.#write({id,method,params});}catch(error){clearTimeout(timer);this.#pending.delete(id);reject(error);}
     });
   }
-  async start({privateHome,projectDir,environment,brokers,model,text,images=[],nativeSessionId,signal}) {
+  async start({privateHome,projectDir,environment,brokers,model,text,images=[],nativeSessionId,effort,signal}) {
     if(this.#child || this.#closed || typeof model!=="string" || !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/.test(model) || typeof text!=="string" ||
         Buffer.byteLength(text)>512*1024 || !Array.isArray(images) || images.length>10 ||
         images.some(url=>typeof url!=="string" || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(url)) ||
-        (nativeSessionId!==undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(nativeSessionId)) || signal?.aborted)
+        (nativeSessionId!==undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(nativeSessionId)) ||
+        (effort!==undefined&&(typeof effort!=='string'||!/^[a-z][a-z0-9_-]{0,31}$/.test(effort)))||signal?.aborted)
       throw new Error("invalid native turn");
     const env=buildJobEnvironment({privateHome,projectDir,environment,brokers});
     if(!brokers.modelToken)throw new Error("native model capability required");
@@ -150,6 +151,7 @@ export class CodexAppServer {
       this.#thread=thread.thread.id;
       this.#startingTurn=true;
       const turn=await this.#request("turn/start",{threadId:this.#thread,cwd:projectDir,model,approvalPolicy:"on-request",
+        ...(effort!==undefined?{effort}:{}),
         sandboxPolicy:{type:"readOnly",networkAccess:false},input:[{type:"text",text},...images.map(url=>({type:"image",url}))]});
       if(!/^[A-Za-z0-9_-]{1,128}$/.test(turn.turn?.id??""))throw new Error("native turn identity unavailable");
       this.#turn=turn.turn.id;
@@ -262,12 +264,22 @@ function validAnswers(value) {
     answer.every(text=>typeof text==="string" && text.length<=2000 && !text.includes("\0")));
 }
 export function jobRequest(value) {
-  const fields={start:["operation","sessionId","project","model","text","images","nativeSessionId"],
+  const fields={start:["operation","sessionId","project","model","text","images","nativeSessionId","turnIdentity","identityRevision","nativeProfile"],
     inspect:["operation"],events:["operation","jobId","after"],approve:["operation","jobId","id","decision"],answer:["operation","jobId","id","answers","reject"],abort:["operation","jobId"]};
   const allowed=fields[value?.operation];
   if(!value || typeof value!=="object" || Array.isArray(value) || !allowed || Object.keys(value).some(key=>!allowed.includes(key)))
     throw new Error("invalid managed job operation");
   if(value.operation==="start") {
+    const grant=value.nativeProfile,turn=value.turnIdentity;
+    const turnFields=['userId','instanceId','generation','conversationId','execution','requestId','policyRevision','runtime'];
+    if(!grant||typeof grant!=='object'||Array.isArray(grant)||Object.keys(grant).some(key=>!['model','modelToken','modelUrl','effort'].includes(key))||
+        grant.model!==value.model||!/^[a-f0-9]{64}$/.test(grant.modelToken??'')||grant.modelUrl!=='http://172.31.240.1:4792/v1'||
+        grant.effort!==undefined&&(typeof grant.effort!=='string'||!/^[a-z][a-z0-9_-]{0,31}$/.test(grant.effort))||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(value.identityRevision??'')||!turn||typeof turn!=='object'||Array.isArray(turn)||
+        Object.keys(turn).sort().join(',')!==turnFields.sort().join(',')||turn.runtime!=='codex'||turn.conversationId!==value.sessionId||
+        !['userId','instanceId','conversationId','requestId'].every(key=>/^[A-Za-z0-9_-]{1,128}$/.test(turn[key]??''))||
+        !['generation','execution','policyRevision'].every(key=>Number.isSafeInteger(turn[key])&&turn[key]>0))
+      throw new Error('invalid native execution grant');
     if(!/^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId??"") || typeof value.project!=="string" || !value.project || value.project.length>4096 ||
         /[\\\0]/.test(value.project) || value.project.startsWith("/") || value.project.split("/").some(part=>["",".",".."].includes(part)) ||
         !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/.test(value.model??"") || typeof value.text!=="string" || Buffer.byteLength(value.text)>512*1024 ||
@@ -282,7 +294,7 @@ export function jobRequest(value) {
     if(value.operation==="approve" && (!/^[a-f0-9]{64}$/.test(value.id??"") || !["accept","decline","cancel"].includes(value.decision)))
       throw new Error("invalid managed job approval");
   }
-  return {...value};
+  return structuredClone(value);
 }
 export class CliJobs {
   #jobs=new Map(); #starting=false; #closing=false;
@@ -316,10 +328,8 @@ export class CliJobs {
   }
   async #start(request,signal) {
     if(this.busy)throw new Error("managed job capacity unavailable");
-    if(!this.profile)throw new Error("managed job profile unavailable");
-    const providerName=this.profile.enabled_providers[0];const provider=this.profile.provider[providerName];
-    // Codex requires a Responses-compatible broker. Anthropic-only profiles stay unavailable.
-    if(provider.npm!=="@ai-sdk/openai-compatible" || !Object.hasOwn(provider.models,request.model))throw new Error("managed native model unavailable");
+    if(request.turnIdentity.instanceId!==this.manifest.instanceId||request.turnIdentity.generation!==this.manifest.generation)
+      throw new Error('foreign native execution grant');
     this.#starting=true;
     try {
       const info=await this.environments.call({operation:"inspect",project:request.project,imageDigest:this.imageDigest},{signal});
@@ -354,7 +364,7 @@ export class CliJobs {
       this.#jobs.set(job.id,job);
       try {
         const result=await job.native.start({...request,privateHome:this.manifest.home,projectDir,environment,
-          brokers:{modelToken:provider.options.apiKey,modelUrl:provider.options.baseURL},signal});
+          effort:request.nativeProfile.effort,brokers:{modelToken:request.nativeProfile.modelToken,modelUrl:request.nativeProfile.modelUrl},signal});
         if(!/^[A-Za-z0-9_-]{1,128}$/.test(result?.nativeSessionId??"")||!/^[A-Za-z0-9_-]{1,128}$/.test(result.turnId??"")||
             (request.nativeSessionId&&result.nativeSessionId!==request.nativeSessionId)||
             (job.nativeSessionId&&result.nativeSessionId!==job.nativeSessionId)||(job.turnId&&result.turnId!==job.turnId))

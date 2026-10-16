@@ -188,10 +188,11 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   const files = new WorkspaceRpc({ workerManager: manager, tenantPolicy });
   environments = new SandboxEnvironments({ files, tenantPolicy, packageGrants, imageDigest: configuration.imageDigest,
     acquireMaintenance: (context) => manager.acquireMaintenance(context) });
-  const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy});
-  manager.inspectNative = context => nativeJobs.inspect(context);
   const nativeProfileResolver = managedNativeProfileResolver({ configuration, broker: model,
     serviceProfile: new ManagedCodexProfile({ home: join(dataDir, "codex-service") }) });
+  const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy,
+    issueNativeGrant:input=>nativeProfileResolver.issueNativeGrant(input)});
+  manager.inspectNative = context => nativeJobs.inspect(context);
   plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, searchProvider: config.searchProvider, nativeJobs, nativeProfileResolver,
     runtimeCatalog: (context, { access }) => readManagedModelCatalog({ config, context, access }),
     saveRuntimeDefaultModel: (context, model) => saveManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId, model }),
