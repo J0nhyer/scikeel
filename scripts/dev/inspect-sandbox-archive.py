@@ -14,6 +14,8 @@ def inspect(path):
                       "opt/scikeel/tools/bin/osd", "opt/scikeel/tools/bin/opencode",
                       "opt/scikeel/tools/bin/node", "opt/scikeel/tools/bin/codex", "opt/scikeel/tools/bin/claude",
                       "opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json",
+                      "opt/scikeel/tools/native-tools.mjs", "opt/scikeel/runtime/required-effect-guard.mjs",
+                      "opt/scikeel/tools/codex-requirements.toml", "etc/codex/requirements.toml",
                       "opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py", "opt/scikeel/tools/science-environment.mjs", "opt/scikeel/tools/collaboration.mjs", "opt/scikeel/tools/tool-outcome.mjs"}
     known = set()
     total = 0

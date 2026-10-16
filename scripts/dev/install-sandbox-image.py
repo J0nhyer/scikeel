@@ -110,7 +110,13 @@ def validate_native(manifest, listing, tool_lock):
     native = manifest.get("codexRuntime", {})
     integration = native.get("integration", {})
     resources = native.get("resources", {})
-    expected = {"opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json"}
+    managed_sources = {
+        "opt/scikeel/tools/native-tools.mjs": "runtime/sandbox/native-tools.mjs",
+        "opt/scikeel/runtime/required-effect-guard.mjs": "runtime/sandbox/required-effect-guard.mjs",
+        "opt/scikeel/tools/codex-requirements.toml": "runtime/sandbox/codex-requirements.toml",
+        "etc/codex/requirements.toml": "runtime/sandbox/codex-requirements.toml",
+    }
+    expected = {"opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json"} | set(managed_sources)
     tool = manifest.get("tools", {}).get("codex", {})
     fixed = {"schema": 1, "policy": "required-effect-guard-v1", "upstreamVersion": "0.157.1",
              "upstreamCommit": "36650394c5b38c2990ccf2a3457165ca3e9d9726", "rustVersion": "1.95.0",
@@ -145,6 +151,7 @@ def validate_native(manifest, listing, tool_lock):
             or "scripts/dev/build-codex-guard-runtime.mjs" not in source_map
             or "scripts/dev/probe-production-runner.mjs" not in source_map
             or "services/platform/fixtures/native-protocol.mjs" not in source_map
+            or any(resources[path] != source_map.get(source) for path, source in managed_sources.items())
             or tool_lock.get("schema") != 1 or tool_lock.get("codexRuntime") != native
             or tool_lock.get("sourceInputs") != sources or tool_lock.get("tools", {}).get("codex") != tool
             or tool_lock.get("baselineLockSha256") != manifest.get("baselineLockSha256")):

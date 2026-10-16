@@ -12,6 +12,8 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/scikeel/science
 WORKDIR /opt/scikeel/baseline
 RUN uv sync --locked --no-dev --no-install-project --no-cache
 COPY tools/ /opt/scikeel/tools/
+COPY tools/required-effect-guard.mjs /opt/scikeel/runtime/required-effect-guard.mjs
+COPY tools/codex-requirements.toml /etc/codex/requirements.toml
 ENV PATH=/opt/scikeel/science/bin:/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin
 ENV OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 ENV PYTHONDONTWRITEBYTECODE=1

@@ -205,7 +205,8 @@ jobs:
           cp "$(command -v node)" .deploy/science-context/tools/bin/
           cp .deploy/session-title-runtime/opencode .deploy/science-context/tools/bin/opencode
           cp .deploy/session-title-runtime/runtime-manifest.json .deploy/science-context/tools/session-title-runtime.json
-          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment,collaboration,tool-outcome}.mjs .deploy/science-context/tools/
+          cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment,collaboration,tool-outcome,native-tools,required-effect-guard}.mjs .deploy/science-context/tools/
+          cp runtime/sandbox/codex-requirements.toml .deploy/science-context/tools/
           cp runtime/sandbox/project-environment.py .deploy/science-context/tools/
           mkdir -p .deploy/science-context/tools/resources/skills-core
           tar -C runtime/skills/core --exclude=.gitkeep -cf - . | tar -C .deploy/science-context/tools/resources/skills-core -xf -

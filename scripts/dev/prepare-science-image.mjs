@@ -7,7 +7,7 @@ import { readdir, lstat, readFile, writeFile } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { validateBuildContext, validateImageManifest, validateGuardArtifact, validateImageToolLock, validateNativeArchive } from "./stage-sandbox-image.mjs";
+import { validateBuildContext, validateImageManifest, validateGuardArtifact, validateImageToolLock, validateNativeArchive, managedNativeSources } from "./stage-sandbox-image.mjs";
 
 export function validateSourceImages(sources) {
   if (!/^(?:docker\.io\/library\/)?python@sha256:[a-f0-9]{64}$/.test(sources?.python ?? "") ||
@@ -43,6 +43,16 @@ export async function measureNativeContext(context, { required = true, source } 
   for (const name of names.slice(1)) resources[`opt/scikeel/tools/bin/${name}`] = await sha256(join(context, "tools/bin", name));
   if (resources["opt/scikeel/tools/bin/codex-resources/bwrap"] !== integration.bwrapSha256)
     throw new Error("native sandbox resource identity mismatch");
+  const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  for (const [path, source] of Object.entries(managedNativeSources)) {
+    const name = source.split('/').at(-1);
+    const resource = join(context, 'tools', name);
+    const info = await lstat(resource);
+    if (!info.isFile() || info.nlink !== 1 || info.size > 1024 * 1024 ||
+        await sha256(resource) !== await sha256(join(sourceRoot, source)))
+      throw new Error('immutable native guard source mismatch');
+    resources[path] = await sha256(resource);
+  }
   return { integration, resources };
 }
 function run(binary, args) {
