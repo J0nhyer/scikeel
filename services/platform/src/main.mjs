@@ -103,6 +103,8 @@ const platform = new PlatformServer({
 if(controlPlane) {
   cliRuntime.assistantAuthority = { inventory: () => platform.assistantExecutionInventory() };
   controlPlane.assistantPolicy=context=>cliRuntime.assistantSnapshot(context.userId);
+  controlPlane.executionAuthority=identity=>cliRuntime.assistantSnapshot(identity.userId).recoveryRequired===false&&
+    cliRuntime.assistantPolicy?.isExecutionCurrent(identity)===true;
   controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
   controlPlane.model.networkHandler=(context,body)=>platform.runtimeNetwork(context,body);
   controlPlane.revokeNetwork=async(context)=>{

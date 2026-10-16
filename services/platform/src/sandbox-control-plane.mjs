@@ -123,7 +123,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     return account.context;
   };
   const model = new ModelBroker({ providers: config.providers, identify,
-    assistantPolicy: context => plane?.assistantPolicy?.(context) });
+    assistantPolicy: context => plane?.assistantPolicy?.(context),executionAuthority:identity=>plane?.executionAuthority?.(identity)===true });
   const egress = new EgressBroker({ identify });
   const packageGrants = new PackageGrants();
   const packages = new PackageBroker({ mirrorUrl: config.mirrorUrl, identify,

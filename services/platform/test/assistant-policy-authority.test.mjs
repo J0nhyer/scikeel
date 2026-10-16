@@ -22,6 +22,15 @@ async function policyFixture(options = {}) {
 const turn = { userId: "owner_a", instanceId: "instance_a", generation: 2, conversationId: "conversation_a",
   execution: 3, requestId: "send_a", policyRevision: 1, runtime: "opencode" };
 const selection = { runtime: "codex", expectedRevision: 1, operationId: "select_codex" };
+test('inference authority recognizes only the exact live durable turn and never a restarted or unknown lease',async()=>{
+ const {policy,saved}=await policyFixture();assert.equal(typeof policy.isExecutionCurrent,'function');
+ assert.equal(policy.isExecutionCurrent(turn),false);
+ const lease=await policy.admit(turn,async()=>({}));assert.equal(policy.isExecutionCurrent(turn),true);
+ for(const field of Object.keys(turn))assert.equal(policy.isExecutionCurrent({...turn,[field]:typeof turn[field]==='number'?turn[field]+1:turn[field]+'_other'}),false,field);
+ assert.equal(policy.isExecutionCurrent({...turn,extra:true}),false);
+ const restarted=await policyFixture({state:saved()});assert.equal(restarted.policy.isExecutionCurrent(turn),false);
+ await lease.settle({cleanupVerified:false});assert.equal(policy.isExecutionCurrent(turn),false);
+});
 test('workspace reservation captures policy before queue entry without holding the global queue for the operation',async()=>{
  const workspace=new WorkspaceAdmission({resolveExecution:async()=>false});
  const {policy}=await policyFixture({inventory:async()=>({activeExecutions:workspace.activeAdmissions(),uncertainEffects:[]})});

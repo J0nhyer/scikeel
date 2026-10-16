@@ -63,6 +63,15 @@ function identity(context) {
       !Number.isSafeInteger(context.generation) || context.generation < 1) throw failure("model_identity_denied");
   return `${context.userId}:${context.instanceId}:${context.generation}`;
 }
+const turnFields=['userId','instanceId','generation','conversationId','execution','requestId','policyRevision','runtime'];
+function turnScope(capability) {
+  const turn=capability.turnIdentity;
+  return turn&&typeof turn==='object'&&!Array.isArray(turn)&&Object.keys(turn).length===turnFields.length&&
+    turnFields.every(field=>Object.hasOwn(turn,field))&&['userId','instanceId','conversationId','requestId'].every(field=>validName(turn[field]))&&
+    ['generation','execution','policyRevision'].every(field=>Number.isSafeInteger(turn[field])&&turn[field]>0)&&
+    ['opencode','codex','claude'].includes(turn.runtime)&&['userId','instanceId','generation','policyRevision','runtime']
+      .every(field=>turn[field]===capability[field]);
+}
 export function authorizeModelRequest({ capability, request, policy, now }) {
   if (!capability || !request || !policy || !Number.isSafeInteger(now) ||
       capability.bridgeOnly === true || capability.inferenceRevoked === true ||
@@ -95,13 +104,15 @@ function wait(operation, signal) {
 }
 export class ModelBroker {
   #providers = new Map(); #grants = new Map(); #operations = new Set(); #expiredRequests = new Map();
-  #assistantPolicy; #revokedAssistantRevisions = new Map();
+  #assistantPolicy; #executionAuthority; #revokedAssistantRevisions = new Map();
   constructor({ providers, identify, now = Date.now, timeoutMs, firstByteTimeoutMs, idleTimeoutMs, totalTimeoutMs,
     maxBodyBytes = 2 * 1024 ** 2, maxResponseBytes = 16 * 1024 ** 2, maxConnections = 4,
-    maxOutputTokens = 32768, maxGrants = 1024, assistantPolicy = null, logger = event => console.log(JSON.stringify(event)) } = {}) {
+    maxOutputTokens = 32768, maxGrants = 1024, assistantPolicy = null, executionAuthority = null, logger = event => console.log(JSON.stringify(event)) } = {}) {
     if (!providers || typeof identify !== "function" || typeof now !== "function" || typeof logger !== "function" ||
-        assistantPolicy !== null && typeof assistantPolicy !== "function") throw new Error("invalid model broker configuration");
+        assistantPolicy !== null && typeof assistantPolicy !== "function"||executionAuthority!==null&&typeof executionAuthority!=='function')
+      throw new Error("invalid model broker configuration");
     this.#assistantPolicy = assistantPolicy;
+    this.#executionAuthority=executionAuthority;
     const legacyTimeout = timeoutMs;
     firstByteTimeoutMs ??= legacyTimeout ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
     idleTimeoutMs ??= legacyTimeout ?? DEFAULT_IDLE_TIMEOUT_MS;
@@ -126,6 +137,7 @@ export class ModelBroker {
   }
   #inferenceAllowed(capability) {
     if (capability.bridgeOnly === true || capability.inferenceRevoked === true) return false;
+    if(!this.#executionAllowed(capability))return false;
     if (!this.#assistantPolicy) return true;
     try {
       const current = this.#assistantPolicy({ userId: capability.userId, instanceId: capability.instanceId,
@@ -135,6 +147,11 @@ export class ModelBroker {
         capability.policyRevision > (this.#revokedAssistantRevisions.get(capability.runtime) ?? 0) &&
         current.activeRuntime === capability.runtime && current.revision === capability.policyRevision;
     } catch { return false; }
+  }
+  #executionAllowed(capability) {
+    if(capability.runtime!=='codex'&&capability.turnIdentity===undefined)return true;
+    if(!turnScope(capability)||!this.#executionAuthority)return false;
+    try{return this.#executionAuthority(structuredClone(capability.turnIdentity))===true;}catch{return false;}
   }
   #requireInference(grantKey, operation) {
     const current = this.#grants.get(grantKey);
@@ -199,6 +216,7 @@ export class ModelBroker {
       ...(capability.runtime !== undefined ? { runtime: capability.runtime } : {}),
       ...(capability.policyRevision !== undefined ? { policyRevision: capability.policyRevision } : {}),
       ...(capability.bridgeOnly === true ? { bridgeOnly: true } : {}),
+      ...(capability.turnIdentity!==undefined?{turnIdentity:Object.freeze(structuredClone(capability.turnIdentity))}:{}),
       ...(policy.identityRevision != null ? { profileRevision: policy.identityRevision } : {}),
       models: Object.freeze([...capability.models]), routes: Object.freeze([...capability.routes]) }));
     return token;
@@ -215,7 +233,7 @@ export class ModelBroker {
     const policy = grant && this.#providers.get(grant.provider);
     if (!grant || identity(grant) !== identity(context) || grant.expiresAt <= this.now() || !policy || policy.revoked ||
         (policy.identityRevision != null && grant.profileRevision !== policy.identityRevision) ||
-        grant.models.some((model) => !policy.enabledModels.includes(model))) throw failure("model_grant_denied");
+        grant.models.some((model) => !policy.enabledModels.includes(model))||!this.#executionAllowed(grant)) throw failure("model_grant_denied");
     const expiresAt = this.now() + 900000;
     this.#grants.set(key, Object.freeze({ ...grant, expiresAt }));
     for (const operation of this.#operations) if (operation.grantKey === key) operation.armExpiry?.(expiresAt);
@@ -296,7 +314,8 @@ export class ModelBroker {
       operation.grantKey = grantKey;
       context = await wait(() => this.identify(req), controller.signal);
       if (identity(context) !== identity(capability) || capability.expiresAt <= this.now()) throw failure("model_grant_denied");
-      operation.context = { ...context, runtime: capability.runtime, policyRevision: capability.policyRevision };
+      operation.context = { ...context, runtime: capability.runtime, policyRevision: capability.policyRevision,
+        ...(capability.turnIdentity?{turnIdentity:structuredClone(capability.turnIdentity)}:{}) };
       operation.armExpiry = expiresAt => {
         clearTimeout(operation.expiration);
         operation.expiration = setTimeout(() => controller.abort(failure("model_grant_expired")), Math.max(1, expiresAt - this.now()));

@@ -107,10 +107,28 @@ async function fixture(t, handler, options = {}) {
   return { broker, token, fetch, upstream };
 }
 
+test("native inference additionally requires a current exact canonical turn before issue, renewal and upstream contact",async t=>{
+  const turnIdentity={...context,conversationId:"owned_conversation",execution:1,requestId:"owned_request",policyRevision:1,runtime:"codex"};
+  let current=true,contacts=0;const seen=[];
+  const f=await fixture(t,(_req,res)=>{contacts++;res.writeHead(200,{"content-type":"application/json"});res.end('{}');},{
+    assistantPolicy:()=>({activeRuntime:"codex",revision:1,recoveryRequired:false}),
+    executionAuthority:identity=>{seen.push(structuredClone(identity));return current&&Object.keys(turnIdentity).every(field=>identity[field]===turnIdentity[field]);},
+    grantScope:{runtime:"codex",policyRevision:1,turnIdentity},
+  });
+  assert.equal((await f.fetch()).status,200);assert.equal(contacts,1);assert(seen.length>=2);
+  const grant={...context,provider:"fixture",models:["approved"],routes:["/v1/responses"],expiresAt:Date.now()+60000,runtime:"codex",policyRevision:1};
+  for(const value of [undefined,{...turnIdentity,extra:true},{...turnIdentity,generation:2},{...turnIdentity,policyRevision:2}])
+    assert.throws(()=>f.broker.issue({...grant,turnIdentity:value}),{code:"model_grant_denied"});
+  current=false;
+  assert.equal((await f.fetch()).status,403);assert.equal(contacts,1);
+  assert.throws(()=>f.broker.renew(f.token,context),{code:"model_grant_denied"});
+  assert.throws(()=>f.broker.issue({...grant,turnIdentity}),{code:"model_grant_denied"});
+});
+
 test("managed inference grants bind the deployment assistant revision before any upstream contact", async t => {
   let current = { activeRuntime: "opencode", revision: 1, recoveryRequired: false }, contacts = 0;
   const f = await fixture(t, (_req, res) => { contacts++; res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); },
-    { assistantPolicy: () => current, grantScope: { runtime: "opencode", policyRevision: 1 } });
+    { assistantPolicy: () => current, executionAuthority:()=>true,grantScope: { runtime: "opencode", policyRevision: 1 } });
   const grant = { ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 };
   for (const scope of [{}, { runtime: "codex", policyRevision: 1 }, { runtime: "opencode", policyRevision: 2 },
     { runtime: "opencode", policyRevision: "1" }])
@@ -119,7 +137,9 @@ test("managed inference grants bind the deployment assistant revision before any
   current = { activeRuntime: "codex", revision: 2, recoveryRequired: false };
   assert.equal((await f.fetch()).status, 403);
   assert.equal(contacts, 1);
-  const next = f.broker.issue({ ...grant, runtime: "codex", policyRevision: 2 });
+  const nativeScope={runtime:"codex",policyRevision:2,turnIdentity:{...context,conversationId:"owned_conversation",execution:1,
+    requestId:"owned_request",policyRevision:2,runtime:"codex"}};
+  const next = f.broker.issue({ ...grant, ...nativeScope });
   assert.equal((await f.fetch(undefined, { grant: next })).status, 200);
   for (const value of [null, { ...current, recoveryRequired: true }, Promise.resolve(current)]) {
     current = value;

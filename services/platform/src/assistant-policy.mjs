@@ -146,6 +146,13 @@ export class AssistantPolicy {
     return Object.entries(this.#state.executions).filter(([id, execution]) => this.#live.has(id) && execution.status === "active")
       .map(([, execution]) => structuredClone(execution.identity));
   }
+  isExecutionCurrent(input) {
+    if(!this.#initialized||this.#uncertain||this.#state.transition||!exact(input,identityFields))return false;
+    try{identity(input);}catch{return false;}
+    if(Object.values(this.#state.executions).some(execution=>execution.status==='unknown'&&execution.identity.userId===input.userId))return false;
+    return Object.entries(this.#state.executions).some(([id,execution])=>this.#live.has(id)&&execution.status==='active'&&
+      Object.keys(input).every(field=>execution.identity[field]===input[field]));
+  }
   committedSnapshot() {
     return {activeRuntime:this.#state.activeRuntime,revision:this.#state.revision,
       recoveryRequired:!this.#initialized||this.#uncertain||!!this.#state.transition};
