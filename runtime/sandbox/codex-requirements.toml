@@ -1,0 +1,21 @@
+allowed_approval_policies = ["on-request"]
+allowed_sandbox_modes = ["workspace-write"]
+allowed_web_search_modes = ["disabled"]
+allow_managed_hooks_only = true
+mcp_servers = {}
+plugins = {}
+
+[features]
+plugins = false
+recommended_plugins = false
+skill_mcp_dependency_install = false
+shell_snapshot = false
+shell_snapshot_v2 = false
+default_mode_request_user_input = true
+
+[hooks]
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/opt/scikeel/tools/bin/node /opt/scikeel/runtime/required-effect-guard.mjs --guard"
+timeout = 5

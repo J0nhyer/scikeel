@@ -103,6 +103,23 @@ test('managed user parts use the actual message identity and continuing history 
  assert.equal(f.session.history.length,502);assert.deepEqual(f.session.history.slice(0,500),before);
  const user=f.session.history[500];assert.equal(user.parts[0].messageID,user.info.id);
 });
+test('native custom tool states use stable message parts and persist completed evidence without transport reply IDs',async t=>{
+ const events=[];let f;
+ f=await fixture(t,{run:async args=>{
+  await args.emit({type:'tool',id:'a'.repeat(64),callId:'call-owned',tool:'research_delivery',state:{status:'running',input:{action:'verify',deliverables:['result.csv']}}});
+  await args.emit({type:'tool',id:'a'.repeat(64),callId:'call-owned',tool:'research_delivery',state:{status:'completed',input:{action:'verify',deliverables:['result.csv']},output:'Verified actual files'}});
+  return {nativeSessionId:'native-owned'};
+ }});
+ const emit=f.manager.emit.bind(f.manager);f.manager.emit=(user,event)=>{events.push(structuredClone(event));emit(user,event);};
+ await f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'Verify'});
+ const parts=f.session.history[1].parts;assert.equal(parts.length,1);assert.equal(parts[0].type,'tool');
+ assert.equal(parts[0].callID,'call-owned');assert.equal(parts[0].state.status,'completed');assert.equal(parts[0].state.output,'Verified actual files');
+ assert.equal(parts[0].messageID,f.session.history[1].info.id);assert.equal(parts[0].sessionID,f.session.id);
+ const updates=events.filter(event=>event.type==='message.part.updated');assert.equal(updates.length,2);
+ assert.equal(updates[0].properties.part.id,updates[1].properties.part.id);assert.notEqual(parts[0].id,'a'.repeat(64));
+ const saved=JSON.parse(await readFile(f.manager.userPaths('a').sessionsPath,'utf8'));
+ assert.equal(saved.sessions[0].history[1].parts[0].state.output,'Verified actual files');
+});
 test('managed bounded history refuses a new turn before dispatch instead of discarding existing messages',async t=>{
  let dispatches=0;const f=await fixture(t,{run:async()=>{dispatches++;return{nativeSessionId:'owned'};}});
  f.session.history=Array.from({length:12000},(_,index)=>({info:{id:`old-${index}`,role:'assistant',sessionID:f.session.id,time:{created:1,completed:1}},parts:[]}));

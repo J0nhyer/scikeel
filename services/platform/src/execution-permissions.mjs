@@ -32,8 +32,10 @@ export class ExecutionPermissions {
   if(!session||session.id!==action.sessionId||session.conversationId!==identity.conversationId||session.directory!==action.directory||
     !within(session.workspaceDir,action.directory)||!Array.isArray(session.permission))return null;
   const execution=structuredClone(await this.#readers.execution(identity,action.sessionId));
-  if(execution?.owner?.sessionId!==identity.conversationId||execution.blocked!==false||execution.repairExhausted===true||
-      execution.state?.phase!=='running'||execution.state.execution!==identity.execution||execution.state.pending||execution.state.recoveryRequired)return null;
+  const expectedExecution=execution?.expectedExecution??identity.execution,expectedOwner=execution?.expectedOwner??identity.conversationId;
+  if(!Number.isSafeInteger(expectedExecution)||expectedExecution<1||!name(expectedOwner)||
+      execution?.owner?.sessionId!==expectedOwner||execution.blocked!==false||execution.repairExhausted===true||
+      execution.state?.phase!=='running'||execution.state.execution!==expectedExecution||execution.state.pending||execution.state.recoveryRequired)return null;
   const rules=collaborationPermissions(execution.state.executionMode??execution.state.mode);
   const designatedRead=skillRead(action);
   if(designatedRead){

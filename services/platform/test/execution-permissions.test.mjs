@@ -15,6 +15,12 @@ function fixture(){
    session:async()=>session,execution:async()=>execution};
  return {state,session,execution,reads,setCurrent:value=>current=value,permissions:new ExecutionPermissions(reads)};
 }
+test('native research execution counters are explicitly bound independently of canonical turn counters',async()=>{
+ const f=fixture();f.state.execution=7;f.execution.expectedExecution=7;
+ const decision=await f.permissions.authorize(identity,action);assert.equal(decision.allowed,true);
+ f.state.execution=8;assert.equal(await f.permissions.assertCurrent(decision),false);
+ assert.equal((await f.permissions.authorize(identity,action)).allowed,false);
+});
 test('designated immutable Skill reads remain allowed without granting other outside-workspace access',async()=>{
  const f=fixture();f.session.permission.push(...collaborationPermissions('autonomous'));
  const skill={...action,tool:'external_directory',kind:'read',inputs:{path:'/opt/scikeel/tools/resources/skills-core/data/SKILL.md'}};

@@ -17,7 +17,8 @@ for (const exited of [false, true]) test(`the production native adapter cleans s
     if(frame.method==='turn/start'){require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'});${exited ? "setTimeout(()=>process.exit(0),100);" : ""}}
   });`;
   let child, stopped = 0;
-  const runtime = new CodexAppServer({ emit: async () => {}, onStopped: () => { stopped++; }, requestTimeoutMs: 2000,
+  // This real process-group regression uses a synthetic server, not installed image resources.
+  const runtime = new CodexAppServer({ verifyRuntime:async()=>{}, emit: async () => {}, onStopped: () => { stopped++; }, requestTimeoutMs: 2000,
     spawnImpl: (_binary, _args, options) => {
       assert.equal(options.detached, true);
       child = spawn(process.execPath, ["-e", source], { ...options, cwd: root });

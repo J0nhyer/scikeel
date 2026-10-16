@@ -9,7 +9,7 @@ function fixture({close,result={nativeSessionId:"native-owned",turnId:"turn-owne
   const jobs=new CliJobs({manifest,imageDigest,environments:{call:async value=>({owned:true,projectDir:`${manifest.workspaceDir}/${value.project}`,
     basePython:"/opt/scikeel/science/bin/python",venvState:"valid",venvPython:`${manifest.workspaceDir}/${value.project}/.venv/bin/python`})},
     nativeFactory:options=>{emit=options.emit;stopped=options.onStopped;return {start:async request=>{calls.push(request);return result;},
-      approve:value=>calls.push(value),close:async()=>{closed++;await close?.();}};}});
+      approve:value=>calls.push(value),toolResult:value=>calls.push(value),close:async()=>{closed++;await close?.();}};}});
   jobs.configure(profile);return {jobs,calls,emit:event=>emit({nativeSessionId:"native-owned",turnId:"turn-owned",...event}),stopped:()=>stopped(),closed:()=>closed};
 }
 const request={operation:"start",sessionId:"owned",project:"project",model:"approved",text:"Research",
@@ -23,6 +23,21 @@ test("native jobs require the per-turn sanitized grant and never inherit the inf
   assert.equal(f.calls[0].brokers.modelToken,nativeProfile.modelToken);assert.equal(f.calls[0].effort,'high');
   assert.notEqual(f.calls[0].brokers.modelToken,profile.provider.fixture.options.apiKey);
   await f.jobs.close();
+});
+test('native tool replies consume one opaque job-owned request, never a foreign or stopped call',async()=>{
+ const f=fixture(),started=await f.jobs.call(request);
+ await f.emit({type:'tool-call',id:'rpc-owned',callId:'call-owned',tool:'research_checkpoint',input:{kind:'method',question:'Use this method?'}});
+ const event=(await f.jobs.call({operation:'events',jobId:started.jobId,after:0})).events[0];
+ assert.match(event.id,/^[a-f0-9]{64}$/);assert.notEqual(event.id,'rpc-owned');
+ const result={operation:'toolResult',jobId:started.jobId,id:event.id,success:true,text:'Authentic platform decision'};
+ await assert.rejects(f.jobs.call({...result,id:'f'.repeat(64)}));
+ assert.deepEqual(await f.jobs.call(result),{replied:true});
+ assert.deepEqual(f.calls.at(-1),{id:'rpc-owned',success:true,text:result.text});
+ await assert.rejects(f.jobs.call(result));
+ await f.emit({type:'tool-call',id:'rpc-stopped',callId:'call-stopped',tool:'research_delivery',input:{action:'verify',deliverables:['result.csv']}});
+ const pending=(await f.jobs.call({operation:'events',jobId:started.jobId,after:1})).events[0];
+ await f.jobs.call({operation:'abort',jobId:started.jobId});
+ await assert.rejects(f.jobs.call({...result,id:pending.id}));await f.jobs.close();
 });
 test('missing, malformed or foreign per-turn grants never reach environment inspection or native start',async()=>{
  const f=fixture();

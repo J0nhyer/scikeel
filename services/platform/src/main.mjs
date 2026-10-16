@@ -7,6 +7,7 @@ import { PlatformServer } from "./platform-server.mjs";
 import { sandboxConfiguration, loadSandboxImageConfiguration } from "./sandbox-manifest.mjs";
 import { createSandboxControlPlane } from "./sandbox-control-plane.mjs";
 import { WorkerManager } from "./worker-manager.mjs";
+import {configureNativeEffects} from './native-effects.mjs';
 
 function env(name, fallback = "") {
   return process.env[name] ?? fallback;
@@ -105,6 +106,8 @@ if(controlPlane) {
   controlPlane.assistantPolicy=context=>cliRuntime.assistantSnapshot(context.userId);
   controlPlane.executionAuthority=identity=>cliRuntime.assistantSnapshot(identity.userId).recoveryRequired===false&&
     cliRuntime.assistantPolicy?.isExecutionCurrent(identity)===true;
+  configureNativeEffects({nativeJobs:controlPlane.nativeJobs,cliRuntime,platform,workerManager,tenantPolicy:controlPlane.tenantPolicy});
+  controlPlane.model.nativeEffectHandler=(context,body,options)=>controlPlane.nativeJobs.authorizeEffect(context,body,options);
   controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
   controlPlane.model.networkHandler=(context,body)=>platform.runtimeNetwork(context,body);
   controlPlane.revokeNetwork=async(context)=>{

@@ -1451,6 +1451,17 @@ test('managed runtime mutation policy admission precedes the workspace queue and
  assert.equal(admin.status,200);assert.equal(queued,0);assert.equal(captures,1);
 });
 
+test('managed running tools resolve through native transport, never OpenCode worker history',async()=>{
+ const server=Object.create(PlatformServer.prototype),context={userId:'owner',instanceId:'user-owner',generation:1};
+ let calls=0;server.workerManager={getWorker:()=>({userId:'owner',generation:1,status:'running'})};
+ server.tenantPolicy={session:()=>{throw Error('Must not read OpenCode tool authority');}};
+ server.cliRuntime={isManaged:()=>true,sandboxJobs:{runningToolPart:(owner,sessionId,callId)=>{calls++;
+  assert.deepEqual(owner,context);assert.equal(sessionId,'owned');assert.equal(callId,'call-owned');
+  return {type:'tool',tool:'research_delivery',callID:callId,state:{status:'running',input:{action:'verify',deliverables:['output.csv']}}};}}};
+ assert.equal((await server.runningToolPart(context,'owned','call-owned')).tool,'research_delivery');assert.equal(calls,1);
+ await assert.rejects(server.runningToolPart({...context,generation:2},'owned','call-owned'));assert.equal(calls,1);
+});
+
 test('automatic search authorization cannot redirect to a different backend', async () => {
   const server = Object.create(PlatformServer.prototype);
   server.searchProvider = 'parallel'; server.permissionDecisions = new Map();

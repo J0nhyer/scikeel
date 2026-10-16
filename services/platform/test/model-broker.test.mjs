@@ -124,6 +124,24 @@ test("native inference additionally requires a current exact canonical turn befo
   assert.throws(()=>f.broker.renew(f.token,context),{code:"model_grant_denied"});
   assert.throws(()=>f.broker.issue({...grant,turnIdentity}),{code:"model_grant_denied"});
 });
+test('native effect bridge receives only the server-bound execution grant, never an OpenCode or bridge-only capability',async t=>{
+ const turnIdentity={...context,conversationId:'owned_conversation',execution:1,requestId:'owned_request',policyRevision:1,runtime:'codex'};
+ let current=true,calls=0,upstream=0;
+ const f=await fixture(t,(_req,res)=>{upstream++;res.end('{}');},{executionAuthority:()=>current,grantScope:{runtime:'codex',policyRevision:1,turnIdentity}});
+ f.broker.nativeEffectHandler=async(owner,body,{signal})=>{calls++;assert.deepEqual(owner.turnIdentity,turnIdentity);
+  assert.equal(owner.runtime,'codex');assert.equal(signal.aborted,false);return {allowed:true,digest:'a'.repeat(64)};};
+ const body={session_id:'native-owned',turn_id:'turn-owned',tool_use_id:'call-owned',cwd:'/tenant/workspace/project',hook_event_name:'PreToolUse',tool_name:'Bash',
+  tool_input:{nativeTool:'exec_command',nativeInput:{cmd:'true'},canonicalInput:{command:'true'}}};
+ const result=await f.fetch(body,{path:'/native/effect'});assert.equal(result.status,200);assert.equal(calls,1);assert.equal(upstream,0);
+ const legacy=f.broker.issue({...context,provider:'fixture',models:['approved'],routes:['/v1/responses'],expiresAt:Date.now()+60000,runtime:'opencode'});
+ assert.equal((await f.fetch(body,{grant:legacy,path:'/native/effect'})).status,403);assert.equal(calls,1);
+ const bridgeOnly=f.broker.issue({...context,provider:'fixture',models:['approved'],routes:['/v1/responses'],expiresAt:Date.now()+60000,runtime:'codex',bridgeOnly:true});
+ assert.equal((await f.fetch(body,{grant:bridgeOnly,path:'/native/effect'})).status,403);assert.equal(calls,1);
+ f.broker.collaborationHandler=f.broker.networkHandler=async()=>{throw Error('Native token bypassed tool transport');};
+ assert.equal((await f.fetch({action:'checkpoint',sessionId:'owned',kind:'method',question:'Bypass'}, {path:'/collaboration'})).status,403);
+ assert.equal((await f.fetch({version:1,action:'authorize',sessionId:'owned',execution:1,callId:'unguarded',tool:'webfetch',origins:['https://example.test']},{path:'/network'})).status,403);
+ current=false;assert.equal((await f.fetch(body,{path:'/native/effect'})).status,403);assert.equal(calls,1);
+});
 
 test("managed inference grants bind the deployment assistant revision before any upstream contact", async t => {
   let current = { activeRuntime: "opencode", revision: 1, recoveryRequired: false }, contacts = 0;

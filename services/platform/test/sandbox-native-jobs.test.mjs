@@ -5,9 +5,48 @@ import {fileURLToPath} from "node:url";
 import {CliJobs} from "../../../runtime/sandbox/cli-jobs.mjs";
 import {TenantPolicy} from "../src/tenant-policy.mjs";
 import {SandboxNativeJobs as ManagedNativeJobs} from "../src/sandbox-native-jobs.mjs";
+import {effectDigest} from '../../../runtime/sandbox/native-tools.mjs';
+import {makeToolOutcome,ToolOutcomeError} from '../../../packages/sdk/src/tool-outcome.mjs';
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
 const acceptance={nativeSessionId:"native-owned",turnId:"turn-owned"};
+test('native custom tools require matching pre-effect authority and expose real lifecycle with one bound result',async()=>{
+ for(const failure of [null,'business','unguarded','changed-input','denied','stop','replay']){
+  const policy=new TenantPolicy({accounts:[context]}),events=[],calls=[],controller=new AbortController();let transport,dispatches=0;
+  const input={action:'verify',deliverables:['result.csv']},decision={allowed:true};
+  const turnIdentity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
+  const hook={session_id:'native-owned',turn_id:'turn-owned',tool_use_id:'call-delivery',cwd:session.directory,hook_event_name:'PreToolUse',tool_name:'research_delivery',
+   tool_input:{nativeTool:'research_delivery',nativeInput:input,canonicalInput:input}};
+  let batch=0;
+  transport=new ManagedNativeJobs({tenantPolicy:policy,delayMs:1,
+   issueNativeGrant:async()=>({identityRevision:'owned-profile',configuration:{model:'approved'},renew:()=>{},revoke:async()=>{}}),
+   workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release:()=>{}})},files:{job:async(owner,request)=>{
+    calls.push(request);if(request.operation==='start')return {jobId:'b'.repeat(64),...acceptance};
+    if(request.operation==='abort')return {stopped:true};if(request.operation==='toolResult')return {replied:true};
+    if(batch++===0){
+     if(failure!=='unguarded')await transport.authorizeEffect({...context,turnIdentity},hook);
+     return {jobId:request.jobId,status:'running',...acceptance,events:[{type:'tool-call',id:'d'.repeat(64),callId:'call-delivery',tool:'research_delivery',
+      input:failure==='changed-input'?{...input,deliverables:['other.csv']}:input,sessionID:'owned',sequence:1,...acceptance}]};
+    }
+    return {jobId:request.jobId,status:failure==='replay'?'running':'completed',...acceptance,events:failure==='replay'?
+     [{type:'tool-call',id:'e'.repeat(64),callId:'call-delivery',tool:'research_delivery',input,sessionID:'owned',sequence:2,...acceptance}]:[]};
+   }}});
+  transport.configureEffects({prepare:async()=>({researchExecution:7,rootSessionId:'owned'}),permissions:{authorize:async()=>decision,assertCurrent:async()=>failure!=='denied'},
+   callTool:async({callId,input:args})=>{dispatches++;assert.equal(callId,'call-delivery');assert.deepEqual(args,input);
+    assert.deepEqual(transport.runningToolPart(context,'owned',callId).state.input,input);
+    if(failure==='business')throw new ToolOutcomeError(makeToolOutcome('delivery_missing_input',{source:'collaboration',status:409,correlationId:callId}));
+    if(failure==='stop')controller.abort();return 'Verified actual platform files';}});
+  const run=transport.run({userId:'a',session,model:'approved',text:'Research',turnIdentity,identityRevision:'owned-profile',signal:controller.signal,emit:async event=>events.push(event)});
+  if(failure&&failure!=='business')await assert.rejects(run);else await run;
+  assert.equal(dispatches,[null,'business','stop','replay'].includes(failure)?1:0,failure);
+  assert.equal(calls.filter(call=>call.operation==='toolResult').length,[null,'business','replay'].includes(failure)?1:0,failure);
+  if(failure==='business'){const result=calls.find(call=>call.operation==='toolResult');assert.equal(result.success,false);
+   assert.equal(JSON.parse(result.text).error.code,'delivery_missing_input');assert.equal(events.at(-1).state.status,'error');}
+  if(!failure){assert.deepEqual(events.map(event=>[event.type,event.state?.status]),[['tool','running'],['tool','completed']]);
+   assert.equal(events[1].state.output,'Verified actual platform files');}
+  assert.throws(()=>transport.runningToolPart(context,'owned','call-delivery'));
+ }
+});
 // Older cleanup/interaction cases use a synthetic authority, never an infrastructure token.
 class SandboxNativeJobs extends ManagedNativeJobs {
   constructor(options){super({issueNativeGrant:async input=>({identityRevision:input.identityRevision,
@@ -15,6 +54,48 @@ class SandboxNativeJobs extends ManagedNativeJobs {
   run(input){return super.run({turnIdentity:{userId:'a',instanceId:'user-a',generation:1,conversationId:session.id,execution:1,
     requestId:'request-owned',policyRevision:1,runtime:'codex'},identityRevision:'owned-profile',...input});}
 }
+test('effect guard binds an accepted execution and original call inputs, and Stop wins an asynchronous permission decision',async()=>{
+ const policy=new TenantPolicy({accounts:[context]});let transport,release,entered,finish;let accepted=false;
+ const ready=new Promise(resolve=>entered=resolve),done=new Promise(resolve=>finish=resolve);
+ const turnIdentity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
+ const envelope={session_id:'native-owned',turn_id:'turn-owned',tool_use_id:'call-owned',cwd:session.directory,hook_event_name:'PreToolUse',tool_name:'Bash',
+  tool_input:{nativeTool:'exec_command',nativeInput:{cmd:'printf verified > result.txt'},canonicalInput:{command:'printf verified > result.txt'}}};
+ let decisionGate;const wait=new Promise(resolve=>decisionGate=resolve);const controller=new AbortController();
+ transport=new SandboxNativeJobs({tenantPolicy:policy,delayMs:1,workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release:()=>release=true})},
+  files:{job:async(_context,input)=>{if(input.operation==='start')return {jobId:'b'.repeat(64),...acceptance};
+   if(input.operation==='abort')return {stopped:true};entered();await done;return {jobId:input.jobId,status:'completed',...acceptance,events:[]};}}});
+ transport.configureEffects({prepare:async()=>({researchExecution:7}),permissions:{authorize:async()=>{await wait;return {allowed:true};},assertCurrent:async()=>true},callTool:async()=>{throw Error('Must not dispatch');}});
+ const running=transport.run({userId:'a',session,model:'approved',text:'Research',signal:controller.signal,onAccepted:async()=>{accepted=true;},emit:async()=>{}});
+ await ready;assert.equal(accepted,true);
+ const request=transport.authorizeEffect({...context,turnIdentity},envelope);
+ controller.abort();decisionGate();
+ await assert.rejects(request);finish();await running.catch(()=>{});assert.equal(release,true);
+ await assert.rejects(transport.authorizeEffect({...context,turnIdentity},envelope));
+ assert.equal(effectDigest(envelope).length,64);
+});
+test('checkpoint authority fences later effects before the custom tool RPC reaches platform polling',async()=>{
+ const policy=new TenantPolicy({accounts:[context]});let ready,finish,permissions=0;
+ const entered=new Promise(resolve=>ready=resolve),done=new Promise(resolve=>finish=resolve),controller=new AbortController();
+ const turnIdentity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
+ const transport=new ManagedNativeJobs({tenantPolicy:policy,delayMs:1,
+  issueNativeGrant:async()=>({identityRevision:'owned-profile',configuration:{model:'approved'},renew:()=>{},revoke:async()=>{}}),
+  workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release:()=>{}})},files:{job:async(_owner,input)=>{
+   if(input.operation==='start')return {jobId:'b'.repeat(64),...acceptance};if(input.operation==='abort')return {stopped:true};
+   ready();await done;return {jobId:input.jobId,status:'completed',...acceptance,events:[]};
+  }}});
+ transport.configureEffects({prepare:async()=>({researchExecution:7}),permissions:{authorize:async()=>{permissions++;return {allowed:true};},assertCurrent:async()=>true},callTool:()=>{throw Error('Not dispatched yet');}});
+ const run=transport.run({userId:'a',session,model:'approved',text:'Research',turnIdentity,identityRevision:'owned-profile',signal:controller.signal,emit:async()=>{}});
+ await entered;
+ try{
+  const input={kind:'method',question:'Choose method?'};
+  const hook={session_id:'native-owned',turn_id:'turn-owned',tool_use_id:'checkpoint',cwd:session.directory,hook_event_name:'PreToolUse',tool_name:'research_checkpoint',
+   tool_input:{nativeTool:'research_checkpoint',nativeInput:input,canonicalInput:input}};
+  assert.equal((await transport.authorizeEffect({...context,turnIdentity},hook)).allowed,true);
+  await assert.rejects(transport.authorizeEffect({...context,turnIdentity},{...hook,tool_use_id:'late-command',tool_name:'Bash',
+   tool_input:{nativeTool:'exec_command',nativeInput:{cmd:'printf unsafe > result'},canonicalInput:{command:'printf unsafe > result'}}}));
+  assert.equal(permissions,1,'No later tool reaches shared authorization while the checkpoint RPC is pending');
+ }finally{controller.abort();finish();await run.catch(()=>{});}
+});
 test('managed native transport without execution identity or grant authority rejects before worker startup',async()=>{
  let effects=0;const transport=new ManagedNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),files:{job:()=>effects++},
    workerManager:{ensureWorker:()=>effects++}});
@@ -55,7 +136,7 @@ test("native transport issues an isolated grant before dispatch and holds cleanu
 });
 test("actual adapter, runner and platform transport preserve one native turn through scoped approval and cleanup",async(t)=>{
   let released=0;const events=[],operations=[];
-  const jobs=new CliJobs({manifest:{instanceId:context.instanceId,generation:context.generation,workspaceDir:context.workspaceDir,home:"/tenant/home"},imageDigest:`sha256:${"a".repeat(64)}`,
+  const jobs=new CliJobs({verifyRuntime:async()=>{},manifest:{instanceId:context.instanceId,generation:context.generation,workspaceDir:context.workspaceDir,home:"/tenant/home"},imageDigest:`sha256:${"a".repeat(64)}`,
     environments:{call:async()=>({owned:true,projectDir:session.directory,venvState:"absent",basePython:"/opt/scikeel/science/bin/python"})},
     spawnImpl:(_command,_args,options)=>spawn(process.execPath,[fileURLToPath(new URL("../fixtures/sandbox-cli.mjs",import.meta.url))],{...options,cwd:undefined})});
   t.after(()=>jobs.close());jobs.configure({enabled_providers:["fixture"],provider:{fixture:{npm:"@ai-sdk/openai-compatible",

@@ -1,14 +1,91 @@
 import {posix} from "node:path";
+import {effectRequest,effectDigest,validateNativeTool} from '../../../runtime/sandbox/native-tools.mjs';
+import {readToolError} from '../../../packages/sdk/src/tool-outcome.mjs';
+
+const sameIdentity=(left,right)=>left&&right&&Object.keys(left).length===8&&Object.keys(right).length===8&&
+  Object.keys(left).every(key=>left[key]===right[key]);
 
 // Native CLI transport remains inside the assigned runner. This adapter owns
 // the long-lived worker lease; it never spawns a model process on the platform.
 export class SandboxNativeJobs {
-  #turns=new Map();
+  #turns=new Map(); #effects;
   constructor({files,workerManager,tenantPolicy,issueNativeGrant=null,delayMs=250}) {
     if(!files || !workerManager || !tenantPolicy || !Number.isSafeInteger(delayMs) || delayMs<1 || delayMs>5000)
       throw new Error("invalid native job transport");
     if(issueNativeGrant!==null&&typeof issueNativeGrant!=='function')throw new Error('invalid native grant authority');
     Object.assign(this,{files,workerManager,tenantPolicy,issueNativeGrant,delayMs});
+  }
+  configureEffects(effects){
+    if(this.#turns.size||!effects||typeof effects.prepare!=='function'||typeof effects.callTool!=='function'||
+      typeof effects.permissions?.authorize!=='function'||typeof effects.permissions?.assertCurrent!=='function')throw Error('Invalid native effect authority');
+    this.#effects=effects;
+  }
+  executionScope(identity){
+    const turn=this.#turns.get(`${identity?.userId}/${identity?.conversationId}`);
+    if(!turn?.accepted||turn.signal.aborted||!sameIdentity(turn.identity,identity))return null;
+    this.tenantPolicy.account(turn.context);
+    return {context:{...turn.context},session:{...turn.session},researchExecution:turn.researchExecution,rootSessionId:turn.rootSessionId};
+  }
+  async authorizeEffect(context,input,{signal}={}){
+    const body=structuredClone(input),action=effectRequest(body),identity=context.turnIdentity;
+    const turn=this.#turns.get(`${context.userId}/${identity?.conversationId}`);
+    if(!this.#effects||!turn||!sameIdentity(turn.identity,identity)||turn.context?.instanceId!==context.instanceId||
+      turn.context?.generation!==context.generation)throw Error('Native effect scope denied');
+    // A hook may arrive while the runner start acknowledgement is in flight.
+    // It gains no authority before the actual native binding has been persisted.
+    if(!turn.accepted){
+      let timer;const aborted=()=>{throw Error('Native effect stopped');};
+      try{await Promise.race([turn.ready,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Native acceptance unavailable')),1500);})]);}
+      finally{clearTimeout(timer);}if(signal?.aborted)aborted();
+    }
+    if(!this.executionScope(identity)||signal?.aborted||action.nativeSessionId!==turn.nativeSessionId||action.turnId!==turn.turnId||
+      action.directory!==turn.session.directory||turn.barrier||turn.guards.has(action.callId)||turn.guards.size>=256)throw Error('Native effect denied');
+    // Fence at the pre-effect hook, not at a later tool-event poll. Parallel
+    // guards already awaiting permission must also observe this barrier below.
+    if(action.nativeTool==='research_checkpoint')turn.barrier=action.callId;
+    const record={action,used:false};turn.guards.set(action.callId,record);
+    const decision=await this.#effects.permissions.authorize(identity,{sessionId:turn.session.id,callId:action.callId,
+      tool:action.tool,kind:action.kind,directory:action.directory,inputs:action.inputs});
+    if(decision.allowed!==true||!await this.#effects.permissions.assertCurrent(decision)||!this.executionScope(identity)||signal?.aborted||
+      turn.barrier&&turn.barrier!==action.callId)
+      throw Error('Native effect denied');
+    record.decision=decision;
+    return {allowed:true,digest:effectDigest(body)};
+  }
+  runningToolPart(context,sessionId,callId){
+    const turn=this.#turns.get(`${context.userId}/${sessionId}`),scope=turn&&this.executionScope(turn.identity);
+    if(!scope||scope.context.instanceId!==context.instanceId||scope.context.generation!==context.generation||turn.activeTool?.callID!==callId)
+      throw Error('Native tool is not running');
+    return structuredClone(turn.activeTool);
+  }
+  async #tool(turn,event,context,started,signal,emit){
+    const input=validateNativeTool(event.tool,event.input),record=turn.guards.get(event.callId);
+    if(!/^[a-f0-9]{64}$/.test(event.id??'')||!record?.decision||record.used||record.action.nativeTool!==event.tool||effectDigest(record.action.inputs)!==effectDigest(input)||
+      !await this.#effects.permissions.assertCurrent(record.decision)||!this.executionScope(turn.identity)||
+      turn.barrier&&turn.barrier!==event.callId)throw Error('Native tool authorization changed');
+    record.used=true;
+    signal.throwIfAborted();
+    turn.activeTool={type:'tool',callID:event.callId,tool:event.tool,state:{status:'running',input}};
+    try{
+      await emit({...structuredClone(turn.activeTool),...event,type:'tool',state:structuredClone(turn.activeTool.state)});
+      signal.throwIfAborted();
+      if(!this.executionScope(turn.identity)||turn.barrier&&turn.barrier!==event.callId)throw Error('Native tool authorization changed');
+      let text,outcome;
+      try{text=await this.#effects.callTool({context,identity:structuredClone(turn.identity),sessionId:turn.session.id,callId:event.callId,
+        tool:event.tool,input,signal});}
+      catch(error){
+        outcome=readToolError(JSON.stringify({error:error?.outcome}));
+        if(!outcome||outcome.correlationId!==event.callId)throw error;
+        text=JSON.stringify({error:outcome});
+      }
+      signal.throwIfAborted();
+      if(!this.executionScope(turn.identity)||typeof text!=='string'||Buffer.byteLength(text)>256*1024)throw Error('Native tool result denied');
+      const reply=await this.files.job(context,{operation:'toolResult',jobId:started.jobId,id:event.id,success:!outcome,text},{signal});
+      if(reply?.replied!==true)throw Error('Native tool result unavailable');
+      await emit({...event,type:'tool',callID:event.callId,state:outcome?{status:'error',input,error:text,metadata:{scikeelOutcome:outcome}}:
+        {status:'completed',input,output:text}});
+      if(event.tool==='research_checkpoint'&&!outcome)turn.barrier=null;
+    }finally{turn.activeTool=null;}
   }
   async inspect(context) {
     this.tenantPolicy.account(context);
@@ -37,7 +114,10 @@ export class SandboxNativeJobs {
     const controller = new AbortController();
     signal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     let settled;
-    const reservation={controller,settled:new Promise(resolve=>{settled=resolve;})};
+    let accepted,rejectAcceptance;
+    const reservation={controller,identity:turnIdentity,session,signal,guards:new Map(),accepted:false,
+      ready:new Promise((resolve,reject)=>{accepted=resolve;rejectAcceptance=reject;}),settled:new Promise(resolve=>{settled=resolve;})};
+    reservation.ready.catch(()=>{});
     this.#turns.set(key,reservation);let lease;let context;let started;let grant;let submitted=false;let cleanupVerified=true;
     const revoke=()=>{if(!reservation.revoking&&grant){reservation.revoking=Promise.resolve().then(()=>grant.revoke());reservation.revoking.catch(()=>{});}};
     try {
@@ -49,6 +129,13 @@ export class SandboxNativeJobs {
       reservation.lease=lease;
       if(lease.generation!==context.generation)throw new Error("native worker generation changed");
       signal.throwIfAborted();
+      if(this.#effects){
+        const prepared=await this.#effects.prepare({identity:turnIdentity,context,session});
+        if(!Number.isSafeInteger(prepared?.researchExecution)||prepared.researchExecution<1)throw Error('Native research execution unavailable');
+        reservation.researchExecution=prepared.researchExecution;
+        reservation.rootSessionId=prepared.rootSessionId??session.id;
+        signal.throwIfAborted();
+      }
       grant=await this.issueNativeGrant({context:{userId,instanceId:context.instanceId,generation:context.generation},turnIdentity,model,variant,identityRevision});
       reservation.grant=grant;signal.addEventListener('abort',revoke,{once:true});
       signal.throwIfAborted();
@@ -67,6 +154,7 @@ export class SandboxNativeJobs {
       if(signal.aborted)throw new Error("native turn cancelled");
       await onAccepted?.({nativeSessionId:started.nativeSessionId,turnId:started.turnId});
       if(signal.aborted)throw new Error("native turn cancelled");
+      Object.assign(reservation,{accepted:true,nativeSessionId:started.nativeSessionId,turnId:started.turnId});accepted();
       for(;;) {
         if(signal?.aborted)throw new Error("native turn cancelled");
         if(Date.now()-renewedAt>=300000){grant.renew();renewedAt=Date.now();}
@@ -76,15 +164,23 @@ export class SandboxNativeJobs {
             !Array.isArray(batch.events)||batch.events.length>10000)throw new Error("invalid native event batch");
         for(const event of batch.events) {
           if(event.sessionID!==session.id||event.nativeSessionId!==started.nativeSessionId||event.turnId!==started.turnId||
-              event.sequence!==after+1||!["approval","question","text","tool-output","completed"].includes(event.type))
+              event.sequence!==after+1||!["approval","question","tool-call","text","tool-output","completed"].includes(event.type))
             throw new Error("foreign native event");
           after=event.sequence;
+          if(event.type==='tool-call'){
+            await this.#tool(reservation,event,context,started,signal,emit);continue;
+          }
           if(["approval","question"].includes(event.type))this.tenantPolicy.registerRequest(context,{id:event.id,sessionID:session.id});
           if(event.type==="approval") {
             // Tool execution in the assigned Web sandbox is already authorized.
             // Answer only this generation/session/job's validated request; user
             // questions remain interactive and sandbox boundaries still apply.
             signal?.throwIfAborted();
+            if(this.#effects){
+              const record=reservation.guards.get(event.itemId);
+              if(!record?.decision||!await this.#effects.permissions.assertCurrent(record.decision)||!this.executionScope(turnIdentity)||reservation.barrier)
+                throw Error('Native approval authority changed');
+            }
             this.tenantPolicy.account(context);
             const reply=await this.files.job(context,{operation:"approve",jobId:started.jobId,id:event.id,decision:"accept"},{signal});
             if(reply?.replied!==true)throw new Error("native automatic permission unavailable");
@@ -118,6 +214,7 @@ export class SandboxNativeJobs {
       }
       throw error;
     } finally {
+      reservation.accepted=false;rejectAcceptance(Error('Native execution ended'));
       signal.removeEventListener('abort',revoke);
       try {if(grant){revoke();await reservation.revoking;}}
       catch {cleanupVerified=false;throw new Error('native model cleanup unverified; workspace remains reserved');}

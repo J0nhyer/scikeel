@@ -310,7 +310,7 @@ export class ModelBroker {
     req.once("aborted", aborted); res.once("close", aborted); this.#operations.add(operation);
     try {
       if (this.#operations.size > this.maxConnections) throw failure("model_capacity", 429);
-      if (req.method !== "POST" || !(ROUTES.has(req.url) || req.url === "/collaboration" && this.collaborationHandler || req.url === "/network" && this.networkHandler) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
+      if (req.method !== "POST" || !(ROUTES.has(req.url) || req.url === "/native/effect" && this.nativeEffectHandler || req.url === "/collaboration" && this.collaborationHandler || req.url === "/network" && this.networkHandler) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
           req.headers["content-encoding"] || req.headers.expect) throw failure("model_request_denied");
       const bearer = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
       const apiKey = /^[a-f0-9]{64}$/.test(req.headers["x-api-key"] ?? "") ? req.headers["x-api-key"] : undefined;
@@ -338,6 +338,22 @@ export class ModelBroker {
       let body;
       try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw failure("model_invalid_json", 400); }
       if (!body || typeof body !== "object" || Array.isArray(body)) throw failure("model_request_denied");
+      // Native effects require the input-bound tool transport, never legacy bridge writes.
+      if(capability.runtime==='codex'&&(req.url==='/network'||req.url==='/collaboration'&&!['state','guard'].includes(body.action)))
+        throw failure('model_request_denied');
+      if(req.url==='/native/effect'){
+        if(bytes>512*1024||capability.runtime!=='codex'||!turnScope(capability))throw failure('model_request_denied');
+        this.#requireInference(grantKey,operation);
+        const work=Promise.resolve().then(()=>{
+          controller.signal.throwIfAborted();this.#requireInference(grantKey,operation);
+          return this.nativeEffectHandler(structuredClone(operation.context),body,{signal:controller.signal});
+        });
+        operation.effect=work;
+        const result=await wait(()=>work,controller.signal);
+        controller.signal.throwIfAborted();this.#requireInference(grantKey,operation);
+        res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});
+        res.end(JSON.stringify(result));return;
+      }
       if (req.url === "/network") {
         if (bytes > 8192 || body.version !== 1 || !["authorize", "complete", "cancel"].includes(body.action) ||
             Object.keys(body).some(key => !["version", "action", "sessionId", "callId", "execution", "tool", "origins", "operationId", "outcome"].includes(key))) throw failure("model_request_denied");

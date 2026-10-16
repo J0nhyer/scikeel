@@ -1371,6 +1371,13 @@ export class CliRuntimeManager {
           } else if(event.type==="tool-output") {
             const part={id:`prt_${randomUUID()}`,type:"text",text:event.text,synthetic:true};
             assistant.parts.push(part);this.emitText(userId,session,assistant,part);
+          } else if(event.type==='tool') {
+            let part=assistant.parts.find(part=>part.type==='tool'&&part.callID===event.callId);
+            if(!part){part={id:`prt_${randomUUID()}`,type:'tool',callID:event.callId,tool:event.tool,
+              messageID:assistant.info.id,sessionID:session.id};assistant.parts.push(part);}
+            const start=part.state?.time?.start??now();
+            part.state={title:event.tool,metadata:{},...structuredClone(event.state),time:{start,...(event.state.status!=='running'?{end:now()}:{})}};
+            this.emitTool(userId,session,assistant,part);
           }
         }});
       session.nativeSessionId=result.nativeSessionId;session.identityRevision=profile.identityRevision;
@@ -1381,6 +1388,10 @@ export class CliRuntimeManager {
     } finally {
       for(const [id,pending]of this.nativeApprovals)if(pending.userId===userId && pending.sessionID===session.id)this.nativeApprovals.delete(id);
       for(const [id,pending]of this.nativeQuestions)if(pending.userId===userId && pending.sessionID===session.id)this.nativeQuestions.delete(id);
+      for(const part of assistant.parts)if(part.type==='tool'&&part.state.status==='running'){
+        part.state={status:'error',input:part.state.input,error:'Execution interrupted or unavailable.',time:{start:part.state.time.start,end:now()}};
+        this.emitTool(userId,session,assistant,part);
+      }
       assistant.info.time.completed=now();
       if(assistant.parts.length || assistant.info.error)session.history.push(assistant);
       session.status="idle";session.updatedAt=now();

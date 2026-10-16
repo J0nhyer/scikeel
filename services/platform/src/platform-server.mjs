@@ -1469,6 +1469,7 @@ export class PlatformServer {
   async runningToolPart(context, sessionId, callId) {
     const worker = this.workerManager.getWorker(context.instanceId);
     if (!worker || worker.userId !== context.userId || worker.generation !== context.generation || worker.status !== "running") throw new Error("Tool worker unavailable");
+    if(this.cliRuntime?.isManaged(context.userId))return this.cliRuntime.sandboxJobs.runningToolPart(context,sessionId,callId);
     const session = this.tenantPolicy.session(context, sessionId);
     const history = await this.#workerResearchRequest({ userId: context.userId, directory: session.directory }, `/session/${encodeURIComponent(sessionId)}/message`);
     const part = Array.isArray(history) && history.flatMap(message => message.parts ?? []).findLast(part => part.type === "tool" && part.callID === callId);
