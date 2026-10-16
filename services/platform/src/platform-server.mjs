@@ -909,6 +909,60 @@ export class PlatformServer {
     this.tenantPolicy.account(context);sendJson(response,200,value);return true;
   }
 
+  #nativeResearchHeld(owner,execution,exclude=[]) {
+    return [...this.promptAdmissions.values()].some(held=>!exclude.includes(held)&&held.owner.userId===owner.userId&&
+      held.owner.instanceId===owner.instanceId&&held.owner.generation===owner.generation&&
+      held.rootSessionId===owner.sessionId&&held.rootExecution===execution);
+  }
+
+  async #prepareNativeResearch(executionAdmission,owner,sessionId,body) {
+    const admission=new PromptAdmission({collaboration:this.collaboration,researchTasks:this.researchTasks}),held=[];
+    const hold=(kind,ticket)=>{
+      const root=admission.root ?? admission.inherited;
+      const key=this.#admissionKey(kind,ticket),record={owner:{...ticket},disposition:'preparing',
+        rootSessionId:root.owner.sessionId,rootExecution:root.execution};
+      this.promptAdmissions.set(key,record);held.push({key,record});
+    };
+    const settle=executionAdmission.settle.bind(executionAdmission),submitted=executionAdmission.submitted.bind(executionAdmission);
+    executionAdmission.settle=async options=>{
+      if(options?.cleanupVerified===true){
+        const root=admission.root,other=root&&this.#nativeResearchHeld(root.owner,root.execution,held.map(item=>item.record));
+        // A root's own cleanup does not release accepted descendant work.
+        if(other){admission.inherited=root;admission.root=null;}
+        if(!executionAdmission.dispatched)await admission.rejectBeforeDispatch();
+        else if(admission.root)await this.collaboration.settled(admission.root.owner,admission.root.execution);
+      }
+      await settle(options);
+      if(options?.cleanupVerified===true)for(const {key,record} of held)
+        if(this.promptAdmissions.get(key)===record)this.promptAdmissions.delete(key);
+    };
+    executionAdmission.submitted=async()=>{
+      if(executionAdmission.reservation.cancelled)throw workspaceError('turn_cancelled',409);
+      const root=admission.root ?? admission.inherited;
+      await this.collaboration.assertAdmission(root.owner,root.execution);
+      if(admission.research)await this.researchTasks.assertAdmission(admission.research);
+      if(executionAdmission.reservation.cancelled)throw workspaceError('turn_cancelled',409);
+      await submitted();admission.dispatch();
+    };
+    const current=await this.collaboration.get(owner),revision=body.collaborationRevision;
+    let state;
+    if(owner.sessionId!==sessionId&&current.phase==='running'){
+      if(revision!==undefined)this.collaboration.revision(current,revision);
+      const guarded=await this.collaboration.guard(owner);
+      if(guarded.blocked||guarded.repairExhausted)throw workspaceError('research_execution_changed',409);
+      await this.collaboration.assertAdmission(owner,current.execution);
+      state=current;admission.inherited={owner,execution:state.execution};
+      hold('collaboration',{...owner,execution:state.execution,sessionId});
+    }else state=await this.collaboration.begin(owner,revision??current.revision,{onStarted:ticket=>{
+      admission.started(ticket.owner,ticket.execution);hold('collaboration',{...ticket.owner,execution:ticket.execution});
+    }});
+    const prepared=ticket=>{admission.prepared(ticket);hold('research',ticket);};
+    const result={...body};delete result.collaborationRevision;if(result.agent==='plan')delete result.agent;
+    result.system=[result.system??'',collaborationPolicy(state),`Confirmed research decisions: ${JSON.stringify(state.decisions)}`,
+      `Delivery verification: ${JSON.stringify(state.delivery??null)}`].filter(Boolean).join('\n\n');
+    return {body:result,prepared};
+  }
+
   async #proxy(request, response, access, user, worker) {
     this.#requireWriteContext(request, user, worker);
     await this.#requireAssistantContext(request, response);
@@ -1015,6 +1069,7 @@ export class PlatformServer {
     let serializedBody=gatewayBody===undefined ? undefined : JSON.stringify(gatewayBody);
     let preparedAttachments;
     let executionAdmission;
+    let nativeResearch;
     if (promptMatch && request.method === "POST") {
       const sessionId = decodeURIComponent(promptMatch[1]);
       if (promptMatch[2] === "prompt_async") {
@@ -1037,6 +1092,9 @@ export class PlatformServer {
             // native dispatch and cleanup are owned by the admitted turn below.
             response.once("finish",()=>{if(response.statusCode>=400&&!executionAdmission.dispatched)
               void executionAdmission.settle({cleanupVerified:true}).catch(()=>{});});
+            const researchOwner=await this.#collaborationOwner(user,sessionId,access,worker);
+            nativeResearch=await this.#prepareNativeResearch(executionAdmission,researchOwner,sessionId,promptBody);
+            promptBody=nativeResearch.body;
           }catch(error){sendJson(response,error.statusCode??error.status??503,{error:error.message,code:error.code});return;}
         }
       }
@@ -1086,7 +1144,8 @@ export class PlatformServer {
         try {
           const owner = await this.#researchOwner(user, sessionId, access, worker);
           if (owner.runtime !== task.runtime || resolve(owner.directory) !== task.directory) throw Object.assign(new Error("research task belongs to a different assistant or workspace"), { status: 409 });
-          promptBody = await this.researchTasks.prepare(user.id, sessionId, body, owner);
+          promptBody = await this.researchTasks.prepare(user.id, sessionId, body, owner,
+            nativeResearch?{onPrepared:nativeResearch.prepared}:undefined);
           serializedBody = JSON.stringify(promptBody);
         } catch (error) {
           sendJson(response, error.status ?? 400, { error: error.message });
@@ -1336,6 +1395,7 @@ export class PlatformServer {
     return JSON.stringify([kind,owner.userId,owner.instanceId,owner.generation,owner.sessionId,owner.execution]);
   }
   async #admissionRunning(kind,owner) {
+    if(kind==='collaboration'&&owner.runtime==='codex'&&this.#nativeResearchHeld(owner,owner.execution))return true;
     const key=this.#admissionKey(kind,owner),held=this.promptAdmissions.get(key);
     if(held) {
       if(held.disposition!=="unknown" || !held.messageID)return true;

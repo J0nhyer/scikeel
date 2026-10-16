@@ -1431,6 +1431,148 @@ test('native collaboration resolves owned child ancestry without querying the Op
  assert.throws(()=>policy.session(context,unregistered.id));assert.equal(workerReads,0);
 });
 
+async function nativeHttpFixture(t,run){
+ const root=await mkdtemp(join(tmpdir(),'scikeel-native-http-research-'));
+ const cliRuntime=new CliRuntimeManager({rootDir:join(root,'native'),sandboxJobs:{run},
+  profileResolver:{refresh:async runtime=>({runtime,enabledByProfile:runtime==='codex',models:runtime==='codex'?[{id:'approved',variants:{}}]:[],
+   defaultModel:runtime==='codex'?'approved':null,identityRevision:'service-profile',catalogRevision:'catalog',status:'ready',files:{}})},
+  assistantAuthority:{prepare:async()=>{},revoke:async()=>{},inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}});
+ await cliRuntime.init();await cliRuntime.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'native-http-research'});
+ const policy=new TenantPolicy(),f=await makeFixture({root,tenantPolicy:policy,cliRuntime}),client=makeClient(f.base);
+ const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+ const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+ f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+ const owner={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir,runtime:'codex'};
+ policy.registerAccount(owner);
+ const create=async parentId=>{
+  const session=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir});
+  if(parentId)session.parentId=parentId;
+  await f.server.conversations.create(owner,{conversationId:session.id,title:'Owned',parentId:parentId??null,lifecycle:'active'});
+  return session;
+ };
+ const session=await create();f.server.conversationRouter={index:(scope,id)=>f.server.conversations.open(scope,id)};
+ const send=(requestId,body={},target=session)=>client.request(`/session/${target.id}/prompt_async`,{method:'POST',
+  headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2','x-scikeel-request-id':requestId},
+  body:JSON.stringify({parts:[{type:'text',text:'Research'}],model:{providerID:'codex',modelID:'approved'},...body})});
+ return {...f,client,user,owner,session,create,send,researchOwner:{...owner,sessionId:session.id}};
+}
+async function until(check){
+ for(let n=0;n<100;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
+ assert.fail('Timed out waiting for native turn settlement');
+}
+test('native HTTP research starts before preparation and remains held until verified cleanup',async t=>{
+ let finish,entered;const gate=new Promise(resolve=>finish=resolve),ready=new Promise(resolve=>entered=resolve);t.after(()=>finish());
+ let text;const f=await nativeHttpFixture(t,async args=>{
+  text=args.text;await args.onAccepted({nativeSessionId:'native-owned',turnId:'native-turn'});entered();
+  await gate;await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'native-owned'};
+ });
+ let prepared=false;const prepare=f.server.attachmentTurns.prepare.bind(f.server.attachmentTurns);
+ f.server.attachmentTurns.prepare=async(...args)=>{
+  const state=await f.server.collaboration.get(f.researchOwner);assert.equal(state.phase,'running');prepared=true;return prepare(...args);
+ };
+ const response=await f.send('http-research',{collaborationRevision:0,agent:'plan'});assert.equal(response.status,202);await ready;
+ assert.equal(prepared,true);assert.match(text,/SciKeel collaboration mode: autonomous/);assert.match(text,/Confirmed research decisions/);
+ const running=await f.server.collaboration.get(f.researchOwner);assert.equal(running.execution,1);
+ f.server.collaboration.now=()=>Date.now()+10000;await f.server.collaboration.tick();
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+ assert.equal((await f.server.conversations.open(f.owner,f.session.id)).turns['http-research'].state,'accepted');
+ assert.equal((await f.send('http-research',{collaborationRevision:0,agent:'plan'})).status,202);
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).execution,1);
+ finish();await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal((await f.server.conversations.open(f.owner,f.session.id)).turns['http-research'].state,'settled');
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'idle');assert.equal(f.server.promptAdmissions.size,0);
+});
+test('native HTTP rejects stale revisions and pending decisions without dispatch or clearing research state',async t=>{
+ let starts=0;const f=await nativeHttpFixture(t,async()=>{starts++;throw Error('Unexpected dispatch');});
+ await f.server.collaboration.setMode(f.researchOwner,'guided',0);
+ assert.equal((await f.send('stale-research',{collaborationRevision:0})).status,409);
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['stale-research'].state==='settled');
+ await until(()=>!f.cliRuntime.turnReservations.has(f.session.id));
+ const started=await f.server.collaboration.begin(f.researchOwner,1);
+ const waiting=await f.server.collaboration.checkpoint(f.researchOwner,{kind:'step',question:'Proceed?',suggestedAnswer:'Yes',execution:started.execution});
+ assert.equal((await f.send('pending-research',{collaborationRevision:waiting.revision})).status,409);
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['pending-research'].state==='settled');
+ assert.deepEqual(await f.server.collaboration.get(f.researchOwner),waiting);assert.equal(starts,0);
+});
+test('native HTTP preparation rejection releases only the execution it began',async t=>{
+ let starts=0;const f=await nativeHttpFixture(t,async()=>{starts++;throw Error('Unexpected dispatch');});
+ f.server.attachmentTurns.prepare=async()=>{throw Object.assign(Error('Preparation rejected'),{status:400});};
+ assert.equal((await f.send('rejected-research')).status,400);
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['rejected-research'].state==='settled');
+ await until(()=>!f.cliRuntime.turnReservations.has(f.session.id));
+ const rejected=await f.server.collaboration.get(f.researchOwner);
+ assert.equal(rejected.phase,'idle');assert.equal(rejected.execution,1);assert.equal(f.server.promptAdmissions.size,0);
+ const current=await f.server.collaboration.get(f.researchOwner);await f.server.collaboration.begin(f.researchOwner,current.revision);
+ const child=await f.create(f.session.id);
+ assert.equal((await f.send('rejected-child',{},child)).status,400);
+ await until(async()=>(await f.server.conversations.open(f.owner,child.id)).turns['rejected-child'].state==='settled');
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');assert.equal(starts,0);
+});
+test('native HTTP child completion preserves inherited execution and unverified cleanup stays fenced',async t=>{
+ for(const verified of [true,false]){
+  let finish;const gate=new Promise(resolve=>finish=resolve);t.after(()=>finish());
+  const f=await nativeHttpFixture(t,async args=>{
+   await args.onAccepted({nativeSessionId:'native-child',turnId:'native-turn'});await gate;
+   await args.onCleanup({cleanupVerified:verified});return {nativeSessionId:'native-child'};
+  });
+  await f.server.collaboration.begin(f.researchOwner,0);const child=await f.create(f.session.id);
+  assert.equal((await f.send('child-research',{},child)).status,202);finish();
+  await until(async()=>['settled','unknown'].includes((await f.server.conversations.open(f.owner,child.id)).turns['child-research'].state));
+  await until(()=>f.cliRuntime.activeTurns.size===0);
+  assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+  const receipt=(await f.server.conversations.open(f.owner,child.id)).turns['child-research'];
+  assert.equal(receipt.state,verified?'settled':'unknown');assert.equal(f.server.promptAdmissions.size,verified?0:1);
+  if(!verified){
+   f.server.collaboration.now=()=>Date.now()+10000;await f.server.collaboration.tick();
+   assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+  }
+ }
+});
+test('native HTTP unverified root cleanup survives monitoring and prevents unsafe retry',async t=>{
+ let finish;const gate=new Promise(resolve=>finish=resolve);t.after(()=>finish());
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'native-root',turnId:'native-turn'});await gate;
+  await args.onCleanup({cleanupVerified:false});return {nativeSessionId:'native-root'};
+ });
+ assert.equal((await f.send('uncertain-root')).status,202);finish();await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal((await f.server.conversations.open(f.owner,f.session.id)).turns['uncertain-root'].state,'unknown');
+ f.server.collaboration.now=()=>Date.now()+10000;await f.server.collaboration.tick();
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+ assert.equal((await f.send('unsafe-retry')).status,503);assert.equal(f.server.promptAdmissions.size,1);
+});
+test('native HTTP root completion cannot settle an active descendant research execution',async t=>{
+ let finishRoot,finishChild,entered;const ready=new Promise(resolve=>entered=resolve);
+ const rootGate=new Promise(resolve=>finishRoot=resolve),childGate=new Promise(resolve=>finishChild=resolve);
+ t.after(()=>{finishRoot();finishChild();});
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:args.session.parentId?'native-child':'native-root',turnId:'native-turn'});
+  if(!args.session.parentId)entered();
+  await (args.session.parentId?childGate:rootGate);await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'native-owned'};
+ });
+ try{
+  assert.equal((await f.send('root-research')).status,202);await ready;const child=await f.create(f.session.id);
+  const response=await f.send('active-child',{},child);assert.equal(response.status,202,await response.text());finishRoot();
+  await until(()=>f.session.status==='idle'&&!f.cliRuntime.turnReservations.has(f.session.id));
+  assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+  finishChild();await until(()=>f.cliRuntime.activeTurns.size===0);
+  f.server.collaboration.now=()=>Date.now()+10000;await f.server.collaboration.tick();
+  assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'idle');assert.equal(f.server.promptAdmissions.size,0);
+ }finally{finishRoot();finishChild();}
+});
+test('native HTTP Stop during attachment preparation prevents late dispatch and preserves pending decisions',async t=>{
+ let resume,entered;const gate=new Promise(resolve=>resume=resolve),ready=new Promise(resolve=>entered=resolve);t.after(()=>resume());
+ let starts=0;const f=await nativeHttpFixture(t,async()=>{starts++;throw Error('Stopped send must not dispatch');});
+ const prepare=f.server.attachmentTurns.prepare.bind(f.server.attachmentTurns);
+ f.server.attachmentTurns.prepare=async(...args)=>{entered();await gate;return prepare(...args);};
+ const pending=f.send('preparation-stop');await ready;
+ const running=await f.server.collaboration.get(f.researchOwner);
+ const waiting=await f.server.collaboration.checkpoint(f.researchOwner,{kind:'method',question:'Use this method?',suggestedAnswer:'Confirm',execution:running.execution});
+ const stopped=await f.client.request(`/session/${f.session.id}/abort`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+ assert.equal(stopped.status,200);resume();assert.equal((await pending).status,409);
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['preparation-stop'].state==='settled');
+ assert.deepEqual(await f.server.collaboration.get(f.researchOwner),waiting);assert.equal(starts,0);
+});
+
 test('managed runtime mutation policy admission precedes the workspace queue and Admin selection bypasses its own tenant queue',async()=>{
  const policy=new TenantPolicy(),f=await makeFixture({tenantPolicy:policy}),client=makeClient(f.base);
  const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
