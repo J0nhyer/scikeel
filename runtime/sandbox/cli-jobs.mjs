@@ -312,7 +312,7 @@ export class CliJobs {
       job.approvals.delete(request.id);job.native.approve({id:pending,decision:request.decision});return {replied:true};
     }
     if(request.after>job.sequence || (job.events.length && request.after<job.events[0].sequence-1))throw new Error("managed event cursor unavailable");
-    return {jobId:job.id,status:job.status,nativeSessionId:job.nativeSessionId,events:job.events.filter(event=>event.sequence>request.after)};
+    return {jobId:job.id,status:job.status,nativeSessionId:job.nativeSessionId,turnId:job.turnId,events:job.events.filter(event=>event.sequence>request.after)};
   }
   async #start(request,signal) {
     if(this.busy)throw new Error("managed job capacity unavailable");
@@ -332,6 +332,12 @@ export class CliJobs {
       job.native=this.nativeFactory({spawnImpl:this.spawnImpl,onStopped:()=>{
         if(job.status==="running"){job.status="failed";job.approvals.clear();job.questions.clear();}
       },emit:async event=>{
+        if(job.status!=="running"||!event||!['approval','question','text','tool-output','completed'].includes(event.type)||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(event.nativeSessionId??"")||!/^[A-Za-z0-9_-]{1,128}$/.test(event.turnId??"")||
+            (request.nativeSessionId&&event.nativeSessionId!==request.nativeSessionId)||
+            (job.nativeSessionId&&event.nativeSessionId!==job.nativeSessionId)||(job.turnId&&event.turnId!==job.turnId))
+          throw new Error("foreign native event scope");
+        job.nativeSessionId=event.nativeSessionId;job.turnId=event.turnId;
         if(event.type==="question") {
           if(job.questions.size>=8)throw new Error("managed question capacity");
           const id=randomBytes(32).toString("hex");job.questions.set(id,event.id);event={...event,id};
@@ -349,7 +355,12 @@ export class CliJobs {
       try {
         const result=await job.native.start({...request,privateHome:this.manifest.home,projectDir,environment,
           brokers:{modelToken:provider.options.apiKey,modelUrl:provider.options.baseURL},signal});
-        job.nativeSessionId=result.nativeSessionId;return {jobId:job.id,nativeSessionId:result.nativeSessionId};
+        if(!/^[A-Za-z0-9_-]{1,128}$/.test(result?.nativeSessionId??"")||!/^[A-Za-z0-9_-]{1,128}$/.test(result.turnId??"")||
+            (request.nativeSessionId&&result.nativeSessionId!==request.nativeSessionId)||
+            (job.nativeSessionId&&result.nativeSessionId!==job.nativeSessionId)||(job.turnId&&result.turnId!==job.turnId))
+          throw new Error("foreign native acceptance scope");
+        job.nativeSessionId=result.nativeSessionId;job.turnId=result.turnId;
+        return {jobId:job.id,nativeSessionId:job.nativeSessionId,turnId:job.turnId};
       } catch {await job.native.close();job.status="failed";job.approvals.clear();job.questions.clear();throw new Error("managed native turn unavailable");}
     } finally{this.#starting=false;}
   }

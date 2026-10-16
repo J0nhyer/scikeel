@@ -44,14 +44,20 @@ export class SandboxNativeJobs {
       submitted=true;cleanupVerified=false;
       started=await this.files.job(context,{operation:"start",sessionId:session.id,project:context.project,model,text,images,
         ...(nativeSessionId ? {nativeSessionId} : {})},{signal});
-      if(!/^[a-f0-9]{64}$/.test(started.jobId??""))throw new Error("invalid native runner reply");
+      if(!/^[a-f0-9]{64}$/.test(started.jobId??"")||!/^[A-Za-z0-9_-]{1,128}$/.test(started.nativeSessionId??"")||
+          !/^[A-Za-z0-9_-]{1,128}$/.test(started.turnId??"")||(nativeSessionId&&started.nativeSessionId!==nativeSessionId))
+        throw new Error("invalid native runner reply");
+      this.tenantPolicy.account(context);
       Object.assign(reservation,{context,jobId:started.jobId});let after=0;
       for(;;) {
         if(signal?.aborted)throw new Error("native turn cancelled");
         const batch=await this.files.job(context,{operation:"events",jobId:started.jobId,after},{signal});
-        if(batch.jobId!==started.jobId || !Array.isArray(batch.events) || batch.events.length>10000)throw new Error("invalid native event batch");
+        this.tenantPolicy.account(context);
+        if(batch.jobId!==started.jobId||batch.nativeSessionId!==started.nativeSessionId||batch.turnId!==started.turnId||
+            !Array.isArray(batch.events)||batch.events.length>10000)throw new Error("invalid native event batch");
         for(const event of batch.events) {
-          if(event.sessionID!==session.id || event.sequence!==after+1 || !["approval","question","text","tool-output","completed"].includes(event.type))
+          if(event.sessionID!==session.id||event.nativeSessionId!==started.nativeSessionId||event.turnId!==started.turnId||
+              event.sequence!==after+1||!["approval","question","text","tool-output","completed"].includes(event.type))
             throw new Error("foreign native event");
           after=event.sequence;
           if(["approval","question"].includes(event.type))this.tenantPolicy.registerRequest(context,{id:event.id,sessionID:session.id});
@@ -60,6 +66,7 @@ export class SandboxNativeJobs {
             // Answer only this generation/session/job's validated request; user
             // questions remain interactive and sandbox boundaries still apply.
             signal?.throwIfAborted();
+            this.tenantPolicy.account(context);
             const reply=await this.files.job(context,{operation:"approve",jobId:started.jobId,id:event.id,decision:"accept"},{signal});
             if(reply?.replied!==true)throw new Error("native automatic permission unavailable");
             continue;
@@ -68,7 +75,7 @@ export class SandboxNativeJobs {
         }
         if(batch.status!=="running" && batch.status!=="settling") {
           if(batch.status!=="completed" || !/^[A-Za-z0-9_-]{1,128}$/.test(batch.nativeSessionId??""))throw new Error("native turn failed");
-          cleanupVerified=true;return {nativeSessionId:batch.nativeSessionId};
+          cleanupVerified=true;return {nativeSessionId:batch.nativeSessionId,turnId:batch.turnId};
         }
         // Event cursors are bounded HTTP snapshots; the timer is abortable and
         // the worker lease remains held until the native process is stopped.

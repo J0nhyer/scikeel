@@ -1,9 +1,47 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {spawn} from "node:child_process";
+import {fileURLToPath} from "node:url";
+import {CliJobs} from "../../../runtime/sandbox/cli-jobs.mjs";
 import {TenantPolicy} from "../src/tenant-policy.mjs";
 import {SandboxNativeJobs} from "../src/sandbox-native-jobs.mjs";
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
+const acceptance={nativeSessionId:"native-owned",turnId:"turn-owned"};
+test("actual adapter, runner and platform transport preserve one native turn through scoped approval and cleanup",async(t)=>{
+  let released=0;const events=[],operations=[];
+  const jobs=new CliJobs({manifest:{workspaceDir:context.workspaceDir,home:"/tenant/home"},imageDigest:`sha256:${"a".repeat(64)}`,
+    environments:{call:async()=>({owned:true,projectDir:session.directory,venvState:"absent",basePython:"/opt/scikeel/science/bin/python"})},
+    spawnImpl:(_command,_args,options)=>spawn(process.execPath,[fileURLToPath(new URL("../fixtures/sandbox-cli.mjs",import.meta.url))],{...options,cwd:undefined})});
+  t.after(()=>jobs.close());jobs.configure({enabled_providers:["fixture"],provider:{fixture:{npm:"@ai-sdk/openai-compatible",
+    models:{approved:{}},options:{apiKey:"d".repeat(64),baseURL:"http://172.31.240.1:4792/v1"}}}});
+  const transport=new SandboxNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),delayMs:1,
+    workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release:()=>released++})},
+    files:{job:async(owner,input,options)=>{assert.equal(owner.generation,1);operations.push(input.operation);return jobs.call(input,options);}}});
+  const result=await transport.run({userId:"a",session,model:"approved",text:"Research",emit:async event=>events.push(event)});
+  assert.deepEqual(result,acceptance);assert.equal(operations.filter(x=>x==="approve").length,1);
+  assert.equal(events.find(x=>x.type==="text").text,"Actual fixture result");
+  assert(events.every(event=>event.nativeSessionId===acceptance.nativeSessionId&&event.turnId===acceptance.turnId));
+  assert.equal(released,1);assert.equal((await jobs.call({operation:"inspect"})).busy,false);
+});
+test("native transport rejects changed acceptance or event scopes before automatic replies",async()=>{
+  for(const fault of ["start","batch-thread","batch-turn","event-thread","event-turn"]) {
+    const operations=[];let released=0;
+    const transport=new SandboxNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),delayMs:1,
+      workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release:()=>released++})},
+      files:{job:async(_owner,input)=>{
+        operations.push(input.operation);
+        if(input.operation==="start")return {jobId:"b".repeat(64),nativeSessionId:"native-owned",...(fault==="start"?{}:{turnId:"turn-owned"})};
+        if(input.operation==="abort")return {stopped:true};
+        if(input.operation==="approve")return {replied:true};
+        return {jobId:input.jobId,status:"completed",nativeSessionId:fault==="batch-thread"?"foreign":"native-owned",
+          turnId:fault==="batch-turn"?"foreign":"turn-owned",events:[{type:"approval",id:"c".repeat(64),sequence:1,sessionID:session.id,
+            nativeSessionId:fault==="event-thread"?"foreign":"native-owned",turnId:fault==="event-turn"?"foreign":"turn-owned"}]};
+      }}});
+    await assert.rejects(transport.run({userId:"a",session,model:"approved",text:"Research",emit:async()=>{}}),/native/);
+    assert(!operations.includes("approve"),fault);assert.equal(operations.at(-1),"abort");assert.equal(released,1);
+  }
+});
 test("native inventory uses the existing read-only runner snapshot without starting a worker or turn",async()=>{
  const policy=new TenantPolicy({accounts:[context]});let calls=0;
  const transport=new SandboxNativeJobs({tenantPolicy:policy,workerManager:{ensureWorker:()=>{throw Error("must not start worker");}},
@@ -18,7 +56,7 @@ test("recovery aborts only the matching generation and releases it only after ve
   const transport = new SandboxNativeJobs({ tenantPolicy: policy,
     workerManager: { ensureWorker: async () => ({ generation: 1 }), retainWorker: () => ({ generation: 1, release: () => released++ }), stopWorker: async () => { stops++; } },
     files: { job: async (_owner, request, { signal } = {}) => {
-      if (request.operation === "start") return { jobId: "b".repeat(64) };
+      if (request.operation === "start") return { jobId: "b".repeat(64),...acceptance };
       entered(); return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("interrupted")), { once: true }));
     } },
   });
@@ -34,11 +72,11 @@ test("platform native transport automatically approves owned tool calls without 
   const policy=new TenantPolicy({accounts:[context]});let released=0;let accepted=false;const calls=[];let transport;
   const files={job:async(owner,request)=>{
     assert.equal(owner.generation,1);calls.push(request);
-    if(request.operation==="start")return {jobId:"b".repeat(64)};
+    if(request.operation==="start")return {jobId:"b".repeat(64),...acceptance};
     if(request.operation==="approve"){accepted=true;return {replied:true};}
-    return {jobId:request.jobId,status:accepted?"completed":"running",nativeSessionId:"native-owned",events:request.after===0
-      ? [{type:"approval",id:"c".repeat(64),sequence:1,sessionID:"owned"}]
-      : [{type:"completed",status:"completed",sequence:2,sessionID:"owned"}]};
+    return {jobId:request.jobId,status:accepted?"completed":"running",...acceptance,events:request.after===0
+      ? [{type:"approval",id:"c".repeat(64),sequence:1,sessionID:"owned",...acceptance}]
+      : [{type:"completed",status:"completed",sequence:2,sessionID:"owned",...acceptance}]};
   }};
   transport=new SandboxNativeJobs({files,tenantPolicy:policy,delayMs:1,workerManager:{ensureWorker:async()=>({generation:1}),
     retainWorker:()=>({generation:1,release:()=>released++})}});
@@ -54,7 +92,7 @@ test("cancellation aborts the native runner before releasing the worker generati
   const transport=new SandboxNativeJobs({tenantPolicy:policy,workerManager:{ensureWorker:async()=>({generation:1}),
     retainWorker:()=>({generation:1,release:()=>events.push("released")})},files:{job:async(owner,request)=>{
       events.push(request.operation);
-      if(request.operation==="start"){controller.abort();return {jobId:"b".repeat(64)};}
+      if(request.operation==="start"){controller.abort();return {jobId:"b".repeat(64),...acceptance};}
       return {stopped:true};
     }}});
   await assert.rejects(transport.run({userId:"a",session,model:"approved",text:"Research",emit:async()=>{},signal:controller.signal}),/cancel/);
@@ -64,7 +102,7 @@ test("unverified cancellation retains admission rather than allowing a second jo
   const policy=new TenantPolicy({accounts:[context]});const controller=new AbortController();let released=0;
   const transport=new SandboxNativeJobs({tenantPolicy:policy,workerManager:{ensureWorker:async()=>({generation:1}),
     retainWorker:()=>({generation:1,release:()=>released++}),stopWorker:async()=>{throw new Error("launcher unavailable");}},
-    files:{job:async(owner,request)=>{if(request.operation==="start"){controller.abort();return {jobId:"b".repeat(64)};}throw new Error("runner unavailable");}}});
+    files:{job:async(owner,request)=>{if(request.operation==="start"){controller.abort();return {jobId:"b".repeat(64),...acceptance};}throw new Error("runner unavailable");}}});
   await assert.rejects(transport.run({userId:"a",session,model:"approved",text:"Research",emit:async()=>{},signal:controller.signal}),/unverified/);
   assert.equal(released,0);
   await assert.rejects(transport.run({userId:"a",session,model:"approved",text:"Research",emit:async()=>{}}),/busy/);
@@ -76,7 +114,7 @@ test("late native cleanup carries its original generation instead of stopping a 
     workerManager: { ensureWorker: async () => ({ generation: 1 }), retainWorker: () => ({ generation: 1, release: () => {} }),
       stopWorker: async (...args) => { stops.push(args); } },
     files: { job: async (_owner, request) => {
-      if (request.operation === "start") { controller.abort(); return { jobId: "b".repeat(64) }; }
+      if (request.operation === "start") { controller.abort(); return { jobId: "b".repeat(64),...acceptance }; }
       throw new Error("old runner unavailable");
     } },
   });
@@ -92,9 +130,9 @@ test("automatic native permission rejects foreign requests and unconfirmed repli
       workerManager: { ensureWorker: async () => ({ generation: 1 }), retainWorker: () => ({ generation: 1, release: () => operations.push("released") }) },
       files: { job: async (_owner, request) => {
         operations.push(request.operation);
-        if (request.operation === "start") return { jobId: "b".repeat(64) };
-        if (request.operation === "events") return { jobId: request.jobId, status: "running", events: [{ type: "approval", id: "c".repeat(64), sequence: 1,
-          sessionID: failure === "foreign" ? "another-session" : session.id }] };
+        if (request.operation === "start") return { jobId: "b".repeat(64),...acceptance };
+        if (request.operation === "events") return { jobId: request.jobId, status: "running",...acceptance, events: [{ type: "approval", id: "c".repeat(64), sequence: 1,
+          sessionID: failure === "foreign" ? "another-session" : session.id,...acceptance }] };
         if (request.operation === "approve") return { replied: false };
         return { stopped: true };
       } },
@@ -110,12 +148,12 @@ test("native questions still reach the user without being mistaken for tool perm
   transport = new SandboxNativeJobs({ tenantPolicy: policy, delayMs: 1,
     workerManager: { ensureWorker: async () => ({ generation: 1 }), retainWorker: () => ({ generation: 1, release: () => {} }) },
     files: { job: async (_owner, request) => {
-      if (request.operation === "start") return { jobId: "b".repeat(64) };
+      if (request.operation === "start") return { jobId: "b".repeat(64),...acceptance };
       if (request.operation === "answer") { answered = true; return { replied: true }; }
       assert.notEqual(request.operation, "approve");
-      return { jobId: request.jobId, status: answered ? "completed" : "running", nativeSessionId: "native-owned", events: request.after === 0
-        ? [{ type: "question", id: "c".repeat(64), sequence: 1, sessionID: session.id }]
-        : [{ type: "completed", status: "completed", sequence: 2, sessionID: session.id }] };
+      return { jobId: request.jobId, status: answered ? "completed" : "running",...acceptance, events: request.after === 0
+        ? [{ type: "question", id: "c".repeat(64), sequence: 1, sessionID: session.id,...acceptance }]
+        : [{ type: "completed", status: "completed", sequence: 2, sessionID: session.id,...acceptance }] };
     } },
   });
   await transport.run({ userId: "a", session, model: "approved", text: "Research", emit: async event => {
