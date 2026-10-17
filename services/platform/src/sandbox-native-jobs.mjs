@@ -115,8 +115,8 @@ export class SandboxNativeJobs {
     const context={userId,instanceId,generation:worker.generation};
     const account=this.tenantPolicy.account(context);
     this.tenantPolicy.directory(context,session.directory);
-    const project=posix.relative(account.workspaceDir,session.directory);
-    if(!project || project.startsWith("../") || project===".." || posix.isAbsolute(project))throw new Error("native project session required");
+    const project=posix.relative(account.workspaceDir,session.directory)||'.';
+    if(project.startsWith("../") || project===".." || posix.isAbsolute(project))throw new Error("native project session required");
     this.tenantPolicy.registerSession(context,{id:session.id,directory:session.directory});
     return {...context,project};
   }

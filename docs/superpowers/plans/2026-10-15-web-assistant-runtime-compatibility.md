@@ -27,6 +27,8 @@ Specification: `docs/superpowers/specs/2026-10-15-web-assistant-runtime-compatib
 
 Execution authorization was received on October 15, 2026 (Asia/Shanghai). No further routine implementation/publication approval is required. A successful feasibility test, a model HTTP 200, or a persisted Admin selection is not product completion.
 
+Additional approved requirement, October 17: model replacement must be configuration-driven for both Codex and OpenCode. Tasks 4, 12, 14 and 15 consume one effective trusted administrator model policy (allowlist, selected model and coherent configuration revision) from the existing service configuration/synchronization path. Readiness, turn admission and frozen live acceptance validate that policy without hardcoding a product model ID. Keep the initial Codex allowlist exactly `gpt-6.1-sol`; future additions require explicit administrator synchronization and unchanged capability/security gates. Do not introduce user overrides, automatic catalog broadening or another provider editor. The parent owns the disjoint profile/authority/release/live-gate follow-up; freeze and CI wait for its review.
+
 ## 2. Baseline and File Ownership
 
 Use the existing isolated branch `fix/web-prompt-send-recovery-20261015` at `/opt/open-science-desktop/.worktrees/web-prompt-send-recovery-20261015`. Its existing recovery fixes are not all deployed; retain them and test their integration. Production was inspected at release `2026-10-14T13-10-17-696Z-cd4c7c5e`, image `f28f552b`; recheck both at execution time. The dirty main checkout is not a deployment source.

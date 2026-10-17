@@ -10,6 +10,19 @@ import {makeToolOutcome,ToolOutcomeError} from '../../../packages/sdk/src/tool-o
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
 const acceptance={nativeSessionId:"native-owned",turnId:"turn-owned"};
+test('root-origin legacy continuation preserves its directory in the native transport',async()=>{
+ const policy=new TenantPolicy({accounts:[context]}),calls=[];
+ const identity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'root-request',policyRevision:1,runtime:'codex'};
+ const transport=new ManagedNativeJobs({tenantPolicy:policy,
+  issueNativeGrant:async()=>({identityRevision:'owned-profile',configuration:{model:'approved'},renew(){},async revoke(){}}),
+  workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release(){}})},files:{job:async(_owner,input)=>{
+   calls.push(input);if(input.operation==='start')return {jobId:'b'.repeat(64),...acceptance};
+   return {jobId:input.jobId,status:'completed',...acceptance,events:[]};
+  }}});
+ const rootSession={...session,directory:context.workspaceDir};
+ await transport.run({userId:'a',session:rootSession,model:'approved',text:'Continue',turnIdentity:identity,identityRevision:'owned-profile',emit:async()=>{}});
+ assert.equal(calls[0].project,'.');assert.equal(policy.session(context,'owned').directory,context.workspaceDir);
+});
 test('native command observations require the actual guarded call and never dispatch a platform tool',async()=>{
  for(const failure of [null,'unguarded','wrong-kind','changed-input']){
   const policy=new TenantPolicy({accounts:[context]}),events=[],calls=[];let batch=0;

@@ -10,6 +10,8 @@ The administrator selects exactly one assistant for the whole deployment: OpenCo
 
 The first intended activation is Codex, using the host's existing Codex provider configuration and credentials, with only `gpt-6.1-sol` exposed by the application. Do not alter the host's global model catalog or assume this provider alias establishes an official model identity.
 
+On October 17, 2026, the user additionally approved easy future model replacement for both Codex and OpenCode. Model IDs and allowlists must come from trusted administrator-controlled service configuration through the existing explicit synchronization/configuration path, not permission, session, tool, readiness or acceptance hardcodes. Freeze the effective model policy and revision into each release/turn and apply the same capability gates to replacements. The present Codex activation remains restricted to `gpt-6.1-sol`; this approval neither imports additional models automatically nor adds tenant overrides, user assistant selection or a parallel provider editor.
+
 Existing conversations remain visible after an administrator switch. Their public identity, transcript, workspace, attachments, and platform-owned research decisions remain intact. On the next authorized user send, a different assistant can continue through a bounded context handover into a fresh native session. Switching or reopening a page alone starts no execution.
 
 This is product-level continuity, not lossless native-session migration. Model capabilities and results may differ. No native session ID, running tool, transient approval, or temporary credential is transferable between assistants.

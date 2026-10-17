@@ -354,7 +354,7 @@ export function jobRequest(value) {
         !['generation','execution','policyRevision'].every(key=>Number.isSafeInteger(turn[key])&&turn[key]>0))
       throw new Error('invalid native execution grant');
     if(!/^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId??"") || typeof value.project!=="string" || !value.project || value.project.length>4096 ||
-        /[\\\0]/.test(value.project) || value.project.startsWith("/") || value.project.split("/").some(part=>["",".",".."].includes(part)) ||
+        /[\\\0]/.test(value.project) || value.project.startsWith("/") || value.project!=='.'&&value.project.split("/").some(part=>["",".",".."].includes(part)) ||
         !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/.test(value.model??"") || typeof value.text!=="string" || Buffer.byteLength(value.text)>512*1024 ||
         (value.nativeSessionId!==undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(value.nativeSessionId)) ||
         (value.images!==undefined && (!Array.isArray(value.images) || value.images.length>10 || value.images.some(url=>typeof url!=="string" ||
@@ -436,10 +436,15 @@ export class CliJobs {
       throw new Error('foreign native execution grant');
     this.#starting=true;
     try {
-      const info=await this.environments.call({operation:"inspect",project:request.project,imageDigest:this.imageDigest},{signal});
-      const projectDir=`${this.manifest.workspaceDir}/${request.project}`;
-      if(info.owned!==true || info.projectDir!==projectDir || !["absent","valid"].includes(info.venvState))throw new Error("managed project environment unavailable");
-      const environment=info.venvState==="valid" ? {kind:"private",python:info.venvPython} : {kind:"base",python:info.basePython};
+      const projectDir=request.project==='.'?this.manifest.workspaceDir:`${this.manifest.workspaceDir}/${request.project}`;
+      // Root-origin conversations share the existing shell hook's base-only
+      // environment; they must not adopt an unregistered root .venv.
+      let environment={kind:'base',python:'/opt/scikeel/science/bin/python'};
+      if(request.project!=='.'){
+        const info=await this.environments.call({operation:"inspect",project:request.project,imageDigest:this.imageDigest},{signal});
+        if(info.owned!==true || info.projectDir!==projectDir || !["absent","valid"].includes(info.venvState))throw new Error("managed project environment unavailable");
+        environment=info.venvState==="valid" ? {kind:"private",python:info.venvPython} : {kind:"base",python:info.basePython};
+      }
       if(this.#jobs.size>=16){const oldest=[...this.#jobs].find(([,job])=>job.status!=="running");if(oldest)this.#jobs.delete(oldest[0]);}
       if(this.#jobs.size>=16)throw new Error("managed job history capacity");
       const job={id:randomBytes(32).toString("hex"),sessionId:request.sessionId,status:"running",events:[],sequence:0,bytes:0,approvals:new Map(),questions:new Map(),tools:new Map(),

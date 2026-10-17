@@ -15,6 +15,18 @@ function fixture({close,network,result={nativeSessionId:"native-owned",turnId:"t
 const request={operation:"start",sessionId:"owned",project:"project",model:"approved",text:"Research",
   identityRevision:'owned-profile',turnIdentity:{userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'},
   nativeProfile:{model:'approved',modelToken:'c'.repeat(64),modelUrl:'http://172.31.240.1:4792/v1'}};
+test('root-origin native conversations keep the exact workspace and use only the base environment',async()=>{
+ const starts=[];let inspections=0;
+ const jobs=new CliJobs({manifest,imageDigest,environments:{call:async()=>{inspections++;throw Error('Root is not a managed project');}},
+  nativeFactory:()=>({start:async value=>{starts.push(value);return {nativeSessionId:'root-thread',turnId:'root-turn'};},close:async()=>{}})});
+ jobs.configure(profile);
+ await jobs.call({...request,project:'.'});
+ assert.equal(inspections,0);assert.equal(starts[0].projectDir,manifest.workspaceDir);
+ assert.deepEqual(starts[0].environment,{kind:'base',python:'/opt/scikeel/science/bin/python'});
+ for(const project of ['', './', 'project/..', '../workspace', '/tenant/workspace', 'project/.', 'project//child'])
+  assert.throws(()=>jobRequest({...request,project}),undefined,project);
+ await jobs.close();
+});
 test("native jobs require the per-turn sanitized grant and never inherit the infrastructure profile token",async()=>{
   const f=fixture();
   const turnIdentity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
