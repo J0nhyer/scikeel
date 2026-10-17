@@ -18,9 +18,10 @@ test('a forbidden Admin selection cannot dispatch inference or manufacture nativ
  assert.deepEqual(requests,['/api/admin/runtime']);
 });
 
-function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed'}={}) {
+function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed',fileRevertFailure}={}) {
  const calls=[],files=new Map(),history=[],questions=[],selections=[];
  let revision=1,runtime='opencode',currentPhase,checkpointAnswered=false,disabled=false,aborted=false,warm=false,settling=0;
+ let reverted=null,restorePoint;
  const state={revision:1,phase:'idle',mode:'autonomous',execution:1,pending:null};
  const admin={origin:'http://127.0.0.1:4790',headers:{cookie:'admin-private'}};
  const answer=text=>{state.phase='running';settling=2;history.push({info:{id:`msg_${history.length}`,role:'assistant',time:{completed:1}},parts:[{type:'text',text}]});};
@@ -40,7 +41,22 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
   if(path==='/v1/whoami'){warm=true;return Response.json({id:'acceptance-user'});}
   if(path==='/api/runtime')return Response.json({runtime,model:'gpt-6.1-sol',policyRevision:revision,context:warm?{instanceId:'worker',generation:1}:null});
   if(path==='/session')return Response.json({id:'ses_legacy',directory:'/workspace/research',title:'Acceptance'});
-  if(path==='/session/ses_legacy')return Response.json({id:'ses_legacy',directory:'/workspace/research',model:`${runtime}/gpt-6.1-sol`});
+  if(path==='/session/ses_legacy')return Response.json({id:'ses_legacy',directory:'/workspace/research',model:`${runtime}/gpt-6.1-sol`,...(reverted?{revert:reverted}:{})});
+  if(path==='/session/ses_legacy/revert'){
+   assert.equal(currentPhase,'files');const index=history.findIndex(message=>message.info.id===body.messageID);
+   assert.ok(index>0);assert.equal(history[index].info.role,'user');
+   restorePoint={files:new Map(files),history:structuredClone(history)};reverted={messageID:body.messageID};
+   if(fileRevertFailure!=='not-reverted')files.delete('acceptance-output.txt');
+   if(fileRevertFailure==='input-overwritten')files.set('acceptance-read.txt','wrong bytes');
+   history.splice(index);return Response.json({id:'ses_legacy',revert:reverted});
+  }
+  if(path==='/session/ses_legacy/unrevert'){
+   assert.ok(restorePoint);files.clear();for(const [key,value]of restorePoint.files)files.set(key,value);
+   if(fileRevertFailure==='not-restored')files.delete('acceptance-output.txt');
+   history.splice(0,history.length,...structuredClone(restorePoint.history));
+   if(fileRevertFailure==='lost-history')history.shift();
+   reverted=null;return Response.json({id:'ses_legacy'});
+  }
   if(path==='/session/status'){if(--settling<=0)state.phase='idle';return Response.json({ses_legacy:{type:'idle'}});}
   if(path==='/permission')return Response.json([]);
   if(path==='/question')return Response.json(questions);
@@ -77,6 +93,7 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
    const text=body.parts[0].text;
    currentPhase=/Acceptance phase: ([a-z_]+)/.exec(text)?.[1];assert.ok(currentPhase);
    if(currentPhase===failPhase)return Response.json({error:'SECRET-upstream-key'},{status:403});
+   history.push({info:{id:`user_${history.length}`,role:'user'},parts:body.parts});
    if(currentPhase===failAsyncPhase){answer('');history.at(-1).info.error={name:'CliRuntimeError'};return Response.json({},{status:202});}
    if(currentPhase==='handover'){assert.ok(!text.includes('legacy-secret-'));answer(history[0].parts[0].text);}
    else if(currentPhase==='files'){
@@ -115,6 +132,8 @@ test('the live orchestrator observes every Web workflow and disables its disposa
  assert.deepEqual(fixture.snapshot(),{disabled:true,aborted:true,checkpointAnswered:true,currentPhase:'after_stop'});
  assert.equal(JSON.stringify(proof).includes('private'),false);
  assert.equal(fixture.calls.filter(call=>call.path==='/auth/login').length,2);
+ assert.equal(fixture.calls.filter(call=>call.path.endsWith('/revert')).length,1);
+ assert.equal(fixture.calls.filter(call=>call.path.endsWith('/unrevert')).length,1);
 });
 
 test('an upstream failure aborts and disables the test account without exposing response secrets',async()=>{
@@ -137,6 +156,13 @@ for(const nativeFileEvidence of ['missing','failed','wrong-output'])test(`file b
  const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
  const fixture=gateway({nativeFileEvidence});
  await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1}),/native file tool evidence/i);
+ assert.equal(fixture.snapshot().disabled,true);assert.equal(fixture.snapshot().currentPhase,'files');
+});
+
+for(const fileRevertFailure of ['not-reverted','not-restored','input-overwritten','lost-history'])test(`a successful revert response is insufficient: ${fileRevertFailure}`,async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({fileRevertFailure});
+ await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1}),/file revert|file restoration|history restoration/i);
  assert.equal(fixture.snapshot().disabled,true);assert.equal(fixture.snapshot().currentPhase,'files');
 });
 

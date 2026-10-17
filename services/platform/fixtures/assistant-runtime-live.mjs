@@ -147,7 +147,21 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
   ensure(reply.parts.some(part=>part.type==='tool'&&part.tool==='bash'&&part.state?.status==='completed'&&
    part.state.metadata?.nativeItemType==='commandExecution'&&part.state.metadata.exitCode===0&&
    typeof part.state.output==='string'&&part.state.output.includes(readNonce)),
-   'Completed native file tool evidence is missing');phaseResults.file_write_read='passed';await idle();
+   'Completed native file tool evidence is missing');await idle();
+  const fileHistory=await history(),fileMessage=fileHistory.find(message=>!ids.has(message.info.id)&&message.info.role==='user');
+  ensure(typeof fileMessage?.info.id==='string','Native file turn public message is missing');
+  await json(scoped(sessionPath('/revert')),{body:{messageID:fileMessage.info.id},
+   headers:{...authHeaders(),'x-scikeel-request-id':'acceptance-revert-'+randomUUID()}});
+  ensure((await json(scoped(sessionPath()))).revert?.messageID===fileMessage.info.id&&
+   await read('acceptance-output.txt',true)===undefined&&await read('acceptance-read.txt')===readNonce&&
+   await read('acceptance-input.csv')==='value\n1\n2\n3\n','Native file revert verification failed');
+  await json(scoped(sessionPath('/unrevert')),{body:{},
+   headers:{...authHeaders(),'x-scikeel-request-id':'acceptance-unrevert-'+randomUUID()}});
+  ensure(!(await json(scoped(sessionPath()))).revert&&await read('acceptance-output.txt',true)===writeNonce&&
+   await read('acceptance-read.txt')===readNonce&&await read('acceptance-input.csv')==='value\n1\n2\n3\n',
+   'Native file restoration verification failed');
+  ensure(JSON.stringify(await history())===JSON.stringify(fileHistory),'Native history restoration verification failed');
+  phaseResults.file_write_read='passed';
   ids=await begin('question','Use request_user_input to ask exactly "Release question" with options "Continue" and "Stop". Wait for the actual answer, then reply with exactly the selected option label. Do not answer it yourself.');
   const question=await poll('native question',async()=>{
    const questions=await json(scoped('/question'));ensure(Array.isArray(questions),'Native question state is unavailable');
