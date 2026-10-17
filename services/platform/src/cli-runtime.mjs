@@ -1789,7 +1789,7 @@ export class CliRuntimeManager {
     escalation.unref();
   }
 
-  async handle(request, response, { userId, workspaceDir, promptBody, attachmentInput, workspaceContext, executionAdmission }) {
+  async handle(request, response, { userId, workspaceDir, promptBody, attachmentInput, workspaceContext, executionAdmission, renameConversation }) {
     await this.init();
     if (!this.isManaged(userId)) return false;
     const parsed = new URL(request.url ?? "/", "http://platform.invalid");
@@ -1869,7 +1869,13 @@ export class CliRuntimeManager {
         } else if (!route && request.method === "PATCH") {
           const { state, session } = await this.getOwnedSession(userId, sessionId);
           const body = await jsonBody(request);
-          if (typeof body.title === "string" && body.title.trim()) session.title = body.title.trim().slice(0, 240);
+          if (typeof body.title === "string" && body.title.trim()) {
+            const title=body.title.trim().slice(0,240);
+            // The public title belongs to canonical metadata after a handover;
+            // updating only this native alias makes it disappear on reload.
+            await renameConversation?.(session,title);
+            session.title=title;
+          }
           if (body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)) session.metadata = body.metadata;
           session.updatedAt = now();
           await this.persistUser(state);

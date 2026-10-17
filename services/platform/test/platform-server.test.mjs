@@ -8,6 +8,7 @@ import { afterEach, test } from "node:test";
 
 import { AuthStore } from "../src/auth-store.mjs";
 import { CliRuntimeManager } from "../src/cli-runtime.mjs";
+import { ConversationState } from "../src/conversation-state.mjs";
 import { CliProfileResolver } from "../src/cli-profile.mjs";
 import { PlatformServer } from "../src/platform-server.mjs";
 import { WorkerManager } from "../src/worker-manager.mjs";
@@ -1463,6 +1464,20 @@ async function until(check,attempts=100){
  for(let n=0;n<attempts;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
  assert.fail('Timed out waiting for native turn settlement');
 }
+test('canonical native rename survives owned read, history refresh and platform reconstruction',async t=>{
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Metadata must not dispatch inference');});
+ const title='Checked canonical research title';
+ const changed=await f.client.request(`/session/${f.session.id}`,{method:'PATCH',headers:{'content-type':'application/json',
+  'x-scikeel-assistant-revision':'2'},body:JSON.stringify({title})});
+ assert.equal(changed.status,200,await changed.text());
+ const read=await f.client.request(`/session/${f.session.id}`);assert.equal(read.status,200);
+ assert.equal((await read.json()).title,title);
+ assert.equal((await f.server.conversations.open(f.owner,f.session.id)).title,title);
+ await f.server.conversationRouter.messages(f.owner,f.session.id,{synchronize:true});
+ assert.equal((await f.server.conversationRouter.read(f.owner,f.session.id)).title,title);
+ const restarted=new ConversationState({rootDir:f.server.conversations.rootDir,authorize:async()=>true});
+ assert.equal((await restarted.open(f.owner,f.session.id)).title,title);
+});
 test('native HTTP history remains readable when a real turn completes between indexing and rendering',async t=>{
  let finish,accepted=false;const completed=new Promise(resolve=>{finish=resolve;});
  const f=await nativeHttpFixture(t,async args=>{

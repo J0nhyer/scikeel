@@ -1307,6 +1307,13 @@ export class PlatformServer {
         promptBody,
         attachmentInput: preparedAttachments,
         executionAdmission,
+        renameConversation:this.tenantPolicy&&this.cliRuntime.sandboxJobs?async(session,title)=>{
+          const owner={userId:user.id,instanceId:worker.id,generation:worker.generation,workspaceDir:worker.workspaceDir,directory:session.directory};
+          let value;
+          try{value=await this.conversations.open(owner,session.publicConversationId??session.id);}
+          catch(error){if(error.code==='conversation_not_found')return;throw error;}
+          await this.conversations.rename(owner,value.id,{expectedRevision:value.revision,title});
+        }:undefined,
         workspaceContext: this.tenantPolicy ? { instanceId: worker.id, generation: worker.generation } : undefined,
       });
       if (handled) return;

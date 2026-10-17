@@ -16,6 +16,17 @@ async function fixture(t,options={}) {
  return {rootDir,authorize,state:new ConversationState({rootDir,authorize,...options})};
 }
 const imported={conversationId:'public-conversation',expectedRevision:0,title:'Existing research',parentId:null,lifecycle:'active',binding,events:[event],cursor:'page-1'};
+test('owned canonical renames preserve native provenance and reject stale or foreign writes',async t=>{
+ const {state,rootDir,authorize}=await fixture(t),before=await state.importNative(owner,imported);
+ const changed=await state.rename(owner,before.id,{expectedRevision:before.revision,title:'Reviewed research title'});
+ assert.equal(changed.title,'Reviewed research title');assert.equal(changed.revision,before.revision+1);
+ assert.deepEqual({...changed,title:before.title,revision:before.revision},before);
+ await assert.rejects(state.rename(owner,before.id,{expectedRevision:before.revision,title:'Stale'}),error=>error.code==='conversation_revision_conflict');
+ for(const title of ['', ' ', 'x'.repeat(241),null])await assert.rejects(state.rename(owner,before.id,{expectedRevision:changed.revision,title}));
+ await assert.rejects(state.rename({...owner,userId:'foreign',instanceId:'user-foreign'},before.id,{expectedRevision:changed.revision,title:'Foreign'}));
+ const replay=await state.importNative(owner,{...imported,expectedRevision:changed.revision});assert.equal(replay.title,changed.title);
+ assert.equal((await new ConversationState({rootDir,authorize}).open(owner,before.id)).title,changed.title);
+});
 test('legacy history without a verified native identity uses an archival source and never invents a binding',async t=>{
  const {state,rootDir,authorize}=await fixture(t);
  assert.equal(typeof state.importHistorical,'function');

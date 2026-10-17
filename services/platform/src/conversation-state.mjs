@@ -207,6 +207,18 @@ export class ConversationState {
    return values;
   });
  }
+ async rename(owner,id,input) {
+  owner=await this.#owner(owner);
+  if(!exact(input,['expectedRevision','title'])||!integer(input.expectedRevision)||typeof input.title!=='string'||
+    !input.title.trim()||input.title!==input.title.trim()||input.title.length>240)throw invalid();
+  return this.#serialized(owner.userId,async()=>{
+   const data=await this.#load(owner.userId),value=await this.#owned(data,owner,id);
+   if(value.directory!==owner.directory)throw fail('conversation_denied',403);
+   if(value.revision!==input.expectedRevision)throw fail('conversation_revision_conflict');
+   if(value.title===input.title)return structuredClone(value);
+   value.title=input.title;value.revision++;await this.#save(data,owner);return structuredClone(value);
+  });
+ }
  async create(owner,input) {
   owner=await this.#owner(owner);
   if(!exact(input,['conversationId','title','parentId','lifecycle']) || !name(input.conversationId) ||
