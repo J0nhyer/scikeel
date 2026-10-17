@@ -3,6 +3,7 @@ import { constants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse, stringify } from "smol-toml";
+import { validManagedModelId, validManagedModelIds } from "./managed-model-policy.mjs";
 
 const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const validModel = (value) => typeof value === "string" && value.length > 0 && value.length <= 160 && !/[\r\n\0]/.test(value);
@@ -27,7 +28,7 @@ const exactKeys = (value, keys) => !!value && typeof value === "object" && !Arra
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const safeModelName = value => typeof value === "string" && value.length > 0 && value.length <= 160 && !/[\x00-\x1f]/.test(value);
 function safeModelMetadata(value) {
-  return exactKeys(value, ["id", "name", "variants", "inputModalities"]) && value.id === "gpt-6.1-sol" && safeModelName(value.name) &&
+  return exactKeys(value, ["id", "name", "variants", "inputModalities"]) && validManagedModelId(value.id) && safeModelName(value.name) &&
     value.variants && typeof value.variants === "object" && !Array.isArray(value.variants) &&
     Object.entries(value.variants).every(([effort, metadata]) => /^[a-z][a-z0-9_-]{0,31}$/.test(effort) &&
       exactKeys(metadata, ["reasoningEffort"]) && metadata.reasoningEffort === effort) &&
@@ -64,12 +65,12 @@ async function profileFile(path, { privateFile = false, limit = 8 * 1024 ** 2 } 
 // This server-only store has no tenant-copy API. The legacy resolver below is unchanged.
 export class ManagedCodexProfile {
   #home; #allowedModels; #environment;
-  constructor({ home, allowedModels = ["gpt-6.1-sol"], environment = process.env }) {
+  constructor({ home, allowedModels, environment = process.env }) {
     if (!isAbsolute(home ?? "") || typeof process.getuid !== "function" ||
-        !Array.isArray(allowedModels) || allowedModels.length !== 1 || allowedModels[0] !== "gpt-6.1-sol")
+        (allowedModels !== undefined && !validManagedModelIds(allowedModels)))
       throw profileFailure("invalid_service_profile");
     this.#home = resolve(home);
-    this.#allowedModels = [...allowedModels];
+    this.#allowedModels = allowedModels === undefined ? null : [...allowedModels];
     this.#environment = environment;
   }
 
@@ -89,7 +90,8 @@ export class ManagedCodexProfile {
     const value = JSON.parse(await profileFile(join(this.#home, "service-profile.json"), { privateFile: true }));
     if (value.schema !== 1 || !/^[a-f0-9-]{36}$/.test(value.sourceRevision ?? "") ||
         !/^[a-f0-9-]{36}$/.test(value.identityRevision ?? "") || !this.#validProvider(value.provider) ||
-        !Array.isArray(value.models) || value.models.length !== 1 || !safeModelMetadata(value.models[0]) ||
+        !Array.isArray(value.models) || value.models.length !== value.provider.enabledModels.length ||
+        !value.models.every((model, index) => safeModelMetadata(model) && model.id === value.provider.enabledModels[index]) ||
         !exactKeys(value, ["schema", "sourceRevision", "identityRevision", "provider", "models"]))
       throw profileFailure("unsafe_service_profile");
     return value;
@@ -99,7 +101,8 @@ export class ManagedCodexProfile {
     if (!provider || typeof provider.baseUrl !== "string" || typeof provider.credential !== "string" ||
         !provider.credential || provider.credential.length > 16384 || /[\r\n\0]/.test(provider.credential) ||
         provider.authMode !== "bearer" || JSON.stringify(provider.routes) !== '["/v1/responses"]' ||
-        JSON.stringify(provider.enabledModels) !== JSON.stringify(this.#allowedModels) ||
+        !validManagedModelIds(provider.enabledModels) ||
+        (this.#allowedModels !== null && JSON.stringify(provider.enabledModels) !== JSON.stringify(this.#allowedModels)) ||
         !exactKeys(provider, ["baseUrl", "credential", "authMode", "routes", "enabledModels"])) return false;
     try {
       const url = new URL(provider.baseUrl);
@@ -128,19 +131,23 @@ export class ManagedCodexProfile {
         const auth = JSON.parse(await source(join(codexHome, "auth.json"), { privateFile: true }));
         credential = auth.OPENAI_API_KEY;
       }
-      const route = { baseUrl: provider.base_url, credential, enabledModels: this.#allowedModels,
+      // Only explicit synchronization adopts the host's selected model. Other
+      // catalog entries are metadata, not permission to enable inference.
+      const allowedModels = this.#allowedModels ?? [config.model];
+      const route = { baseUrl: provider.base_url, credential, enabledModels: allowedModels,
         routes: ["/v1/responses"], authMode: "bearer" };
       if (!this.#validProvider(route)) throw profileFailure("service_profile_unavailable");
       const catalog = JSON.parse(await source(sourcePath(codexHome, config.model_catalog_json), { limit: 32 * 1024 ** 2 }));
       const entries = Array.isArray(catalog) ? catalog : catalog.models;
-      const matches = Array.isArray(entries) ? entries.filter(entry => this.#allowedModels.includes(entry?.slug ?? entry?.id)) : [];
-      if (matches.length !== 1) throw profileFailure("service_profile_unavailable");
-      const entry = matches[0];
-      const name = entry.display_name ?? entry.name ?? entry.slug ?? entry.id;
-      if (!safeModelName(name)) throw profileFailure("service_profile_unavailable");
-      const models = [{ id: this.#allowedModels[0], name, variants: codexVariants(entry),
-        inputModalities: [...new Set((Array.isArray(entry.input_modalities) ? entry.input_modalities : []).filter(value => ["text", "image"].includes(value)))] }];
-      if (!safeModelMetadata(models[0])) throw profileFailure("service_profile_unavailable");
+      const models = allowedModels.map(id => {
+        const matches = Array.isArray(entries) ? entries.filter(entry => (entry?.slug ?? entry?.id) === id) : [];
+        if (matches.length !== 1) throw profileFailure("service_profile_unavailable");
+        const entry = matches[0];
+        const model = { id, name: entry.display_name ?? entry.name ?? entry.slug ?? entry.id, variants: codexVariants(entry),
+          inputModalities: [...new Set((Array.isArray(entry.input_modalities) ? entry.input_modalities : []).filter(value => ["text", "image"].includes(value)))] };
+        if (!safeModelMetadata(model)) throw profileFailure("service_profile_unavailable");
+        return model;
+      });
       if (provider.env_key && this.#environment[provider.env_key] !== credential) throw profileFailure("service_profile_source_changed");
       for (const item of sources) if (await profileFile(item.path, item.options) !== item.text)
         throw profileFailure("service_profile_source_changed");
@@ -190,7 +197,7 @@ export class ManagedCodexProfile {
       if (error.code === "ENOENT") return { runtime, status: "unavailable", models: [], defaultModel: null, enabledByProfile: false, catalogRevision: null };
       throw profileFailure("unsafe_service_profile");
     }
-    return { runtime, status: "ready", models: value.models, defaultModel: this.#allowedModels[0], enabledByProfile: true,
+    return { runtime, status: "ready", models: value.models, defaultModel: value.provider.enabledModels[0], enabledByProfile: true,
       sourceRevision: value.sourceRevision, identityRevision: value.identityRevision, catalogRevision: digest(value.models) };
   }
 

@@ -15,7 +15,7 @@ export function createAssistantRuntimeAuthority({configuration,controlPlane,plat
     if(!configuration.imageCapabilities.nativeIntegration||typeof nativeProfileResolver?.refresh!=='function')throw unavailable();
     const profile=await nativeProfileResolver.refresh(runtime);
     if(profile?.runtime!=='codex'||profile.status!=='ready'||profile.enabledByProfile!==true||
-     profile.defaultModel!=='gpt-6.1-sol'||profile.models?.length!==1||profile.models[0].id!=='gpt-6.1-sol'||
+     !validManagedModelSelection(profile)||
      typeof profile.identityRevision!=='string'||!profile.identityRevision)throw unavailable();
    }
   },
@@ -36,3 +36,4 @@ export function createAssistantRuntimeAuthority({configuration,controlPlane,plat
   },
  };
 }
+import {validManagedModelSelection} from './managed-model-policy.mjs';

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readManagedModelCatalog, readManagedDefaultModel, saveManagedDefaultModel } from "../src/managed-model-catalog.mjs";
+import { brokerProfile, validateBrokerConfiguration } from "../src/sandbox-control-plane.mjs";
 
 const config = { defaultProvider: "research", defaultModel: "approved", providers: {
   research: { enabledModels: ["approved", "retired"] },
@@ -42,6 +43,30 @@ test("catalog refresh removes retired models and never replaces an invalid defau
   const catalog = await readManagedModelCatalog({ config, access, context,
     fetchImpl: fetchFixture({ providers: [] }, "codex/gpt-stale") });
   assert.deepEqual(catalog, { model: null, providers: [], connected: [], defaults: {} });
+});
+
+test("OpenCode replacement models use administrator configuration for grants, defaults and the public catalog without changing permissions", async () => {
+  const configuration = { schema: 1, defaultProvider: "research", defaultModel: "fixture-next-model", mirrorUrl: "http://127.0.0.1:3141",
+    providers: { research: { enabledModels: ["fixture-next-model"], baseUrl: "https://provider.example/v1",
+      credential: "synthetic-only", authMode: "bearer", routes: ["/v1/chat/completions"],
+      modelNames: { "fixture-next-model": "Configured Next Model" }, modelVariants: { "fixture-next-model": ["high"] } } } };
+  validateBrokerConfiguration(configuration);
+  const grants = [];
+  const profile = brokerProfile({ config: configuration, context: { userId: "owner", instanceId: "user-owner", generation: 1 },
+    model: "research/approved", broker: { issue: grant => { grants.push(grant); return "a".repeat(64); } },
+    assistantPolicy: { activeRuntime: "opencode", revision: 2, recoveryRequired: false } });
+  assert.equal(profile.model, "research/fixture-next-model");
+  assert.deepEqual(grants[0].models, ["fixture-next-model"]);
+  assert.equal(profile.permission.bash, "ask"); assert.equal(profile.permission.external_directory, "deny");
+  const catalog = await readManagedModelCatalog({ config: configuration, access, context,
+    fetchImpl: fetchFixture({ providers: [{ id: "research", models: {
+      approved: { name: "Previous Model" }, "fixture-next-model": { variants: { high: {}, medium: {} } },
+      unapproved: { name: "Not Authorized" },
+    } }] }, profile.model) });
+  assert.equal(catalog.model, profile.model);
+  assert.deepEqual(Object.keys(catalog.providers[0].models), ["fixture-next-model"]);
+  assert.equal(catalog.providers[0].models["fixture-next-model"].name, "Configured Next Model");
+  assert.deepEqual(catalog.providers[0].models["fixture-next-model"].variants, { high: {} });
 });
 
 test("a failed or malformed OpenCode catalog cannot fall back to the static broker catalog", async () => {

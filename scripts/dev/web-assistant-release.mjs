@@ -2,19 +2,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join, resolve, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { command } from './web-release-source.mjs';
+import { validManagedModelSelection } from '../../services/platform/src/managed-model-policy.mjs';
 
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const name = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(value);
 export function freezeAssistantTarget({ runtime, profile, sourceFingerprint, imageDigest }) {
   if (runtime === 'claude') throw new Error('Claude live acceptance is unavailable until service restoration');
-  if (!['opencode', 'codex'].includes(runtime) || !hash(sourceFingerprint) || !/^sha256:[a-f0-9]{64}$/.test(imageDigest ?? '') ||
-      profile?.status !== 'ready' || profile.enabledByProfile !== true || !Array.isArray(profile.models) ||
-      !profile.models.length || !name(profile.sourceRevision) || !name(profile.identityRevision) || !hash(profile.catalogRevision) ||
-      typeof profile.defaultModel !== 'string' || !profile.models.some(model => model.id === profile.defaultModel))
+  const providerID = profile?.providerID ?? runtime;
+  if (!['opencode', 'codex'].includes(runtime) || !/^[A-Za-z0-9_-]{1,128}$/.test(providerID) || runtime === 'codex' && providerID !== 'codex' ||
+      !hash(sourceFingerprint) || !/^sha256:[a-f0-9]{64}$/.test(imageDigest ?? '') ||
+      profile?.status !== 'ready' || profile.enabledByProfile !== true || !validManagedModelSelection(profile) ||
+      !name(profile.sourceRevision) || !name(profile.identityRevision) || !hash(profile.catalogRevision))
     throw new Error('Selected assistant target profile is unavailable or invalid');
-  if (runtime === 'codex' && (profile.defaultModel !== 'gpt-6.1-sol' || profile.models.length !== 1 || profile.models[0].id !== 'gpt-6.1-sol'))
-    throw new Error('Selected Codex model is outside the administrator allowlist');
-  return { schema: 2, runtime, model: profile.defaultModel, sourceRevision: profile.sourceRevision,
+  return { schema: 2, runtime, providerID, model: profile.defaultModel, sourceRevision: profile.sourceRevision,
     identityRevision: profile.identityRevision, catalogRevision: profile.catalogRevision, sourceFingerprint, imageDigest };
 }
 export const assistantTargetHash = target => createHash('sha256').update(JSON.stringify(target)).digest('hex');
@@ -59,7 +59,7 @@ export async function captureReleaseAssistantTarget(candidate) {
     const provider = configuration.providers[configuration.defaultProvider];
     const revision = createHash('sha256').update(JSON.stringify(configuration)).digest('hex');
     const models = provider.enabledModels.map(id => ({ id }));
-    profile = { status: 'ready', enabledByProfile: true, models, defaultModel: configuration.defaultModel,
+    profile = { status: 'ready', enabledByProfile: true, providerID: configuration.defaultProvider, models, defaultModel: configuration.defaultModel,
       sourceRevision: revision, identityRevision: revision,
       catalogRevision: createHash('sha256').update(JSON.stringify(models)).digest('hex') };
   }

@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
+import {validManagedModelId} from '../src/managed-model-policy.mjs';
 
 const ensure=(condition,message)=>{if(!condition)throw Error(message);};
 const text=message=>(message?.parts??[]).filter(part=>part.type==='text'&&!part.synthetic).map(part=>part.text).join('\n');
@@ -10,7 +11,10 @@ const capabilities=['model_reply','file_write_read','question_answer','research_
 // direct tenant filesystem access, or successful deterministic fixture is a live proof.
 export async function runSelectedAssistantAcceptance({target,admin,request=fetch,onSelection=async()=>{},
  timeoutMs=240000,pollMs=250,stopGraceMs=6500}={}) {
- ensure(target?.runtime==='codex'&&target.model==='gpt-6.1-sol','Selected assistant live acceptance is unsupported or unavailable');
+ const providerID=target?.providerID??target?.runtime;
+ ensure(['codex','opencode'].includes(target?.runtime)&&validManagedModelId(target.model)&&
+  /^[A-Za-z0-9_-]{1,128}$/.test(providerID)&&(target.runtime!=='codex'||providerID==='codex'),
+  'Selected assistant live acceptance is unsupported or unavailable');
  ensure(admin?.origin&&admin.headers,'Authenticated Admin acceptance client is required');
  const origin=new URL(admin.origin).origin;
  let user,session,cookie='',generation,policyRevision,directory,heartbeatFailure,heartbeatPromise,heartbeat;
@@ -81,7 +85,7 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
   const before=await history();ensure(Array.isArray(before),'Acceptance history is unavailable');
   const ids=new Set(before.map(message=>message.info.id));
   const state=(await collaboration()).state;
-  await json(scoped(sessionPath('/prompt_async')),{body:{model:{providerID:target.runtime,modelID:target.model},
+  await json(scoped(sessionPath('/prompt_async')),{body:{model:{providerID,modelID:target.model},
    parts:[{type:'text',text:`Acceptance phase: ${phase}\n${instruction}`}],collaborationRevision:state.revision},
    headers:{...authHeaders(),'x-scikeel-request-id':'acceptance-'+randomUUID()}});
   return ids;
@@ -145,7 +149,8 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
   ensure(await read('acceptance-output.txt')===writeNonce&&await read('acceptance-read.txt')===readNonce&&text(reply).includes(readNonce),
    'Native file write/read verification failed');
   ensure(reply.parts.some(part=>part.type==='tool'&&part.tool==='bash'&&part.state?.status==='completed'&&
-   part.state.metadata?.nativeItemType==='commandExecution'&&part.state.metadata.exitCode===0&&
+   (target.runtime==='codex'?part.state.metadata?.nativeItemType==='commandExecution'&&part.state.metadata.exitCode===0:
+    part.state.metadata?.exit===0)&&
    typeof part.state.output==='string'&&part.state.output.includes(readNonce)),
    'Completed native file tool evidence is missing');await idle();
   const fileHistory=await history(),fileMessage=fileHistory.find(message=>!ids.has(message.info.id)&&message.info.role==='user');
@@ -162,7 +167,7 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
    'Native file restoration verification failed');
   ensure(JSON.stringify(await history())===JSON.stringify(fileHistory),'Native history restoration verification failed');
   phaseResults.file_write_read='passed';
-  ids=await begin('question','Use request_user_input to ask exactly "Release question" with options "Continue" and "Stop". Wait for the actual answer, then reply with exactly the selected option label. Do not answer it yourself.');
+  ids=await begin('question',`Use ${target.runtime==='codex'?'request_user_input':'the question tool'} to ask exactly "Release question" with options "Continue" and "Stop". Wait for the actual answer, then reply with exactly the selected option label. Do not answer it yourself.`);
   const question=await poll('native question',async()=>{
    const questions=await json(scoped('/question'));ensure(Array.isArray(questions),'Native question state is unavailable');
    const pending=questions.find(value=>value.sessionID===session.id&&value.questions?.some(item=>item.question==='Release question'));

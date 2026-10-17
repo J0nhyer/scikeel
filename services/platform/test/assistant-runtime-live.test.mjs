@@ -18,7 +18,8 @@ test('a forbidden Admin selection cannot dispatch inference or manufacture nativ
  assert.deepEqual(requests,['/api/admin/runtime']);
 });
 
-function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed',fileRevertFailure}={}) {
+function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed',fileRevertFailure,
+ model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex'}={}) {
  const calls=[],files=new Map(),history=[],questions=[],selections=[];
  let revision=1,runtime='opencode',currentPhase,checkpointAnswered=false,disabled=false,aborted=false,warm=false,settling=0;
  let reverted=null,restorePoint;
@@ -39,9 +40,9 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
   if(path==='/auth/login')return Response.json({user:{id:'acceptance-user'}},{headers:{'set-cookie':'session=acceptance-private; HttpOnly'}});
   if(path==='/auth/logout')return Response.json({ok:true});
   if(path==='/v1/whoami'){warm=true;return Response.json({id:'acceptance-user'});}
-  if(path==='/api/runtime')return Response.json({runtime,model:'gpt-6.1-sol',policyRevision:revision,context:warm?{instanceId:'worker',generation:1}:null});
+  if(path==='/api/runtime')return Response.json({runtime,model,policyRevision:revision,context:warm?{instanceId:'worker',generation:1}:null});
   if(path==='/session')return Response.json({id:'ses_legacy',directory:'/workspace/research',title:'Acceptance'});
-  if(path==='/session/ses_legacy')return Response.json({id:'ses_legacy',directory:'/workspace/research',model:`${runtime}/gpt-6.1-sol`,...(reverted?{revert:reverted}:{})});
+  if(path==='/session/ses_legacy')return Response.json({id:'ses_legacy',directory:'/workspace/research',model:`${providerID}/${model}`,...(reverted?{revert:reverted}:{})});
   if(path==='/session/ses_legacy/revert'){
    assert.equal(currentPhase,'files');const index=history.findIndex(message=>message.info.id===body.messageID);
    assert.ok(index>0);assert.equal(history[index].info.role,'user');
@@ -89,7 +90,7 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
    assert.equal(options.headers['x-scikeel-assistant-revision'],String(revision));
    assert.equal(options.headers['x-scikeel-runtime-generation'],'1');
    assert.ok(options.headers['x-scikeel-request-id']);
-   assert.deepEqual(body.model,{providerID:'codex',modelID:'gpt-6.1-sol'});
+   assert.equal(runtime,selectedRuntime);assert.deepEqual(body.model,{providerID,modelID:model});
    const text=body.parts[0].text;
    currentPhase=/Acceptance phase: ([a-z_]+)/.exec(text)?.[1];assert.ok(currentPhase);
    if(currentPhase===failPhase)return Response.json({error:'SECRET-upstream-key'},{status:403});
@@ -102,8 +103,12 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
     if(nativeFileEvidence!=='missing')history.at(-1).parts.push({type:'tool',tool:'bash',state:{
      status:nativeFileEvidence==='failed'?'error':'completed',input:{command:'cat acceptance-read.txt'},
      output:nativeFileEvidence==='wrong-output'?'unrelated output':files.get('acceptance-read.txt'),
-     metadata:{nativeItemType:'commandExecution',exitCode:0}}});
-   }else if(currentPhase==='question')questions.push({id:'que_acceptance',sessionID:'ses_legacy',questions:[{question:'Release question',options:[{label:'Continue'},{label:'Stop'}]}]});
+     metadata:(selectedRuntime==='codex')!==(nativeFileEvidence==='wrong-protocol')?
+      {nativeItemType:'commandExecution',exitCode:nativeFileEvidence==='wrong-exit'?1:0}:{exit:nativeFileEvidence==='wrong-exit'?1:0}}});
+   }else if(currentPhase==='question'){
+    assert.ok(text.includes(selectedRuntime==='codex'?'request_user_input':'question tool'));
+    questions.push({id:'que_acceptance',sessionID:'ses_legacy',questions:[{question:'Release question',options:[{label:'Continue'},{label:'Stop'}]}]});
+   }
    else if(currentPhase==='fetch'){
     answer('Example Domain');if(!omitFetch)history.at(-1).parts.push({type:'tool',tool:'webfetch',state:{status:'completed',input:{url:'https://example.com/'},output:'<h1>Example Domain</h1>'}});
    }else if(currentPhase==='research'){
@@ -118,6 +123,27 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
   snapshot:()=>({disabled,aborted,checkpointAnswered,currentPhase})};
 }
 const target={schema:2,runtime:'codex',model:'gpt-6.1-sol'};
+
+for(const selectedRuntime of ['codex','opencode'])test(`replacement ${selectedRuntime} models run the same complete acceptance contract`,async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const model='fixture-next-model',providerID=selectedRuntime==='codex'?'codex':'configured-provider';
+ const fixture=gateway({selectedRuntime,model,providerID});
+ const proof=await runSelectedAssistantAcceptance({...fixture,target:{schema:2,runtime:selectedRuntime,model,providerID},
+  timeoutMs:1000,pollMs:1,stopGraceMs:1});
+ assert.equal(proof.model,model);assert.equal(proof.runtime,selectedRuntime);
+ assert.equal(Object.keys(proof.capabilities).length,9);assert.equal(Object.values(proof.capabilities).every(value=>value==='passed'),true);
+ assert.equal(fixture.snapshot().disabled,true);
+});
+
+for(const selectedRuntime of ['codex','opencode'])for(const nativeFileEvidence of ['wrong-exit','wrong-protocol'])
+ test(`${selectedRuntime} replacement models cannot bypass native command evidence: ${nativeFileEvidence}`,async()=>{
+  const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+  const model='fixture-next-model',providerID=selectedRuntime==='codex'?'codex':'configured-provider';
+  const fixture=gateway({selectedRuntime,model,providerID,nativeFileEvidence});
+  await assert.rejects(runSelectedAssistantAcceptance({...fixture,target:{schema:2,runtime:selectedRuntime,model,providerID},
+   timeoutMs:1000,pollMs:1,stopGraceMs:1}),/native file tool evidence/i);
+  assert.equal(fixture.snapshot().disabled,true);
+ });
 
 test('the live orchestrator observes every Web workflow and disables its disposable account',async()=>{
  const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');

@@ -85,16 +85,25 @@ test('idle readiness is rechecked after broker drain and never stops busy or unk
  assert.equal(f.events.filter(event=>event[0]==='stop').length,0);
  f.workerManager.isIdle=async()=>true;await f.manager.reconcileAssistant();assert.equal(f.workers[0].generation,2);
 });
-test('measured native presence never substitutes for a ready exact single-model service profile',async t=>{
+test('measured native presence never substitutes for a ready consistent administrator model catalog',async t=>{
  const f=await fixture(t);
  const {createAssistantRuntimeAuthority}=await import('../src/assistant-runtime-authority.mjs');
- for(const patch of [{status:'unavailable'},{models:[{id:'other'}]},{models:[{id:'gpt-6.1-sol'},{id:'other'}]},
+ for(const patch of [{status:'unavailable'},{models:[{id:'other'}]},{models:[{id:'gpt-6.1-sol'},{id:'gpt-6.1-sol'}]},
   {identityRevision:''},{defaultModel:'other'},{enabledByProfile:false}]){
   const authority=createAssistantRuntimeAuthority({configuration:f.configuration,platform:{assistantExecutionInventory:async()=>({activeExecutions:[],uncertainEffects:[]})},
    controlPlane:{manager:f.workerManager,model:f.model,nativeProfileResolver:{refresh:async()=>({...profile(),...patch})}}});
   await assert.rejects(authority.prepare('codex'),{code:'assistant_unavailable'});
  }
  assert.equal(f.events.length,0);
+});
+test('verified service configuration can change models without changing cutover authority or tool permissions',async t=>{
+ const f=await fixture(t);
+ const {createAssistantRuntimeAuthority}=await import('../src/assistant-runtime-authority.mjs');
+ const authority=createAssistantRuntimeAuthority({configuration:f.configuration,
+  platform:{assistantExecutionInventory:async()=>({activeExecutions:[],uncertainEffects:[]})},
+  controlPlane:{manager:f.workerManager,model:f.model,nativeProfileResolver:{refresh:async()=>({...profile(),
+   defaultModel:'fixture-next-model',models:[{id:'fixture-next-model',variants:{high:{reasoningEffort:'high'}}}]})}}});
+ await authority.prepare('codex');assert.equal(f.events.length,0);
 });
 test('the authenticated Admin HTTP endpoint uses production callbacks for an exclusive switch and receipt replay',async t=>{
  const f=await fixture(t),authStore=new AuthStore({filePath:join(f.root,'auth.json'),bootstrapAdmin:{username:'admin',password:'synthetic-admin-password'}});

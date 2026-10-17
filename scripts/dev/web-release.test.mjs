@@ -587,7 +587,7 @@ test('release CLI accepts an explicit assistant only on target-aware preparation
  assert.throws(()=>parseArguments(['deploy','--release','fixture','--assistant','codex']),/option/);
 });
 
-test('selected assistant target freezes safe profile identity and refuses extra models or unavailable Claude',async()=>{
+test('selected assistant target freezes safe profile identity and refuses inconsistent catalogs or unavailable Claude',async()=>{
  const {freezeAssistantTarget}=await import('./web-assistant-release.mjs');
  const input={runtime:'codex',profile:{status:'ready',enabledByProfile:true,models:[{id:'gpt-6.1-sol'}],defaultModel:'gpt-6.1-sol',
   sourceRevision:'source-fixture',identityRevision:'identity-fixture',catalogRevision:'a'.repeat(64)},
@@ -595,9 +595,26 @@ test('selected assistant target freezes safe profile identity and refuses extra 
  const target=freezeAssistantTarget(input);
  assert.equal(target.runtime,'codex');assert.equal(target.model,'gpt-6.1-sol');assert.equal(target.schema,2);
  assert.equal(JSON.stringify(target).includes('credential'),false);
- for(const profile of [{...input.profile,status:'unavailable'},{...input.profile,models:[...input.profile.models,{id:'other'}]},
+ for(const profile of [{...input.profile,status:'unavailable'},{...input.profile,models:[...input.profile.models,...input.profile.models]},
   {...input.profile,identityRevision:null}])assert.throws(()=>freezeAssistantTarget({...input,profile}),/target|profile|model/);
  assert.throws(()=>freezeAssistantTarget({...input,runtime:'claude'}),/unavailable/);
+});
+
+test('both assistants freeze configured replacement models and cannot reuse previous model evidence',async()=>{
+ const {freezeAssistantTarget,assistantTargetHash,verifyAssistantEvidence,requiredAssistantCapabilities}=await import('./web-assistant-release.mjs');
+ for(const runtime of ['codex','opencode']){
+  const input={runtime,profile:{status:'ready',enabledByProfile:true,providerID:runtime==='codex'?'codex':'configured-provider',models:[{id:'fixture-previous-model'}],defaultModel:'fixture-previous-model',
+   sourceRevision:'source-fixture',identityRevision:'identity-fixture',catalogRevision:'a'.repeat(64)},
+   sourceFingerprint:'b'.repeat(64),imageDigest:'sha256:'+'c'.repeat(64)};
+  const previous=freezeAssistantTarget(input);
+  assert.equal(previous.providerID,input.profile.providerID);
+  const next=freezeAssistantTarget({...input,profile:{...input.profile,models:[{id:'fixture-next-model'}],defaultModel:'fixture-next-model'}});
+  assert.equal(next.model,'fixture-next-model');assert.notEqual(assistantTargetHash(previous),assistantTargetHash(next));
+  const evidence={schema:2,status:'passed',targetHash:assistantTargetHash(previous),runtime,model:previous.model,
+   policyRevision:2,userId:'fixture',capabilities:Object.fromEntries(requiredAssistantCapabilities.map(name=>[name,'passed']))};
+  assert.throws(()=>verifyAssistantEvidence(next,evidence),/evidence|workflow/);
+  assert.equal(verifyAssistantEvidence(next,{...evidence,targetHash:assistantTargetHash(next),model:next.model}).status,'passed');
+ }
 });
 
 test('a selected-assistant live gate requires every native workflow and refuses stale or legacy evidence',async()=>{

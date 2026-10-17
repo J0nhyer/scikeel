@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stringify } from "smol-toml";
+import { parse, stringify } from "smol-toml";
 
 const command = new URL("../src/managed-codex-profile-command.mjs", import.meta.url);
 async function fixture(t) {
@@ -62,4 +62,18 @@ test("the operator rejects overlapping personal/service roots and unexpected opt
   }
   assert.deepEqual(await fs.readdir(f.dataDir), []);
   assert.deepEqual((await fs.readdir(f.source)).sort(), ["auth.json", "catalog.json", "config.toml"]);
+});
+
+test("the same operator command synchronizes a replacement host model without code or tenant changes", async t => {
+  const f = await fixture(t), args = ["--data-dir", f.dataDir, "--source", f.source];
+  const first = f.run("initialize", ...args); assert.equal(first.status, 0);
+  const receipt = JSON.parse(first.stdout), path = join(f.source, "config.toml");
+  const config = parse(await fs.readFile(path, "utf8")); config.model = "fixture-replacement-model";
+  const catalog = JSON.parse(await fs.readFile(config.model_catalog_json, "utf8"));
+  catalog.models.push({ ...catalog.models[0], slug: config.model });
+  await fs.writeFile(config.model_catalog_json, JSON.stringify(catalog));
+  await fs.writeFile(path, stringify(config));
+  const synced = f.run("synchronize", ...args, "--expected-revision", receipt.sourceRevision);
+  assert.equal(synced.status, 0); assert.deepEqual(JSON.parse(synced.stdout).models, [config.model]);
+  assert.equal(JSON.stringify(synced.stdout).includes("synthetic-command-private-key"), false);
 });

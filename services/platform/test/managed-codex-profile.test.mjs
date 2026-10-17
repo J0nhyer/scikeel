@@ -38,6 +38,50 @@ function resolver(input) {
   return new profiles.ManagedCodexProfile({ home: input.home, allowedModels: ["gpt-6.1-sol"], environment: input.environment });
 }
 
+test("explicit host synchronization selects the configured model without importing the whole catalog", async t => {
+  const input = await fixture(t);
+  const service = new profiles.ManagedCodexProfile({ home: input.home, environment: input.environment });
+  const before = await service.initializeFromSource({ codexHome: input.source });
+  assert.deepEqual(before.models.map(model => model.id), ["gpt-6.1-sol"]);
+  input.config.model = "fixture-next-model:preview";
+  const catalog = JSON.parse(await fs.readFile(input.catalog, "utf8"));
+  catalog.models.push({ ...catalog.models[0], slug: input.config.model, display_name: "Next Approved Model" });
+  await fs.writeFile(input.catalog, JSON.stringify(catalog));
+  await fs.writeFile(join(input.source, "config.toml"), stringify(input.config));
+  assert.deepEqual(await service.refresh("codex"), before, "Host changes alone cannot change service authority");
+  const after = await service.synchronizeFromSource({ codexHome: input.source, expectedRevision: before.sourceRevision });
+  assert.equal(after.defaultModel, input.config.model);
+  assert.deepEqual(after.models.map(model => model.id), [input.config.model]);
+  assert.notEqual(after.identityRevision, before.identityRevision);
+  assert.notEqual(after.catalogRevision, before.catalogRevision);
+  assert.deepEqual((await service.resolveProvider(after.identityRevision)).enabledModels, [input.config.model]);
+  await assert.rejects(service.resolveProvider(before.identityRevision), { code: "profile_revision_conflict" });
+  assert.deepEqual(await new profiles.ManagedCodexProfile({ home: input.home }).refresh("codex"), after);
+  await assert.rejects(service.synchronizeFromSource({ codexHome: input.source, expectedRevision: before.sourceRevision }),
+    { code: "profile_revision_conflict" });
+});
+
+test("invalid or ambiguous newly selected models leave the committed service profile untouched", async t => {
+  const input = await fixture(t);
+  const service = new profiles.ManagedCodexProfile({ home: input.home, environment: input.environment });
+  const before = await service.initializeFromSource({ codexHome: input.source });
+  for (const id of ["missing-model", "has whitespace", "", "x".repeat(161)]) {
+    input.config.model = id;
+    await fs.writeFile(join(input.source, "config.toml"), stringify(input.config));
+    await assert.rejects(service.synchronizeFromSource({ codexHome: input.source, expectedRevision: before.sourceRevision }),
+      { code: "service_profile_unavailable" });
+    assert.deepEqual(await service.refresh("codex"), before);
+  }
+  input.config.model = "ambiguous-model";
+  await fs.writeFile(join(input.source, "config.toml"), stringify(input.config));
+  const original = JSON.parse(await fs.readFile(input.catalog, "utf8")).models[0];
+  await fs.writeFile(input.catalog, JSON.stringify({ models: [original, { ...original, slug: input.config.model },
+    { ...original, slug: input.config.model }] }));
+  await assert.rejects(service.synchronizeFromSource({ codexHome: input.source, expectedRevision: before.sourceRevision }),
+    { code: "service_profile_unavailable" });
+  assert.deepEqual(await service.refresh("codex"), before);
+});
+
 test("native service grants use only the private provider and exact execution, with sanitized tenant configuration",async t=>{
   const input=await fixture(t);let contacts=0;
   const upstream=createServer((request,response)=>{
