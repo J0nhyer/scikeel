@@ -16,6 +16,31 @@ import { validateGuardLock, buildGuardRuntime } from "../../../scripts/dev/build
 import * as integration from "../../../scripts/dev/build-codex-guard-runtime.mjs";
 
 const workflow = new URL("../../../.github/workflows/sandbox-image.yml", import.meta.url);
+test('restricted native network evidence requires exact EPERM from socket creation or connect, never route errors or success',()=>{
+ assert.equal(typeof protocol.nativeNetworkDenialScript,'string');
+ const run=(stage,code)=>spawnSync('python3',['-c',`import errno,json,socket
+class DeniedSocket:
+ def __init__(self,*args):
+  if ${JSON.stringify(stage)}=='socket': raise OSError(${code},'synthetic denial')
+ def __enter__(self): return self
+ def __exit__(self,*args): pass
+ def settimeout(self,*args): pass
+ def connect(self,*args):
+  if ${code}: raise OSError(${code},'synthetic denial')
+socket.socket=DeniedSocket
+${protocol.nativeNetworkDenialScript}
+print(json.dumps(denials))`],{encoding:'utf8',timeout:3000});
+ for(const stage of ['socket','connect']){
+  const result=run(stage,1);assert.equal(result.status,0,result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout),Array.from({length:3},()=>({stage,errno:1})));
+  for(const code of [13,101,111])assert.notEqual(run(stage,code).status,0);
+ }
+ assert.notEqual(run('connect',0).status,0);
+ const proof={interfaces:['lo'],denials:Array.from({length:3},()=>({stage:'socket',errno:1})),outsideWriteDenied:true};
+ assert.equal(protocol.validNativeIsolationProof(proof),true);
+ for(const patch of [{interfaces:['lo','eth0']},{outsideWriteDenied:false},{denials:[{stage:'socket',errno:13}]},
+  {denials:Array.from({length:3},()=>({stage:'connect',errno:101}))}])assert.equal(protocol.validNativeIsolationProof({...proof,...patch}),false);
+});
 
 test('the pinned bubblewrap fix makes only loopback address creation idempotent and keeps errors fatal',async()=>{
  const lock=JSON.parse(await readFile(new URL('../../../runtime/codex-patches/required-effect-guard.lock.json',import.meta.url),'utf8'));

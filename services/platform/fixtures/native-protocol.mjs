@@ -15,6 +15,28 @@ const root = "/fixture/native";
 const port = 48177;
 export const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
 
+export const nativeNetworkDenialScript = `denials=[]
+for address,port in [('127.0.0.1',${port}),('172.31.240.1',4792),('1.1.1.1',443)]:
+ stage='socket'
+ try:
+  with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as client:
+   client.settimeout(1)
+   stage='connect'
+   client.connect((address,port))
+ except OSError as error:
+  assert error.errno==errno.EPERM,(stage,error.errno)
+  denials.append({'stage':stage,'errno':error.errno})
+ else:
+  raise AssertionError('restricted native networking unexpectedly succeeded')
+`;
+
+export function validNativeIsolationProof(proof) {
+  return Array.isArray(proof?.denials) && proof.denials.length === 3 &&
+    proof.denials.every(value => ['socket', 'connect'].includes(value?.stage) &&
+      isDeepStrictEqual(value, { stage: value.stage, errno: 1 })) &&
+    isDeepStrictEqual(proof, { interfaces: ['lo'], denials: proof.denials, outsideWriteDenied: true });
+}
+
 export async function observeLateEffects(startedAt, duration, { now = () => performance.now(), wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   let elapsed = now() - startedAt;
   while (elapsed < duration) {
@@ -316,6 +338,9 @@ export async function runNativeProtocolProbe() {
   });
   await new Promise(resolve => server.listen(port, "127.0.0.1", resolve));
   try {
+    const reachable = await fetch(`http://127.0.0.1:${port}/fixture-reachability`, { signal: AbortSignal.timeout(2000) });
+    if (reachable.status !== 404) throw new Error('outer fixture loopback is not reachable');
+    report.outerLoopbackReachable = true;
     for (const kind of ["command", "edit", "custom", "question", "running-command"]) for (const mode of (kind === "question" ? ["deny", "allow"] : kind === "running-command" ? ["allow", "stopped"] : ["deny", "allow", "crash", "malformed", "empty", "timeout", "missing", "stopped"])) {
       const isCommand = kind === "command" || kind === "running-command";
       const label = { deny: "denied", allow: "allowed", crash: "crashed", timeout: "timedout" }[mode] ?? mode;
@@ -335,13 +360,7 @@ else:
  raise AssertionError('outside workspace write succeeded')
 interfaces=sorted({line.split(':',1)[0].strip() for line in pathlib.Path('/proc/net/dev').read_text().splitlines()[2:] if ':' in line})
 assert interfaces==['lo'],interfaces
-denials=[]
-for address,port,expected in [('127.0.0.1',${port},errno.ECONNREFUSED),('172.31.240.1',4792,errno.ENETUNREACH),('1.1.1.1',443,errno.ENETUNREACH)]:
- with socket.socket() as client:
-  client.settimeout(1)
-  result=client.connect_ex((address,port))
-  assert result==expected,(address,result)
-  denials.append(result)
+${nativeNetworkDenialScript}
 pathlib.Path('isolation.json').write_text(json.dumps({'interfaces':interfaces,'denials':denials,'outsideWriteDenied':True}))
 pathlib.Path('result.txt').write_text('verified-native-write')
 `;
@@ -423,7 +442,7 @@ pathlib.Path('result.txt').write_text('verified-native-write')
           let proof;
           try { proof = JSON.parse(await readFile(`${directory}/workspace/isolation.json`, 'utf8')); }
           catch (error) { if (error.code !== 'ENOENT') throw error; }
-          record.isolationVerified = isDeepStrictEqual(proof, { interfaces: ['lo'], denials: [111,101,101], outsideWriteDenied: true }) &&
+          record.isolationVerified = report.outerLoopbackReachable === true && validNativeIsolationProof(proof) &&
             await readFile(outside, 'utf8') === 'unchanged';
           record.isolation = proof ?? null;
         }
