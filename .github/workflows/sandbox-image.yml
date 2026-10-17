@@ -149,6 +149,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install locked platform dependencies for image validators
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter @ai4s/platform...
       - name: Consume only the successful guarded binary from this workflow source
         uses: actions/download-artifact@v4
         with:

@@ -119,6 +119,16 @@ test("CI workflow is parseable and preserves dedicated limits and attestation ou
   assert.ok(steps.some((step) => step.run?.includes("--network=none --read-only")));
 });
 
+test("the isolated production-image job installs locked platform validator dependencies before manifest preparation", async () => {
+  const { load } = await import("js-yaml");
+  const { readFile } = await import("node:fs/promises");
+  const workflow = load(await readFile(new URL("../../../.github/workflows/sandbox-image.yml", import.meta.url), "utf8"));
+  const steps = workflow.jobs["science-probe-image"].steps;
+  const install = steps.findIndex(step => step.run?.includes("pnpm install --frozen-lockfile --ignore-scripts --filter @ai4s/platform..."));
+  const prepare = steps.findIndex(step => step.run?.includes("node scripts/dev/prepare-science-image.mjs"));
+  assert.ok(install >= 0 && prepare > install, "the science runner cannot inherit smol-toml or other dependencies from the native runner");
+});
+
 test("archive inspection measures tool bytes inside the rootfs rather than trusting manifest hashes", async () => {
   const { createHash } = await import("node:crypto");
   const temporary = await mkdtemp(join(tmpdir(), "scikeel-image-hash-"));
