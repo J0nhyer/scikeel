@@ -13,13 +13,14 @@ const repository = 'J0nhyer/scikeel';
 const workflow = 'sandbox-image.yml';
 const stages = ['snapshot', 'push', 'ci', 'artifact', 'install', 'deploy'];
 const hex = /^[a-f0-9]{40}$/;
+const publicationCIRef = /^ci\/web-publication-([A-Za-z0-9][A-Za-z0-9_-]{1,99})$/;
 export function parsePublishArguments(args) {
   const [command, ...rest] = args;
   if (!['start', 'status', 'resume', 'worker'].includes(command)) throw new Error('Expected start, status or resume');
   const options = { command };
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i]?.slice(2);
-    if (!['source', 'branch', 'job', 'image-digest', 'assistant'].includes(key) || rest[i] !== '--' + key || !rest[i + 1] || options[key]) throw new Error('Invalid or duplicate publication option');
+    if (!['source', 'branch', 'job', 'image-digest', 'assistant', 'ci-ref'].includes(key) || rest[i] !== '--' + key || !rest[i + 1] || options[key]) throw new Error('Invalid or duplicate publication option');
     options[key] = rest[i + 1];
   }
   if (command === 'start') {
@@ -28,8 +29,28 @@ export function parsePublishArguments(args) {
     if (options.assistant && !['opencode','codex'].includes(options.assistant)) throw new Error('Only an available assistant can be published');
     if (options['image-digest'] && !/^sha256:[a-f0-9]{64}$/.test(options['image-digest'])) throw new Error('Invalid installed image digest');
     if (options.branch && (!/^ci\/[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$/.test(options.branch) || options.branch.includes('..') || options.branch.endsWith('/'))) throw new Error('Only a safe isolated ci/ branch may be published');
-  } else if (!/^[A-Za-z0-9_-]{1,100}$/.test(options.job ?? '') || options.source || options.branch || options['image-digest'] || options.assistant) throw new Error('An explicit --job is required');
+    if (options['ci-ref'] && !publicationCIRef.test(options['ci-ref'])) throw new Error('Only a recorded publication CI ref may be reused');
+  } else if (!/^[A-Za-z0-9_-]{1,100}$/.test(options.job ?? '') || options.source || options.branch || options['image-digest'] || options.assistant || options['ci-ref']) throw new Error('An explicit --job is required');
   return options;
+}
+export function validateCIRefSource(ref, previous) {
+  const match=publicationCIRef.exec(ref);
+  if(!match||previous?.schema!==1||previous.id!==match[1]||previous.branch!==ref||!hex.test(previous.commit??'')||
+    !/^[a-f0-9]{64}$/.test(previous.sourceFingerprint??''))throw new Error('CI ref does not match a recorded publication');
+  return previous.commit;
+}
+export async function advanceCIRef(job,{request,push}) {
+  if(!publicationCIRef.test(job.ciRef??'')||!hex.test(job.commit??'')||!hex.test(job.ciRefExpectedCommit??''))throw new Error('Invalid CI ref identity');
+  const path=`git/ref/heads/${job.ciRef}`,before=await request(path);
+  if(before.object?.sha===job.commit)return;
+  if(before.object?.sha!==job.ciRefExpectedCommit)throw new Error('CI ref changed from its recorded publication');
+  const response=await request(`actions/runs?branch=${encodeURIComponent(job.ciRef)}&per_page=100`),runs=response.workflow_runs;
+  if(!Array.isArray(runs)||runs.length>=100||runs.some(run=>run.status!=='completed')||!runs.some(run=>
+    run.head_sha===job.ciRefExpectedCommit&&run.head_branch===job.ciRef&&run.event==='workflow_dispatch'&&run.status==='completed'))
+    throw new Error('CI ref has active or unverified prior workflows');
+  // Only this recorded ref may move; the snapshot branch and Git objects remain immutable.
+  await push(job.ciRef,job.commit,job.ciRefExpectedCommit);
+  if((await request(path)).object?.sha!==job.commit)throw new Error('CI ref post-update identity mismatch');
 }
 export function releaseArguments(job) {
   if (job.requestedAssistant && !['opencode','codex'].includes(job.requestedAssistant)) throw new Error('Unavailable publication assistant');
@@ -87,7 +108,8 @@ async function credentials(store) {
   return { GH_TOKEN: value.token, PATH: '/usr/local/lib/scikeel:' + process.env.PATH, GIT_TERMINAL_PROMPT: '0' };
 }
 async function github(path, env, payload) {
-  const args = ['api', `repos/${repository}/${path}`, ...(payload ? ['--method', 'POST', '--input', '-'] : [])];
+  const resource=payload?path:`${path}${path.includes('?')?'&':'?'}_=${Date.now()}`;
+  const args = ['api', `repos/${repository}/${resource}`, ...(payload ? ['--method', 'POST', '--input', '-'] : [])];
   for (let attempt = 0; ; attempt++) {
     try { const text = await execute('/usr/local/lib/scikeel/gh', args, { env, input: payload ? JSON.stringify(payload) : undefined, capture: true }); return text.trim() ? JSON.parse(text) : null; }
     catch (error) { if (attempt >= 2 || payload) throw error; await delay(2000 * (attempt + 1)); }
@@ -178,6 +200,13 @@ async function snapshot(job, directory) {
   await git(['worktree', 'add', '--detach', job.source, job.commit]);
   await freezeSource(job.originalSource, job.source, files);
   job.productionBefore = await inspectProduction();
+  if(job.ciRef){
+    const match=publicationCIRef.exec(job.ciRef);
+    if(!match)throw new Error('Invalid recorded CI ref');
+    const previous=JSON.parse(await readFile(join(commonStore(root),'web-publications',match[1],'job.json'),'utf8'));
+    job.ciRefExpectedCommit=validateCIRefSource(job.ciRef,previous);
+    if(fingerprintFiles(await inventorySource(previous.source))!==previous.sourceFingerprint)throw new Error('Recorded CI source changed');
+  }
   if (job.requestedImage) {
     await validateInstalledImage({ source: { root: job.source, files }, selection: { imageRequired: true }, production: job.productionBefore }, job.requestedImage);
     job.imageDigest = job.requestedImage;
@@ -211,15 +240,22 @@ async function worker(job, directory, store) {
     },
     ci: async () => {
       if (job.reusedInstalledImage) return;
+      const ciBranch=job.ciRef??job.branch;
       if (!job.dispatchedAt) {
-        await github(`actions/workflows/${workflow}/dispatches`, env, { ref: job.branch, inputs: { python_image: 'python:3.12.12-slim-bookworm', uv_image: 'ghcr.io/astral-sh/uv:0.11.26' } });
+        if(job.ciRef)await advanceCIRef(job,{request:path=>github(path,env),push:async(ref,commit,expected)=>{
+          const helper=join(store,'publish-auth/git-credential.py');
+          await execute('git',['-c','credential.helper=','-c',`credential.helper=${helper}`,'-c','http.version=HTTP/1.1',
+            '-c','http.lowSpeedLimit=1','-c','http.lowSpeedTime=60','push',`--force-with-lease=refs/heads/${ref}:${expected}`,
+            `https://github.com/${repository}.git`,`${commit}:refs/heads/${ref}`],{cwd:job.originalSource,env});
+        }});
+        await github(`actions/workflows/${workflow}/dispatches`, env, { ref: ciBranch, inputs: { python_image: 'python:3.12.12-slim-bookworm', uv_image: 'ghcr.io/astral-sh/uv:0.11.26' } });
         job.dispatchedAt = new Date().toISOString(); await save(path, job);
       }
       const deadline = Date.now() + 75 * 60 * 1000;
       while (Date.now() < deadline) {
-        const response = await github(`actions/workflows/${workflow}/runs?branch=${encodeURIComponent(job.branch)}&event=workflow_dispatch&per_page=20`, env);
-        const runs = response.workflow_runs.filter(run => run.head_sha === job.commit && run.head_branch === job.branch && run.event === 'workflow_dispatch');
-        const success = selectSuccessfulRun(runs, job.commit, job.branch);
+        const response = await github(`actions/workflows/${workflow}/runs?branch=${encodeURIComponent(ciBranch)}&event=workflow_dispatch&per_page=20`, env);
+        const runs = response.workflow_runs.filter(run => run.head_sha === job.commit && run.head_branch === ciBranch && run.event === 'workflow_dispatch');
+        const success = selectSuccessfulRun(runs, job.commit, ciBranch);
         if (success) { job.runID = success.id; job.runURL = success.html_url; await save(path, job); return; }
         const run = runs[0];
         if (run) {
@@ -233,7 +269,7 @@ async function worker(job, directory, store) {
     artifact: async () => {
       if (job.reusedInstalledImage) return;
       const run = await github(`actions/runs/${job.runID}`, env);
-      if (!selectSuccessfulRun([run], job.commit, job.branch)) throw new Error('CI identity changed before artifact download');
+      if (!selectSuccessfulRun([run], job.commit, job.ciRef??job.branch)) throw new Error('CI identity changed before artifact download');
       const values = await github(`actions/runs/${job.runID}/artifacts?per_page=100`, env);
       const artifact = selectImageArtifact(values.artifacts, job.commit);
       const temporary = join(directory, 'artifact-download'); await rm(temporary, { recursive: true, force: true }); await mkdir(temporary);
@@ -284,7 +320,8 @@ async function cli(args) {
     const id = new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomUUID().slice(0, 8);
     const directory = join(store, 'web-publications', id); await mkdir(directory, { recursive: true, mode: 0o700 });
     const job = { schema: 1, id, status: 'queued', originalSource: options.source, branch: options.branch ?? `ci/web-publication-${id}`, stages: {},
-      ...(options['image-digest'] ? { requestedImage: options['image-digest'] } : {}), ...(options.assistant ? { requestedAssistant: options.assistant } : {}) };
+      ...(options['image-digest'] ? { requestedImage: options['image-digest'] } : {}), ...(options.assistant ? { requestedAssistant: options.assistant } : {}),
+      ...(options['ci-ref'] ? {ciRef:options['ci-ref']} : {}) };
     await credentials(store); await save(join(directory, 'job.json'), job); await startService(job, directory);
     console.log(JSON.stringify({ job: id, status: job.status, state: join(directory, 'job.json'), log: join(directory, 'output.log') }, null, 2)); return;
   }

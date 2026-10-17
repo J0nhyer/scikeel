@@ -2,11 +2,38 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { selectSuccessfulRun, selectImageArtifact, publishPipeline, parsePublishArguments, parseGitCommit, releaseArguments } from './web-publish.mjs';
 import {publishViaGitAPI} from './web-publish.mjs';
+import * as publication from './web-publish.mjs';
 import {execFileSync} from 'node:child_process';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const sha = 'a'.repeat(40);
+const cacheRef='ci/web-publication-2026-10-17T21-44-34-881Z-fixture';
+test('CI cache ref reuse requires an exact locally recorded publication identity',()=>{
+ assert.equal(parsePublishArguments(['start','--source','/repo','--ci-ref',cacheRef])['ci-ref'],cacheRef);
+ const prior={schema:1,id:cacheRef.slice('ci/web-publication-'.length),branch:cacheRef,commit:'b'.repeat(40),sourceFingerprint:'c'.repeat(64)};
+ assert.equal(publication.validateCIRefSource(cacheRef,prior),prior.commit);
+ for(const patch of [{schema:2},{id:'foreign'},{branch:'main'},{commit:'bad'},{sourceFingerprint:'bad'}])
+  assert.throws(()=>publication.validateCIRefSource(cacheRef,{...prior,...patch}));
+ for(const ref of ['main','ci/foreign','ci/web-publication-../bad'])
+  assert.throws(()=>parsePublishArguments(['start','--source','/repo','--ci-ref',ref]));
+ assert.throws(()=>parsePublishArguments(['resume','--job','fixture','--ci-ref',cacheRef]));
+});
+test('CI ref reuse uses an expected-old-commit lease and verifies the actual new head',async()=>{
+ const job={commit:sha,ciRef:cacheRef,ciRefExpectedCommit:'b'.repeat(40)},calls=[];let head=job.ciRefExpectedCommit;
+ const terminal={head_sha:job.ciRefExpectedCommit,head_branch:cacheRef,event:'workflow_dispatch',status:'completed'};
+ const request=async path=>path.startsWith('git/ref/')?{object:{sha:head}}:{workflow_runs:[terminal]};
+ await publication.advanceCIRef(job,{request,push:async(ref,commit,expected)=>{calls.push({ref,commit,expected});head=commit;}});
+ assert.deepEqual(calls,[{ref:cacheRef,commit:sha,expected:'b'.repeat(40)}]);
+ await publication.advanceCIRef(job,{request,push:async()=>assert.fail('Idempotent resume must not push')});
+ for(const state of ['in_progress','queued','waiting','pending','requested'])await assert.rejects(publication.advanceCIRef(job,{
+  request:async path=>path.startsWith('git/ref/')?{object:{sha:job.ciRefExpectedCommit}}:{workflow_runs:[{status:state}]},
+  push:async()=>assert.fail('Active CI must not move')}));
+ await assert.rejects(publication.advanceCIRef(job,{request:async()=>({object:{sha:'d'.repeat(40)}}),push:async()=>assert.fail('Foreign head')}));
+ await assert.rejects(publication.advanceCIRef(job,{request:async path=>path.startsWith('git/ref/')?{object:{sha:job.ciRefExpectedCommit}}:{workflow_runs:[]},push:async()=>assert.fail('Unknown prior CI')}));
+ head=job.ciRefExpectedCommit;
+ await assert.rejects(publication.advanceCIRef(job,{request,push:async()=>{head='d'.repeat(40);}}));
+});
 async function apiHistory(t,count,{emptyLast=false}={}){
  const directory=await mkdtemp(join(tmpdir(),'scikeel-publication-history-'));
  t.after(()=>rm(directory,{recursive:true,force:true}));
