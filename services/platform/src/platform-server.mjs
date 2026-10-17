@@ -1108,6 +1108,13 @@ export class PlatformServer {
             if(input.directory!==undefined&&input.directory!==owner.directory)throw workspaceError("conversation_owner_mismatch",403);
             if(!this.conversationRouter)throw workspaceError("conversation_authority_unavailable",503);
             await this.conversationRouter.index(owner,sessionId);
+            try{await this.cliRuntime.getOwnedSession(user.id,sessionId);}
+            catch(error){
+              if(error.code!=='unknown_session')throw error;
+              await this.cliRuntime.assertAssistantRevision(request.headers['x-scikeel-assistant-revision']);
+              await this.cliRuntime.ensureNativeConversation({conversations:this.conversations,owner,conversationId:sessionId,
+                readDenies:id=>this.conversationRouter.explicitDenies(owner,id)});
+            }
             executionAdmission=await this.cliRuntime.admitHttpPrompt({conversations:this.conversations,owner,sessionId,
               body:promptBody,requestId:request.headers["x-scikeel-request-id"]??promptBody.attachmentTurn?.turnId,
               policyRevision:request.headers["x-scikeel-assistant-revision"],
@@ -1381,7 +1388,24 @@ export class PlatformServer {
   }
   async #researchOwner(user, sessionId, access, worker) {
     if (this.cliRuntime?.isManaged(user.id)) {
-      const { session } = await this.cliRuntime.getOwnedSession(user.id, sessionId);
+      let session;
+      try{({session}=await this.cliRuntime.getOwnedSession(user.id,sessionId));}
+      catch(error){
+        if(error.code!=='unknown_session'||!this.tenantPolicy||!this.conversationRouter)throw error;
+        const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+        const owner={...context,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir};
+        const ancestry=[],seen=new Set();let id=sessionId;
+        while(id){
+          if(seen.has(id)||ancestry.length>=20)throw recoveryError('session_context_unavailable');seen.add(id);
+          const value=await this.conversations.open(owner,id);
+          const row={id:value.id,directory:value.directory,parentID:value.parentId};
+          this.tenantPolicy.directory(context,row.directory);await this.workspaceManagement?.assertAccessible(context,row.directory);
+          if(ancestry.length&&row.directory!==ancestry[0].directory)throw recoveryError('session_context_unavailable');
+          ancestry.push(row);id=row.parentID;
+        }
+        this.tenantPolicy.registerSessionList(context,ancestry);
+        return {...owner,sessionId,directory:ancestry[0].directory,runtime:this.cliRuntime.runtimeForUser(user.id)};
+      }
       if(this.tenantPolicy) {
         const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
         const ancestry=[],seen=new Set();let current=session;
@@ -1390,8 +1414,9 @@ export class PlatformServer {
           seen.add(current.id);
           this.tenantPolicy.directory(context,current.directory);
           await this.workspaceManagement?.assertAccessible(context,current.directory);
-          ancestry.push({id:current.id,parentID:current.parentId ?? null,directory:current.directory});
-          current=current.parentId?(await this.cliRuntime.getOwnedSession(user.id,current.parentId)).session:null;
+          ancestry.push({id:current.publicConversationId??current.id,parentID:current.publicParentId??current.parentId ?? null,directory:current.directory});
+          const parentId=current.publicParentId??current.parentId;
+          current=parentId?(await this.cliRuntime.getOwnedSession(user.id,parentId)).session:null;
         }
         // Validate the entire owned chain before granting authority for a child.
         this.tenantPolicy.registerSessionList(context,ancestry);

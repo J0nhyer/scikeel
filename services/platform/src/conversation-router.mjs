@@ -5,6 +5,7 @@ const id=value=>typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.t
 const runtimes=new Set(['opencode','codex','claude']);
 const clone=structuredClone;
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export const nativePublicMessageId=(conversationId,bindingId,messageId)=>`msg_${hash([conversationId,bindingId,messageId]).slice(0,40)}`;
 const messageHash=message=>hash({role:message.info.role,parts:message.parts,attachments:message.attachments??[],error:message.info.error??null});
 const messageState=message=>message.info.error?'failed':message.info.role==='user'||Number.isFinite(message.info.time?.completed)?'completed':'partial';
 /** Owned conversation references and history, independent of active inference. */
@@ -43,6 +44,11 @@ export class ConversationRouter {
    sources.set(row.id,{row,runtime:'opencode',sourceId:row.id});
   }
   const rawSources=[...sources.values()];
+  for(const source of rawSources)if(source.row.publicConversationId!==undefined){
+   const target=canonical.find(value=>value.id===source.row.publicConversationId);
+   if(!id(source.row.publicConversationId)||!target||target.directory!==source.row.directory||source.runtime==='opencode')throw fail('conversation_origin_conflict');
+   hidden.add(source.sourceId);
+  }
   for(const value of canonical) {
    if(!id(value.id)||!Array.isArray(value.bindings))throw fail('conversation_history_invalid');
    const bindingSources=new Map();
@@ -53,6 +59,7 @@ export class ConversationRouter {
     if(candidates.length>1)throw fail('conversation_origin_conflict');
     if(candidates[0]) {
      const candidate=candidates[0];
+     if(candidate.row.publicConversationId!==undefined&&candidate.row.publicConversationId!==value.id)throw fail('conversation_origin_conflict');
      if(candidate.row.directory!==value.directory||binding.runtime!=='opencode'&&binding.identityRevision&&
        !(candidate.row.nativeSessionId===binding.nativeSessionId&&candidate.row.identityRevision===binding.identityRevision)&&
        !candidate.row.bindingHistory?.some(previous=>previous.nativeSessionId===binding.nativeSessionId&&previous.identityRevision===binding.identityRevision))
@@ -101,6 +108,18 @@ export class ConversationRouter {
   return ancestors;
  }
  async read(owner,conversationId) {return clone((await this.#resolve(owner,conversationId)).row);}
+ async explicitDenies(owner,conversationId) {
+  const source=await this.#resolve(owner,conversationId),records=[source,...source.bindingSources?.values()??[],source.archival].filter(Boolean),rules=new Map();
+  for(const record of records){
+   const permission=record.row.permission??[];
+   if(!Array.isArray(permission)||permission.length>256||permission.some(rule=>!rule||
+    Object.keys(rule).sort().join(',')!=='action,pattern,permission'||!['allow','ask','deny'].includes(rule.action)||
+    [rule.permission,rule.pattern].some(value=>typeof value!=='string'||!value||value.length>4096||value.includes('\0'))))throw fail('conversation_permissions_unavailable');
+   for(const rule of permission)if(rule.action==='deny')rules.set(JSON.stringify([rule.permission,rule.pattern]),rule);
+  }
+  if(rules.size>256)throw fail('conversation_permissions_unavailable');
+  return clone([...rules.values()]);
+ }
  async #messages(owner,source) {
   if(!source.runtime) return [];
   if(source.runtime==='opencode')return this.readOpenCode({...owner,directory:source.row.directory},`/session/${encodeURIComponent(source.sourceId)}/message`);
@@ -197,7 +216,7 @@ export class ConversationRouter {
     const previous=value?.events.filter(event=>(event.bindingId??event.historicalSourceId)===originId&&event.nativeMessageId===message.info.id)??[];
     if(previous.length>1)throw fail('conversation_origin_conflict');
     return {nativeEventId:previous[0]?.nativeEventId??message.info.id,nativeMessageId:message.info.id,
-     publicMessageId:previous[0]?.publicMessageId??(job.historical?message.info.id:`msg_${hash([conversationId,job.binding.id,message.info.id]).slice(0,40)}`),
+     publicMessageId:previous[0]?.publicMessageId??(job.historical?message.info.id:nativePublicMessageId(conversationId,job.binding.id,message.info.id)),
      role:message.info.role,state:messageState(message),contentHash:messageHash(message)};
    });
    const completeCursor=`index_${hash(events)}`,stored=job.historical?value?.historicalSource:value?.bindings.find(binding=>binding.id===job.binding.id);

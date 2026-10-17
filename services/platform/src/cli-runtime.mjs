@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { CliProfileResolver } from "./cli-profile.mjs";
 import { AssistantPolicy, validateAssistantPolicyState } from "./assistant-policy.mjs";
 import {handoverText,prepareHandover} from './conversation-handover.mjs';
+import {nativePublicMessageId} from './conversation-router.mjs';
 export {handoverText} from './conversation-handover.mjs';
 export const RUNTIME_STORAGE_VERSION = 5;
 export const READABLE_RUNTIME_STORAGE_VERSIONS = Object.freeze([1, 2, 3, 4, 5]);
@@ -277,10 +278,10 @@ function isWithin(root, candidate) {
 
 function publicSession(session) {
   return {
-    id: session.id,
+    id: session.publicConversationId ?? session.id,
     title: session.title,
     directory: session.directory,
-    parentID: session.parentId ?? null,
+    parentID: session.publicParentId ?? session.parentId ?? null,
     time: { created: session.createdAt, updated: session.updatedAt },
     metadata: session.metadata ?? {},
     ...(session.model ? { model: session.model } : {}),
@@ -758,7 +759,7 @@ export class CliRuntimeManager {
         throw issue("assistant_identity_conflict", "Conversation execution identity changed", 503);
       return receipt;
     });
-    let transitionQueue = Promise.resolve();
+    let transitionQueue = Promise.resolve(),acceptedBindingId;
     const serial = run => {
       const next = transitionQueue.catch(() => {}).then(run); transitionQueue = next; return next;
     };
@@ -777,6 +778,10 @@ export class CliRuntimeManager {
       });
     };
     return { replay: false, identity: structuredClone(lease.reservation.identity), receipt: structuredClone(lease.reservation),
+      publicMessageId:messageId=>{
+        if(!acceptedBindingId)throw issue('native_acceptance_required','Native acceptance is required for message identity',503);
+        return nativePublicMessageId(conversationId,acceptedBindingId,messageId);
+      },
       submitted: () => serial(() => transition("submitted")),
       accepted: nativeAcceptance => {
         const capturedAcceptance = structuredClone(nativeAcceptance);
@@ -789,8 +794,13 @@ export class CliRuntimeManager {
           const current=await conversations.open(capturedOwner,conversationId),receipt=current.turns[capturedInput.requestId];
           if(!receipt || JSON.stringify(receipt.identity)!==JSON.stringify(lease.reservation.identity) ||
               !this.assistantPolicy.isExecutionCurrent(receipt.identity))throw issue("assistant_identity_conflict","Native admission changed",503);
-          return conversations.acceptNativeTurn(capturedOwner,conversationId,{requestId:capturedInput.requestId,
+          const accepted=await conversations.acceptNativeTurn(capturedOwner,conversationId,{requestId:capturedInput.requestId,
             expectedRevision:current.revision,nativeAcceptance:capturedAcceptance,representedSequence});
+          const bound=await conversations.open(capturedOwner,conversationId);
+          const binding=bound.bindings.find(value=>value.id===bound.currentBindingId);
+          if(!binding||binding.runtime!==capturedAcceptance.runtime||binding.nativeSessionId!==capturedAcceptance.nativeSessionId||binding.identityRevision!==capturedInput.identityRevision)
+            throw issue('native_identity_conflict','Native binding changed after acceptance',503);
+          acceptedBindingId=binding.id;return accepted;
         });
       },
       settle: ({ cleanupVerified } = {}) => serial(async () => {
@@ -849,6 +859,8 @@ export class CliRuntimeManager {
         if(session.bindingHistory!==undefined&&(!Array.isArray(session.bindingHistory)||session.bindingHistory.length>128||
           session.bindingHistory.some(binding=>!binding||typeof binding.nativeSessionId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(binding.nativeSessionId)||
             typeof binding.identityRevision!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(binding.identityRevision))))throw historyFailure();
+        if(session.publicConversationId!==undefined&&(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(session.publicConversationId)||session.publicConversationId===session.id)||
+          session.publicParentId!==undefined&&(!session.parentId||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(session.publicParentId)))throw historyFailure();
         for (const message of session.history) {
           if (!message || typeof message.info?.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(message.info.id) ||
               messages.has(message.info.id) || !["user", "assistant"].includes(message.info.role) || !Array.isArray(message.parts) ||
@@ -879,6 +891,8 @@ export class CliRuntimeManager {
       try { await this.workspaceAccess?.(input.userId, session.directory); }
       catch (error) { if (error.code !== "project_trashed") throw error; lifecycle = "trashed"; }
       visible.push({ ...publicSession(session), runtime: session.runtime, lifecycle,
+        id:session.id,parentID:session.parentId??null,publicConversationId:session.publicConversationId,
+        permission:structuredClone(session.permission??[]),
         nativeSessionId: session.nativeSessionId ?? null, identityRevision: session.identityRevision ?? null,
         bindingHistory:structuredClone(session.bindingHistory??[]) });
     }
@@ -904,7 +918,7 @@ export class CliRuntimeManager {
       part.type==='text'&&part.sessionID===message.info.sessionID&&
       /^msg_cli_user_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(part.messageID??'')?
         {...part,messageID:message.info.id}:part)}:message);
-    return structuredClone({ session: { ...publicSession(session), runtime: session.runtime, nativeSessionId: session.nativeSessionId ?? null,
+    return structuredClone({ session: { ...publicSession(session), id:session.id,runtime: session.runtime, nativeSessionId: session.nativeSessionId ?? null,
       identityRevision: session.identityRevision ?? null }, messages,
       nextCursor: end < session.history.length ? `history_${identity}_${end}` : null, sourceRevision: identity });
   }
@@ -1104,13 +1118,49 @@ export class CliRuntimeManager {
 
   async getOwnedSession(userId, sessionId) {
     const state = await this.ensureUser(userId);
-    assertSessionId(sessionId);
-    const session = state.sessions.get(sessionId);
-    if (!session || session.runtime !== this.runtimeForUser(userId)) {
+    if(typeof sessionId!=="string"||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(sessionId))throw issue("invalid_session","invalid session id",400);
+    const matches=[...state.sessions.values()].filter(session=>(session.publicConversationId??session.id)===sessionId&&session.runtime===this.runtimeForUser(userId));
+    if(matches.length>1)throw issue("conversation_origin_conflict","Conversation has conflicting native aliases",503);
+    const session=matches[0];
+    if (!session) {
       throw issue("unknown_session", "session not found in the selected runtime", 404);
     }
     await this.workspaceAccess?.(userId,session.directory);
     return { state, session };
+  }
+
+  async ensureNativeConversation({conversations,owner,conversationId,readDenies}) {
+    if(!this.sandboxJobs||!this.isManaged(owner.userId))throw issue('runtime_unavailable','Native conversation is unavailable',503);
+    const state=await this.ensureUser(owner.userId),runtime=this.runtimeForUser(owner.userId),chain=[];
+    let id=conversationId;
+    while(id){
+      if(chain.some(value=>value.id===id)||chain.length>=20)throw historyFailure();
+      const value=await conversations.open(owner,id);
+      if(value.directory!==owner.directory||value.turns&&Object.values(value.turns).some(turn=>turn.state!=='settled'||turn.cleanupVerified!==true))
+        throw issue('assistant_recovery_required','Conversation cleanup requires reconciliation',503);
+      await this.workspaceAccess?.(owner.userId,value.directory);chain.push(value);id=value.parentId;
+    }
+    let parent;
+    for(const value of chain.reverse()){
+      const candidates=[...state.sessions.values()].filter(session=>(session.publicConversationId??session.id)===value.id&&session.runtime===runtime);
+      if(candidates.length>1)throw historyFailure();
+      let session=candidates[0];
+      if(!session){
+        const prior=state.sessions.get(value.id);
+        if(value.historicalSource&&!readDenies)throw issue('conversation_permissions_unavailable','Owned source permissions are required',503);
+        const permission=readDenies?await readDenies(value.id):structuredClone(prior?.permission??[]).filter(rule=>rule.action==='deny');
+        if(!Array.isArray(permission)||permission.length>256||permission.some(rule=>!rule||rule.action!=='deny'||
+          Object.keys(rule).sort().join(',')!=='action,pattern,permission'||[rule.permission,rule.pattern].some(value=>typeof value!=='string'||!value||value.length>4096||value.includes('\0'))))throw historyFailure();
+        const timestamp=now();session={id:`ses_cli_${randomUUID().replaceAll('-','')}`,publicConversationId:value.id,
+          ...(parent?{parentId:parent.id,publicParentId:value.parentId}:{}),userId:owner.userId,runtime,directory:value.directory,
+          title:value.title,model:managedModelKey(runtime,this.modelForUser(owner.userId,runtime)),variant:null,nativeSessionId:null,
+          createdAt:timestamp,updatedAt:timestamp,metadata:{},history:[],status:'idle',
+          permission:structuredClone(permission)};
+        state.sessions.set(session.id,session);
+      }
+      if(session.directory!==value.directory)throw historyFailure();parent=session;
+    }
+    await this.persistUser(state);return parent;
   }
 
   // Internal research operations share native session storage. This is not an
@@ -1147,7 +1197,7 @@ export class CliRuntimeManager {
     if (operation === "message") return structuredClone(session.history);
     if (operation === "children") {
       const children = [];
-      for (const child of state.sessions.values()) if (child.parentId === sessionId && child.runtime === session.runtime) {
+      for (const child of state.sessions.values()) if (child.parentId === session.id && child.runtime === session.runtime) {
         await this.workspaceAccess?.(userId, child.directory);
         children.push(publicSession(child));
       }
@@ -1175,17 +1225,27 @@ export class CliRuntimeManager {
   }
 
   emit(userId,event) {
+    const id=event.properties?.sessionID??event.properties?.info?.sessionID??event.properties?.part?.sessionID;
+    const sessions=this.userStates.get(userId)?.sessions;
+    const session=id?sessions?.get(id)??[...sessions?.values()??[]].find(value=>value.publicConversationId===id):null;
+    if(id&&!session)return;
+    if(session){
+      const properties={...event.properties},publicId=session.publicConversationId??session.id;
+      if(properties.sessionID!==undefined)properties.sessionID=publicId;
+      if(properties.info)properties.info={...properties.info,sessionID:publicId,id:session._publicMessageId?.(properties.info.id)??properties.info.id};
+      if(properties.part)properties.part={...properties.part,sessionID:publicId,messageID:session._publicMessageId?.(properties.part.messageID)??properties.part.messageID};
+      event={...event,properties};
+    }
     if(!this.workspaceAccess)return this.emitVisible(userId,event);
-    const id=event.properties?.sessionID??event.properties?.info?.id??event.properties?.part?.sessionID;
-    const session=id?this.userStates.get(userId)?.sessions.get(id):null;
     if(!session)return this.emitVisible(userId,event);
     void this.workspaceAccess(userId,session.directory).then(()=>this.emitVisible(userId,event)).catch(()=>{});
   }
   emitVisible(userId, event) {
     const subscribers = this.subscribers.get(userId);
     if (!subscribers) return;
-    const sessionId = event.properties?.sessionID;
-    const session = sessionId ? this.userStates.get(userId)?.sessions.get(sessionId) : null;
+    const sessionId = event.properties?.sessionID??event.properties?.info?.sessionID??event.properties?.part?.sessionID;
+    const sessions=this.userStates.get(userId)?.sessions;
+    const session = sessionId ? sessions?.get(sessionId)??[...sessions?.values()??[]].find(value=>value.publicConversationId===sessionId) : null;
     for (const subscription of [...subscribers]) {
       if (session && subscription.directory && resolve(subscription.directory) !== resolve(session.directory)) continue;
       try {
@@ -1254,7 +1314,7 @@ export class CliRuntimeManager {
         Buffer.byteLength(JSON.stringify([...state.sessions.values()],null,2))+Buffer.byteLength(text)>HISTORY_SOURCE_LIMIT-6*1024**2)
       throw issue("conversation_history_full","Conversation history is full; existing messages have been preserved",507);
     if(executionAdmission && (executionAdmission.replay || executionAdmission.identity.userId!==userId ||
-        executionAdmission.identity.conversationId!==session.id || !this.assistantPolicy.isExecutionCurrent(executionAdmission.identity)))
+        executionAdmission.identity.conversationId!==(session.publicConversationId??session.id) || !this.assistantPolicy.isExecutionCurrent(executionAdmission.identity)))
       throw issue("assistant_identity_conflict","Execution admission is no longer current",409);
     const turn = Object.assign(reserved??{}, { userId, state, session, text, displayText, model, attachmentInput, workspaceContext, executionAdmission, cancelled: false });
     this.turnReservations.set(session.id, turn);
@@ -1343,13 +1403,13 @@ export class CliRuntimeManager {
       ...(attachmentInput?{attachments:attachmentInput.metadata}:{})};
     session.history.push(userMessage);await this.persistUser(state);
     const assistant={info:{id:`msg_cli_${randomUUID()}`,role:"assistant",sessionID:session.id,time:{created:timestamp}},parts:[]};
-    this.emitMessageUpdated(userId,session,assistant);
+    if(!turn.executionAdmission)this.emitMessageUpdated(userId,session,assistant);
     const stale=Boolean(session.nativeSessionId && session.identityRevision!==profile.identityRevision);
     let acceptedNativeSessionId;
     try {
       if(turn.executionAdmission){await turn.executionAdmission.submitted();turn.executionAdmission.dispatched=true;}
       const handover=turn.executionAdmission?.handover;
-      const result=await this.sandboxJobs.run({userId,session,workspaceContext:turn.workspaceContext,model:chosen,variant:chosenVariant,text:`${handover?.context??(stale?handoverText(session.history):"")}${text}`,
+      const result=await this.sandboxJobs.run({userId,session:{...session,id:session.publicConversationId??session.id},workspaceContext:turn.workspaceContext,model:chosen,variant:chosenVariant,text:`${handover?.context??(stale?handoverText(session.history):"")}${text}`,
         turnIdentity:turn.executionAdmission?.identity,identityRevision:profile.identityRevision,
         onCleanup:async({cleanupVerified})=>{turn.nativeCleanupVerified=cleanupVerified===true;},
         onAccepted:async native=>{
@@ -1365,15 +1425,19 @@ export class CliRuntimeManager {
           }
           session.nativeSessionId=native.nativeSessionId;session.identityRevision=profile.identityRevision;
           await this.persistUser(state);
+          if(turn.executionAdmission){
+            session._publicMessageId=turn.executionAdmission.publicMessageId;
+            this.emitMessageUpdated(userId,session,userMessage);this.emitMessageUpdated(userId,session,assistant);
+          }
         },
         images:(attachmentInput?.images??[]).map(image=>image.url),nativeSessionId:handover?handover.resumeNativeSessionId:stale?undefined:session.nativeSessionId,signal:controller.signal,
         emit:async event=>{
           if(event.type==="text")this.appendAssistantText(userId,session,assistant,event.text);
           else if(event.type==="question") {
-            const pending={id:event.id,sessionID:session.id,questions:event.questions};
+            const pending={id:event.id,sessionID:session.publicConversationId??session.id,questions:event.questions};
             this.nativeQuestions.set(event.id,{userId,...pending});this.emit(userId,{type:"question.asked",properties:pending});
           } else if(event.type==="approval") {
-            const pending={id:event.id,sessionID:session.id,permission:event.kind==="edit"?"edit":"bash",patterns:event.command?[event.command]:[],metadata:{}};
+            const pending={id:event.id,sessionID:session.publicConversationId??session.id,permission:event.kind==="edit"?"edit":"bash",patterns:event.command?[event.command]:[],metadata:{}};
             this.nativeApprovals.set(event.id,{userId,...pending});
             this.emit(userId,{type:"permission.asked",properties:pending});
           } else if(event.type==="tool-output") {
@@ -1397,13 +1461,14 @@ export class CliRuntimeManager {
       if(!turn.cancelled){assistant.info.error={name:"CliRuntimeError",data:{message:"Isolated AI assistant turn failed. Retry after checking the workspace status."}};
         this.emit(userId,{type:"session.error",properties:{sessionID:session.id,error:assistant.info.error}});}
     } finally {
-      for(const [id,pending]of this.nativeApprovals)if(pending.userId===userId && pending.sessionID===session.id)this.nativeApprovals.delete(id);
-      for(const [id,pending]of this.nativeQuestions)if(pending.userId===userId && pending.sessionID===session.id)this.nativeQuestions.delete(id);
+      for(const [id,pending]of this.nativeApprovals)if(pending.userId===userId && pending.sessionID===(session.publicConversationId??session.id))this.nativeApprovals.delete(id);
+      for(const [id,pending]of this.nativeQuestions)if(pending.userId===userId && pending.sessionID===(session.publicConversationId??session.id))this.nativeQuestions.delete(id);
       for(const part of assistant.parts)if(part.type==='tool'&&part.state.status==='running'){
         part.state={status:'error',input:part.state.input,error:'Execution interrupted or unavailable.',time:{start:part.state.time.start,end:now()}};
         this.emitTool(userId,session,assistant,part);
       }
       assistant.info.time.completed=now();
+      if(!turn.executionAdmission||acceptedNativeSessionId)this.emitMessageUpdated(userId,session,assistant);
       if(assistant.parts.length || assistant.info.error)session.history.push(assistant);
       session.status="idle";session.updatedAt=now();
       this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
@@ -1664,8 +1729,8 @@ export class CliRuntimeManager {
 
   async abortSession(userId, sessionId, includeOtherRuntimes = false) {
     const state = await this.ensureUser(userId);
-    assertSessionId(sessionId);
-    const session = state.sessions.get(sessionId);
+    const session = includeOtherRuntimes ? state.sessions.get(sessionId)??[...state.sessions.values()].find(value=>value.publicConversationId===sessionId&&value.runtime===this.runtimeForUser(userId))
+      :(await this.getOwnedSession(userId,sessionId)).session;
     if (!session || !includeOtherRuntimes && session.runtime !== this.runtimeForUser(userId)) throw issue("unknown_session", "session not found", 404);
     const turn = this.turnReservations.get(session.id);
     if (turn) turn.cancelled = true;

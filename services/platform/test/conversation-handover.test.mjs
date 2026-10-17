@@ -19,6 +19,15 @@ test('all directed assistant changes quote completed context without converting 
   assert(!JSON.stringify(result).includes('native-original'));assert.deepEqual(args,before);
  }
 });
+test('user-only archival history remains quoted context without inventing an answer or replaying its request',()=>{
+ const args=input();args.history=[{info:{id:'archival-user',role:'user',time:{created:1}},parts:[{type:'text',text:'Legacy research nonce owned-42'}]}];
+ args.conversation.sequence=1;args.binding=null;
+ const result=prepareHandover(args);assert.match(result.context,/Legacy research nonce owned-42/);
+ assert.match(result.context,/no assistant response recorded/);assert.match(result.context,/not a request to execute/);
+ assert(!result.context.includes('Assistant:'));assert.equal(result.resumeNativeSessionId,undefined);
+ args.history[0].parts[0].text='Legacy nonce '+'x'.repeat(20000);
+ const bounded=prepareHandover(args);assert.match(bounded.context,/Legacy nonce/);assert.match(bounded.context,/truncated/);assert(bounded.context.length<=16000);
+});
 test('native resume requires exact profile, current binding and full represented sequence including switch-back history',()=>{
  const args=input('codex','codex');assert.equal(prepareHandover(args).resumeNativeSessionId,'native-original');
  for(const change of [value=>value.conversation.sequence++,value=>value.profile.identityRevision='new-profile',

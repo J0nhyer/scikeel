@@ -7,12 +7,15 @@ const identity={userId:'owner',instanceId:'user-owner',generation:2,conversation
 const context={userId:'owner',instanceId:'user-owner',generation:2};
 const session={id:'child',directory:'/workspace/project',parentId:'root'};
 const action={sessionId:'child',callId:'call-owned',tool:'bash',kind:'command',directory:session.directory,inputs:{cmd:'true'}};
-function fixture(){
+function fixture({aliases=false}={}){
  let current=true,effects;const calls=[],rules=[];
  const state={sessionId:'root',instanceId:'user-owner',generation:2,phase:'running',execution:7,mode:'autonomous',pending:null};
  const scope={context,session,researchExecution:7,rootSessionId:'root'};
  const nativeJobs={executionScope:()=>current?scope:null,configureEffects:value=>effects=value};
- const cliRuntime={assistantPolicy:{isExecutionCurrent:()=>current},getOwnedSession:async(_user,id)=>({session:id==='child'?session:{id:'root',directory:session.directory}}),
+ const child=aliases?{...session,id:'private-child',publicConversationId:'child',parentId:'private-root',publicParentId:'root'}:session;
+ const root=aliases?{id:'private-root',publicConversationId:'root',directory:session.directory}:{id:'root',directory:session.directory};
+ const cliRuntime={assistantPolicy:{isExecutionCurrent:()=>current},getOwnedSession:async(_user,id)=>{
+  assert(['child','root'].includes(id),'Private aliases are not accepted as public session IDs');return {session:id==='child'?child:root};},
   researchRequest:async({path})=>({permission:path==='/session/root'?rules:[]})};
  const platform={runtimeCollaboration:async(_context,body)=>{calls.push(body);
   if(body.action==='delivery')return {state:{...state,delivery:{status:'verified'}}};
@@ -29,6 +32,12 @@ test('native effect adapter reuses shared authority with independent research co
  f.rules.length=0;f.state.pending={id:'checkpoint'};
  assert.equal((await f.permissions.authorize(identity,action)).allowed,false);
  f.state.pending=null;f.setCurrent(false);assert.equal((await f.permissions.authorize(identity,action)).allowed,false);
+});
+test('native effect authorization uses canonical aliases while inheriting the original root denies',async()=>{
+ const f=fixture({aliases:true});
+ assert.equal((await f.permissions.authorize(identity,action)).allowed,true);
+ f.rules.push({permission:'bash',pattern:'*',action:'deny'});
+ assert.equal((await f.permissions.authorize(identity,action)).allowed,false);
 });
 test('native adapter rejects changed research execution and never begins research behind HTTP admission',async()=>{
  const f=fixture();f.state.execution=0;f.state.phase='idle';

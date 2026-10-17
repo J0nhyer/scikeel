@@ -24,12 +24,13 @@ export function configureNativeEffects({nativeJobs,cliRuntime,platform,workerMan
    for(let depth=0;ancestor;depth++){
     if(depth>=20||seen.has(ancestor.id)||ancestor.directory!==session.directory)throw Error('Native ancestry denied');
     seen.add(ancestor.id);
-    const view=await cliRuntime.researchRequest({userId:identity.userId,directory:ancestor.directory,path:`/session/${ancestor.id}`});
+    const view=await cliRuntime.researchRequest({userId:identity.userId,directory:ancestor.directory,path:`/session/${ancestor.publicConversationId??ancestor.id}`});
     if(!Array.isArray(view.permission))throw Error('Native permission rules unavailable');
     rules.unshift(...view.permission);
-    ancestor=ancestor.parentId?(await cliRuntime.getOwnedSession(identity.userId,ancestor.parentId)).session:null;
+    const parentId=ancestor.publicParentId??ancestor.parentId;
+    ancestor=parentId?(await cliRuntime.getOwnedSession(identity.userId,parentId)).session:null;
    }
-   return {id:session.id,parentID:session.parentId,conversationId:identity.conversationId,directory:session.directory,
+   return {id:session.publicConversationId??session.id,parentID:session.publicParentId??session.parentId,conversationId:identity.conversationId,directory:session.directory,
     workspaceDir:tenantPolicy.account(scope.context).workspaceDir,permission:rules};
   },
   execution:guarded,

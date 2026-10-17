@@ -1461,6 +1461,45 @@ async function until(check){
  for(let n=0;n<100;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
  assert.fail('Timed out waiting for native turn settlement');
 }
+for(const userOnly of [false,true])test(`native HTTP lazily adopts owned ${userOnly?'user-only':'completed'} OpenCode history without changing public identity`,async t=>{
+ const calls=[];const f=await nativeHttpFixture(t,async args=>{
+  calls.push(args);const nativeSessionId=args.nativeSessionId??'adopted-native-thread';
+  await args.onAccepted({nativeSessionId,turnId:`adopted-turn-${calls.length}`});
+  await args.emit({type:'text',text:'Native continuation'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ });
+ const events=[];f.cliRuntime.emitVisible=(_user,event)=>events.push(event);
+ const deny={permission:'bash',pattern:'restricted-command',action:'deny'};
+ const legacy={id:'ses_owned_legacy_opencode',title:'Existing research',directory:f.owner.directory,time:{created:1,updated:2},
+  permission:[{permission:'*',pattern:'*',action:'allow'},deny]};
+ const history=[{info:{id:'old-user',role:'user',sessionID:legacy.id,time:{created:1,completed:1}},parts:[{id:'old-user-part',type:'text',text:'Remember the measured result',sessionID:legacy.id,messageID:'old-user'}]},
+  {info:{id:'old-assistant',role:'assistant',sessionID:legacy.id,time:{created:2,completed:2}},parts:[{id:'old-assistant-part',type:'text',text:'Verified old result: 42',sessionID:legacy.id,messageID:'old-assistant'}]}];
+ if(userOnly)history.pop();
+ f.server.conversationRouter.listOpenCode=async()=>[legacy];
+ f.server.conversationRouter.readOpenCode=async(_owner,path)=>{assert.equal(path,`/session/${legacy.id}/message`);return structuredClone(history);};
+ const before=await f.client.request(`/session/${legacy.id}/message`);assert.equal(before.status,200,await before.clone().text());
+ assert.equal((await before.json()).length,history.length);assert.equal(calls.length,0);
+ for(const requestId of ['legacy-next','legacy-again']){
+  const response=await f.send(requestId,{},legacy);assert.equal(response.status,202,await response.text());
+  await until(()=>f.cliRuntime.activeTurns.size===0);
+ }
+ assert.equal(calls.length,2);assert.equal(calls[0].session.id,legacy.id);
+ assert.equal(calls[0].turnIdentity.conversationId,legacy.id);assert.equal(calls[0].nativeSessionId,undefined);
+ assert.match(calls[0].text,userOnly?/Remember the measured result/:/Verified old result: 42/);
+ if(userOnly)assert.match(calls[0].text,/no assistant response recorded; not a request to execute/);
+ assert.equal(calls[1].nativeSessionId,'adopted-native-thread');
+ const response=await f.client.request(`/session/${legacy.id}/message`);assert.equal(response.status,200,await response.clone().text());
+ const all=await response.json();assert.equal(all.length,history.length+4);assert.deepEqual(all.slice(0,history.length).map(message=>message.info.id),history.map(message=>message.info.id));
+ assert(all.every(message=>message.info.sessionID===legacy.id));
+ const nativeMessages=all.slice(history.length).map(message=>message.info.id);
+ assert(events.filter(event=>event.type==='message.updated').every(event=>event.properties.info.sessionID===legacy.id&&nativeMessages.includes(event.properties.info.id)));
+ assert(events.filter(event=>event.type==='message.part.updated').every(event=>event.properties.part.sessionID===legacy.id&&nativeMessages.includes(event.properties.part.messageID)));
+ assert(events.filter(event=>event.type==='session.idle').every(event=>event.properties.sessionID===legacy.id));
+ const stored=await f.server.conversations.open(f.owner,legacy.id);assert.equal(stored.bindings.length,1);assert.equal(stored.historicalSource.runtime,'opencode');
+ const native=(await f.cliRuntime.readHistoricalSessions(f.owner)).find(row=>row.publicConversationId===legacy.id);assert(native);assert.notEqual(native.id,legacy.id);
+ assert.deepEqual((await f.cliRuntime.getOwnedSession(f.user.id,legacy.id)).session.permission,[deny]);
+ const bypass=await f.client.request(`/session/${native.id}`);assert.equal(bypass.status,404);
+ const listing=await f.client.request('/session');assert.equal(listing.status,200);assert.equal((await listing.json()).filter(row=>row.id===legacy.id).length,1);
+});
 test('native HTTP profile handover reads canonical messages, confirmed decisions and owned accepted attachment bytes',async t=>{
  const calls=[];const f=await nativeHttpFixture(t,async args=>{
   calls.push(args);const nativeSessionId=args.nativeSessionId??`http-native-${calls.length}`;

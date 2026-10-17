@@ -18,6 +18,39 @@ async function fixture(t,jobs) {
   const session=await manager.createSession({userId:"a",workspaceDir:workspace,directory:project,title:"Owned"});
   return {manager,session,workspace,project};
 }
+test('native aliases persist owned canonical ancestry and refuse direct private IDs or uncertain history',async t=>{
+ const f=await fixture(t,{run:async()=>{throw Error('Alias preparation cannot infer');}});
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:'legacy-root',title:'Root',parentId:null,lifecycle:'active'});
+ await conversations.create(owner,{conversationId:'legacy-child',title:'Child',parentId:'legacy-root',lifecycle:'active'});
+ const child=await f.manager.ensureNativeConversation({conversations,owner,conversationId:'legacy-child'});
+ const root=(await f.manager.getOwnedSession('a','legacy-root')).session;
+ assert.equal(child.publicConversationId,'legacy-child');assert.equal(child.publicParentId,'legacy-root');assert.equal(child.parentId,root.id);
+ assert.equal((await f.manager.getOwnedSession('a','legacy-child')).session.id,child.id);
+ await assert.rejects(f.manager.getOwnedSession('a',child.id),{code:'unknown_session'});
+ assert.equal((await f.manager.ensureNativeConversation({conversations,owner,conversationId:'legacy-child'})).id,child.id);
+ await assert.rejects(f.manager.ensureNativeConversation({conversations,owner:{...owner,userId:'foreign'},conversationId:'legacy-child'}));
+ const current=await conversations.open(owner,'legacy-child');
+ const pending=await f.manager.admitConversation({conversations,owner,conversationId:'legacy-child',expectedRevision:current.revision,request:{requestId:'pending',payloadHash:'a'.repeat(64),policyRevision:2,runtime:'codex',generation:1,model:'approved',identityRevision:'owned-profile'}});
+ await pending.submitted();await pending.settle({cleanupVerified:false});
+ await assert.rejects(f.manager.ensureNativeConversation({conversations,owner,conversationId:'legacy-child'}),{code:'assistant_recovery_required'});
+ const saved=JSON.parse(await readFile((await f.manager.ensureUser('a')).paths.sessionsPath,'utf8'));
+ assert.equal(saved.sessions.find(value=>value.id===child.id).publicConversationId,'legacy-child');
+ assert.equal(f.manager.processes.size,0);
+});
+test('native message and part events never cross project subscriptions or expose hidden session aliases',async t=>{
+ const f=await fixture(t,{run:async()=>{throw Error('No inference');}}),own=[],other=[];
+ f.manager.workspaceAccess=async(_user,directory)=>{assert.equal(directory,f.project);};
+ f.manager.subscribers.set('a',new Set([{directory:f.project,response:{write:value=>own.push(value),end(){}}},
+  {directory:join(f.workspace,'other'),response:{write:value=>other.push(value),end(){}}}]));
+ const message={info:{id:'owned-message',role:'assistant',sessionID:f.session.id},parts:[]};
+ f.manager.emitMessageUpdated('a',f.session,message);
+ f.manager.emitText('a',f.session,message,{id:'owned-part',type:'text',text:'Owned only'});
+ f.manager.emit('a',{type:'message.updated',properties:{info:{id:'foreign-message',sessionID:'foreign'}}});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(own.length,2);assert.equal(other.length,0);
+});
 test('HTTP native admission captures the original payload and persists its exact execution lease before preparation',async t=>{
  const f=await fixture(t,{run:async()=>{throw Error('No inference in admission');}});
  const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
