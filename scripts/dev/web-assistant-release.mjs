@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join, resolve, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { command } from './web-release-source.mjs';
@@ -74,7 +74,7 @@ export async function assertAssistantTargetCurrent(candidate, capture = captureR
 }
 
 export async function runSelectedAssistantLive(candidate, production, { connect, request = fetch,
-  capture = captureReleaseAssistantTarget, runAcceptance } = {}) {
+  capture = captureReleaseAssistantTarget, runAcceptance, recordSelection = async () => {} } = {}) {
   if (candidate.selection.liveGateVersion !== 2) throw new Error('Legacy assistant acceptance cannot authorize this release');
   await assertAssistantTargetCurrent(candidate, capture);
   if (!runAcceptance) {
@@ -86,8 +86,40 @@ export async function runSelectedAssistantLive(candidate, production, { connect,
   if (typeof runAcceptance !== 'function' || typeof connect !== 'function') throw new Error('Required selected-assistant native acceptance is unavailable');
   const client = await connect(production);
   try {
-    const evidence = await runAcceptance({ production, target: structuredClone(candidate.assistantTarget), admin: client, request });
+    let selected;
+    const onSelection=async receipt=>{
+      if(receipt?.runtime!==candidate.assistantTarget.runtime||!Number.isSafeInteger(receipt.revision)||receipt.revision<1)
+        throw Error('Selected assistant activation receipt is invalid');
+      selected={runtime:receipt.runtime,revision:receipt.revision};await recordSelection(selected);
+    };
+    const evidence = await runAcceptance({ production, target: structuredClone(candidate.assistantTarget), admin: client, request, onSelection });
     await assertAssistantTargetCurrent(candidate, capture);
+    if(!selected||evidence?.policyRevision!==selected.revision)throw Error('Selected assistant activation receipt is missing or stale');
     return verifyAssistantEvidence(candidate.assistantTarget, evidence);
   } finally { await client.close(); }
+}
+
+export async function readAssistantSelection(admin,{request=fetch}={}) {
+ const response=await request(admin.origin+'/api/admin/runtime',{headers:admin.headers,signal:AbortSignal.timeout(10000)});
+ if(!response.ok)throw Error('Recovery assistant selection read failed');
+ const state=await response.json(),runtime=state.activeRuntime??state.defaultRuntime,revision=state.revision??null;
+ if(!['opencode','codex','claude'].includes(runtime)||revision!==null&&(!Number.isSafeInteger(revision)||revision<1))
+  throw Error('Recovery assistant selection identity is unavailable');
+ return {runtime,revision};
+}
+export async function restoreAssistantSelection(admin,before,{request=fetch,expected}={}) {
+ if(!['opencode','codex','claude'].includes(before?.runtime))throw Error('Prior assistant selection is unavailable');
+ const current=await readAssistantSelection(admin,{request});
+ if(current.runtime===before.runtime)return {...current,changed:false};
+ if(before.runtime==='claude'||current.revision===null)throw Error('Recovery assistant selection cannot be restored safely');
+ if(!expected||expected.runtime!==current.runtime||expected.revision!==current.revision)
+  throw Error('Recovery assistant selection changed outside this release');
+ const response=await request(admin.origin+'/api/admin/runtime',{method:'POST',headers:admin.headers,
+  body:JSON.stringify({runtime:before.runtime,expectedRevision:current.revision,operationId:'release-recovery-'+randomUUID()}),
+  signal:AbortSignal.timeout(60000)});
+ if(!response.ok)throw Error('Recovery assistant selection remains blocked');
+ const receipt=await response.json(),verified=await readAssistantSelection(admin,{request});
+ if(receipt.activeRuntime!==before.runtime||!Number.isSafeInteger(receipt.revision)||receipt.revision<=current.revision||
+  verified.runtime!==before.runtime||verified.revision!==receipt.revision)throw Error('Recovery assistant selection was not committed');
+ return {...verified,changed:true};
 }

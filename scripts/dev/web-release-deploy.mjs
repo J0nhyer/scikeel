@@ -9,7 +9,8 @@ import { inspectProduction, validateCandidate, command, sha256, commonStore, fin
 import { writeManifest, readManifest } from './web-release-state.mjs';
 import { artifactFiles, productionFingerprint, validateInstalledImage } from './web-release.mjs';
 import { verifyTaskLocks } from './web-build.mjs';
-import { assertAssistantTargetCurrent, runSelectedAssistantLive } from './web-assistant-release.mjs';
+import { assertAssistantTargetCurrent, runSelectedAssistantLive, readAssistantSelection, restoreAssistantSelection } from './web-assistant-release.mjs';
+import { loadCompatibleRecovery, compatibleRecoveryPrevious, markCompatibleRecoveryRestored } from './web-release-recovery.mjs';
 
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dropIn = '/etc/systemd/system/osd-platform.service.d/zz-scikeel-web-release.conf';
@@ -106,7 +107,7 @@ export async function publishRelease(candidate, ops) {
   } catch (cause) {
     try { await ops.restorePrevious(previous); await ops.restartPlatform(); await ops.verifyPrevious(previous); }
     catch (recovery) { throw new AggregateError([cause, recovery], 'Publication and recovery failed'); }
-    throw new Error('Publication failed; previous deployment restored', { cause });
+    throw new Error(previous.recoveryReader ? 'Publication failed; compatible recovery reader restored' : 'Publication failed; previous deployment restored', { cause });
   }
 }
 async function privateRead(path) { return command('sudo', ['-n', 'cat', path], { trim: false }); }
@@ -236,7 +237,10 @@ async function deploymentOperations(candidate, store) {
       await validateCandidate(candidate);
       if (candidate.artifacts.web && JSON.stringify(await artifactFiles(candidate.artifacts.web.directory)) !== JSON.stringify(candidate.artifacts.web.files)) throw new Error('Candidate artifacts changed');
       await validateInstalledImage(candidate, candidate.artifacts.image.imageDigest);
-      if (candidate.selection.liveAssistant) await assertAssistantTargetCurrent(candidate);
+      if (candidate.selection.liveAssistant) {
+        await assertAssistantTargetCurrent(candidate);
+        await loadCompatibleRecovery(candidate);
+      }
     },
     compareBaseline: async () => {
       if (productionFingerprint(await inspectProduction()) !== candidate.baseline.fingerprint) throw new Error('Production baseline changed; prepare again');
@@ -259,13 +263,20 @@ async function deploymentOperations(candidate, store) {
       }
       previous = { production, sourceBackup, files: await artifactFiles(production.webRoot), oldDropIn,
         pointer: await readFile(join(store, 'web-releases/current.json'), 'utf8').then(JSON.parse).catch(() => null) };
+      if (candidate.selection.liveAssistant) {
+        const client=await sessionClient(production);
+        try {previous.assistantBefore=await readAssistantSelection(client);}
+        finally {await client.close();}
+        previous=compatibleRecoveryPrevious(previous,await loadCompatibleRecovery(candidate));
+      }
       await writeFile(join(recoveryDir, 'environment.before'), environment, { mode: 0o600 });
       await writeFile(join(recoveryDir, 'drop-in.before'), oldDropIn ?? '', { mode: 0o600 });
       return previous;
     },
     saveRecovery: async (value) => {
       // Contents remain private; public recovery state carries identities only.
-      candidate.rollback = { production: value.production, files: value.files, previousId: value.pointer?.id ?? null, hadDropIn: value.oldDropIn !== null };
+      candidate.rollback = { production: value.production, originalProduction:value.originalProduction??null,
+        recoveryReader:value.recoveryReader??null, files: value.files, previousId: value.pointer?.id ?? null, hadDropIn: value.oldDropIn !== null };
       candidate.status = 'publishing'; await writeManifest(path, candidate);
       await writeFile(join(recoveryDir, 'previous.json'), JSON.stringify(value), { mode: 0o600 });
     },
@@ -293,7 +304,8 @@ async function deploymentOperations(candidate, store) {
     },
     requiredLiveAcceptance: async () => {
       if (candidate.selection.liveAssistant)
-        candidate.deployment.liveAssistant = await runSelectedAssistantLive(candidate, candidate.deployment.production, { connect: sessionClient });
+        candidate.deployment.liveAssistant = await runSelectedAssistantLive(candidate, candidate.deployment.production, { connect: sessionClient,
+          recordSelection:async receipt=>{candidate.deployment.assistantSelection=receipt;await writeManifest(path,candidate);} });
     },
     markPublished: async () => {
       candidate.status = 'publishing'; await writeManifest(path, candidate);
@@ -345,6 +357,23 @@ async function deploymentOperations(candidate, store) {
         if (actual.source !== value.sourceBackup.root || actual.webRoot !== value.production.webRoot || actual.imageDigest !== value.production.imageDigest || actual.platformFingerprint !== value.production.platformFingerprint || actual.webFingerprint !== value.production.webFingerprint) throw new Error('Restored fixed source identity differs');
       } else if (productionFingerprint(actual) !== productionFingerprint(value.production)) throw new Error('Restored process identity differs');
       await verifyDelivery(actual, value.production.webRoot, value.files);
+      if (value.assistantBefore) {
+        try {
+          const client=await sessionClient(actual);
+          try {candidate.rollback.assistantSelection=await restoreAssistantSelection(client,value.assistantBefore,
+            {expected:candidate.deployment?.assistantSelection});}
+          finally {await client.close();}
+        } catch (error) {
+          command('sudo',['-n','systemctl','stop','osd-platform.service']);
+          candidate.status='rollback-maintenance';await writeManifest(path,candidate);
+          throw new Error('Recovery held in maintenance: prior assistant selection could not be committed',{cause:error});
+        }
+      }
+      if (value.recoveryReader) {
+        await markCompatibleRecoveryRestored(value,actual);
+        await writeManifest(join(store,'web-releases/current.json'),value.pointer);
+        await writeFile(join(recoveryDir,'previous.json'),JSON.stringify(value),{mode:0o600});
+      }
       candidate.rollback.restoredProduction = actual;
       candidate.status = 'rolled-back'; await writeManifest(path, candidate);
     },
@@ -352,9 +381,9 @@ async function deploymentOperations(candidate, store) {
   return ops;
 }
 export function validateRecoveryConfiguration(configuration, candidate, previous) {
-  const allowedSources = [candidate.selection.deployPlatform ? candidate.source.root : candidate.production.source, previous.production.source, previous.sourceBackup?.root].filter(Boolean);
-  const allowedWebRoots = [candidate.artifacts.web?.directory ?? candidate.production.webRoot, previous.production.webRoot];
-  const allowedImages = [candidate.artifacts.image.imageDigest, previous.production.imageDigest];
+  const allowedSources = [candidate.selection.deployPlatform ? candidate.source.root : candidate.production.source, previous.production.source, previous.sourceBackup?.root,previous.originalProduction?.source].filter(Boolean);
+  const allowedWebRoots = [candidate.artifacts.web?.directory ?? candidate.production.webRoot, previous.production.webRoot,previous.originalProduction?.webRoot].filter(Boolean);
+  const allowedImages = [candidate.artifacts.image.imageDigest, previous.production.imageDigest,...(previous.originalProduction?[previous.originalProduction.imageDigest]:[])];
   if (!allowedSources.includes(configuration.source) || !allowedWebRoots.includes(configuration.webRoot) || !allowedImages.includes(configuration.imageDigest)) throw new Error('Recovery configuration belongs to a different deployment');
 }
 function environmentValue(text, key) {
@@ -398,8 +427,10 @@ export async function deploymentCommand(operation, id, { store, locked = false }
     const candidatePlatform = candidate.source.files.filter((file) => file.path.startsWith('services/platform/src/')).map((file) => ({ ...file, path: file.path.slice('services/platform/src/'.length) }));
     const matchesCandidate = actual && actual.source === expectedSource && actual.webRoot === expectedWebRoot && actual.imageDigest === candidate.artifacts.image.imageDigest && actual.platformFingerprint === (candidate.selection.deployPlatform ? fingerprintFiles(candidatePlatform) : candidate.production.platformFingerprint) && actual.webFingerprint === (candidate.artifacts.web?.fingerprint ?? candidate.production.webFingerprint);
     const matchesRecovery = actual && previous.sourceBackup && actual.source === previous.sourceBackup.root && actual.webRoot === previous.production.webRoot && actual.imageDigest === previous.production.imageDigest && actual.platformFingerprint === previous.production.platformFingerprint && actual.webFingerprint === previous.production.webFingerprint;
-    if (actual && !matchesCandidate && !matchesRecovery && productionFingerprint(actual) !== productionFingerprint(previous.production)) throw new Error('Recovery target does not match the running deployment');
-    if (pointer?.id !== id && (!['publishing', 'published', 'recovering','rollback-maintenance'].includes(candidate.status) || (pointer && pointer.id !== previous.pointer?.id))) throw new Error('Rollback must reference the current publication or incomplete transaction');
+    const matchesOriginal=actual&&previous.originalProduction&&productionFingerprint(actual)===productionFingerprint(previous.originalProduction);
+    if (actual && !matchesCandidate && !matchesRecovery && !matchesOriginal && productionFingerprint(actual) !== productionFingerprint(previous.production)) throw new Error('Recovery target does not match the running deployment');
+    if (pointer?.id !== id && (!['publishing', 'published', 'recovering','rollback-maintenance'].includes(candidate.status) ||
+      (pointer && ![previous.pointer?.id,previous.originalPointer?.id].includes(pointer.id)))) throw new Error('Rollback must reference the current publication or incomplete transaction');
     await ops.restorePrevious(previous); await ops.restartPlatform(); await ops.verifyPrevious(previous);
   }
   console.log(JSON.stringify({ release: id, status: candidate.status, deployment: candidate.deployment?.production, rollback: candidate.rollback?.production }));

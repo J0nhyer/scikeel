@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { readFile, mkdir, lstat } from 'node:fs/promises';
+import { readFile, mkdir, lstat, readdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -9,6 +9,7 @@ import { selectVerification, imageInputPath } from './web-release-policy.mjs';
 import { recordStage, writeManifest, readManifest, storageInventory, vendorStorageInventory, canResume } from './web-release-state.mjs';
 import { buildWeb, runProcess, verifyTaskLimits } from './web-build.mjs';
 import { captureReleaseAssistantTarget, assistantTargetHash } from './web-assistant-release.mjs';
+import { prepareCompatibleRecovery } from './web-release-recovery.mjs';
 
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export function parseArguments(args, { internal = false } = {}) {
@@ -49,7 +50,9 @@ export async function prepareRelease(candidate, selection, ops) {
   if (selection.imageRequired) await ops.stage('image-validation');
   if (selection.liveAssistant) await ops.stage('assistant-target');
   if (selection.buildWeb) { await ops.stage('vendor'); await ops.stage('web-bundle'); await ops.stage('candidate-browser'); }
-  await ops.validateSource(candidate); await ops.validateArtifacts(candidate); await ops.markPrepared(candidate); return candidate;
+  await ops.validateSource(candidate); await ops.validateArtifacts(candidate);
+  if (selection.liveAssistant) await ops.stage('compatible-recovery');
+  await ops.markPrepared(candidate); return candidate;
 }
 export async function artifactFiles(directory) {
   return inventorySource(directory, { git: false });
@@ -193,7 +196,7 @@ export async function validateResume(candidate, production) {
   if (production.source.startsWith(candidate.directory + '/') || production.webRoot.startsWith(candidate.directory + '/')) throw new Error('A referenced candidate cannot resume');
   if (productionFingerprint(production) !== candidate.baseline.fingerprint) throw new Error('Production baseline changed; prepare a new candidate');
 }
-const TOOL_FILES = ['web-release.mjs', 'web-release-source.mjs', 'web-release-state.mjs', 'web-release-policy.mjs', 'web-release-deploy.mjs', 'web-release-maintenance.mjs', 'web-assistant-release.mjs', 'web-build.mjs', 'web-vendor-cache.mjs', 'build-web-vendor.mjs', 'safe-desktop-task.mjs'];
+const TOOL_FILES = ['web-release.mjs', 'web-release-source.mjs', 'web-release-state.mjs', 'web-release-policy.mjs', 'web-release-deploy.mjs', 'web-release-maintenance.mjs', 'web-release-recovery.mjs', 'web-assistant-release.mjs', 'web-build.mjs', 'web-vendor-cache.mjs', 'build-web-vendor.mjs', 'safe-desktop-task.mjs'];
 async function validateTooling(candidate) {
   for (const name of TOOL_FILES) {
     const path = 'scripts/dev/' + name;
@@ -207,7 +210,8 @@ async function prepareCandidate(candidate, path) {
   const actions = {
     lint: () => runProcess(process.execPath, [join(desktop, 'node_modules/eslint/bin/eslint.js'), '.'], desktop),
     typecheck: () => runProcess(process.execPath, [join(desktop, 'node_modules/typescript/bin/tsc'), '--noEmit'], desktop),
-    'workflow-tests': () => runProcess(process.execPath, ['--test', '--test-concurrency=1', join(root, 'scripts/dev/web-release.test.mjs'), join(root, 'scripts/dev/web-vendor-cache.test.mjs')], root),
+    'workflow-tests': async () => runProcess(process.execPath, ['--test', '--test-concurrency=1',
+      ...(await readdir(join(root,'scripts/dev'))).filter(name=>name.endsWith('.test.mjs')).sort().map(name=>join(root,'scripts/dev',name))], root),
     'frontend-tests': () => runProcess(process.execPath, [join(desktop, 'node_modules/vitest/vitest.mjs'), 'run', '--no-file-parallelism', ...(s.frontendFull ? [] : s.frontendFiles)], desktop),
     'platform-tests': () => runProcess(process.execPath, ['--test', '--test-concurrency=1', ...(s.platformFull ? [] : s.platformFiles)], join(root, 'services/platform'), candidate.artifacts.image?.imageDigest ? {
       SCIKEEL_WEBFETCH_NATIVE:'1', SCIKEEL_WEBFETCH_NATIVE_BIN:join('/var/lib/scikeel/images',candidate.artifacts.image.imageDigest.replace(/^sha256:/,''),'rootfs/opt/scikeel/tools/bin/opencode'),
@@ -234,6 +238,10 @@ async function prepareCandidate(candidate, path) {
       candidate.artifacts.web = output; return output;
     },
     'candidate-browser': () => browserStage(candidate),
+    'compatible-recovery': async () => {
+      candidate.compatibleRecovery=await prepareCompatibleRecovery(candidate);
+      return candidate.compatibleRecovery;
+    },
   };
   // Validate reuse on every preparation, including UI-only revisions with no image changes.
   candidate.artifacts.image = await validateInstalledImage(candidate, candidate.requestedImage ?? candidate.production.imageDigest);
@@ -320,6 +328,7 @@ async function cli(args) {
       references.add(join(store, 'web-releases', id));
       const manifest = await readManifest(join(store, 'web-releases', id, 'manifest.json')).catch(() => null);
       if (manifest?.artifacts?.vendor?.directory) references.add(manifest.artifacts.vendor.directory);
+      if (manifest?.artifacts?.web?.directory) references.add(manifest.artifacts.web.directory);
     }
     console.log(JSON.stringify({ dryRun: true, vendorCaches: await vendorStorageInventory(join(store, 'web-vendor-cache'), references), releases: await storageInventory(join(store, 'web-releases'), references) }, null, 2)); return;
   }

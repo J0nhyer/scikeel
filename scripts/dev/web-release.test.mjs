@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, rename, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fingerprintFiles, inventorySource, freezeSource, changedPaths, validateSourceSnapshot, inspectProduction, dependencyIdentity } from './web-release-source.mjs';
@@ -126,6 +126,16 @@ test('preparation checks once, follows stage order, and never publishes failed c
   calls.length = 0;
   await assert.rejects(prepareRelease({}, selection, { ...ops, stage: async (name) => { calls.push(name); if (name === 'typecheck') throw new Error('fixture'); } }));
   assert(!calls.includes('web-bundle')); assert(!calls.includes('prepared'));
+  calls.length=0;
+  await prepareRelease({}, {...selection,liveAssistant:true},ops);
+  assert(calls.includes('compatible-recovery'));
+  assert(calls.indexOf('compatible-recovery')>calls.indexOf('artifacts'));
+  assert(calls.indexOf('compatible-recovery')<calls.indexOf('prepared'));
+  calls.length=0;
+  await assert.rejects(prepareRelease({}, {...selection,liveAssistant:true},{...ops,stage:async name=>{
+    calls.push(name);if(name==='compatible-recovery')throw Error('Recovery reader unavailable');
+  }}),/Recovery reader unavailable/);
+  assert(!calls.includes('prepared'));
 });
 import { publishRelease, replaceEnvironmentValue, transformServedIndex, validateRecoveryConfiguration, lifecycleRollbackPolicy } from './web-release-deploy.mjs';
 test('rollback refuses readers that would discard exclusive assistant policy or canonical conversation history',async t=>{
@@ -164,6 +174,54 @@ test('assistant rollback inspection rejects symlinks and malformed or unversione
  }
  await rename(file,join(root,'outside.json'));await symlink(join(root,'outside.json'),file);
  assert.equal((await assistantRollbackPolicy(source,data)).compatible,false);
+});
+
+test('a forward-reader recovery target preserves the original deployment identity and never points rollback at its incompatible reader',async()=>{
+ const {compatibleRecoveryPrevious}=await import('./web-release-recovery.mjs');
+ const original={production:{source:'/old/source',imageDigest:'sha256:old',platformFingerprint:'old-platform',webRoot:'/old/web',webFingerprint:'old-web'},
+  sourceBackup:null,pointer:{id:'old',manifestHash:'old-hash'},files:[{path:'index.html'}],oldDropIn:'old-config'};
+ const reader={id:'candidate-reader',source:{root:'/candidate-reader/source',files:[{path:'services/platform/src/main.mjs',sha256:'a'.repeat(64)}],fingerprint:'new-source'},
+  artifacts:{image:{imageDigest:'sha256:new'},web:{directory:'/candidate-reader/web',files:[{path:'index.html',sha256:'checked-web'}],fingerprint:'checked-web'}}};
+ const result=compatibleRecoveryPrevious(original,reader);
+ assert.equal(result.production.source,reader.source.root);assert.equal(result.production.imageDigest,'sha256:new');
+ assert.equal(result.production.webRoot,'/candidate-reader/web');assert.equal(result.production.webFingerprint,'checked-web');
+ assert.deepEqual(result.files,reader.artifacts.web.files);
+ assert.deepEqual(result.originalProduction,original.production);assert.deepEqual(result.originalPointer,original.pointer);
+ assert.equal(result.pointer.id,reader.id);assert.equal(result.pointer.previousId,'old');
+ assert.deepEqual(result.sourceBackup,reader.source);assert.equal(result.recoveryReader.id,reader.id);
+ assert.deepEqual(original.production.source,'/old/source');assert.equal(original.pointer.id,'old');
+});
+
+test('compatible recovery freezes the checked reader and refuses missing evidence or changed source, target and retained Web bytes',async t=>{
+ const {prepareCompatibleRecovery,loadCompatibleRecovery}=await import('./web-release-recovery.mjs');
+ const {validateSourceSnapshot}=await import('./web-release-source.mjs');
+ const root=await fixture(t),store=join(root,'store'),source=join(root,'candidate/source'),web=join(root,'old-web');
+ await mkdir(join(source,'services/platform/src'),{recursive:true});await mkdir(join(store,'web-releases'),{recursive:true});await mkdir(web);
+ await writeFile(join(source,'services/platform/src/main.mjs'),'export const fixture = true;');await writeFile(join(web,'index.html'),'retained');
+ const files=await inventorySource(source,{git:false}),webFiles=await inventorySource(web,{git:false});
+ const candidate={id:'candidate',sharedStore:store,source:{root:source,files,fingerprint:fingerprintFiles(files),dependencies:{}},
+  production:{webRoot:web,webFingerprint:fingerprintFiles(webFiles)},baseline:{fingerprint:'original-baseline'},
+  artifacts:{image:{imageDigest:'sha256:'+'a'.repeat(64)},web:{directory:web,files:webFiles,fingerprint:fingerprintFiles(webFiles)}},assistantTarget:{schema:2,runtime:'codex',model:'gpt-6.1-sol'}};
+ const proof={schema:1,status:'passed',runtimeVersion:5,conversationSchema:2,
+  checks:['exclusive_selection','native_history','canonical_bindings','continued_write','workspace_preserved']};
+ const options={freeze:(from,to,files)=>freezeSource(from,to,files,{linkDependencies:false}),validate:validateSourceSnapshot,
+  verifyReader:async({sourceRoot,writerSourceRoot})=>{assert.equal(writerSourceRoot,source);assert.notEqual(sourceRoot,source);
+   assert.equal(await readFile(join(sourceRoot,'services/platform/src/main.mjs'),'utf8'),'export const fixture = true;');return proof;}};
+ candidate.compatibleRecovery=await prepareCompatibleRecovery(candidate,options);
+ const reader=await loadCompatibleRecovery(candidate,options);assert.equal(reader.kind,'assistant-forward-reader');
+ assert.equal(reader.status,'recovery-prepared');assert.deepEqual(reader.readerProof,proof);
+ assert.equal(reader.artifacts.web.directory,join(store,'web-releases/candidate-reader/web'));
+ assert.notEqual(reader.artifacts.web.directory,web);assert.equal(reader.source.fingerprint,candidate.source.fingerprint);
+ const changed=structuredClone(candidate);changed.assistantTarget.model='foreign-model';
+ await assert.rejects(loadCompatibleRecovery(changed,options),/recovery|reader|target/i);
+ await writeFile(join(reader.source.root,'services/platform/src/main.mjs'),'changed');
+ await assert.rejects(loadCompatibleRecovery(candidate,options),/source|snapshot/i);
+ await writeFile(join(reader.source.root,'services/platform/src/main.mjs'),'export const fixture = true;');
+ await writeFile(join(reader.artifacts.web.directory,'index.html'),'substituted');await assert.rejects(loadCompatibleRecovery(candidate,options),/Web|artifact/i);
+ await writeFile(join(reader.artifacts.web.directory,'index.html'),'retained');
+ const absent={...candidate,id:'absent-proof',compatibleRecovery:null};
+ await assert.rejects(prepareCompatibleRecovery(absent,{...options,verifyReader:async()=>({...proof,checks:[]})}),/reader.*proof/i);
+ assert.equal(await lstat(join(store,'web-releases/absent-proof-reader/manifest.json')).catch(()=>null),null);
 });
 test('rollback requires lifecycle-compatible sources after private workspace state exists',async t=>{
   const root=await fixture(t),source=join(root,'source'),data=join(root,'data');
@@ -299,6 +357,10 @@ test('a stopped or partially switched service can recover only its recorded conf
   validateRecoveryConfiguration({ source: '/new/source', webRoot: '/old/web', imageDigest: 'new-image', running: false }, candidate, previous);
   validateRecoveryConfiguration({ source: '/fixed/old-source', webRoot: '/old/web', imageDigest: 'old-image', running: false }, candidate, previous);
   assert.throws(() => validateRecoveryConfiguration({ source: '/unrelated/source', webRoot: '/old/web', imageDigest: 'old-image' }, candidate, previous), /different deployment/);
+  const compatible={...previous,production:{source:'/reader/source',webRoot:'/old/web',imageDigest:'new-image'},
+    sourceBackup:{root:'/reader/source'},originalProduction:previous.production};
+  validateRecoveryConfiguration({source:'/old/source',webRoot:'/old/web',imageDigest:'old-image'},candidate,compatible);
+  validateRecoveryConfiguration({source:'/reader/source',webRoot:'/old/web',imageDigest:'new-image'},candidate,compatible);
 });
 
 test('source edits between selection and freezing cannot omit newly affected checks', () => {
@@ -490,7 +552,7 @@ test('assistant authority changes require versioned selected-runtime and assista
  for(const path of ['services/platform/src/assistant-policy.mjs','services/platform/src/conversation-state.mjs',
   'services/platform/src/conversation-router.mjs','services/platform/src/conversation-handover.mjs',
   'services/platform/src/execution-permissions.mjs','services/platform/src/native-effects.mjs',
-  'services/platform/src/sandbox-native-jobs.mjs','runtime/sandbox/native-tools.mjs',
+  'services/platform/src/sandbox-native-jobs.mjs','runtime/sandbox/native-tools.mjs','scripts/dev/web-release-recovery.mjs',
   'apps/desktop/src/components/settings/ManagedAgentsCard.tsx']) {
   const selection=selectVerification([path],{known:true});
   assert.equal(selection.liveAssistant,true,path);assert.equal(selection.liveGateVersion,2,path);
@@ -564,7 +626,7 @@ test('selected native acceptance checks the frozen target before and after execu
  const candidate={selection:{liveGateVersion:2},assistantTarget:target};let closed=0,runs=0,reads=0;
  const connect=async()=>({close:async()=>closed++});
  const capture=async()=>{reads++;return target;};
- const runAcceptance=async()=>{runs++;return {schema:2,status:'passed',runtime:'codex',model:'gpt-6.1-sol',
+ const runAcceptance=async({onSelection})=>{await onSelection({runtime:'codex',revision:2});runs++;return {schema:2,status:'passed',runtime:'codex',model:'gpt-6.1-sol',
   targetHash:assistantTargetHash(target),policyRevision:2,userId:'release-fixture',
   capabilities:Object.fromEntries(requiredAssistantCapabilities.map(name=>[name,'passed']))};};
  assert.equal((await runSelectedAssistantLive(candidate,{}, {connect,capture,runAcceptance})).status,'passed');
@@ -576,6 +638,41 @@ test('selected native acceptance checks the frozen target before and after execu
  assert.equal(runs,2);assert.equal(closed,2);
  await assert.rejects(runSelectedAssistantLive({...candidate,selection:{liveGateVersion:1}},{},{connect,capture,runAcceptance}),/Legacy/);
  assert.equal(runs,2);
+});
+
+test('failed native activation restores only the prior committed Admin selection through a fresh revisioned request',async()=>{
+ const {readAssistantSelection,restoreAssistantSelection}=await import('./web-assistant-release.mjs');
+ const admin={origin:'http://127.0.0.1:4790',headers:{cookie:'private-test-cookie',origin:'http://127.0.0.1:4790'}};
+ let current={activeRuntime:'codex',revision:4},posts=0;
+ const request=async(url,options)=>{
+  assert.equal(url,admin.origin+'/api/admin/runtime');assert.equal(options.headers.cookie,admin.headers.cookie);
+  if(options.method==='POST'){
+   const body=JSON.parse(options.body);assert.deepEqual(Object.keys(body).sort(),['expectedRevision','operationId','runtime']);
+   assert.equal(body.runtime,'opencode');assert.equal(body.expectedRevision,4);assert.match(body.operationId,/^release-recovery-/);
+   posts++;current={activeRuntime:'opencode',revision:5};
+  }
+  return Response.json(current);
+ };
+ const legacy=await readAssistantSelection(admin,{request:async()=>Response.json({defaultRuntime:'opencode'})});
+ assert.deepEqual(legacy,{runtime:'opencode',revision:null});
+ const expected={runtime:'codex',revision:4};
+ const evidence=await restoreAssistantSelection(admin,legacy,{request,expected});
+ assert.deepEqual(evidence,{runtime:'opencode',revision:5,changed:true});assert.equal(posts,1);
+ assert.deepEqual(await restoreAssistantSelection(admin,legacy,{request}),{runtime:'opencode',revision:5,changed:false});
+ assert.equal(posts,1);
+ current={activeRuntime:'codex',revision:6};
+ await assert.rejects(restoreAssistantSelection(admin,legacy,{request:async()=>new Response('{}',{status:409}),expected}),/selection|recovery/i);
+ assert.equal(posts,1);
+ let blockedPosts=0;
+ await assert.rejects(restoreAssistantSelection(admin,legacy,{expected:{runtime:'codex',revision:6},request:async(_url,options)=>{
+  if(options.method==='POST'){blockedPosts++;return new Response('{}',{status:409});}
+  return Response.json(current);
+ }}),/blocked/);
+ assert.equal(blockedPosts,1);
+ await assert.rejects(restoreAssistantSelection(admin,legacy,{request,expected}),/changed|release/i);
+ await assert.rejects(restoreAssistantSelection(admin,legacy,{request}),/release|safely/i);
+ await assert.rejects(restoreAssistantSelection(admin,legacy,{request:async()=>Response.json({activeRuntime:'codex'})}),/safely/);
+ await assert.rejects(restoreAssistantSelection(admin,{runtime:'claude'},{request}),/safely/);
 });
 
 
