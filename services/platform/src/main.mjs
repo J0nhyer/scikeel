@@ -8,6 +8,7 @@ import { sandboxConfiguration, loadSandboxImageConfiguration } from "./sandbox-m
 import { createSandboxControlPlane } from "./sandbox-control-plane.mjs";
 import { WorkerManager } from "./worker-manager.mjs";
 import {configureNativeEffects} from './native-effects.mjs';
+import {createAssistantRuntimeAuthority} from './assistant-runtime-authority.mjs';
 
 function env(name, fallback = "") {
   return process.env[name] ?? fallback;
@@ -102,7 +103,7 @@ const platform = new PlatformServer({
 });
 
 if(controlPlane) {
-  cliRuntime.assistantAuthority = { inventory: () => platform.assistantExecutionInventory() };
+  cliRuntime.assistantAuthority = createAssistantRuntimeAuthority({configuration:sandbox,controlPlane,platform});
   controlPlane.assistantPolicy=context=>cliRuntime.assistantSnapshot(context.userId);
   controlPlane.executionAuthority=identity=>cliRuntime.assistantSnapshot(identity.userId).recoveryRequired===false&&
     cliRuntime.assistantPolicy?.isExecutionCurrent(identity)===true;
