@@ -111,15 +111,19 @@ export function parseGitCommit(text) {
   if (!result.tree || !result.author || !result.committer) throw new Error('Incomplete frozen Git commit');
   return result;
 }
-async function publishViaGitAPI(job, env) {
-  const git = (args, raw = false) => execute('git', args, { cwd: job.originalSource, capture: true, raw });
+export async function publishViaGitAPI(job, env, {
+  git = (args, raw = false) => execute('git', args, { cwd: job.originalSource, capture: true, raw }),
+  request = (path, payload) => github(path, env, payload),
+} = {}) {
   const verified = new Map();
   async function ensureCommit(sha, depth = 0) {
     if (verified.has(sha)) return verified.get(sha);
     let present;
-    try { present = await github(`git/commits/${sha}`, env); } catch { /* Upload only exact local Git objects. */ }
+    try { present = await request(`git/commits/${sha}`); } catch { /* Upload only exact local Git objects. */ }
     if (present?.sha === sha) { verified.set(sha, present); return present; }
-    if (depth >= 8) throw new Error('Git API fallback exceeds the local commit depth limit');
+    // Publication can follow several reviewed local fixes before a remote snapshot.
+    // Bound traversal without discarding any of those exact parent identities.
+    if (depth >= 32) throw new Error('Git API fallback exceeds the local commit depth limit');
     const payload = parseGitCommit(await git(['cat-file', '-p', sha]));
     const parents = [];
     for (const parent of payload.parents) parents.push(await ensureCommit(parent, depth + 1));
@@ -132,21 +136,21 @@ async function publishViaGitAPI(job, env) {
       if (!match) throw new Error('Git API fallback only supports regular source blobs');
       const [, mode, blobSHA] = match;
       const content = await git(['cat-file', 'blob', blobSHA], true);
-      const blob = await github('git/blobs', env, { content: content.toString('base64'), encoding: 'base64' });
+      const blob = await request('git/blobs', { content: content.toString('base64'), encoding: 'base64' });
       if (blob.sha !== blobSHA) throw new Error('Git API blob identity mismatch');
       entries.push({ path, mode, type: 'blob', sha: blobSHA });
     }
-    const tree = await github('git/trees', env, { ...(parents.length ? { base_tree: parents[0].tree.sha } : {}), tree: entries });
+    const tree = await request('git/trees', { ...(parents.length ? { base_tree: parents[0].tree.sha } : {}), tree: entries });
     if (tree.sha !== payload.tree) throw new Error('Git API tree identity mismatch');
-    const commit = await github('git/commits', env, payload);
+    const commit = await request('git/commits', payload);
     if (commit.sha !== sha) throw new Error('Git API commit identity mismatch; publication refused');
     verified.set(sha, commit); return commit;
   }
   await ensureCommit(job.commit);
-  const refs = await github(`git/matching-refs/heads/${job.branch}`, env);
+  const refs = await request(`git/matching-refs/heads/${job.branch}`);
   const existing = refs.find(ref => ref.ref === `refs/heads/${job.branch}`);
   if (existing) { if (existing.object.sha !== job.commit) throw new Error('Remote publication branch identity mismatch'); return; }
-  await github('git/refs', env, { ref: `refs/heads/${job.branch}`, sha: job.commit });
+  await request('git/refs', { ref: `refs/heads/${job.branch}`, sha: job.commit });
 }
 async function snapshot(job, directory) {
   const files = await inventorySource(job.originalSource);
