@@ -9,7 +9,7 @@ import { inspectProduction, validateCandidate, command, sha256, commonStore, fin
 import { writeManifest, readManifest } from './web-release-state.mjs';
 import { artifactFiles, productionFingerprint, validateInstalledImage } from './web-release.mjs';
 import { verifyTaskLocks } from './web-build.mjs';
-import { assertAssistantTargetCurrent, runSelectedAssistantLive, readAssistantSelection, restoreAssistantSelection, managedDataDirectory } from './web-assistant-release.mjs';
+import { assertAssistantTargetCurrent, runSelectedAssistantLive, readAssistantSelection, restoreAssistantSelection, managedDataDirectory, verifyReleaseLauncher } from './web-assistant-release.mjs';
 import { loadCompatibleRecovery, compatibleRecoveryPrevious, markCompatibleRecoveryRestored } from './web-release-recovery.mjs';
 
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -238,6 +238,7 @@ async function deploymentOperations(candidate, store) {
       if (candidate.artifacts.web && JSON.stringify(await artifactFiles(candidate.artifacts.web.directory)) !== JSON.stringify(candidate.artifacts.web.files)) throw new Error('Candidate artifacts changed');
       await validateInstalledImage(candidate, candidate.artifacts.image.imageDigest);
       if (candidate.selection.liveAssistant) {
+        await verifyReleaseLauncher();
         await assertAssistantTargetCurrent(candidate);
         await loadCompatibleRecovery(candidate);
       }

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, rename, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:net';
 import { fingerprintFiles, inventorySource, freezeSource, changedPaths, validateSourceSnapshot, inspectProduction, dependencyIdentity } from './web-release-source.mjs';
 import { writeManifest, readManifest, recordStage, canResume, classifyStorage } from './web-release-state.mjs';
 import { selectVerification } from './web-release-policy.mjs';
@@ -136,6 +137,50 @@ test('preparation checks once, follows stage order, and never publishes failed c
     calls.push(name);if(name==='compatible-recovery')throw Error('Recovery reader unavailable');
   }}),/Recovery reader unavailable/);
   assert(!calls.includes('prepared'));
+});
+test('selected assistant preparation rejects an incompatible host launcher before heavy tasks or configuration writes', async () => {
+  const calls = [];
+  await assert.rejects(prepareRelease({}, { liveAssistant: true, lint: true, buildWeb: true, frontendFiles: [], platformFiles: [] }, {
+    validateSource: async () => calls.push('source'),
+    stage: async name => { calls.push(name); if (name === 'assistant-launcher') throw Error('Launcher inventory incompatible'); },
+    validateArtifacts: async () => calls.push('artifacts'), markPrepared: async () => calls.push('prepared'),
+  }), /Launcher inventory incompatible/);
+  assert.deepEqual(calls, ['source', 'assistant-launcher']);
+});
+
+test('release launcher readiness exercises the exact read-only socket protocol and rejects the old empty response', async t => {
+  const { verifyReleaseLauncher } = await import('./web-assistant-release.mjs');
+  assert.equal(typeof verifyReleaseLauncher, 'function');
+  const root = await fixture(t), socketPath = join(root, 'host.sock');
+  const requests = [], sockets = new Set();
+  let result;
+  const server = createServer(socket => {
+    sockets.add(socket); socket.on('close', () => sockets.delete(socket));
+    let input = '';
+    socket.on('data', bytes => {
+      input += bytes;
+      if (!input.endsWith('\n')) return;
+      const request = JSON.parse(input); requests.push(request);
+      if (result === undefined) return socket.end();
+      socket.end(JSON.stringify({ schema: 1, requestId: request.requestId, ok: true, result }) + '\n');
+    });
+  });
+  await new Promise(done => server.listen(socketPath, done));
+  t.after(async () => { for (const socket of sockets) socket.destroy(); await new Promise(done => server.close(done)); });
+  const readConfiguration = () => ({ socketPath, platformUid: process.getuid() });
+  await assert.rejects(verifyReleaseLauncher({ readConfiguration }), /launcher inventory is unavailable or incompatible/);
+  const account = { instanceId: 'private-instance', userId: 'private-owner', generation: 1, status: 'stopped' };
+  result = { accounts: [account] };
+  assert.deepEqual(await verifyReleaseLauncher({ readConfiguration }), { schema: 1, inventory: 'verified', accounts: 1 });
+  result = { accounts: [{ ...account, internalToken: 'must-not-appear' }] };
+  await assert.rejects(verifyReleaseLauncher({ readConfiguration }), /launcher inventory is unavailable or incompatible/);
+  assert.equal(requests.length, 3);
+  for (const request of requests) {
+    assert.equal(request.op, 'inventory'); assert.deepEqual(request.args, {});
+    assert.equal(request.schema, 1); assert.ok(request.requestId);
+  }
+  await assert.rejects(verifyReleaseLauncher({ readConfiguration: () => ({ socketPath, platformUid: process.getuid() + 1 }) }), /launcher inventory is unavailable or incompatible/);
+  assert.equal(requests.length, 3, 'foreign peer must not probe or mutate launcher state');
 });
 import { publishRelease, replaceEnvironmentValue, transformServedIndex, validateRecoveryConfiguration, lifecycleRollbackPolicy } from './web-release-deploy.mjs';
 test('rollback refuses readers that would discard exclusive assistant policy or canonical conversation history',async t=>{

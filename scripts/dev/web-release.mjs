@@ -8,7 +8,7 @@ import { inspectProduction, commonStore, inventorySource, createCandidate, valid
 import { selectVerification, imageInputPath } from './web-release-policy.mjs';
 import { recordStage, writeManifest, readManifest, storageInventory, vendorStorageInventory, canResume } from './web-release-state.mjs';
 import { buildWeb, runProcess, verifyTaskLimits } from './web-build.mjs';
-import { captureReleaseAssistantTarget, assistantTargetHash } from './web-assistant-release.mjs';
+import { captureReleaseAssistantTarget, assistantTargetHash, verifyReleaseLauncher } from './web-assistant-release.mjs';
 import { prepareCompatibleRecovery } from './web-release-recovery.mjs';
 
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -41,6 +41,7 @@ export function requireBrowserConfiguration(environment) {
 }
 export async function prepareRelease(candidate, selection, ops) {
   await ops.validateSource(candidate);
+  if (selection.liveAssistant) await ops.stage('assistant-launcher');
   if (selection.lint) await ops.stage('lint');
   if (selection.typecheck) await ops.stage('typecheck');
   if (selection.workflowTests) await ops.stage('workflow-tests');
@@ -208,6 +209,7 @@ async function prepareCandidate(candidate, path) {
   await validateTooling(candidate);
   const root = candidate.source.root; const desktop = join(root, 'apps/desktop'); const s = candidate.selection;
   const actions = {
+    'assistant-launcher': () => verifyReleaseLauncher(),
     lint: () => runProcess(process.execPath, [join(desktop, 'node_modules/eslint/bin/eslint.js'), '.'], desktop),
     typecheck: () => runProcess(process.execPath, [join(desktop, 'node_modules/typescript/bin/tsc'), '--noEmit'], desktop),
     'workflow-tests': async () => runProcess(process.execPath, ['--test', '--test-concurrency=1',
@@ -259,7 +261,7 @@ async function prepareCandidate(candidate, path) {
         outputValid = await artifactFiles(previous.output.directory).then((files) => fingerprintFiles(files) === previous.output.fingerprint).catch(() => false);
         if (outputValid) candidate.artifacts.web = previous.output;
       }
-      if (name !== 'assistant-target' && canResume(previous, stageInput, { outputValid })) return;
+      if (!['assistant-target', 'assistant-launcher'].includes(name) && canResume(previous, stageInput, { outputValid })) return;
       console.log(`Release stage: ${name}`);
       await recordStage(candidate, path, name, stageInput, actions[name]);
     },

@@ -2,6 +2,32 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join, resolve, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validManagedModelSelection } from '../../services/platform/src/managed-model-policy.mjs';
+import { SandboxClient } from '../../services/platform/src/sandbox-client.mjs';
+import { command } from './web-release-source.mjs';
+
+const launcherConfigurationReader = [
+  'import json, os, stat',
+  'fd = os.open("/etc/scikeel/sandbox-host.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)',
+  'info = os.fstat(fd)',
+  'assert stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and not info.st_mode & 0o022 and 0 < info.st_size <= 65536',
+  'with os.fdopen(fd) as source: config = json.load(source)',
+  'print(json.dumps({key: config[key] for key in ("socketPath", "platformUid")}))',
+].join('\n');
+
+export async function verifyReleaseLauncher({ readConfiguration = () =>
+  JSON.parse(command('sudo', ['-n', 'python3', '-c', launcherConfigurationReader])) } = {}) {
+  try {
+    const configuration = await readConfiguration();
+    if (Object.keys(configuration).sort().join(',') !== 'platformUid,socketPath' ||
+        configuration.platformUid !== process.getuid() || typeof configuration.socketPath !== 'string' ||
+        !isAbsolute(configuration.socketPath) || resolve(configuration.socketPath) !== configuration.socketPath ||
+        configuration.socketPath === '/' || /[\0\r\n]/.test(configuration.socketPath)) throw Error('Invalid launcher configuration');
+    const inventory = await new SandboxClient({ socketPath: configuration.socketPath, timeoutMs: 3000 }).inventory();
+    return { schema: 1, inventory: 'verified', accounts: inventory.accounts.length };
+  } catch {
+    throw Error('Privileged sandbox launcher inventory is unavailable or incompatible; update the verified host launcher before publication');
+  }
+}
 
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const name = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(value);
