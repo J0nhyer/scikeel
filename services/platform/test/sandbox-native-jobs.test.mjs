@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {spawn} from "node:child_process";
 import {fileURLToPath} from "node:url";
 import {CliJobs} from "../../../runtime/sandbox/cli-jobs.mjs";
+import {TenantRunner} from '../../../runtime/sandbox/runner.mjs';
+import {WorkspaceRpc} from '../src/workspace-rpc.mjs';
 import {TenantPolicy} from "../src/tenant-policy.mjs";
 import {SandboxNativeJobs as ManagedNativeJobs} from "../src/sandbox-native-jobs.mjs";
 import {effectDigest} from '../../../runtime/sandbox/native-tools.mjs';
@@ -10,6 +12,33 @@ import {makeToolOutcome,ToolOutcomeError} from '../../../packages/sdk/src/tool-o
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
 const acceptance={nativeSessionId:"native-owned",turnId:"turn-owned"};
+for(const mode of ['reject-initialize','reject-turn-start','foreign-pre-effect'])test(`actual runner ${mode} releases only a verified owned pre-effect failure`,async t=>{
+ const manifest={schema:1,instanceId:context.instanceId,generation:1,workspaceDir:context.workspaceDir,home:'/tenant/home',stateDir:'/tenant/state',scratchDir:'/tenant/scratch'};
+ const policy=new TenantPolicy({accounts:[context]}),identity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'startup-request',policyRevision:1,runtime:'codex'};
+ let stopped=0,cleanup,revoked=0,accepted=0;
+ const worker={userId:'a',generation:1,status:'running'};
+ const workerManager={ensureWorker:async()=>worker,getWorker:()=>worker,retainWorker:()=>({generation:worker.generation,release(){}}),
+  getWorkerAccess:()=>({runnerUrl:'http://172.31.240.2:4791',token:'a'.repeat(64)}),
+  stopWorker:async()=>{stopped++;worker.generation++;worker.status='stopped';}};
+ const runner=new TenantRunner({manifest,token:'a'.repeat(64)});
+ runner.jobs=new CliJobs({manifest,imageDigest:'sha256:'+'d'.repeat(64),environments:{call:async()=>assert.fail('Root startup uses the base environment')},verifyRuntime:async()=>{},
+  spawnImpl:(_command,_args,options)=>spawn(process.execPath,[fileURLToPath(new URL('../fixtures/sandbox-cli.mjs',import.meta.url)),mode==='foreign-pre-effect'?'reject-initialize':mode],{...options,cwd:undefined})});
+ await runner.listen({host:'127.0.0.1',port:0});t.after(()=>runner.close());
+ const files=new WorkspaceRpc({workerManager,tenantPolicy:policy,fetchImpl:async(url,options)=>{
+  const response=await fetch(`http://127.0.0.1:${runner.server.address().port}${new URL(url).pathname}`,options);
+  if(mode!=='foreign-pre-effect')return response;
+  const body=await response.json();body.turnIdentity.requestId='another-request';
+  return new Response(JSON.stringify(body),{status:response.status});
+ }});
+ const transport=new ManagedNativeJobs({workerManager,tenantPolicy:policy,files,
+  issueNativeGrant:async()=>({identityRevision:'owned-profile',configuration:{model:'approved',modelToken:'b'.repeat(64),modelUrl:'http://172.31.240.1:4792/v1'},renew(){},async revoke(){revoked++;}})});
+ await assert.rejects(transport.run({userId:'a',session:{...session,directory:context.workspaceDir},model:'approved',text:'Start',turnIdentity:identity,identityRevision:'owned-profile',
+  emit:async()=>{},onAccepted:async()=>{accepted++;},onCleanup:async value=>{cleanup=value;}}),error=>{
+   assert.equal(error.code,mode==='reject-initialize'?'native_pre_effect_failure':mode==='foreign-pre-effect'?'workspace_rpc_unavailable':'workspace_rpc_denied');return true;
+  });
+ assert.equal(stopped,mode==='reject-initialize'?0:1,'Only a verified pre-turn failure can avoid conservative generation cleanup');
+ assert.equal(accepted,0);assert.equal(revoked,1);assert.equal(cleanup.cleanupVerified,true);
+});
 test('root-origin legacy continuation preserves its directory in the native transport',async()=>{
  const policy=new TenantPolicy({accounts:[context]}),calls=[];
  const identity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'root-request',policyRevision:1,runtime:'codex'};

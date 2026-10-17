@@ -9,6 +9,19 @@ import {CodexAppServer} from "../../../runtime/sandbox/cli-jobs.mjs";
 const fixture=fileURLToPath(new URL("../fixtures/sandbox-cli.mjs",import.meta.url));
 const request={privateHome:"/tenant/home",projectDir:"/tenant/workspace/project",environment:{kind:"base",python:"/opt/scikeel/science/bin/python"},
   brokers:{modelToken:"a".repeat(64)},model:"fixture/approved",text:"Do research"};
+for(const mode of ['reject-initialize','reject-turn-start'])test(`native ${mode} reports pre-effect cleanup only before submitting turn/start`,async t=>{
+ let child;
+ const server=new CodexAppServer({verifyRuntime:async()=>{},requestTimeoutMs:1000,timeoutMs:2000,emit:async()=>{},
+  spawnImpl:(_command,_args,options)=>(child=spawn(process.execPath,[fixture,mode],{...options,cwd:undefined}))});
+ t.after(()=>server.close());
+ await assert.rejects(server.start(request),error=>{
+  if(mode==='reject-initialize'){
+   assert.equal(error.code,'native_pre_effect_failure');assert.equal(error.cleanupVerified,true);
+  }else assert.equal(error.code,undefined,'A rejected/lost turn acknowledgement cannot prove no effect');
+  return true;
+ });
+ assert(child.exitCode!==null||child.signalCode!==null,'The typed proof requires observed process cleanup');
+});
 test('native command and edit lifecycle preserves real item identity, input, output and completion',async t=>{
  const events=[];let stopped;const closed=new Promise(resolve=>stopped=resolve);
  const server=new CodexAppServer({verifyRuntime:async()=>{},requestTimeoutMs:1000,timeoutMs:2000,onStopped:stopped,emit:async event=>events.push(event),

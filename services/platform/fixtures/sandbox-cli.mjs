@@ -4,6 +4,10 @@ const input=createInterface({input:process.stdin});let started=false;
 const send=value=>process.stdout.write(JSON.stringify(value)+"\n");
 input.on("line",line=>{
   const value=JSON.parse(line);
+  if((process.argv[2]==='reject-initialize'&&value.method==='initialize')||
+      (process.argv[2]==='reject-turn-start'&&value.method==='turn/start')){
+    send({id:value.id,error:{code:-32000,message:'Synthetic rejected startup'}});return;
+  }
   if(value.method==="initialize"){
     if(process.argv[2]==='tool')assert.equal(value.params.capabilities.experimentalApi,true);
     send({id:value.id,result:{userAgent:"fixture"}});

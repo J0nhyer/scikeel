@@ -232,7 +232,12 @@ export class SandboxNativeJobs {
       }
     } catch(error) {
       if (reservation.recovering) { cleanupVerified=false; throw error; }
-      if(submitted) {
+      if(submitted&&!started&&error?.code==='native_pre_effect_failure'&&error.cleanupVerified===true&&sameIdentity(error.turnIdentity,turnIdentity)){
+        // The authenticated runner observed process-group cleanup before it
+        // ever submitted turn/start. Keep the helper generation usable; a
+        // missing response or post-submission error still takes the stop path.
+        cleanupVerified=true;
+      }else if(submitted) {
         try {
           if(!started || (await this.files.job(context,{operation:"abort",jobId:started.jobId})).stopped!==true)throw new Error("native cleanup unavailable");
           cleanupVerified=true;

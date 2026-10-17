@@ -57,6 +57,26 @@ test('native file versions bind the actual public accepted message and verified 
  assert.equal(observed[1].input.messageID,executionAdmission.publicMessageId(f.session.history[0].info.id));
  assert.notEqual(observed[1].input.messageID,f.session.history[0].info.id);assert.equal((await conversations.open(owner,f.session.id)).turns['snapshot-send'].state,'settled');
 });
+test('verified pre-effect native startup failure discards its snapshot and settles durable admission before an explicit retry',async t=>{
+ let discarded=0;
+ const f=await fixture(t,{run:async args=>{
+  await args.onCleanup({cleanupVerified:true});
+  throw Object.assign(Error('Native startup failed before submission'),{code:'native_pre_effect_failure',cleanupVerified:true});
+ }});
+ f.manager.conversationRevert={begin:async()=>({captured:true}),discard:async()=>{discarded++;},
+  complete:async()=>assert.fail('A failed native startup has no accepted effects'),projection:async()=>({version:0,hiddenMessageIds:[],revert:null})};
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ for(const requestId of ['failed-start','explicit-retry']){
+  const executionAdmission=await f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId,policyRevision:'2',body:{parts:[{type:'text',text:'Start'}]}});
+  await f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'Start',executionAdmission,workspaceContext:owner});
+  const receipt=(await conversations.open(owner,f.session.id)).turns[requestId];
+  assert.equal(receipt.state,'settled');assert.equal(receipt.cleanupVerified,true);assert.equal(receipt.nativeAcceptance,null);
+  assert.deepEqual(f.manager.assistantPolicy.activeExecutionSnapshot(),[]);
+ }
+ assert.equal(discarded,2);assert.equal(f.session.nativeSessionId,null);
+});
 test('a changed checked-revert projection forces a fresh native binding with only visible canonical context',async t=>{
  const f=await fixture(t,{run:async()=>{throw Error('Admission must not dispatch');}});
  f.session.nativeSessionId='pre-revert-native';f.session.identityRevision='owned-profile';f.session.revertVersion=1;

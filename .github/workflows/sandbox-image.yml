@@ -259,6 +259,8 @@ jobs:
           cp scripts/dev/probe-production-runner.mjs .deploy/science-test/
           timeout --signal=TERM --kill-after=10s 70s docker run --rm --name scikeel-production-runner-test \
             --network=none --read-only --memory=1024m --memory-swap=1152m --pids-limit=256 --cpus=1 \
+            --cap-drop=ALL --security-opt no-new-privileges \
+            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
             -v "$PWD/.deploy/runner-fixture/workspace:/fixture/workspace" \
             -v "$PWD/.deploy/runner-fixture/state:/fixture/state" \

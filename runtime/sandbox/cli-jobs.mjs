@@ -150,6 +150,7 @@ export class CodexAppServer {
     this.deadline=setTimeout(()=>{void this.close().catch(()=>{});},this.timeoutMs);
     this.abort=()=>{void this.close().catch(()=>{});};this.signal=signal;signal?.addEventListener("abort",this.abort,{once:true});
     if(signal?.aborted){await this.close();throw new Error("native turn cancelled");}
+    let turnSubmitted=false;
     try {
       await this.#request("initialize",{clientInfo:{name:"scikeel",version:"1.0.0"},capabilities:{experimentalApi:true}});
       this.#write({method:"initialized"});
@@ -159,6 +160,9 @@ export class CodexAppServer {
       if(!/^[A-Za-z0-9_-]{1,128}$/.test(thread.thread?.id??"") || (nativeSessionId && thread.thread.id!==nativeSessionId))throw new Error("native resume identity changed");
       this.#thread=thread.thread.id;
       this.#startingTurn=true;
+      // From this point a missing/rejected acknowledgement can conceal an
+      // executed turn; it must never receive a pre-effect failure receipt.
+      turnSubmitted=true;
       const turn=await this.#request("turn/start",{threadId:this.#thread,cwd:projectDir,model,approvalPolicy:"on-request",
         ...(effort!==undefined?{effort}:{}),
         sandboxPolicy:{type:"workspaceWrite",writableRoots:[projectDir],networkAccess:false,excludeTmpdirEnvVar:true,excludeSlashTmp:true},
@@ -171,7 +175,10 @@ export class CodexAppServer {
       this.#startingTurn=false;
       signal?.removeEventListener("abort",this.abort);this.signal=undefined;
       return {nativeSessionId:this.#thread,turnId:this.#turn};
-    } catch {await this.close();throw new Error("native turn unavailable");}
+    } catch {
+      await this.close();
+      throw Object.assign(new Error("native turn unavailable"),turnSubmitted?{}:{code:'native_pre_effect_failure',cleanupVerified:true});
+    }
   }
   async #message(value) {
     if(!value || typeof value!=="object" || Array.isArray(value))throw new Error("invalid native frame");
@@ -489,7 +496,12 @@ export class CliJobs {
           throw new Error("foreign native acceptance scope");
         job.nativeSessionId=result.nativeSessionId;job.turnId=result.turnId;
         return {jobId:job.id,nativeSessionId:job.nativeSessionId,turnId:job.turnId};
-      } catch {job.status='settling';await this.#cleanup(job);job.status="failed";job.approvals.clear();job.questions.clear();job.tools.clear();throw new Error("managed native turn unavailable");}
+      } catch(error) {
+        job.status='settling';await this.#cleanup(job);job.status="failed";job.approvals.clear();job.questions.clear();job.tools.clear();
+        throw Object.assign(new Error("managed native turn unavailable"),
+          error?.code==='native_pre_effect_failure'&&error.cleanupVerified===true?
+            {code:'native_pre_effect_failure',cleanupVerified:true,turnIdentity:structuredClone(request.turnIdentity)}:{});
+      }
     } finally{this.#starting=false;}
   }
   async close() {

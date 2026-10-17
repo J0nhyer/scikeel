@@ -1,6 +1,7 @@
 import { jobRequest } from "../../../runtime/sandbox/cli-jobs.mjs";
 import { fileRequest, environmentRequest, managementStatuses } from "../../../runtime/sandbox/file-rpc.mjs";
 import { WorkspaceRpcQueue } from "./workspace-rpc-queue.mjs";
+import {isDeepStrictEqual} from 'node:util';
 
 const rpcFailure = (code, statusCode, message) => Object.assign(new Error(message), {code, statusCode});
 const denied = message => rpcFailure("workspace_rpc_denied", 403, message);
@@ -76,6 +77,10 @@ export class WorkspaceRpc {
       let value;try{value=JSON.parse(Buffer.concat(buffers).toString("utf8"));}catch{throw unavailable("Invalid workspace response.");}
       if(!response.ok){
         const code=value?.code;
+        if(path==='/jobs'&&request.operation==='start'&&response.status===503&&value?.error==='runner_operation_denied'&&
+            code==='native_pre_effect_failure'&&value.cleanupVerified===true&&
+            Object.keys(value).sort().join(',')==='cleanupVerified,code,error,turnIdentity'&&isDeepStrictEqual(value.turnIdentity,request.turnIdentity))
+          throw Object.assign(rpcFailure(code,503,'Native assistant failed before submitting a turn.'),{cleanupVerified:true,turnIdentity:structuredClone(request.turnIdentity)});
         if(path==="/files" && Object.hasOwn(managementStatuses,code))throw rpcFailure(code,managementStatuses[code],code);
         if(response.status===429 && value?.error==="runner_busy")throw rpcFailure("workspace_rpc_busy",429,"Workspace is busy. Try again shortly.");
         if(response.status===401 || response.status===403)throw denied("Workspace access denied.");

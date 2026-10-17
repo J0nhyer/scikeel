@@ -4,6 +4,7 @@ import { readFile, lstat, mkdir, writeFile, rename } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { resolve, posix } from "node:path";
 import { fileURLToPath } from "node:url";
+import {isDeepStrictEqual} from 'node:util';
 import { FileRpc, fileRequest, EnvironmentRpc, environmentRequest, managementStatuses } from "./file-rpc.mjs";
 import { buildJobEnvironment, CliJobs, jobRequest } from "./cli-jobs.mjs";
 
@@ -54,6 +55,7 @@ export class TenantRunner {
     const cancel = () => controller.abort();
     const timeout = setTimeout(() => { send(504, { error: "runner_timeout" }); controller.abort(); req.destroy(); }, req.url === "/environments" ? 300000 : req.url==='/native-network'?125000:this.timeoutMs);
     req.once("aborted", cancel); res.once("close", cancel);
+    let nativeStartIdentity;
     try {
       if (req.headers["content-type"] !== "application/json" || req.headers["content-encoding"]) throw new Error("invalid runner payload");
       let bytes = 0; const chunks = [];
@@ -80,6 +82,7 @@ export class TenantRunner {
         if(!this.jobs || !this.healthy())throw new Error("managed jobs unavailable");
         const value=jobRequest(operation);
         if((req.url==='/native-network')!==(value.operation==='network'))throw Error('Invalid native network route');
+        if(req.url==='/jobs'&&value.operation==='start')nativeStartIdentity=value.turnIdentity;
         result=await this.jobs.call(value,{signal:controller.signal});
       } else if(req.url==="/environments") {
         const value=environmentRequest(operation);
@@ -90,7 +93,9 @@ export class TenantRunner {
       if (!controller.signal.aborted) send(200, result);
     } catch(error) { if (!controller.signal.aborted) {
       const code=error?.code;
-      if(req.url==='/files' && Object.hasOwn(managementStatuses,code))send(managementStatuses[code],{error:'runner_operation_denied',code});
+      if(nativeStartIdentity&&code==='native_pre_effect_failure'&&error.cleanupVerified===true&&isDeepStrictEqual(error.turnIdentity,nativeStartIdentity))
+        send(503,{error:'runner_operation_denied',code,cleanupVerified:true,turnIdentity:nativeStartIdentity});
+      else if(req.url==='/files' && Object.hasOwn(managementStatuses,code))send(managementStatuses[code],{error:'runner_operation_denied',code});
       else send(403, { error: "runner_operation_denied" });
     } }
     finally { clearTimeout(timeout); req.off("aborted", cancel); res.off("close", cancel); this.#active.delete(controller); this.#operations.delete(req.url); }
