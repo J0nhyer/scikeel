@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectSuccessfulRun, selectImageArtifact, publishPipeline, parsePublishArguments, parseGitCommit } from './web-publish.mjs';
+import { selectSuccessfulRun, selectImageArtifact, publishPipeline, parsePublishArguments, parseGitCommit, releaseArguments } from './web-publish.mjs';
 const sha = 'a'.repeat(40);
 test('only the completed successful workflow for the exact source may be installed', () => {
   const good = { id: 1, head_sha: sha, head_branch: 'ci/example', event: 'workflow_dispatch', status: 'completed', conclusion: 'success' };
@@ -39,4 +39,14 @@ test('API transport preserves commit authors, timezones, parents and the exact m
   assert.equal(parsed.message, 'build: immutable snapshot\n');
   assert.throws(() => parseGitCommit(text.replace('\n\n', '\ngpgsig fixture\n\n')), /Unsupported/);
   assert.throws(() => parseGitCommit('invalid'), /Invalid/);
+});
+
+test('publication freezes the explicit assistant and forwards it to target-aware release preparation',()=>{
+ const options=parsePublishArguments(['start','--source','/repo','--assistant','codex']);
+ assert.equal(options.assistant,'codex');
+ assert.deepEqual(releaseArguments({source:'/repo',imageDigest:'sha256:'+sha,requestedAssistant:'codex'}),
+  ['web:release','run','--source','/repo','--image-digest','sha256:'+sha,'--maintenance','--assistant','codex','--full']);
+ assert(!releaseArguments({source:'/repo',imageDigest:'sha256:'+sha}).includes('--assistant'));
+ for(const args of [['start','--source','/repo','--assistant','unknown'],['start','--source','/repo','--assistant','claude'],
+  ['resume','--job','fixture','--assistant','codex']])assert.throws(()=>parsePublishArguments(args));
 });

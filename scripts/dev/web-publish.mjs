@@ -19,16 +19,22 @@ export function parsePublishArguments(args) {
   const options = { command };
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i]?.slice(2);
-    if (!['source', 'branch', 'job', 'image-digest'].includes(key) || rest[i] !== '--' + key || !rest[i + 1] || options[key]) throw new Error('Invalid or duplicate publication option');
+    if (!['source', 'branch', 'job', 'image-digest', 'assistant'].includes(key) || rest[i] !== '--' + key || !rest[i + 1] || options[key]) throw new Error('Invalid or duplicate publication option');
     options[key] = rest[i + 1];
   }
   if (command === 'start') {
     if (!options.source || options.job) throw new Error('start requires --source');
     options.source = resolve(options.source);
+    if (options.assistant && !['opencode','codex'].includes(options.assistant)) throw new Error('Only an available assistant can be published');
     if (options['image-digest'] && !/^sha256:[a-f0-9]{64}$/.test(options['image-digest'])) throw new Error('Invalid installed image digest');
     if (options.branch && (!/^ci\/[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$/.test(options.branch) || options.branch.includes('..') || options.branch.endsWith('/'))) throw new Error('Only a safe isolated ci/ branch may be published');
-  } else if (!/^[A-Za-z0-9_-]{1,100}$/.test(options.job ?? '') || options.source || options.branch || options['image-digest']) throw new Error('An explicit --job is required');
+  } else if (!/^[A-Za-z0-9_-]{1,100}$/.test(options.job ?? '') || options.source || options.branch || options['image-digest'] || options.assistant) throw new Error('An explicit --job is required');
   return options;
+}
+export function releaseArguments(job) {
+  if (job.requestedAssistant && !['opencode','codex'].includes(job.requestedAssistant)) throw new Error('Unavailable publication assistant');
+  return ['web:release','run','--source',job.source,'--image-digest',job.imageDigest,'--maintenance',
+    ...(job.requestedAssistant ? ['--assistant',job.requestedAssistant,'--full'] : [])];
 }
 export function selectSuccessfulRun(runs, commit, branch) {
   return runs.find(run => run.head_sha === commit && run.head_branch === branch && run.event === 'workflow_dispatch' && run.status === 'completed' && run.conclusion === 'success');
@@ -239,11 +245,11 @@ async function worker(job, directory, store) {
       finally { await execute('sudo', ['-n', 'systemctl', 'start', 'osd-platform.service']); }
     },
     deploy: async () => {
-      await execute('pnpm', ['web:release', 'run', '--source', job.source, '--image-digest', job.imageDigest, '--maintenance'], { cwd: job.source, env });
+      await execute('pnpm', releaseArguments(job), { cwd: job.source, env });
       job.productionAfter = await inspectProduction();
       if (job.productionAfter.imageDigest !== job.imageDigest) throw new Error('Publication did not install the requested image');
       const titlePolicy = await stat(join(job.source, 'runtime/opencode-patches/session-title.lock.json')).catch(() => null);
-      if (titlePolicy) {
+      if (titlePolicy && job.requestedAssistant === 'opencode') {
         try {
           await execute('pnpm', ['platform:title:live'], { cwd: root, env: { ...env, SCIKEEL_TITLE_LIVE_ACCEPTANCE: '1', SCIKEEL_RELEASE_PORT: String(job.productionAfter.port) } });
           job.liveTitles = 'passed';
@@ -271,7 +277,8 @@ async function cli(args) {
   if (options.command === 'start') {
     const id = new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomUUID().slice(0, 8);
     const directory = join(store, 'web-publications', id); await mkdir(directory, { recursive: true, mode: 0o700 });
-    const job = { schema: 1, id, status: 'queued', originalSource: options.source, branch: options.branch ?? `ci/web-publication-${id}`, stages: {}, ...(options['image-digest'] ? { requestedImage: options['image-digest'] } : {}) };
+    const job = { schema: 1, id, status: 'queued', originalSource: options.source, branch: options.branch ?? `ci/web-publication-${id}`, stages: {},
+      ...(options['image-digest'] ? { requestedImage: options['image-digest'] } : {}), ...(options.assistant ? { requestedAssistant: options.assistant } : {}) };
     await credentials(store); await save(join(directory, 'job.json'), job); await startService(job, directory);
     console.log(JSON.stringify({ job: id, status: job.status, state: join(directory, 'job.json'), log: join(directory, 'output.log') }, null, 2)); return;
   }

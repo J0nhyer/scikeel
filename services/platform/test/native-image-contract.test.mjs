@@ -16,7 +16,8 @@ const hash=value=>createHash('sha256').update(value).digest('hex');
 const nativeInputs=['runtime/codex-patches/required-effect-guard.patch','runtime/codex-patches/required-effect-guard-tests.patch',
  'runtime/codex-patches/required-effect-guard.lock.json','scripts/dev/build-codex-guard-runtime.mjs',
  'scripts/dev/probe-production-runner.mjs','services/platform/fixtures/native-protocol.mjs',
- 'runtime/sandbox/native-tools.mjs','runtime/sandbox/required-effect-guard.mjs','runtime/sandbox/codex-requirements.toml'];
+ 'runtime/sandbox/native-tools.mjs','runtime/sandbox/required-effect-guard.mjs','runtime/sandbox/codex-requirements.toml',
+ 'runtime/sandbox/native-network.mjs','runtime/sandbox/native-network.py'];
 const nativeLock=JSON.parse(await readFile(new URL('../../../runtime/codex-patches/required-effect-guard.lock.json',import.meta.url),'utf8'));
 async function guardedManifest() {
  const sha='a'.repeat(64),commit='b'.repeat(40);
@@ -122,7 +123,9 @@ with tempfile.TemporaryDirectory() as folder:
  for name,source in {'opt/scikeel/tools/native-tools.mjs':'native-tools.mjs',
   'opt/scikeel/runtime/required-effect-guard.mjs':'required-effect-guard.mjs',
   'opt/scikeel/tools/codex-requirements.toml':'codex-requirements.toml',
-  'etc/codex/requirements.toml':'codex-requirements.toml'}.items():
+  'etc/codex/requirements.toml':'codex-requirements.toml',
+  'opt/scikeel/tools/native-network.mjs':'native-network.mjs',
+  'opt/scikeel/tools/native-network.py':'native-network.py'}.items():
   files[name]=(root/'runtime/sandbox'/source).read_bytes()
  with tarfile.open(path,'w:gz') as archive:
   for name,data in files.items():
@@ -217,6 +220,8 @@ test('managed Codex images require the immutable guard, native tool module and b
   'opt/scikeel/runtime/required-effect-guard.mjs':'runtime/sandbox/required-effect-guard.mjs',
   'opt/scikeel/tools/codex-requirements.toml':'runtime/sandbox/codex-requirements.toml',
   'etc/codex/requirements.toml':'runtime/sandbox/codex-requirements.toml',
+  'opt/scikeel/tools/native-network.mjs':'runtime/sandbox/native-network.mjs',
+  'opt/scikeel/tools/native-network.py':'runtime/sandbox/native-network.py',
  };
  for(const [path,source] of Object.entries(sources)) {
   const sha256=hash(await readFile(new URL('../../../'+source,import.meta.url)));
@@ -230,12 +235,12 @@ test('managed Codex images require the immutable guard, native tool module and b
   const substituted=structuredClone(value);substituted.codexRuntime.resources[path]='e'.repeat(64);
   assert.throws(()=>validateImageManifest(substituted),/native|guard|resource|source/);
  }
- assert.doesNotThrow(()=>validateBuildContext(['tools/native-tools.mjs','tools/required-effect-guard.mjs','tools/codex-requirements.toml']));
+ assert.doesNotThrow(()=>validateBuildContext(['tools/native-tools.mjs','tools/required-effect-guard.mjs','tools/codex-requirements.toml','tools/native-network.mjs','tools/native-network.py']));
 });
 
 test('archive inspection measures the actual immutable native guard and policy bytes',async()=>{
  const paths=['opt/scikeel/tools/native-tools.mjs','opt/scikeel/runtime/required-effect-guard.mjs',
-  'opt/scikeel/tools/codex-requirements.toml','etc/codex/requirements.toml'];
+  'opt/scikeel/tools/codex-requirements.toml','etc/codex/requirements.toml','opt/scikeel/tools/native-network.mjs','opt/scikeel/tools/native-network.py'];
  const result=spawnSync('python3',['-c',`
 import importlib.util,io,json,pathlib,sys,tarfile,tempfile
 root=pathlib.Path.cwd().parents[1]
@@ -256,7 +261,7 @@ test('production image staging copies the managed guard resources into immutable
  const {load}=await import('js-yaml');
  const workflow=load(await readFile(new URL('../../../.github/workflows/sandbox-image.yml',import.meta.url),'utf8'));
  const steps=workflow.jobs['science-probe-image'].steps.map(step=>step.run??'').join('\n');
- for(const name of ['native-tools','required-effect-guard'])assert(steps.includes(name),`Missing ${name} staging`);
+ for(const name of ['native-tools','required-effect-guard','native-network'])assert(steps.includes(name),`Missing ${name} staging`);
  assert(steps.includes('codex-requirements.toml'));
  const dockerfile=await readFile(new URL('../../../runtime/sandbox/image/Dockerfile',import.meta.url),'utf8');
  assert.match(dockerfile,/COPY tools\/required-effect-guard\.mjs \/opt\/scikeel\/runtime\/required-effect-guard\.mjs/);

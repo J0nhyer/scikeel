@@ -499,6 +499,16 @@ test('assistant authority changes require versioned selected-runtime and assista
  }
 });
 
+test('an explicit assistant or image switch cannot disappear behind a no-change source selection',()=>{
+ for(const options of [{assistant:'codex'},{imageSwitch:true}]){
+  const selection=selectVerification([],{known:true},options);
+  assert.equal(selection.deploy,true);assert.equal(selection.liveAssistant,true);
+  assert.equal(selection.buildWeb,true);assert.equal(selection.platformFull,true);
+  assert(selection.browserGroups.includes('assistants'));assert(selection.browserGroups.includes('session'));
+  assert.equal(selection.imageRequired,options.imageSwitch===true);
+ }
+});
+
 test('release CLI accepts an explicit assistant only on target-aware preparation commands',()=>{
  for(const command of ['inspect','prepare','run'])
   assert.equal(parseArguments([command,'--source','/fixture','--assistant','codex']).assistant,'codex');

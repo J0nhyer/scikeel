@@ -277,7 +277,8 @@ export async function releaseWorker(args, { sharedStore }) {
     const baseline = await baselineFor(sharedStore, production);
     const sourceInventory = await inventorySource(options.source);
     const sourceChanges = changedPaths(baseline.files, sourceInventory);
-    const selection = selectVerification(sourceChanges, baseline, { full: options.full });
+    const selection = selectVerification(sourceChanges, baseline, { full: options.full, assistant: options.assistant,
+      imageSwitch: !!options['image-digest'] && options['image-digest'] !== production.imageDigest });
     if (commonStore(options.source) !== sharedStore) throw new Error('Source must belong to the same project Git common root');
     if (!selection.deploy && !options['image-digest']) {
       const directory = join(sharedStore, 'web-releases', options.id);
@@ -308,7 +309,8 @@ async function cli(args) {
   for (const name of ['OSD_PLAYWRIGHT_PATH', 'OSD_CHROMIUM_PATH']) if (!process.env[name] && typeof settings[name] === 'string') process.env[name] = settings[name];
   if (options.command === 'inspect') {
     const production = await inspectProduction(); const source = await inventorySource(options.source); const baseline = await baselineFor(store, production);
-    const changes = changedPaths(baseline.files, source); const selection = selectVerification(changes, baseline, { full: options.full });
+    const changes = changedPaths(baseline.files, source); const selection = selectVerification(changes, baseline, { full: options.full,
+      assistant: options.assistant, imageSwitch: !!options['image-digest'] && options['image-digest'] !== production.imageDigest });
     console.log(JSON.stringify({ production, source: options.source, sourceFingerprint: fingerprintFiles(source), changedPaths: changes, baselineKnown: baseline.known, selection }, null, 2)); return;
   }
   if (options.command === 'prune') {

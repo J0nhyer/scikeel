@@ -9,13 +9,18 @@ const interactions = (path) => /^(?:services\/platform\/src\/(?:session-authorit
 const toolReliability = (path) => /^(?:apps\/desktop\/src\/components\/thread\/Tool(?:CallRow|Group)|runtime\/(?:opencode-patches\/(?:managed-network|network)|sandbox\/(?:runner|collaboration|tool-outcome))|services\/platform\/src\/(?:network-operations|tool-outcomes|collaboration|egress-broker|model-broker|tenant-policy|platform-server)|packages\/sdk\/src\/(?:tool-outcome|OpenCodeClient)|packages\/shared\/src\/toolOutcome)/.test(path);
 const live = (path) => /^(?:runtime\/|crates\/)|^services\/platform\/src\/(?:model-broker|tenant-policy|sandbox-|managed-worker|cli-runtime|cli-profile|attachment-turns)/.test(path);
 const assistants = path => /^(?:services\/platform\/(?:src\/(?:assistant-|conversation-|execution-permissions|native-|sandbox-native-jobs|cli-runtime|cli-profile|model-broker)|fixtures\/assistant-runtime-live)|scripts\/dev\/web-(?:assistant-release|release-(?:deploy|policy))|runtime\/(?:sandbox|codex-patches)\/|apps\/desktop\/src\/(?:components\/settings\/(?:ManagedAgentsCard|RuntimePicker)|lib\/runtime)|packages\/sdk\/src\/(?:OpenCodeClient|runtime|types))/.test(path);
-export function selectVerification(paths, baseline, { full = false } = {}) {
+export function selectVerification(paths, baseline, { full = false, assistant, imageSwitch = false } = {}) {
   const source = paths.filter((path) => !docs(path));
-  if (!source.length && (full || (!baseline.known && !paths.length))) source.push('__bootstrap__');
+  if (!source.length && (full || assistant || imageSwitch || (!baseline.known && !paths.length))) source.push('__bootstrap__');
   const result = { full: false, frontendFull: false, platformFull: false, frontendFiles: [], platformFiles: [],
     browserGroups: [], typecheck: false, lint: false, buildWeb: false, deployPlatform: false, deploy: source.length > 0,
     rustPackages: [...new Set(source.map((path) => /^crates\/(osd-core|osd-cli|osd-sandbox-host)\//.exec(path)?.[1]).filter(Boolean))], workflowTests: source.some(workflow) || !baseline.known || full, imageRequired: source.some(imageInputPath), liveAssistant: source.some(live) || source.some(assistants) || source.some(imageInputPath) || source.some((path) => /^(?:apps\/desktop\/src\/lib\/runtime\.ts|packages\/sdk\/src\/OpenCodeClient\.ts|services\/platform\/src\/platform-server\.mjs)$/.test(path)), liveGateVersion: 2, reasons: [] };
   if (!source.length) { result.reasons.push('No source changes: no build or deployment'); return result; }
+  if (assistant || imageSwitch) {
+    result.liveAssistant = true;
+    result.imageRequired ||= imageSwitch;
+    result.reasons.push('Explicit assistant or image selection requires native workflow verification');
+  }
   const frontend = new Set(); const browser = new Set(['app']);
   for (const path of source) {
     if (assistants(path)) {
