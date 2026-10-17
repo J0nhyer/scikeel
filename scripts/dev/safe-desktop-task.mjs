@@ -136,7 +136,10 @@ if (liveRecovery) {
   process.env.SCIKEEL_TITLE_LIVE_ACCEPTANCE = "1";
   run(process.execPath, ["--test", "--test-concurrency=1", "test/session-title.live.acceptance.mjs"], join(root, "services/platform"));
 } else if (mode === "release-test") {
-  run(process.execPath, ["--test", "--test-concurrency=1", ...args], root);
+  const files = args.length ? args : (await readdir(join(root, "scripts/dev")))
+    .filter(name => name.endsWith(".test.mjs")).sort().map(name => `scripts/dev/${name}`);
+  if (!files.length) throw new Error("Release test files are unavailable");
+  run(process.execPath, ["--test", "--test-concurrency=1", ...files], root);
 } else if (mode === "probe") {
   console.log(smallLinuxHost ? "Resource limits active" : "Host does not need cloud resource limits");
 } else if (mode === "platform-test") {

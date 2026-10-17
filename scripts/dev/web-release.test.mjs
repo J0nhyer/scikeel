@@ -509,6 +509,15 @@ test('an explicit assistant or image switch cannot disappear behind a no-change 
  }
 });
 
+test('the default guarded release suite never invokes repository-wide Node test discovery',async()=>{
+ const source=await readFile(new URL('./safe-desktop-task.mjs',import.meta.url),'utf8');
+ const branch=source.split('else if (mode === "release-test") {')[1]?.split('} else if')[0]??'';
+ assert.match(branch,/args\.length/);
+ assert.match(branch,/readdir\(join\(root, "scripts\/dev"\)\)/);
+ assert.match(branch,/endsWith\("\.test\.mjs"\)/);
+ assert.match(branch,/scripts\/dev\/\$\{name\}/);
+});
+
 test('release CLI accepts an explicit assistant only on target-aware preparation commands',()=>{
  for(const command of ['inspect','prepare','run'])
   assert.equal(parseArguments([command,'--source','/fixture','--assistant','codex']).assistant,'codex');
