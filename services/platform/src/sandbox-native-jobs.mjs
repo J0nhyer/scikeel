@@ -1,5 +1,6 @@
 import {posix} from "node:path";
 import {effectRequest,effectDigest,validateNativeTool} from '../../../runtime/sandbox/native-tools.mjs';
+import {networkStepRequest} from '../../../runtime/sandbox/native-network.mjs';
 import {readToolError} from '../../../packages/sdk/src/tool-outcome.mjs';
 
 const sameIdentity=(left,right)=>left&&right&&Object.keys(left).length===8&&Object.keys(right).length===8&&
@@ -58,6 +59,21 @@ export class SandboxNativeJobs {
       throw Error('Native tool is not running');
     return structuredClone(turn.activeTool);
   }
+  async networkStep(identity,input,{signal}={}){
+    const request=networkStepRequest(input),turn=this.#turns.get(`${identity?.userId}/${identity?.conversationId}`);
+    const assert=async()=>{
+      signal?.throwIfAborted();const active=turn?.activeTool,record=turn?.guards.get(active?.callID);
+      if(!this.#effects||!this.executionScope(identity)||!turn?.jobId||!turn.activeToolId||active?.tool!==request.tool||
+        !['webfetch','websearch'].includes(active?.tool)||!record?.used||!record.decision||turn.barrier||
+        !await this.#effects.permissions.assertCurrent(record.decision)||!this.executionScope(identity)||typeof this.files.nativeNetwork!=='function')
+        throw Error('Native network authority unavailable');
+      signal?.throwIfAborted();
+    };
+    await assert();
+    const result=await this.files.nativeNetwork(turn.context,{operation:'network',jobId:turn.jobId,id:turn.activeToolId,request},
+      {signal:signal?AbortSignal.any([signal,turn.signal]):turn.signal});
+    await assert();return result;
+  }
   async #tool(turn,event,context,started,signal,emit){
     const input=validateNativeTool(event.tool,event.input),record=turn.guards.get(event.callId);
     if(!/^[a-f0-9]{64}$/.test(event.id??'')||!record?.decision||record.used||record.action.nativeTool!==event.tool||effectDigest(record.action.inputs)!==effectDigest(input)||
@@ -65,7 +81,7 @@ export class SandboxNativeJobs {
       turn.barrier&&turn.barrier!==event.callId)throw Error('Native tool authorization changed');
     record.used=true;
     signal.throwIfAborted();
-    turn.activeTool={type:'tool',callID:event.callId,tool:event.tool,state:{status:'running',input}};
+    turn.activeTool={type:'tool',callID:event.callId,tool:event.tool,state:{status:'running',input}};turn.activeToolId=event.id;
     try{
       await emit({...structuredClone(turn.activeTool),...event,type:'tool',state:structuredClone(turn.activeTool.state)});
       signal.throwIfAborted();
@@ -85,7 +101,7 @@ export class SandboxNativeJobs {
       await emit({...event,type:'tool',callID:event.callId,state:outcome?{status:'error',input,error:text,metadata:{scikeelOutcome:outcome}}:
         {status:'completed',input,output:text}});
       if(event.tool==='research_checkpoint'&&!outcome)turn.barrier=null;
-    }finally{turn.activeTool=null;}
+    }finally{turn.activeTool=null;turn.activeToolId=null;}
   }
   async inspect(context) {
     this.tenantPolicy.account(context);

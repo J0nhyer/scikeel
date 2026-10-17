@@ -9,10 +9,63 @@ import { inspectProduction, validateCandidate, command, sha256, commonStore, fin
 import { writeManifest, readManifest } from './web-release-state.mjs';
 import { artifactFiles, productionFingerprint, validateInstalledImage } from './web-release.mjs';
 import { verifyTaskLocks } from './web-build.mjs';
+import { assertAssistantTargetCurrent, runSelectedAssistantLive } from './web-assistant-release.mjs';
 
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dropIn = '/etc/systemd/system/osd-platform.service.d/zz-scikeel-web-release.conf';
 const marker = '# SciKeel managed Web release';
+async function storageDocument(path, field) {
+  const info = await lstat(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (!info) return 0;
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error('Invalid assistant storage');
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const metadata = await file.stat();
+    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 8 * 1024 ** 2 || metadata.ino !== info.ino || metadata.dev !== info.dev)
+      throw new Error('Invalid assistant storage');
+    const value = JSON.parse(await file.readFile('utf8'));
+    if (!value || Array.isArray(value) || !Number.isSafeInteger(value[field]) || value[field] < 1)
+      throw new Error('Invalid assistant storage');
+    return value[field];
+  } finally { await file.close(); }
+}
+async function storageDirectory(path) {
+  const info = await lstat(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error('Invalid assistant storage directory');
+  return !!info;
+}
+async function readableSchemas(sourceRoot, module, name) {
+  const source = await readFile(join(sourceRoot, 'services/platform/src', module), 'utf8')
+    .catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+  const literal = new RegExp(`export const ${name}\\s*=\\s*(?:Object\\.freeze\\()?\\s*(\\[[0-9,\\s]+\\])\\s*\\)?;`).exec(source)?.[1];
+  if (!literal) return [];
+  const versions = JSON.parse(literal);
+  return versions.every(value => Number.isSafeInteger(value) && value > 0) ? versions : [];
+}
+export async function assistantRollbackPolicy(sourceRoot, dataDir) {
+  try {
+    let runtimeVersion = 0;
+    const conversationSchemas = new Set();
+    if (await storageDirectory(join(dataDir, 'cli-runtime')))
+      runtimeVersion = await storageDocument(join(dataDir, 'cli-runtime/runtime.json'), 'version');
+    const conversations = join(dataDir, 'conversation-state');
+    if (await storageDirectory(conversations)) {
+      const entries = await readdir(conversations, { withFileTypes: true });
+      if (entries.length > 10000) throw new Error('Assistant storage inventory limit');
+      for (const entry of entries) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink())
+          throw new Error('Invalid conversation owner directory');
+        const schema = await storageDocument(join(conversations, entry.name, 'conversations.json'), 'schema');
+        if (schema) conversationSchemas.add(schema);
+      }
+    }
+    const runtimeReaders = await readableSchemas(sourceRoot, 'cli-runtime.mjs', 'READABLE_RUNTIME_STORAGE_VERSIONS');
+    const conversationReaders = await readableSchemas(sourceRoot, 'conversation-state.mjs', 'READABLE_CONVERSATION_SCHEMAS');
+    return { compatible: (!runtimeVersion || runtimeReaders.includes(runtimeVersion)) &&
+      [...conversationSchemas].every(schema => conversationReaders.includes(schema)), runtimeVersion, conversationSchemas: [...conversationSchemas].sort(),
+      runtimeReaders, conversationReaders };
+  } catch { return { compatible: false, reason: 'assistant_state_unverified' }; }
+}
 export async function lifecycleRollbackPolicy(sourceRoot,dataDir) {
   const stateDirectory=join(dataDir,'workspace-management');
   const info=await lstat(stateDirectory).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
@@ -175,12 +228,15 @@ async function deploymentOperations(candidate, store) {
   const ops = {
     validatePrepared: async () => {
       if (candidate.status !== 'prepared' || !candidate.selection?.deploy) throw new Error('Release is not prepared for publication');
+      if (candidate.selection.liveOpenCode || candidate.selection.liveAssistant && candidate.selection.liveGateVersion !== 2)
+        throw new Error('Legacy assistant acceptance cannot authorize this release; prepare again');
       if (resolve(candidate.directory) !== join(store, 'web-releases', candidate.id) || resolve(candidate.source.root) !== join(candidate.directory, 'source')) throw new Error('Unsafe candidate directory');
       if (candidate.production.managedEnv !== '/etc/scikeel/platform-sandbox.env') throw new Error('Unsafe managed environment path');
       if (candidate.artifacts.web && resolve(candidate.artifacts.web.directory) !== join(candidate.directory, 'web')) throw new Error('Unsafe Web artifact root');
       await validateCandidate(candidate);
       if (candidate.artifacts.web && JSON.stringify(await artifactFiles(candidate.artifacts.web.directory)) !== JSON.stringify(candidate.artifacts.web.files)) throw new Error('Candidate artifacts changed');
       await validateInstalledImage(candidate, candidate.artifacts.image.imageDigest);
+      if (candidate.selection.liveAssistant) await assertAssistantTargetCurrent(candidate);
     },
     compareBaseline: async () => {
       if (productionFingerprint(await inspectProduction()) !== candidate.baseline.fingerprint) throw new Error('Production baseline changed; prepare again');
@@ -236,7 +292,8 @@ async function deploymentOperations(candidate, store) {
       candidate.deployment = { production: actual, verifiedAt: new Date().toISOString() };
     },
     requiredLiveAcceptance: async () => {
-      if (candidate.selection.liveOpenCode) candidate.deployment.liveOpenCode = await liveOpenCode(candidate.deployment.production);
+      if (candidate.selection.liveAssistant)
+        candidate.deployment.liveAssistant = await runSelectedAssistantLive(candidate, candidate.deployment.production, { connect: sessionClient });
     },
     markPublished: async () => {
       candidate.status = 'publishing'; await writeManifest(path, candidate);
@@ -259,6 +316,13 @@ async function deploymentOperations(candidate, store) {
         candidate.status='rollback-maintenance';candidate.rollback.lifecyclePolicy=policy;
         await writeManifest(path,candidate);
         throw Object.assign(new Error('Rollback held in maintenance: previous source cannot enforce workspace lifecycle state'),{code:'WORKSPACE_ROLLBACK_MAINTENANCE'});
+      }
+      const assistantPolicy = await assistantRollbackPolicy(value.sourceBackup?.root ?? value.production.source, dataDir);
+      candidate.rollback.assistantPolicy = assistantPolicy;
+      if (!assistantPolicy.compatible) {
+        candidate.status = 'rollback-maintenance'; await writeManifest(path, candidate);
+        throw Object.assign(new Error('Rollback held in maintenance: previous source cannot read assistant and conversation state'),
+          { code: 'ASSISTANT_ROLLBACK_MAINTENANCE' });
       }
       environment = replaceEnvironmentValue(environment, 'PLATFORM_WEB_ROOT', value.production.webRoot);
       if (value.production.imageDigest) environment = replaceEnvironmentValue(environment, 'PLATFORM_SANDBOX_IMAGE_DIGEST', value.production.imageDigest);

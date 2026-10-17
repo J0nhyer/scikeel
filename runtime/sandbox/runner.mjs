@@ -48,16 +48,16 @@ export class TenantRunner {
     if (req.method === "GET" && req.url === "/health") { const ready=this.healthy();send(ready ? 200 : 503, {ready});return; }
     const credential = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
     if (!credential || !timingSafeEqual(Buffer.from(credential), Buffer.from(this.token))) { send(403, { error: "runner_denied" }); return; }
-    if (req.method !== "POST" || !["/files", "/profile", "/environments", "/jobs"].includes(req.url)) { send(404, { error: "runner_route_unavailable" }); return; }
+    if (req.method !== "POST" || !["/files", "/profile", "/environments", "/jobs", "/native-network"].includes(req.url)) { send(404, { error: "runner_route_unavailable" }); return; }
     if (this.#operations.has(req.url) || this.#operations.has("/profile") || (req.url === "/profile" && this.#active.size)) { send(429, { error: "runner_busy" }); return; }
     const controller = new AbortController(); this.#active.add(controller); this.#operations.add(req.url);
     const cancel = () => controller.abort();
-    const timeout = setTimeout(() => { send(504, { error: "runner_timeout" }); controller.abort(); req.destroy(); }, req.url === "/environments" ? 300000 : this.timeoutMs);
+    const timeout = setTimeout(() => { send(504, { error: "runner_timeout" }); controller.abort(); req.destroy(); }, req.url === "/environments" ? 300000 : req.url==='/native-network'?125000:this.timeoutMs);
     req.once("aborted", cancel); res.once("close", cancel);
     try {
       if (req.headers["content-type"] !== "application/json" || req.headers["content-encoding"]) throw new Error("invalid runner payload");
       let bytes = 0; const chunks = [];
-      const maxBodyBytes=req.url==='/files'?16*1024**2:4*1024**2;
+      const maxBodyBytes=req.url==='/files'?16*1024**2:req.url==='/native-network'?16384:4*1024**2;
       for await (const chunk of req) {
         bytes += chunk.length; if (bytes > maxBodyBytes || controller.signal.aborted) throw new Error("runner body limit"); chunks.push(chunk);
       }
@@ -76,9 +76,11 @@ export class TenantRunner {
           this.jobs.configure(profile);
         }
         result = { configured: true };
-      } else if(req.url==="/jobs") {
+      } else if(req.url==="/jobs"||req.url==='/native-network') {
         if(!this.jobs || !this.healthy())throw new Error("managed jobs unavailable");
-        result=await this.jobs.call(jobRequest(operation),{signal:controller.signal});
+        const value=jobRequest(operation);
+        if((req.url==='/native-network')!==(value.operation==='network'))throw Error('Invalid native network route');
+        result=await this.jobs.call(value,{signal:controller.signal});
       } else if(req.url==="/environments") {
         const value=environmentRequest(operation);
         if(value.operation!=="inspect" && this.jobs?.busy)throw new Error("managed environment busy");

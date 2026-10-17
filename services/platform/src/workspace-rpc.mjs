@@ -38,7 +38,14 @@ export class WorkspaceRpc {
     return this.#send(context,environmentRequest(value),"/environments",signal);
   }
   async job(context,value,{signal}={}) {
-    return this.#send(context,jobRequest(value),"/jobs",signal);
+    const request=jobRequest(value);
+    if(request.operation==='network')throw denied('Native network requires its owned transport.');
+    return this.#send(context,request,"/jobs",signal);
+  }
+  async nativeNetwork(context,value,{signal}={}){
+    const request=jobRequest(value);
+    if(request.operation!=='network')throw denied('Native network request required.');
+    return this.#send(context,request,'/native-network',signal);
   }
   async #send(context,request,path,signal) {
     this.#owned(context);
@@ -50,7 +57,7 @@ export class WorkspaceRpc {
       if(!/^http:\/\/172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]):4791$/.test(access.runnerUrl??"") ||
           !/^[a-f0-9]{64}$/.test(access.token??"")) throw unavailable();
       // A file request already has a total deadline, including queue wait.
-      const deadline=path==="/files" ? signal : AbortSignal.timeout(path==="/environments" ? 300000 : this.timeoutMs);
+      const deadline=path==="/files" ? signal : AbortSignal.timeout(path==="/environments" ? 300000 : path==='/native-network'?125000:this.timeoutMs);
       const bounded=path==="/files" ? signal : signal ? AbortSignal.any([signal,deadline]) : deadline;
       let response;
       try {

@@ -6,6 +6,8 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { CliProfileResolver } from "./cli-profile.mjs";
 import { AssistantPolicy, validateAssistantPolicyState } from "./assistant-policy.mjs";
+export const RUNTIME_STORAGE_VERSION = 5;
+export const READABLE_RUNTIME_STORAGE_VERSIONS = Object.freeze([1, 2, 3, 4, 5]);
 import { discoverSkills, seedSkills } from "./skills.mjs";
 
 const RUNTIME_ORDER = ["opencode", "claude", "codex"];
@@ -429,7 +431,7 @@ export class CliRuntimeManager {
     }
     const configured = await readJson(this.configPath, undefined);
     if (configured !== undefined && (!configured || typeof configured !== "object" || Array.isArray(configured) ||
-        ![1, 2, 3, 4, 5].includes(configured.version)))
+        !READABLE_RUNTIME_STORAGE_VERSIONS.includes(configured.version)))
       throw issue("unsupported_runtime_schema", "Runtime storage is not supported by this reader; existing data was preserved", 503);
     if ([2, 3, 4, 5].includes(configured?.version)) {
       if (configured.defaultRuntime) this.defaultRuntime = assertRuntime(configured.defaultRuntime);
@@ -533,7 +535,7 @@ export class CliRuntimeManager {
         throw issue("assistant_recovery_required", "Assistant storage requires reconciliation", 503);
       const policy = validateAssistantPolicyState(policyState ?? this.#policyState);
       const snapshot = {
-        version: 5,
+        version: RUNTIME_STORAGE_VERSION,
         defaultRuntime: policy.activeRuntime,
         userRuntimes: Object.fromEntries([...this.userRuntimes].sort(([a], [b]) => a.localeCompare(b))),
         userModels: Object.fromEntries(

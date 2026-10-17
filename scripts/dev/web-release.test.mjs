@@ -11,7 +11,7 @@ test('appearance changes require actual browser coverage without adding model ca
   for (const path of ['apps/desktop/src/lib/store.ts', 'apps/desktop/src/index.css', 'apps/desktop/public/assets/brand/cdut-emblem.png', 'services/platform/src/login-appearance.mjs']) {
     const selected = selectVerification([path], { known: true });
     assert.ok(selected.browserGroups.includes('appearance'));
-    assert.equal(selected.liveOpenCode, false);
+    assert.equal(selected.liveAssistant, false);
   }
   assert.ok(!selectVerification(['PROGRESS.md'], { known: true }).browserGroups.includes('appearance'));
 });
@@ -60,14 +60,14 @@ test('unknown sources and incomplete baseline broaden verification; docs do not 
 test('known leaf UI does not run platform or models; locale changes add parity', () => {
   const leaf = selectVerification(['apps/desktop/src/components/thread/WorkflowStarters.tsx'], { known: true });
   assert.equal(leaf.frontendFull, false); assert.equal(leaf.platformFull, false);
-  assert.equal(leaf.liveOpenCode, false); assert.equal(leaf.imageRequired, false);
+  assert.equal(leaf.liveAssistant, false); assert.equal(leaf.imageRequired, false);
   assert(leaf.frontendFiles.includes('src/components/thread/WorkflowStarters.test.tsx'));
   const locale = selectVerification(['apps/desktop/src/i18n/locales/en/session.json'], { known: true });
   assert(locale.frontendFiles.includes('src/i18n/parity.test.ts'));
 });
-test('runtime transport selects security and live OpenCode, not image without image input changes', () => {
+test('runtime transport selects security and the active assistant, not image without image input changes', () => {
   const model = selectVerification(['services/platform/src/model-broker.mjs'], { known: true });
-  assert.equal(model.platformFull, true); assert.equal(model.liveOpenCode, true); assert.equal(model.imageRequired, false);
+  assert.equal(model.platformFull, true); assert.equal(model.liveAssistant, true); assert.equal(model.imageRequired, false);
   assert.equal(selectVerification(['runtime/sandbox/runner.mjs'], { known: true }).imageRequired, true);
   const dependency = selectVerification(['pnpm-lock.yaml'], { known: true });
   assert.equal(dependency.frontendFull, true); assert.equal(dependency.platformFull, true);
@@ -128,6 +128,43 @@ test('preparation checks once, follows stage order, and never publishes failed c
   assert(!calls.includes('web-bundle')); assert(!calls.includes('prepared'));
 });
 import { publishRelease, replaceEnvironmentValue, transformServedIndex, validateRecoveryConfiguration, lifecycleRollbackPolicy } from './web-release-deploy.mjs';
+test('rollback refuses readers that would discard exclusive assistant policy or canonical conversation history',async t=>{
+ const {assistantRollbackPolicy}=await import('./web-release-deploy.mjs');
+ assert.equal(typeof assistantRollbackPolicy,'function');
+ const root=await fixture(t),source=join(root,'source'),data=join(root,'data');
+ await mkdir(join(source,'services/platform/src'),{recursive:true});await mkdir(data);
+ assert.equal((await assistantRollbackPolicy(source,data)).compatible,true);
+ await mkdir(join(data,'cli-runtime'));await writeFile(join(data,'cli-runtime/runtime.json'),JSON.stringify({version:5}));
+ assert.equal((await assistantRollbackPolicy(source,data)).compatible,false);
+ await writeFile(join(source,'services/platform/src/cli-runtime.mjs'),'export const READABLE_RUNTIME_STORAGE_VERSIONS = [1,2,3,4,5];\n');
+ assert.equal((await assistantRollbackPolicy(source,data)).compatible,true);
+ await mkdir(join(data,'conversation-state/historical-owner'),{recursive:true});
+ await writeFile(join(data,'conversation-state/historical-owner/conversations.json'),JSON.stringify({schema:2}));
+ assert.equal((await assistantRollbackPolicy(source,data)).compatible,false);
+ await writeFile(join(source,'services/platform/src/conversation-state.mjs'),'export const READABLE_CONVERSATION_SCHEMAS = [1,2];\n');
+ assert.equal((await assistantRollbackPolicy(source,data)).compatible,true);
+ await mkdir(join(data,'conversation-state/older-owner'));
+ await writeFile(join(data,'conversation-state/older-owner/conversations.json'),JSON.stringify({schema:1}));
+ await writeFile(join(source,'services/platform/src/conversation-state.mjs'),'export const READABLE_CONVERSATION_SCHEMAS = [2];\n');
+ assert.equal((await assistantRollbackPolicy(source,data)).compatible,false);
+ await writeFile(join(source,'services/platform/src/conversation-state.mjs'),'export const READABLE_CONVERSATION_SCHEMAS = [1,2];\n');
+ await writeFile(join(data,'conversation-state/historical-owner/conversations.json'),JSON.stringify({schema:3}));
+ assert.equal((await assistantRollbackPolicy(source,data)).compatible,false);
+});
+test('assistant rollback inspection rejects symlinks and malformed or unversioned state without changing bytes',async t=>{
+ const {assistantRollbackPolicy}=await import('./web-release-deploy.mjs');
+ assert.equal(typeof assistantRollbackPolicy,'function');
+ const root=await fixture(t),source=join(root,'source'),data=join(root,'data');
+ await mkdir(join(source,'services/platform/src'),{recursive:true});await mkdir(join(data,'cli-runtime'),{recursive:true});
+ const file=join(data,'cli-runtime/runtime.json');
+ for(const value of ['null','[]','{}','{"version":99}','not-json']){
+  await writeFile(file,value);
+  assert.equal((await assistantRollbackPolicy(source,data)).compatible,false);
+  assert.equal(await readFile(file,'utf8'),value);
+ }
+ await rename(file,join(root,'outside.json'));await symlink(join(root,'outside.json'),file);
+ assert.equal((await assistantRollbackPolicy(source,data)).compatible,false);
+});
 test('rollback requires lifecycle-compatible sources after private workspace state exists',async t=>{
   const root=await fixture(t),source=join(root,'source'),data=join(root,'data');
   await mkdir(source,{recursive:true});
@@ -198,7 +235,7 @@ test('explicit project maintenance restores service on validation failure', asyn
 
 test('backend Web rebuild includes typecheck and model transport requires live acceptance', () => {
   const backend = selectVerification(['services/platform/src/platform-server.mjs'], { known: true });
-  assert.equal(backend.buildWeb, true); assert.equal(backend.typecheck, true); assert.equal(backend.liveOpenCode, true);
+  assert.equal(backend.buildWeb, true); assert.equal(backend.typecheck, true); assert.equal(backend.liveAssistant, true);
   const pipeline = selectVerification(['scripts/dev/web-release.mjs'], { known: true });
   assert.equal(pipeline.workflowTests, true);
 });
@@ -217,7 +254,7 @@ test('unknown deployment and platform runtime dependencies switch to frozen sour
   assert.equal(selectVerification([], { known: false }).deployPlatform, true);
   assert.equal(selectVerification(['runtime/sandbox/file-rpc.mjs'], { known: true }).deployPlatform, true);
   for (const path of ['OPENCODE_VERSION', 'scripts/dev/fetch-opencode.sh', 'scripts/dev/fetch-uv.sh', 'runtime/sandbox/image/uv.lock']) {
-    const choice = selectVerification([path], { known: true }); assert.equal(choice.imageRequired, true); assert.equal(choice.liveOpenCode, true);
+    const choice = selectVerification([path], { known: true }); assert.equal(choice.imageRequired, true); assert.equal(choice.liveAssistant, true);
   }
 });
 
@@ -408,6 +445,17 @@ test('session verification includes recovery even when continuity already exists
   });
   assert.equal(result.passedTests, 10);
   assert(result.widths.includes(320));
+  const assistantCandidate={directory:root,source:{root},artifacts:{web:{directory:root}},selection:{browserGroups:['session','assistants']}};
+  await assert.rejects(browserStage(assistantCandidate),/assistant compatibility browser scenario/);
+  await writeFile(join(desktop,'webAssistantCompatibility.acceptance.test.mjs'),'fixture');
+  await browserStage(assistantCandidate,async(_cmd,args,_cwd,environment)=>{
+    assert(args.includes('src/test/webAssistantCompatibility.acceptance.test.mjs'));
+    assert.equal(environment.OSD_ASSISTANT_BROWSER,'1');
+    await writeFile(join(root,'browser-results.json'),JSON.stringify({success:true,numPassedTests:11,numPendingTests:0}));
+  });
+  await assert.rejects(browserStage(assistantCandidate,async()=>{
+    await writeFile(join(root,'browser-results.json'),JSON.stringify({success:true,numPassedTests:11,numPendingTests:1}));
+  }),/failed or was skipped/);
   await rm(join(desktop, 'webProjectFiles.acceptance.test.mjs'));
   await assert.rejects(browserStage({ directory:root,source:{root},artifacts:{web:{directory:root}},selection:{browserGroups:[]} }), /project management browser scenario/);
   await writeFile(join(desktop, 'webProjectFiles.acceptance.test.mjs'), 'fixture');
@@ -436,6 +484,79 @@ test('interaction changes select required session and interaction browser accept
   assert(selection.browserGroups.includes('session'));assert(selection.browserGroups.includes('interactions'));
   assert.equal(selection.imageRequired,false);
  }
+});
+
+test('assistant authority changes require versioned selected-runtime and assistant browser gates',()=>{
+ for(const path of ['services/platform/src/assistant-policy.mjs','services/platform/src/conversation-state.mjs',
+  'services/platform/src/conversation-router.mjs','services/platform/src/conversation-handover.mjs',
+  'services/platform/src/execution-permissions.mjs','services/platform/src/native-effects.mjs',
+  'services/platform/src/sandbox-native-jobs.mjs','runtime/sandbox/native-tools.mjs',
+  'apps/desktop/src/components/settings/ManagedAgentsCard.tsx']) {
+  const selection=selectVerification([path],{known:true});
+  assert.equal(selection.liveAssistant,true,path);assert.equal(selection.liveGateVersion,2,path);
+  assert.equal(selection.platformFull,true,path);assert.equal(selection.buildWeb,true,path);
+  assert(selection.browserGroups.includes('assistants'),path);
+ }
+});
+
+test('release CLI accepts an explicit assistant only on target-aware preparation commands',()=>{
+ for(const command of ['inspect','prepare','run'])
+  assert.equal(parseArguments([command,'--source','/fixture','--assistant','codex']).assistant,'codex');
+ assert.throws(()=>parseArguments(['prepare','--source','/fixture','--assistant','unknown']),/assistant/);
+ assert.throws(()=>parseArguments(['deploy','--release','fixture','--assistant','codex']),/option/);
+});
+
+test('selected assistant target freezes safe profile identity and refuses extra models or unavailable Claude',async()=>{
+ const {freezeAssistantTarget}=await import('./web-assistant-release.mjs');
+ const input={runtime:'codex',profile:{status:'ready',enabledByProfile:true,models:[{id:'gpt-6.1-sol'}],defaultModel:'gpt-6.1-sol',
+  sourceRevision:'source-fixture',identityRevision:'identity-fixture',catalogRevision:'a'.repeat(64)},
+  sourceFingerprint:'b'.repeat(64),imageDigest:'sha256:'+'c'.repeat(64)};
+ const target=freezeAssistantTarget(input);
+ assert.equal(target.runtime,'codex');assert.equal(target.model,'gpt-6.1-sol');assert.equal(target.schema,2);
+ assert.equal(JSON.stringify(target).includes('credential'),false);
+ for(const profile of [{...input.profile,status:'unavailable'},{...input.profile,models:[...input.profile.models,{id:'other'}]},
+  {...input.profile,identityRevision:null}])assert.throws(()=>freezeAssistantTarget({...input,profile}),/target|profile|model/);
+ assert.throws(()=>freezeAssistantTarget({...input,runtime:'claude'}),/unavailable/);
+});
+
+test('a selected-assistant live gate requires every native workflow and refuses stale or legacy evidence',async()=>{
+ const {verifyAssistantEvidence,freezeAssistantTarget,assistantTargetHash,requiredAssistantCapabilities}=await import('./web-assistant-release.mjs');
+ assert.equal(typeof verifyAssistantEvidence,'function');
+ const target=freezeAssistantTarget({runtime:'codex',profile:{status:'ready',enabledByProfile:true,models:[{id:'gpt-6.1-sol'}],defaultModel:'gpt-6.1-sol',
+  sourceRevision:'source-fixture',identityRevision:'identity-fixture',catalogRevision:'a'.repeat(64)},
+  sourceFingerprint:'b'.repeat(64),imageDigest:'sha256:'+'c'.repeat(64)});
+ const evidence={schema:2,status:'passed',targetHash:assistantTargetHash(target),runtime:'codex',model:'gpt-6.1-sol',
+  policyRevision:2,userId:'release-fixture',capabilities:Object.fromEntries(requiredAssistantCapabilities.map(name=>[name,'passed']))};
+ assert.equal(verifyAssistantEvidence(target,evidence).status,'passed');
+ for(const capability of requiredAssistantCapabilities){
+  const changed=structuredClone(evidence);delete changed.capabilities[capability];
+  assert.throws(()=>verifyAssistantEvidence(target,changed),/evidence|workflow/);
+ }
+ for(const changed of [{status:'passed'},{...evidence,schema:1},{...evidence,targetHash:'f'.repeat(64)},
+  {...evidence,runtime:'opencode'},{...evidence,policyRevision:0},{...evidence,model:'other'}])
+  assert.throws(()=>verifyAssistantEvidence(target,changed),/evidence|workflow/);
+});
+
+test('selected native acceptance checks the frozen target before and after execution and always closes its login',async()=>{
+ const {runSelectedAssistantLive,freezeAssistantTarget,assistantTargetHash,requiredAssistantCapabilities}=await import('./web-assistant-release.mjs');
+ const target=freezeAssistantTarget({runtime:'codex',profile:{status:'ready',enabledByProfile:true,models:[{id:'gpt-6.1-sol'}],defaultModel:'gpt-6.1-sol',
+  sourceRevision:'source-fixture',identityRevision:'identity-fixture',catalogRevision:'a'.repeat(64)},
+  sourceFingerprint:'b'.repeat(64),imageDigest:'sha256:'+'c'.repeat(64)});
+ const candidate={selection:{liveGateVersion:2},assistantTarget:target};let closed=0,runs=0,reads=0;
+ const connect=async()=>({close:async()=>closed++});
+ const capture=async()=>{reads++;return target;};
+ const runAcceptance=async()=>{runs++;return {schema:2,status:'passed',runtime:'codex',model:'gpt-6.1-sol',
+  targetHash:assistantTargetHash(target),policyRevision:2,userId:'release-fixture',
+  capabilities:Object.fromEntries(requiredAssistantCapabilities.map(name=>[name,'passed']))};};
+ assert.equal((await runSelectedAssistantLive(candidate,{}, {connect,capture,runAcceptance})).status,'passed');
+ assert.equal(reads,2);assert.equal(runs,1);assert.equal(closed,1);
+ await assert.rejects(runSelectedAssistantLive(candidate,{}, {connect,capture:async()=>({...target,identityRevision:'changed'}),runAcceptance}),/changed/);
+ assert.equal(runs,1);assert.equal(closed,1);
+ reads=0;
+ await assert.rejects(runSelectedAssistantLive(candidate,{}, {connect,capture:async()=>++reads===1?target:{...target,identityRevision:'changed'},runAcceptance}),/changed/);
+ assert.equal(runs,2);assert.equal(closed,2);
+ await assert.rejects(runSelectedAssistantLive({...candidate,selection:{liveGateVersion:1}},{},{connect,capture,runAcceptance}),/Legacy/);
+ assert.equal(runs,2);
 });
 
 

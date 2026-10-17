@@ -8,6 +8,7 @@ import { inspectProduction, commonStore, inventorySource, createCandidate, valid
 import { selectVerification, imageInputPath } from './web-release-policy.mjs';
 import { recordStage, writeManifest, readManifest, storageInventory, vendorStorageInventory, canResume } from './web-release-state.mjs';
 import { buildWeb, runProcess, verifyTaskLimits } from './web-build.mjs';
+import { captureReleaseAssistantTarget, assistantTargetHash } from './web-assistant-release.mjs';
 
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export function parseArguments(args, { internal = false } = {}) {
@@ -17,19 +18,20 @@ export function parseArguments(args, { internal = false } = {}) {
   for (let index = 0; index < rest.length; index++) {
     const name = rest[index];
     if (['--full', '--dry-run', '--maintenance'].includes(name)) { if (result[name.slice(2)]) throw new Error('Duplicate option'); result[name.slice(2)] = true; }
-    else if (['--source', '--release', '--id', '--image-digest'].includes(name)) {
+    else if (['--source', '--release', '--id', '--image-digest', '--assistant'].includes(name)) {
       if (!rest[index + 1] || rest[index + 1].startsWith('--') || result[name.slice(2)]) throw new Error('Missing or duplicate option value');
       result[name.slice(2)] = rest[++index];
     } else throw new Error(`Unknown release option: ${name}`);
   }
   if (['inspect', 'prepare', 'run'].includes(commandName) && !result.source) throw new Error('An explicit --source checkout is required');
   if (['deploy', 'rollback', 'resume'].includes(commandName) && !result.release) throw new Error('An explicit --release id is required');
-  const allowed = { inspect: ['source', 'full'], prepare: ['source', 'full', 'maintenance', 'image-digest', ...(internal ? ['id'] : [])], run: ['source', 'full', 'maintenance', 'image-digest'], resume: ['release', 'maintenance'], deploy: ['release'], rollback: ['release'], prune: ['dry-run'] };
+  const allowed = { inspect: ['source', 'full', 'assistant'], prepare: ['source', 'full', 'maintenance', 'image-digest', 'assistant', ...(internal ? ['id'] : [])], run: ['source', 'full', 'maintenance', 'image-digest', 'assistant'], resume: ['release', 'maintenance'], deploy: ['release'], rollback: ['release'], prune: ['dry-run'] };
   for (const key of Object.keys(result)) if (key !== 'command' && !allowed[commandName].includes(key)) throw new Error(`Unknown option for ${commandName}: --${key}`);
   if (result.maintenance && !['run', 'prepare', 'resume'].includes(commandName)) throw new Error('Maintenance is only valid for preparation or run');
   if (commandName === 'prune' && !result['dry-run']) throw new Error('Only prune --dry-run is supported');
   for (const key of ['release', 'id']) if (result[key] && !/^[A-Za-z0-9_-]{1,100}$/.test(result[key])) throw new Error('Unsafe release id');
   if (result['image-digest'] && !/^sha256:[a-f0-9]{64}$/.test(result['image-digest'])) throw new Error('Invalid image digest');
+  if (result.assistant && !['opencode', 'codex', 'claude'].includes(result.assistant)) throw new Error('Invalid release assistant');
   if (result.source) result.source = resolve(result.source);
   return result;
 }
@@ -45,6 +47,7 @@ export async function prepareRelease(candidate, selection, ops) {
   if (selection.platformFull || selection.platformFiles.length) await ops.stage('platform-tests');
   if (selection.rustPackages?.length) await ops.stage('rust-checks');
   if (selection.imageRequired) await ops.stage('image-validation');
+  if (selection.liveAssistant) await ops.stage('assistant-target');
   if (selection.buildWeb) { await ops.stage('vendor'); await ops.stage('web-bundle'); await ops.stage('candidate-browser'); }
   await ops.validateSource(candidate); await ops.validateArtifacts(candidate); await ops.markPrepared(candidate); return candidate;
 }
@@ -127,7 +130,8 @@ export async function validateInstalledImage(candidate, digest, { execute = comm
   const installedSkills = execute('sudo', ['-n', 'python3', '-c', "import pathlib,json; root=pathlib.Path(__import__('sys').argv[1]); print(json.dumps(sorted(str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name!='.gitkeep')))", join(imageRoot, 'rootfs/opt/scikeel/tools/resources/skills-core')]);
   const candidateSkills = candidate.source.files.filter((file) => file.path.startsWith('runtime/skills/core/') && !file.path.endsWith('.gitkeep')).map((file) => file.path.slice('runtime/skills/core/'.length)).sort();
   if (JSON.stringify(candidateSkills) !== JSON.stringify(JSON.parse(installedSkills))) throw new Error('Core skill inventory differs from installed image');
-  return { imageDigest: digest, reused: digest === candidate.production.imageDigest, runnerFiles: manifest.runnerFiles };
+  return { imageDigest: digest, reused: digest === candidate.production.imageDigest, runnerFiles: manifest.runnerFiles,
+    enabledRuntimes: manifest.enabledRuntimes };
 }
 export async function browserStage(candidate, run = runProcess) {
   requireBrowserConfiguration(process.env);
@@ -141,6 +145,11 @@ export async function browserStage(candidate, run = runProcess) {
   const tests = ['src/test/webRelease.acceptance.test.mjs', notificationScenario, projectScenario, managementScenario];
   const environment = { OSD_RELEASE_ACCEPTANCE: '1', OSD_NOTIFICATIONS_ACCEPTANCE: '1', OSD_PROJECTS_ACCEPTANCE: '1', OSD_PROJECT_FILES_ACCEPTANCE: '1', OSD_PROJECTS_WEB_ROOT: candidate.artifacts.web.directory, OSD_WEB_CANDIDATE: candidate.artifacts.web.directory };
   const groups = candidate.selection.browserGroups;
+  if (groups.includes('assistants')) {
+    const scenario = 'src/test/webAssistantCompatibility.acceptance.test.mjs';
+    if (!await lstat(join(desktop, scenario)).catch(() => null)) throw new Error('Required assistant compatibility browser scenario is unavailable');
+    tests.push(scenario); environment.OSD_ASSISTANT_BROWSER = '1';
+  }
   if (groups.includes('login') || groups.includes('session')) {
     const accountRecovery = 'src/test/webAccountRecovery.acceptance.test.mjs';
     if (!await lstat(join(desktop, accountRecovery)).catch(() => null)) throw new Error('Required account recovery browser scenario is unavailable');
@@ -184,7 +193,7 @@ export async function validateResume(candidate, production) {
   if (production.source.startsWith(candidate.directory + '/') || production.webRoot.startsWith(candidate.directory + '/')) throw new Error('A referenced candidate cannot resume');
   if (productionFingerprint(production) !== candidate.baseline.fingerprint) throw new Error('Production baseline changed; prepare a new candidate');
 }
-const TOOL_FILES = ['web-release.mjs', 'web-release-source.mjs', 'web-release-state.mjs', 'web-release-policy.mjs', 'web-release-deploy.mjs', 'web-release-maintenance.mjs', 'web-build.mjs', 'web-vendor-cache.mjs', 'build-web-vendor.mjs', 'safe-desktop-task.mjs'];
+const TOOL_FILES = ['web-release.mjs', 'web-release-source.mjs', 'web-release-state.mjs', 'web-release-policy.mjs', 'web-release-deploy.mjs', 'web-release-maintenance.mjs', 'web-assistant-release.mjs', 'web-build.mjs', 'web-vendor-cache.mjs', 'build-web-vendor.mjs', 'safe-desktop-task.mjs'];
 async function validateTooling(candidate) {
   for (const name of TOOL_FILES) {
     const path = 'scripts/dev/' + name;
@@ -207,6 +216,12 @@ async function prepareCandidate(candidate, path) {
     } : {}),
     'rust-checks': () => { for (const name of s.rustPackages) runProcess('cargo', ['check', '--locked', '--jobs', '1', '--package', name], root); },
     'image-validation': () => validateInstalledImage(candidate, candidate.requestedImage ?? candidate.production.imageDigest),
+    'assistant-target': async () => {
+      const current = await captureReleaseAssistantTarget(candidate);
+      if (candidate.assistantTarget && assistantTargetHash(candidate.assistantTarget) !== assistantTargetHash(current))
+        throw new Error('Selected assistant profile changed; prepare again');
+      candidate.assistantTarget = current; return current;
+    },
     vendor: async () => {
       const { ensureVendorCache } = await import('./web-vendor-cache.mjs');
       const output = await ensureVendorCache({ root, store: join(candidate.sharedStore, 'web-vendor-cache') });
@@ -236,7 +251,7 @@ async function prepareCandidate(candidate, path) {
         outputValid = await artifactFiles(previous.output.directory).then((files) => fingerprintFiles(files) === previous.output.fingerprint).catch(() => false);
         if (outputValid) candidate.artifacts.web = previous.output;
       }
-      if (canResume(previous, stageInput, { outputValid })) return;
+      if (name !== 'assistant-target' && canResume(previous, stageInput, { outputValid })) return;
       console.log(`Release stage: ${name}`);
       await recordStage(candidate, path, name, stageInput, actions[name]);
     },
@@ -276,9 +291,10 @@ export async function releaseWorker(args, { sharedStore }) {
     try { assertSelectedSource(sourceInventory, candidate.source.files); }
     catch (error) { candidate.status = 'failed'; candidate.resumeBlocked = 'source-selection-changed'; await writeManifest(join(candidate.directory, 'manifest.json'), candidate); throw error; }
     candidate.requestedImage = options['image-digest'] ?? null;
+    candidate.requestedAssistant = options.assistant ?? null;
     if (candidate.requestedImage && candidate.requestedImage !== production.imageDigest) {
-      candidate.selection.imageRequired = candidate.selection.liveOpenCode = candidate.selection.platformFull = candidate.selection.deploy = true;
-      candidate.selection.reasons.push('Explicit image switch requires source identity and live OpenCode verification');
+      candidate.selection.imageRequired = candidate.selection.liveAssistant = candidate.selection.platformFull = candidate.selection.deploy = true;
+      candidate.selection.reasons.push('Explicit image switch requires source identity and selected-assistant verification');
     }
   }
   const path = join(candidate.directory, 'manifest.json');
@@ -307,7 +323,7 @@ async function cli(args) {
   }
   if (['prepare', 'run', 'resume'].includes(options.command)) {
     const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
-    const workerArgs = options.command === 'resume' ? ['resume', '--release', options.release] : ['prepare', '--source', options.source, '--id', id, ...(options.full ? ['--full'] : []), ...(options['image-digest'] ? ['--image-digest', options['image-digest']] : [])];
+    const workerArgs = options.command === 'resume' ? ['resume', '--release', options.release] : ['prepare', '--source', options.source, '--id', id, ...(options.full ? ['--full'] : []), ...(options['image-digest'] ? ['--image-digest', options['image-digest']] : []), ...(options.assistant ? ['--assistant', options.assistant] : [])];
     if (options.maintenance) {
       const { maintenancePrepare } = await import('./web-release-maintenance.mjs');
       await maintenancePrepare(workerArgs, { store, id });

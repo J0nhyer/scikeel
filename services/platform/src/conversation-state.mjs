@@ -2,6 +2,8 @@ import {createHash,randomUUID} from 'node:crypto';
 import {constants,promises as filesystem} from 'node:fs';
 import {lstat,mkdir,rename,rm,readdir} from 'node:fs/promises';
 import {join,posix} from 'node:path';
+export const CONVERSATION_STORAGE_SCHEMA = 2;
+export const READABLE_CONVERSATION_SCHEMAS = Object.freeze([1, 2]);
 
 const fail=(code,statusCode=409)=>Object.assign(new Error(code.replaceAll('_',' ')),{code,statusCode});
 const invalid=()=>fail('invalid_conversation_input',400);
@@ -65,7 +67,7 @@ export class ConversationState {
   const stat=await lstat(pathname,{bigint:true});if(!privateEntry(stat,true))throw storage();return stat;
  }
  #validate(data,userId) {
-  if(!exact(data,['schema','userId','conversations']) || ![1,2].includes(data.schema) || data.userId!==userId ||
+  if(!exact(data,['schema','userId','conversations']) || !READABLE_CONVERSATION_SCHEMAS.includes(data.schema) || data.userId!==userId ||
       !record(data.conversations) || Object.keys(data.conversations).length>10000)throw storage();
   if(data.schema===1) {
    for(const value of Object.values(data.conversations)) {
@@ -76,7 +78,7 @@ export class ConversationState {
      event.historicalSourceId=null;
     }
    }
-   data.schema=2;
+   data.schema=CONVERSATION_STORAGE_SCHEMA;
   }
   const origins=new Set();
   for(const [id,value] of Object.entries(data.conversations)) {
@@ -145,7 +147,7 @@ export class ConversationState {
    const root=await this.#directory(this.rootDir),parent=await this.#directory(folder);
    let file;
    try {file=await filesystem.open(path,constants.O_RDONLY|(constants.O_NOFOLLOW??0));}
-   catch(error) {if(error.code==='ENOENT')return {schema:2,userId,conversations:{}};throw error;}
+   catch(error) {if(error.code==='ENOENT')return {schema:CONVERSATION_STORAGE_SCHEMA,userId,conversations:{}};throw error;}
    let data;
    try {
     const before=await file.stat({bigint:true});
@@ -157,7 +159,7 @@ export class ConversationState {
     data=JSON.parse(bytes.subarray(0,length).toString('utf8'));
    }finally {await file.close();}
    return this.#validate(data,userId);
-  }catch(error) {if(error.code==='ENOENT')return {schema:2,userId,conversations:{}};throw storage();}
+  }catch(error) {if(error.code==='ENOENT')return {schema:CONVERSATION_STORAGE_SCHEMA,userId,conversations:{}};throw storage();}
  }
  async #save(data,owner) {
   this.#validate(data,data.userId);

@@ -4,9 +4,9 @@ import {CliJobs,jobRequest} from "../../../runtime/sandbox/cli-jobs.mjs";
 const manifest={instanceId:'user-a',generation:1,workspaceDir:"/tenant/workspace",home:"/tenant/home"};
 const imageDigest=`sha256:${"a".repeat(64)}`;
 const profile={enabled_providers:["fixture"],provider:{fixture:{npm:"@ai-sdk/openai-compatible",models:{approved:{}},options:{apiKey:"b".repeat(64),baseURL:"http://172.31.240.1:4792/v1"}}}};
-function fixture({close,result={nativeSessionId:"native-owned",turnId:"turn-owned"}}={}) {
+function fixture({close,network,result={nativeSessionId:"native-owned",turnId:"turn-owned"}}={}) {
   let emit;let stopped;const calls=[];let closed=0;
-  const jobs=new CliJobs({manifest,imageDigest,environments:{call:async value=>({owned:true,projectDir:`${manifest.workspaceDir}/${value.project}`,
+  const jobs=new CliJobs({manifest,imageDigest,network,environments:{call:async value=>({owned:true,projectDir:`${manifest.workspaceDir}/${value.project}`,
     basePython:"/opt/scikeel/science/bin/python",venvState:"valid",venvPython:`${manifest.workspaceDir}/${value.project}/.venv/bin/python`})},
     nativeFactory:options=>{emit=options.emit;stopped=options.onStopped;return {start:async request=>{calls.push(request);return result;},
       approve:value=>calls.push(value),toolResult:value=>calls.push(value),close:async()=>{closed++;await close?.();}};}});
@@ -38,6 +38,38 @@ test('native tool replies consume one opaque job-owned request, never a foreign 
  const pending=(await f.jobs.call({operation:'events',jobId:started.jobId,after:1})).events[0];
  await f.jobs.call({operation:'abort',jobId:started.jobId});
  await assert.rejects(f.jobs.call({...result,id:pending.id}));await f.jobs.close();
+});
+test('native network requires an active exact-tool request and never exposes its grant to the model process',async()=>{
+ const steps=[],f=fixture({network:{call:async(value)=>{steps.push(value);return {status:200,text:'Evidence'};}}});
+ const started=await f.jobs.call(request),step={tool:'webfetch',url:'https://science.example/paper',grant:'e'.repeat(64),expiresAt:Date.now()+1000};
+ const network={operation:'network',jobId:started.jobId,id:'f'.repeat(64),request:step};
+ await assert.rejects(f.jobs.call(network));assert.equal(steps.length,0);
+ await f.emit({type:'tool-call',id:'rpc-network',callId:'call-network',tool:'webfetch',input:{url:step.url}});
+ const event=(await f.jobs.call({operation:'events',jobId:started.jobId,after:0})).events[0];
+ await assert.rejects(f.jobs.call({...network,id:event.id,request:{...step,url:'https://foreign.example/'}}));
+ await assert.rejects(f.jobs.call({...network,id:event.id,request:{...step,grant:request.nativeProfile.modelToken}}));
+ assert.equal(steps.length,0);
+ assert.equal((await f.jobs.call({...network,id:event.id})).text,'Evidence');assert.equal(steps.length,1);
+ assert(!JSON.stringify(f.calls).includes(step.grant));
+ await f.jobs.call({operation:'toolResult',jobId:started.jobId,id:event.id,success:true,text:'Evidence'});
+ await assert.rejects(f.jobs.call({...network,id:event.id}));assert.equal(steps.length,1);await f.jobs.close();
+});
+test('native Stop aborts and drains an active network helper before reporting idle or stopped',async()=>{
+ let entered,release;const ready=new Promise(resolve=>{entered=resolve;}),drain=new Promise(resolve=>{release=resolve;});
+ let cancelled=false;
+ const f=fixture({network:{call:async(_value,{signal})=>{entered();await new Promise(resolve=>signal.addEventListener('abort',()=>{cancelled=true;resolve();},{once:true}));
+  await drain;signal.throwIfAborted();}}});
+ const started=await f.jobs.call(request);
+ await f.emit({type:'tool-call',id:'rpc-network',callId:'call-network',tool:'webfetch',input:{url:'https://science.example/paper'}});
+ const event=(await f.jobs.call({operation:'events',jobId:started.jobId,after:0})).events[0];
+ const pending=f.jobs.call({operation:'network',jobId:started.jobId,id:event.id,request:{tool:'webfetch',url:event.input.url,grant:'e'.repeat(64),expiresAt:Date.now()+1000}});
+ const failed=assert.rejects(pending);let stopped=false;
+ try{
+  await Promise.race([ready,pending]);const stopping=f.jobs.call({operation:'abort',jobId:started.jobId}).then(result=>{stopped=result.stopped;return result;});
+  await new Promise(resolve=>setImmediate(resolve));assert(cancelled);assert.equal(stopped,false);assert.equal(f.jobs.busy,true);
+  assert.equal((await f.jobs.call({operation:'inspect'})).jobs[0].status,'settling');
+  release();await failed;await stopping;assert.equal(stopped,true);assert.equal(f.jobs.busy,false);
+ }finally{release();await f.jobs.close();}
 });
 test('missing, malformed or foreign per-turn grants never reach environment inspection or native start',async()=>{
  const f=fixture();

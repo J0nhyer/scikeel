@@ -51,6 +51,14 @@ function rpcFixture(fetchImpl, options = {}) {
   return {files: new WorkspaceRpc({workerManager: manager, tenantPolicy: policy, fetchImpl, ...options}),
     changeGeneration: value => { generation = value; }, released: () => released};
 }
+test('native network uses its own authenticated route, bounded request and owned worker lease',async()=>{
+ const calls=[],f=rpcFixture(async(url,options)=>{calls.push({url,body:JSON.parse(options.body)});return new Response('{"status":200,"text":"Evidence"}');});
+ const value={operation:'network',jobId:'b'.repeat(64),id:'c'.repeat(64),request:{tool:'webfetch',url:'https://science.example/paper',grant:'d'.repeat(64),expiresAt:Date.now()+1000}};
+ assert.equal((await f.files.nativeNetwork(context,value)).text,'Evidence');
+ assert.equal(calls[0].url,'http://172.31.240.2:4791/native-network');assert.equal(calls[0].body.generation,1);assert.equal(f.released(),1);
+ await assert.rejects(f.files.job(context,value));assert.equal(calls.length,1,'Long-running network must not block the Stop job route');
+ f.changeGeneration(2);await assert.rejects(f.files.nativeNetwork(context,value));assert.equal(calls.length,1);
+});
 for (const [status, body, expectedStatus, code] of [
   [429, {error:"runner_busy"}, 429, "workspace_rpc_busy"],
   [403, {error:"synthetic-private-secret"}, 403, "workspace_rpc_denied"],

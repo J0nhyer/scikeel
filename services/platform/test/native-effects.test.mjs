@@ -19,7 +19,7 @@ function fixture(){
   return {state,blocked:Boolean(state.pending),repairExhausted:false};}};
  const permissions=configureNativeEffects({nativeJobs,cliRuntime,platform,workerManager:{getWorker:()=>({userId:'owner',generation:2,status:'running'})},
   tenantPolicy:{account:()=>({workspaceDir:'/workspace'})}});
- return {permissions,get effects(){return effects;},calls,rules,state,scope,setCurrent:value=>current=value};
+ return {permissions,nativeJobs,platform,get effects(){return effects;},calls,rules,state,scope,setCurrent:value=>current=value};
 }
 test('native effect adapter reuses shared authority with independent research counter and complete inherited explicit denies',async()=>{
  const f=fixture();assert.deepEqual(await f.effects.prepare({identity,context,session}),{researchExecution:7,rootSessionId:'root'});
@@ -49,4 +49,10 @@ test('native tools cannot silently bypass a missing scoped network executor',asy
  const f=fixture();
  await assert.rejects(f.effects.callTool({context,identity,sessionId:'child',callId:'network',tool:'webfetch',input:{url:'https://public.example'},signal:new AbortController().signal}),/network executor/);
  assert.equal(f.calls.length,0);
+});
+test('native effect startup wires the existing network authority without an optional missing production callback',async()=>{
+ const f=fixture(),calls=[];f.nativeJobs.networkStep=async(_identity,step)=>{calls.push(step);return {status:200,text:'Public evidence'};};
+ f.platform.runtimeNetwork=async(_context,body)=>body.action==='authorize'?{operationId:'op_owned',grant:'c'.repeat(64),expiresAt:Date.now()+1000}:{completed:true};
+ const result=await f.effects.callTool({context,identity,sessionId:'child',callId:'network',tool:'webfetch',input:{url:'https://public.example'},signal:new AbortController().signal});
+ assert.match(result,/Public evidence/);assert.equal(calls.length,1);
 });

@@ -1,6 +1,7 @@
 import {ExecutionPermissions} from './execution-permissions.mjs';
 import {collaborationHooks} from '../../../runtime/sandbox/collaboration.mjs';
 import {makeToolOutcome,ToolOutcomeError} from '../../../packages/sdk/src/tool-outcome.mjs';
+import {runNativeNetwork} from './native-network.mjs';
 
 // Native transport shares platform research/permission authorities, not a second policy engine.
 export function configureNativeEffects({nativeJobs,cliRuntime,platform,workerManager,tenantPolicy,networkTool=null}){
@@ -61,8 +62,7 @@ export function configureNativeEffects({nativeJobs,cliRuntime,platform,workerMan
      throw error;
     }
    }
-   if(!networkTool)throw Error('Native scoped network executor is unavailable');
-   return networkTool({context,identity,sessionId,callId,tool,input,signal});
+   return (networkTool??runNativeNetwork)({nativeJobs,platform,context,identity,sessionId,callId,tool,input,signal});
   },
  });
  return permissions;

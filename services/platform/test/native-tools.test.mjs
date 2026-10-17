@@ -60,7 +60,7 @@ test('managed startup verifies every immutable parent, exact regular files and n
  const directories=new Set(['/','/etc','/etc/codex','/opt','/opt/scikeel','/opt/scikeel/runtime','/opt/scikeel/tools']);
  const info=path=>({uid:0,mode:directories.has(path)?0o755:0o644,size:content.length,nlink:1,
   isSymbolicLink:()=>false,isDirectory:()=>directories.has(path),isFile:()=>!directories.has(path)});
- for(const failure of [null,'parent','expected','link','hardlink','changed','oversized','type','opened']){
+ for(const failure of [null,'parent','expected','link','hardlink','changed','oversized','type','opened','network-script','network-module']){
   let closed=0,opened=0;const reads=[];
   const lstatImpl=async path=>{
    const stat=info(path);
@@ -69,6 +69,8 @@ test('managed startup verifies every immutable parent, exact regular files and n
    if(failure==='link'&&path==='/etc/codex/requirements.toml')stat.isSymbolicLink=()=>true;
    if(failure==='hardlink'&&path==='/etc/codex/requirements.toml')stat.nlink=2;
    if(failure==='type'&&path.endsWith('required-effect-guard.mjs')){stat.isFile=()=>false;stat.isDirectory=()=>true;}
+   if(failure==='network-script'&&path.endsWith('native-network.py'))stat.mode=0o666;
+   if(failure==='network-module'&&path.endsWith('native-network.mjs'))stat.isSymbolicLink=()=>true;
    return stat;
   };
   const openImpl=async(path,flags)=>{assert.equal(flags&constants.O_NOFOLLOW,constants.O_NOFOLLOW);opened++;

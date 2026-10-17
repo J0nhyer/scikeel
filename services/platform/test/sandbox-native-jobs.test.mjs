@@ -10,6 +10,37 @@ import {makeToolOutcome,ToolOutcomeError} from '../../../packages/sdk/src/tool-o
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
 const acceptance={nativeSessionId:"native-owned",turnId:"turn-owned"};
+test('native network dispatch binds accepted identity, guard decision and the private active tool reply ID',async()=>{
+ const policy=new TenantPolicy({accounts:[context]}),controller=new AbortController(),steps=[];
+ const identity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
+ const input={url:'https://science.example/paper'},step={tool:'webfetch',url:input.url,grant:'e'.repeat(64),expiresAt:Date.now()+1000};
+ let batch=0,valid=true;const decision={allowed:true};
+ const transport=new ManagedNativeJobs({tenantPolicy:policy,delayMs:1,
+  issueNativeGrant:async()=>({identityRevision:'owned-profile',configuration:{model:'approved'},renew:()=>{},revoke:async()=>{}}),
+  workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release(){}})},files:{
+   nativeNetwork:async(owner,value)=>{steps.push({owner,value});return {status:200,text:'Actual evidence'};},
+   job:async(_owner,value)=>{
+    if(value.operation==='start')return {jobId:'b'.repeat(64),...acceptance};
+    if(value.operation==='toolResult')return {replied:true};if(value.operation==='abort')return {stopped:true};
+    if(batch++===0){await transport.authorizeEffect({...context,turnIdentity:identity},{session_id:acceptance.nativeSessionId,turn_id:acceptance.turnId,
+     tool_use_id:'call-network',cwd:session.directory,hook_event_name:'PreToolUse',tool_name:'webfetch',tool_input:{nativeTool:'webfetch',nativeInput:input,canonicalInput:input}});
+     return {jobId:value.jobId,status:'running',...acceptance,events:[{type:'tool-call',id:'d'.repeat(64),callId:'call-network',tool:'webfetch',input,sessionID:'owned',sequence:1,...acceptance}]};}
+    return {jobId:value.jobId,status:'completed',...acceptance,events:[]};
+   }}});
+ transport.configureEffects({prepare:async()=>({researchExecution:7,rootSessionId:'owned'}),permissions:{authorize:async()=>decision,assertCurrent:async()=>valid},
+  callTool:async()=>{
+   await assert.rejects(transport.networkStep({...identity,execution:2},step,{signal:controller.signal}));
+   await assert.rejects(transport.networkStep(identity,{...step,tool:'websearch',query:'Research'},{signal:controller.signal}));
+   valid=false;await assert.rejects(transport.networkStep(identity,step,{signal:controller.signal}));valid=true;
+   assert.equal(steps.length,0);assert.equal((await transport.networkStep(identity,step,{signal:controller.signal})).text,'Actual evidence');
+   assert.equal(transport.runningToolPart(context,'owned','call-network').id,undefined,'Opaque reply ID is not public authority');
+   return 'Actual evidence';
+  }});
+ await assert.rejects(transport.networkStep(identity,step,{signal:controller.signal}));
+ await transport.run({userId:'a',session,model:'approved',text:'Research',turnIdentity:identity,identityRevision:'owned-profile',signal:controller.signal,emit:async()=>{}});
+ assert.equal(steps.length,1);assert.equal(steps[0].value.jobId,'b'.repeat(64));assert.equal(steps[0].value.id,'d'.repeat(64));
+ await assert.rejects(transport.networkStep(identity,step,{signal:controller.signal}));
+});
 test('native custom tools require matching pre-effect authority and expose real lifecycle with one bound result',async()=>{
  for(const failure of [null,'business','unguarded','changed-input','denied','stop','replay']){
   const policy=new TenantPolicy({accounts:[context]}),events=[],calls=[],controller=new AbortController();let transport,dispatches=0;

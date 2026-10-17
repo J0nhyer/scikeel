@@ -111,12 +111,14 @@ test("durable global selection revokes actual broker inference without reviving 
   await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
   t.after(() => { upstream.closeAllConnections(); return new Promise(resolve => upstream.close(resolve)); });
   const context = { userId: "owner_a", instanceId: "instance_a", generation: 1 };
+  const turnIdentity={...context,conversationId:'conversation_a',execution:1,requestId:'request_native',policyRevision:2,runtime:'codex'};
   broker = new ModelBroker({ identify: () => context, assistantPolicy: owned => f.manager.assistantSnapshot(owned.userId),
+    executionAuthority: identity => f.manager.assistantPolicy.isExecutionCurrent(identity),
     logger: () => {}, providers: { fixture: { baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`,
       credential: "synthetic-integration-canary", enabledModels: ["gpt-6.1-sol"], routes: ["/v1/responses"] } } });
   t.after(() => broker.close());
   await broker.listen({ host: "127.0.0.1", port: 0 });
-  const issue = (runtime, policyRevision) => broker.issue({ ...context, runtime, policyRevision,
+  const issue = (runtime, policyRevision) => broker.issue({ ...context, runtime, policyRevision,...(runtime==='codex'?{turnIdentity}:{}),
     provider: "fixture", models: ["gpt-6.1-sol"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 });
   const request = async (token, path = "/v1/responses") => {
     const response = await fetch(`http://127.0.0.1:${broker.server.address().port}${path}`, { method: "POST",
@@ -131,8 +133,12 @@ test("durable global selection revokes actual broker inference without reviving 
   broker.renew(original, context);
   broker.collaborationHandler = async () => ({ state: "readable" });
   assert.equal(await request(original, "/collaboration"), 200);
+  assert.throws(()=>issue('codex',2),error=>error.code==='model_grant_denied','An unadmitted native identity cannot issue inference grants');
+  const nativeLease=await f.manager.assistantPolicy.admit(turnIdentity,async()=>({}));
   const codex = issue("codex", 2);
   assert.equal(await request(codex), 200);
+  await nativeLease.settle({cleanupVerified:true});
+  assert.equal(await request(codex),403,'Settled native execution cannot continue inference');
   await f.manager.selectAssistant({ runtime: "opencode", expectedRevision: 2, operationId: "broker-return" });
   assert.equal(await request(original), 403); assert.equal(await request(codex), 403);
   assert.equal(await request(issue("opencode", 3)), 200);

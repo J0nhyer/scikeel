@@ -10,6 +10,22 @@ import { fileURLToPath } from "node:url";
 
 const manifest = { schema: 1, instanceId: "user-a", generation: 1, workspaceDir: "/tenant/workspace", stateDir: "/tenant/state", home: "/tenant/home", scratchDir: "/tenant/scratch" };
 const token = "a".repeat(64);
+test('native network route cannot block authenticated Stop on the ordinary job route',async t=>{
+ const runner=new TenantRunner({manifest,token});await runner.listen({host:'127.0.0.1',port:0});t.after(()=>runner.close());
+ let entered,release;const ready=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+ runner.jobs={close:async()=>release(),call:async(value)=>{if(value.operation==='network'){entered();await gate;return {status:200,text:'bounded'};}
+  assert.equal(value.operation,'abort');release();return {stopped:true};}};
+ const post=(path,value)=>fetch(`http://127.0.0.1:${runner.server.address().port}${path}`,{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},
+  body:JSON.stringify({instanceId:'user-a',generation:1,...value})});
+ const value={operation:'network',jobId:'b'.repeat(64),id:'c'.repeat(64),request:{tool:'webfetch',url:'https://science.example/paper',grant:'d'.repeat(64),expiresAt:Date.now()+1000}};
+ assert.equal((await post('/jobs',value)).status,403);
+ const pending=post('/native-network',value);
+ try{
+  await Promise.race([ready,pending.then(response=>{throw Error(`Network route refused: ${response.status}`);})]);
+  const stopping=await post('/jobs',{operation:'abort',jobId:value.jobId});assert.equal(stopping.status,200);assert.equal((await stopping.json()).stopped,true);
+  assert.equal((await pending).status,200);
+ }finally{release();await pending;}
+});
 test('managed text accepts two MiB of escaped UTF-8 while other request budgets stay unchanged',async t=>{
  const runner=new TenantRunner({manifest,token,files:{call:async request=>({size:Buffer.byteLength(request.text)})}});
  await runner.listen({host:'127.0.0.1',port:0});t.after(()=>runner.close());

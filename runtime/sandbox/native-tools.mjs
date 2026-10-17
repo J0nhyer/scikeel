@@ -91,7 +91,7 @@ export async function runRequiredEffectGuard({input=process.stdin,output=process
 export async function verifyManagedCodexRuntime({lstatImpl=lstat,openImpl=open}={}){
  const directories=['/','/etc','/etc/codex','/opt','/opt/scikeel','/opt/scikeel/runtime','/opt/scikeel/tools'];
  const files=['/etc/codex/requirements.toml','/opt/scikeel/runtime/required-effect-guard.mjs','/opt/scikeel/tools/native-tools.mjs',
-  '/opt/scikeel/tools/codex-requirements.toml'];
+  '/opt/scikeel/tools/codex-requirements.toml','/opt/scikeel/tools/native-network.mjs','/opt/scikeel/tools/native-network.py'];
  const trusted=(info,file)=>!info.isSymbolicLink()&&info.uid===0&&!(info.mode&0o022)&&(file?info.isFile()&&info.nlink===1:info.isDirectory());
  const snapshots=new Map();
  for(const path of [...directories,...files]){

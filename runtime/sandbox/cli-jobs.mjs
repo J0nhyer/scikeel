@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { posix } from "node:path";
 import {nativeTools, validateNativeTool, verifyManagedCodexRuntime} from './native-tools.mjs';
+import {NativeNetworkRpc,networkStepRequest} from './native-network.mjs';
 
 function path(value) {
   if (typeof value !== "string" || !value.startsWith("/") || value === "/" || /[\0\\]/.test(value) ||
@@ -287,7 +288,7 @@ function validAnswers(value) {
 }
 export function jobRequest(value) {
   const fields={start:["operation","sessionId","project","model","text","images","nativeSessionId","turnIdentity","identityRevision","nativeProfile"],
-    inspect:["operation"],events:["operation","jobId","after"],toolResult:['operation','jobId','id','success','text'],approve:["operation","jobId","id","decision"],answer:["operation","jobId","id","answers","reject"],abort:["operation","jobId"]};
+    inspect:["operation"],events:["operation","jobId","after"],network:['operation','jobId','id','request'],toolResult:['operation','jobId','id','success','text'],approve:["operation","jobId","id","decision"],answer:["operation","jobId","id","answers","reject"],abort:["operation","jobId"]};
   const allowed=fields[value?.operation];
   if(!value || typeof value!=="object" || Array.isArray(value) || !allowed || Object.keys(value).some(key=>!allowed.includes(key)))
     throw new Error("invalid managed job operation");
@@ -317,14 +318,18 @@ export function jobRequest(value) {
       throw new Error("invalid managed job approval");
     if(value.operation==='toolResult'&&(!/^[a-f0-9]{64}$/.test(value.id??'')||typeof value.success!=='boolean'||
       typeof value.text!=='string'||Buffer.byteLength(value.text)>256*1024))throw Error('Invalid managed tool result');
+    if(value.operation==='network'){
+      if(!/^[a-f0-9]{64}$/.test(value.id??''))throw Error('Invalid managed network request');
+      networkStepRequest(value.request);
+    }
   }
   return structuredClone(value);
 }
 export class CliJobs {
   #jobs=new Map(); #starting=false; #closing=false;
-  constructor({manifest,environments,imageDigest,spawnImpl=spawn,verifyRuntime=verifyManagedCodexRuntime,nativeFactory=options=>new CodexAppServer(options)}) {
+  constructor({manifest,environments,imageDigest,network=new NativeNetworkRpc(),spawnImpl=spawn,verifyRuntime=verifyManagedCodexRuntime,nativeFactory=options=>new CodexAppServer(options)}) {
     if(!manifest || !environments || !/^sha256:[a-f0-9]{64}$/.test(imageDigest??"") || typeof nativeFactory!=="function")throw new Error("invalid managed jobs integration");
-    Object.assign(this,{manifest,environments,imageDigest,spawnImpl,verifyRuntime,nativeFactory});
+    Object.assign(this,{manifest,environments,imageDigest,network,spawnImpl,verifyRuntime,nativeFactory});
   }
   configure(profile) {this.profile=profile;}
   get busy() {return this.#starting || this.#closing || [...this.#jobs.values()].some(job=>["running","settling"].includes(job.status));}
@@ -337,7 +342,7 @@ export class CliJobs {
     const job=this.#jobs.get(request.jobId);if(!job)throw new Error("managed job not found");
     if(request.operation==="abort"){
       job.status="settling";job.approvals.clear();job.questions.clear();job.tools.clear();
-      await job.native.close();job.status="cancelled";return {stopped:true};
+      await this.#cleanup(job);job.status="cancelled";return {stopped:true};
     }
     if(request.operation==="answer") {
       const pending=job.questions.get(request.id);if(!pending || job.status!=="running")throw new Error("managed question unavailable");
@@ -348,11 +353,32 @@ export class CliJobs {
       job.approvals.delete(request.id);job.native.approve({id:pending,decision:request.decision});return {replied:true};
     }
     if(request.operation==='toolResult'){
-      const pending=job.tools.get(request.id);if(!pending||job.status!=='running')throw Error('Managed tool result unavailable');
-      job.native.toolResult({id:pending,success:request.success,text:request.text});job.tools.delete(request.id);return {replied:true};
+      const pending=job.tools.get(request.id);if(!pending||pending.active||job.status!=='running')throw Error('Managed tool result unavailable');
+      job.native.toolResult({id:pending.rpcId,success:request.success,text:request.text});job.tools.delete(request.id);return {replied:true};
     }
+    if(request.operation==='network')return this.#network(job,request,signal);
     if(request.after>job.sequence || (job.events.length && request.after<job.events[0].sequence-1))throw new Error("managed event cursor unavailable");
     return {jobId:job.id,status:job.status,nativeSessionId:job.nativeSessionId,turnId:job.turnId,events:job.events.filter(event=>event.sequence>request.after)};
+  }
+  async #network(job,request,signal){
+    const pending=job.tools.get(request.id),step=request.request;
+    if(job.status!=='running'||job.networkController.signal.aborted||!pending||pending.active||pending.tool!==step.tool||
+      !['webfetch','websearch'].includes(pending.tool)||pending.steps>=6||step.grant===job.modelToken||
+      pending.deadline&&step.expiresAt>pending.deadline||
+      pending.tool==='websearch'&&step.query!==pending.input.query||
+      !pending.steps&&pending.tool==='webfetch'&&step.url!==new URL(pending.input.url).href)
+      throw Error('Native network request unavailable');
+    pending.active=true;pending.steps++;pending.deadline=step.expiresAt;
+    const bounded=signal?AbortSignal.any([signal,job.networkController.signal]):job.networkController.signal;
+    const task=Promise.resolve().then(()=>{bounded.throwIfAborted();return this.network.call(step,{signal:bounded});});
+    job.networkTasks.add(task);
+    try{const result=await task;bounded.throwIfAborted();if(job.status!=='running')throw Error('Native network stopped');return result;}
+    finally{pending.active=false;job.networkTasks.delete(task);}
+  }
+  async #cleanup(job){
+    job.networkController.abort();
+    const [native]=await Promise.allSettled([job.native.close(),Promise.allSettled([...job.networkTasks])]);
+    if(native.status==='rejected')throw native.reason;
   }
   async #start(request,signal) {
     if(this.busy)throw new Error("managed job capacity unavailable");
@@ -366,9 +392,14 @@ export class CliJobs {
       const environment=info.venvState==="valid" ? {kind:"private",python:info.venvPython} : {kind:"base",python:info.basePython};
       if(this.#jobs.size>=16){const oldest=[...this.#jobs].find(([,job])=>job.status!=="running");if(oldest)this.#jobs.delete(oldest[0]);}
       if(this.#jobs.size>=16)throw new Error("managed job history capacity");
-      const job={id:randomBytes(32).toString("hex"),sessionId:request.sessionId,status:"running",events:[],sequence:0,bytes:0,approvals:new Map(),questions:new Map(),tools:new Map()};
+      const job={id:randomBytes(32).toString("hex"),sessionId:request.sessionId,status:"running",events:[],sequence:0,bytes:0,approvals:new Map(),questions:new Map(),tools:new Map(),
+        modelToken:request.nativeProfile.modelToken,networkController:new AbortController(),networkTasks:new Set()};
       job.native=this.nativeFactory({spawnImpl:this.spawnImpl,verifyRuntime:this.verifyRuntime,onStopped:()=>{
-        if(job.status==="running"){job.status="failed";job.approvals.clear();job.questions.clear();job.tools.clear();}
+        job.networkController.abort();
+        if(job.status==="running"){
+          job.status=job.networkTasks.size?'settling':'failed';job.approvals.clear();job.questions.clear();job.tools.clear();
+          if(job.networkTasks.size)void Promise.allSettled([...job.networkTasks]).then(()=>{if(job.status==='settling')job.status='failed';});
+        }
       },emit:async event=>{
         if(job.status!=="running"||!event||!['approval','question','tool-call','text','tool-output','completed'].includes(event.type)||
             !/^[A-Za-z0-9_-]{1,128}$/.test(event.nativeSessionId??"")||!/^[A-Za-z0-9_-]{1,128}$/.test(event.turnId??"")||
@@ -378,7 +409,7 @@ export class CliJobs {
         job.nativeSessionId=event.nativeSessionId;job.turnId=event.turnId;
         if(event.type==='tool-call'){
           if(job.tools.size>=32)throw Error('Managed tool capacity');
-          const id=randomBytes(32).toString('hex');job.tools.set(id,event.id);event={...event,id};
+          const id=randomBytes(32).toString('hex');job.tools.set(id,{rpcId:event.id,tool:event.tool,input:structuredClone(event.input),steps:0,active:false});event={...event,id};
         }
         if(event.type==="question") {
           if(job.questions.size>=8)throw new Error("managed question capacity");
@@ -391,7 +422,7 @@ export class CliJobs {
         const owned={...event,sessionID:job.sessionId,sequence:++job.sequence};
         job.bytes+=Buffer.byteLength(JSON.stringify(owned));if(job.bytes>2*1024**2)throw new Error("managed event output limit");
         job.events.push(owned);
-        if(event.type==="completed"){job.status="settling";job.approvals.clear();job.questions.clear();job.tools.clear();await job.native.close();job.status=event.status;}
+        if(event.type==="completed"){job.status="settling";job.approvals.clear();job.questions.clear();job.tools.clear();await this.#cleanup(job);job.status=event.status;}
       }});
       this.#jobs.set(job.id,job);
       try {
@@ -403,7 +434,7 @@ export class CliJobs {
           throw new Error("foreign native acceptance scope");
         job.nativeSessionId=result.nativeSessionId;job.turnId=result.turnId;
         return {jobId:job.id,nativeSessionId:job.nativeSessionId,turnId:job.turnId};
-      } catch {await job.native.close();job.status="failed";job.approvals.clear();job.questions.clear();job.tools.clear();throw new Error("managed native turn unavailable");}
+      } catch {job.status='settling';await this.#cleanup(job);job.status="failed";job.approvals.clear();job.questions.clear();job.tools.clear();throw new Error("managed native turn unavailable");}
     } finally{this.#starting=false;}
   }
   async close() {
@@ -411,7 +442,7 @@ export class CliJobs {
     this.#closing=true;
     try {
       const results=await Promise.allSettled([...this.#jobs.values()].map(async job=>{
-        job.status="settling";job.approvals.clear();job.questions.clear();job.tools.clear();await job.native.close();
+        job.status="settling";job.approvals.clear();job.questions.clear();job.tools.clear();await this.#cleanup(job);
       }));
       if(results.some(result=>result.status==="rejected"))throw new Error("managed native cleanup unverified");
       this.#jobs.clear();
