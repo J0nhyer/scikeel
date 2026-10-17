@@ -9,11 +9,18 @@ export function fileRequest(value) {
     stat:["operation","root","path"],snapshot:["operation","root","path"],readText:["operation","root","path"],createText:["operation","root","path","text"],
     moveNoReplace:["operation","root","path","destinationPath","expectedRevision"],
     replaceTextFromStaging:["operation","root","path","destinationPath","expectedRevision","expectedSourceRevision"],
+    restoreIfRevision:["operation","root","path","stagedPath","expectedRevision","expectedSourceRevision","mode"],
     saveTextIfRevision:["operation","root","path","text","expectedRevision"] };
   const allowed = fields[value?.operation];
   if (!value || typeof value !== "object" || Array.isArray(value) || !allowed || Object.keys(value).some(key => !allowed.includes(key)) ||
       value.root !== "workspace" || typeof value.path !== "string" || value.path.length > 4096 || /[\0\\]/.test(value.path) ||
       value.path.startsWith("/") || posix.normalize(value.path || ".") !== (value.path || ".") || value.path.split("/").some(part => part === "..") ||
+      (value.operation==='restoreIfRevision' && (!value.path || !Object.hasOwn(value,'expectedRevision') ||
+        value.expectedRevision!==null&&(typeof value.expectedRevision!=='string'||!/^[a-f0-9]{64}$/.test(value.expectedRevision)) ||
+        (value.stagedPath===null ? value.expectedRevision===null||value.expectedSourceRevision!==null||value.mode!==null :
+          typeof value.stagedPath!=='string'||!/^\.scikeel\/workspace-management\/staging\/revert-[A-Za-z0-9_-]{1,180}\/payload$/.test(value.stagedPath)||
+          typeof value.expectedSourceRevision!=='string'||!/^[a-f0-9]{64}$/.test(value.expectedSourceRevision)||
+          !Number.isSafeInteger(value.mode)||value.mode<0||value.mode>0o777))) ||
       (value.operation === "write" && (typeof value.text !== "string" || Buffer.byteLength(value.text) > 1024 ** 2)) ||
       (["createText","saveTextIfRevision"].includes(value.operation) && (typeof value.text!=="string" || value.text.includes('\0') || Buffer.byteLength(value.text)>2*1024**2)) ||
       (["moveNoReplace","saveTextIfRevision","replaceTextFromStaging"].includes(value.operation) && !/^[a-f0-9]{64}$/.test(value.expectedRevision??"")) ||

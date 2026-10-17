@@ -77,6 +77,7 @@ mod linux {
         #[serde(rename = "isDir")]
         pub is_dir: bool,
         pub size: u64,
+        pub mode: u32,
     }
 
     #[derive(serde::Serialize)]
@@ -394,9 +395,9 @@ mod linux {
             Ok(file)
         }
         pub fn workspace_stat(&self, root: &str, name: &str) -> io::Result<WorkspaceStat> {
-            let file=self.workspace_entry(root,name,libc::O_PATH)?;
+            let file=if root==WORKSPACE_ROOT&&name.is_empty(){self.root(root)?.descriptor.try_clone()?}else{self.workspace_entry(root,name,libc::O_PATH)?};
             let meta=file.metadata()?;
-            Ok(WorkspaceStat {identity:identity(&meta),revision:revision(&meta,None),is_dir:meta.is_dir(),size:meta.len()})
+            Ok(WorkspaceStat {identity:identity(&meta),revision:revision(&meta,None),is_dir:meta.is_dir(),size:meta.len(),mode:meta.mode()&0o777})
         }
         fn text_snapshot(file: &mut File) -> io::Result<WorkspaceText> {
             let before=file.metadata()?;
@@ -445,6 +446,54 @@ mod linux {
         pub fn workspace_save_text(&self, root: &str, name: &str, text: &str, expected: &str) -> io::Result<WorkspaceText> {
             self.publish_text(root,name,text,Some(expected))
         }
+        pub fn workspace_restore_if_revision(&self, root: &str, name: &str, expected: Option<&str>, staged: Option<(&str,&str,u32)>) -> io::Result<Option<WorkspaceStat>> {
+            let token=|value:&str|value.len()==64&&value.bytes().all(|byte|byte.is_ascii_digit()||(b'a'..=b'f').contains(&byte));
+            if root!=WORKSPACE_ROOT || expected.is_none()&&staged.is_none() || expected.is_some_and(|value|!token(value)) ||
+                name.split('/').any(|part|matches!(part.to_ascii_lowercase().as_str(),".git"|".scikeel"|".openscience")) {return Err(denied());}
+            let (parent,leaf)=self.parent(root,name)?;
+            let conflict=||io::Error::new(io::ErrorKind::InvalidData,"revision_conflict");
+            let check=||->io::Result<Option<std::fs::Metadata>> {
+                match self.open(&parent,&leaf,libc::O_PATH|libc::O_NOFOLLOW,0,true) {
+                    Ok(file)=>{
+                        let meta=file.metadata()?;
+                        if !meta.is_file() || meta.nlink()!=1 {return Err(denied());}
+                        if Some(revision(&meta,None)).as_deref()!=expected {return Err(conflict());}
+                        Ok(Some(meta))
+                    },
+                    Err(error) if error.kind()==io::ErrorKind::NotFound => {
+                        if expected.is_some(){Err(conflict())}else{Ok(None)}
+                    },
+                    Err(error)=>Err(error),
+                }
+            };
+            check()?;
+            let Some((source,source_revision,mode))=staged else {
+                check()?;
+                // Account mutation admission excludes runtime/manual API writers;
+                // this is not an OS transaction against privileged host writes.
+                if unsafe{libc::unlinkat(parent.as_raw_fd(),leaf.as_ptr(),0)}<0{return Err(io::Error::last_os_error());}
+                parent.sync_all()?;return Ok(None);
+            };
+            let id=source.strip_prefix(".scikeel/workspace-management/staging/revert-").and_then(|value|value.strip_suffix("/payload")).ok_or_else(denied)?;
+            if id.is_empty() || id.len()>180 || !id.bytes().all(|byte|byte.is_ascii_alphanumeric()||byte==b'_'||byte==b'-') ||
+                !token(source_revision) || mode>0o777 {return Err(denied());}
+            let file=self.workspace_entry(root,source,libc::O_RDONLY)?;
+            let source_meta=file.metadata()?;
+            if !source_meta.is_file() || source_meta.nlink()!=1 {return Err(denied());}
+            if source_meta.len()>25*1024*1024 || revision(&source_meta,None)!=source_revision {return Err(conflict());}
+            let (source_parent,from)=self.parent(root,source)?;
+            let current_source=self.open(&source_parent,&from,libc::O_PATH|libc::O_NOFOLLOW,0,true)?;
+            if revision(&current_source.metadata()?,None)!=source_revision {return Err(conflict());}
+            if unsafe{libc::fchmod(file.as_raw_fd(),mode)}<0{return Err(io::Error::last_os_error());}
+            file.sync_all()?;check()?;
+            let current_source=self.open(&source_parent,&from,libc::O_PATH|libc::O_NOFOLLOW,0,true)?;
+            if revision(&current_source.metadata()?,None)!=revision(&file.metadata()?,None) {return Err(conflict());}
+            let flags=if expected.is_none(){libc::RENAME_NOREPLACE}else{0};
+            if unsafe{libc::syscall(libc::SYS_renameat2,source_parent.as_raw_fd(),from.as_ptr(),parent.as_raw_fd(),leaf.as_ptr(),flags)}<0{return Err(io::Error::last_os_error());}
+            source_parent.sync_all()?;parent.sync_all()?;
+            let meta=file.metadata()?;
+            Ok(Some(WorkspaceStat{identity:identity(&meta),revision:revision(&meta,None),is_dir:false,size:meta.len(),mode:meta.mode()&0o777}))
+        }
         pub fn workspace_replace_text(&self, root: &str, staged: &str, name: &str, expected: &str, expected_source: &str) -> io::Result<WorkspaceText> {
             if root!=WORKSPACE_ROOT || !staged.starts_with(".scikeel/workspace-management/staging/") || !staged.ends_with("/payload") || staged==name {return Err(denied());}
             let mut source=self.workspace_entry(root,staged,libc::O_RDONLY)?;
@@ -476,7 +525,7 @@ mod linux {
             if unsafe{libc::syscall(libc::SYS_renameat2,source.as_raw_fd(),leaf.as_ptr(),target.as_raw_fd(),to.as_ptr(),libc::RENAME_NOREPLACE)}<0 {return Err(io::Error::last_os_error());}
             source.sync_all()?;target.sync_all()?;
             let after=entry.metadata()?;
-            Ok(WorkspaceStat {identity:identity(&after),revision:revision(&after,None),is_dir:after.is_dir(),size:after.len()})
+            Ok(WorkspaceStat {identity:identity(&after),revision:revision(&after,None),is_dir:after.is_dir(),size:after.len(),mode:after.mode()&0o777})
         }
         pub fn mkdir_all(&self, root: &str, name: &str) -> io::Result<()> {
             relative(name)?;

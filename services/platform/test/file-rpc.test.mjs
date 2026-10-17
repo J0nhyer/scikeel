@@ -10,6 +10,17 @@ test('checked revert uses strict bounded file enumeration without browser filter
   assert.throws(()=>fileRequest({...request,...patch}));
 });
 
+test('binary restore binds destination and staged source versions without caller-controlled payloads or paths',()=>{
+ const request={operation:'restoreIfRevision',root:'workspace',path:'results/image.bin',expectedRevision:'a'.repeat(64),
+  stagedPath:'.scikeel/workspace-management/staging/revert-operation-0/payload',expectedSourceRevision:'b'.repeat(64),mode:0o644};
+ for(const value of [request,{...request,expectedRevision:null},{...request,stagedPath:null,expectedSourceRevision:null,mode:null}])assert.deepEqual(fileRequest(value),value);
+ for(const patch of [{expectedRevision:undefined},{expectedRevision:'invalid'},{expectedRevision:['a'.repeat(64)]},
+  {stagedPath:'public-data'},{stagedPath:'../peer'},{expectedSourceRevision:null},{expectedSourceRevision:['b'.repeat(64)]},
+  {mode:undefined},{mode:0o1000},{mode:-1},{mode:1.5},{mode:'644'},{mode:null},{bytes:[0,255]},
+  {stagedPath:null},{expectedRevision:null,stagedPath:null,expectedSourceRevision:null,mode:null},{path:''},
+  {text:'unrelated'},{path:'../peer'},{root:'state'}])assert.throws(()=>fileRequest({...request,...patch}));
+});
+
 test("file RPC allows only bounded owned workspace operations", () => {
   assert.equal(fileRequest({ operation: "read", root: "workspace", path: "papers/a.txt" }).path, "papers/a.txt");
   for (const request of [{ operation: "exec", root: "workspace", path: "a" }, { operation: "read", root: "state", path: "a" },
