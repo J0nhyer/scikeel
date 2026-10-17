@@ -18,7 +18,7 @@ test('a forbidden Admin selection cannot dispatch inference or manufacture nativ
  assert.deepEqual(requests,['/api/admin/runtime']);
 });
 
-function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false}={}) {
+function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed'}={}) {
  const calls=[],files=new Map(),history=[],questions=[],selections=[];
  let revision=1,runtime='opencode',currentPhase,checkpointAnswered=false,disabled=false,aborted=false,warm=false,settling=0;
  const state={revision:1,phase:'idle',mode:'autonomous',execution:1,pending:null};
@@ -82,6 +82,10 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
    else if(currentPhase==='files'){
     const marker=/Write exactly ([A-Za-z0-9_-]+) to/.exec(text)?.[1];assert.ok(marker);
     files.set('acceptance-output.txt',marker);answer(files.get('acceptance-read.txt'));
+    if(nativeFileEvidence!=='missing')history.at(-1).parts.push({type:'tool',tool:'bash',state:{
+     status:nativeFileEvidence==='failed'?'error':'completed',input:{command:'cat acceptance-read.txt'},
+     output:nativeFileEvidence==='wrong-output'?'unrelated output':files.get('acceptance-read.txt'),
+     metadata:{nativeItemType:'commandExecution',exitCode:0}}});
    }else if(currentPhase==='question')questions.push({id:'que_acceptance',sessionID:'ses_legacy',questions:[{question:'Release question',options:[{label:'Continue'},{label:'Stop'}]}]});
    else if(currentPhase==='fetch'){
     answer('Example Domain');if(!omitFetch)history.at(-1).parts.push({type:'tool',tool:'webfetch',state:{status:'completed',input:{url:'https://example.com/'},output:'<h1>Example Domain</h1>'}});
@@ -127,6 +131,13 @@ test('assistant text alone cannot substitute for an actual completed scoped fetc
  const fixture=gateway({omitFetch:true});
  await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1}),/scoped fetch/i);
  assert.equal(fixture.snapshot().disabled,true);
+});
+
+for(const nativeFileEvidence of ['missing','failed','wrong-output'])test(`file bytes cannot replace completed native read evidence: ${nativeFileEvidence}`,async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({nativeFileEvidence});
+ await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1}),/native file tool evidence/i);
+ assert.equal(fixture.snapshot().disabled,true);assert.equal(fixture.snapshot().currentPhase,'files');
 });
 
 test('a failed native turn cannot be mistaken for a still pending question',async()=>{

@@ -140,10 +140,14 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
   await mode('autonomous');
   const readNonce='read-secret-'+randomUUID(),writeNonce='write-'+randomUUID();
   await create('acceptance-read.txt',readNonce);await create('acceptance-input.csv','value\n1\n2\n3\n');
-  ids=await begin('files',`Explicitly approved single file operation: Write exactly ${writeNonce} to acceptance-output.txt without a trailing newline. Read acceptance-read.txt and return its actual contents. Preserve all other inputs. Use the real workspace tools.`);
+  ids=await begin('files',`Explicitly approved single file operation: Write exactly ${writeNonce} to acceptance-output.txt without a trailing newline. Read acceptance-read.txt using native command execution and return its actual contents. Preserve all other inputs. Use the real workspace tools.`);
   reply=await completion(ids);
   ensure(await read('acceptance-output.txt')===writeNonce&&await read('acceptance-read.txt')===readNonce&&text(reply).includes(readNonce),
-   'Native file write/read verification failed');phaseResults.file_write_read='passed';await idle();
+   'Native file write/read verification failed');
+  ensure(reply.parts.some(part=>part.type==='tool'&&part.tool==='bash'&&part.state?.status==='completed'&&
+   part.state.metadata?.nativeItemType==='commandExecution'&&part.state.metadata.exitCode===0&&
+   typeof part.state.output==='string'&&part.state.output.includes(readNonce)),
+   'Completed native file tool evidence is missing');phaseResults.file_write_read='passed';await idle();
   ids=await begin('question','Use request_user_input to ask exactly "Release question" with options "Continue" and "Stop". Wait for the actual answer, then reply with exactly the selected option label. Do not answer it yourself.');
   const question=await poll('native question',async()=>{
    const questions=await json(scoped('/question'));ensure(Array.isArray(questions),'Native question state is unavailable');
