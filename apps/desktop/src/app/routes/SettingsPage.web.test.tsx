@@ -152,8 +152,8 @@ describe("Providers in the gateway web client", () => {
 
   it("never exposes per-account assistant choices even when several backends are listed", () => {
     for (const name of ["OpenCode", "Claude Code", "Codex"]) {
-      expect(screen.queryByRole("menuitem", { name, exact: true })).not.toBeInTheDocument();
-      expect(screen.queryByRole("radio", { name, exact: true })).not.toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name })).not.toBeInTheDocument();
+      expect(screen.queryByRole("radio", { name })).not.toBeInTheDocument();
     }
     expect(selectGatewayRuntime).not.toHaveBeenCalled();
   });
@@ -179,9 +179,9 @@ describe("Providers in the gateway web client", () => {
     act(() => useRuntimeStore.setState({ gatewayUserRole: "admin", gatewayUser: { id: "usr_admin_settings", username: "Admin fixture", role: "admin" } }));
     expect(await screen.findByRole("radiogroup", { name: "AI assistant" })).toBeInTheDocument();
     await waitFor(() => {
-      expect(screen.getByRole("radio", { name: "OpenCode", exact: true })).toBeChecked();
-      expect(screen.getByRole("radio", { name: "Codex", exact: true })).toBeEnabled();
-      expect(screen.getByRole("radio", { name: "Claude Code", exact: true })).toBeDisabled();
+      expect(screen.getByRole("radio", { name: "OpenCode" })).toBeChecked();
+      expect(screen.getByRole("radio", { name: "Codex" })).toBeEnabled();
+      expect(screen.getByRole("radio", { name: "Claude Code" })).toBeDisabled();
     });
     expect(screen.queryByRole("switch", { name: "Allow Codex" })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/admin/runtime"), expect.objectContaining({ credentials: "same-origin" }));
