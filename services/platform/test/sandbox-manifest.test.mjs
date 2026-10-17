@@ -76,13 +76,23 @@ async function installedImage(t, { codex = false } = {}) {
   if (codex) {
     const paths = ["runtime/codex-patches/required-effect-guard.patch", "runtime/codex-patches/required-effect-guard-tests.patch",
       "runtime/codex-patches/required-effect-guard.lock.json", "scripts/dev/build-codex-guard-runtime.mjs",
-      "scripts/dev/probe-production-runner.mjs", "services/platform/fixtures/native-protocol.mjs"];
+      "scripts/dev/probe-production-runner.mjs", "services/platform/fixtures/native-protocol.mjs",
+      "runtime/sandbox/native-tools.mjs", "runtime/sandbox/required-effect-guard.mjs", "runtime/sandbox/codex-requirements.toml",
+      "runtime/sandbox/native-network.mjs", "runtime/sandbox/native-network.py"];
     const hash = bytes => createHash("sha256").update(bytes).digest("hex");
     const lock = JSON.parse(await readFile(new URL("../../../runtime/codex-patches/required-effect-guard.lock.json", import.meta.url), "utf8"));
     manifest.sourceInputs = await Promise.all(paths.map(async path => ({ path, sha256: hash(await readFile(new URL(`../../../${path}`, import.meta.url))) })));
     const integration = { ...lock, source: commit, target: "x86_64-unknown-linux-gnu", binarySha256: sha, version: "codex-cli 0.157.1" };
     manifest.codexRuntime = { integration, resources: { "opt/scikeel/tools/bin/codex-resources/bwrap": lock.bwrapSha256,
       "opt/scikeel/tools/bin/native-integration.json": hash(JSON.stringify(integration)) } };
+    for (const [resource, source] of Object.entries({
+      "opt/scikeel/tools/native-tools.mjs": "runtime/sandbox/native-tools.mjs",
+      "opt/scikeel/runtime/required-effect-guard.mjs": "runtime/sandbox/required-effect-guard.mjs",
+      "opt/scikeel/tools/codex-requirements.toml": "runtime/sandbox/codex-requirements.toml",
+      "etc/codex/requirements.toml": "runtime/sandbox/codex-requirements.toml",
+      "opt/scikeel/tools/native-network.mjs": "runtime/sandbox/native-network.mjs",
+      "opt/scikeel/tools/native-network.py": "runtime/sandbox/native-network.py",
+    })) manifest.codexRuntime.resources[resource] = manifest.sourceInputs.find(input => input.path === source).sha256;
   }
   const manifestPath = join(imageDirectory, "image-manifest.json"), readyPath = join(imageDirectory, "ready.json");
   const save = () => writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o644 });
@@ -116,6 +126,22 @@ test("a sealed native manifest preserves the measured guard identity without adv
   assert.equal(value.imageCapabilities.activationEligible, undefined);
   fixture.manifest.codexRuntime.integration.patchSha256 = "f".repeat(64); await fixture.save();
   await assert.rejects(fixture.load(), /image|native|guard/i);
+});
+
+test("sealed native readiness rejects missing or altered execution resources and source inputs", async t => {
+  for (const change of ["missing-resource", "altered-resource", "missing-source", "altered-source"]) {
+    await t.test(change, async t => {
+      const fixture = await installedImage(t, { codex: true });
+      const resource = "opt/scikeel/runtime/required-effect-guard.mjs";
+      const source = fixture.manifest.sourceInputs.find(input => input.path === "runtime/sandbox/required-effect-guard.mjs");
+      if (change === "missing-resource") delete fixture.manifest.codexRuntime.resources[resource];
+      if (change === "altered-resource") fixture.manifest.codexRuntime.resources[resource] = "f".repeat(64);
+      if (change === "missing-source") fixture.manifest.sourceInputs = fixture.manifest.sourceInputs.filter(input => input !== source);
+      if (change === "altered-source") source.sha256 = "f".repeat(64);
+      await fixture.save();
+      await assert.rejects(fixture.load(), /image|native|guard/i);
+    });
+  }
 });
 
 test("runtime loading rejects altered, unsealed, untrusted and probe manifests before readiness", async t => {
