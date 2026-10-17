@@ -373,6 +373,8 @@ export class CliRuntimeManager {
     this.nativeQuestions = new Map();
     this.logger = logger;
     this.userStates = new Map();
+    this.userLoads = new Map();
+    this.nativeConversationQueues = new Map();
     this.processes = new Map();
     this.turnReservations = new Map();
     this.activeTurns = new Set();
@@ -927,6 +929,12 @@ export class CliRuntimeManager {
     await this.init();
     const existing = this.userStates.get(userId);
     if (existing) return existing;
+    const loading=this.userLoads.get(userId);if(loading)return loading;
+    const pending=this.#loadUser(userId);this.userLoads.set(userId,pending);
+    try{return await pending;}finally{if(this.userLoads.get(userId)===pending)this.userLoads.delete(userId);}
+  }
+
+  async #loadUser(userId) {
     const paths = this.userPaths(userId);
     await ensureDirectory(paths.root);
     if(!this.sandboxJobs)await ensureDirectory(paths.home);
@@ -1129,7 +1137,14 @@ export class CliRuntimeManager {
     return { state, session };
   }
 
-  async ensureNativeConversation({conversations,owner,conversationId,readDenies}) {
+  async ensureNativeConversation(input) {
+    const userId=input.owner.userId,previous=this.nativeConversationQueues.get(userId)??Promise.resolve();
+    const next=previous.catch(()=>{}).then(()=>this.#ensureNativeConversation(input));
+    this.nativeConversationQueues.set(userId,next);
+    try{return await next;}finally{if(this.nativeConversationQueues.get(userId)===next)this.nativeConversationQueues.delete(userId);}
+  }
+
+  async #ensureNativeConversation({conversations,owner,conversationId,readDenies}) {
     if(!this.sandboxJobs||!this.isManaged(owner.userId))throw issue('runtime_unavailable','Native conversation is unavailable',503);
     const state=await this.ensureUser(owner.userId),runtime=this.runtimeForUser(owner.userId),chain=[];
     let id=conversationId;
@@ -1802,6 +1817,18 @@ export class CliRuntimeManager {
         sendJson(response, error.status ?? 400, { error: error.message });
       }
       return true;
+    }
+    if(path==='/session/status'&&request.method==='GET'){
+      const state=await this.ensureUser(userId),runtime=this.runtimeForUser(userId),statuses={};
+      const directory=parsed.searchParams.get('directory');
+      if(directory!==null&&!isWithin(workspaceDir,directory))throw issue('invalid_directory','Directory is outside the workspace',403);
+      for(const session of state.sessions.values()){
+        if(session.runtime!==runtime||directory!==null&&resolve(directory)!==session.directory||
+          session.status!=='running'&&!this.turnReservations.has(session.id))continue;
+        await this.workspaceAccess?.(userId,session.directory);
+        statuses[session.publicConversationId??session.id]={type:'busy'};
+      }
+      sendJson(response,200,statuses);return true;
     }
     const match = path.match(/^\/session\/([^/]+)(?:\/(.*))?$/);
     if (match) {

@@ -889,7 +889,14 @@ export class PlatformServer {
         await this.conversationRouter.index(owner,sessionId);
         session=await this.conversationRouter.read(owner,sessionId);
       }
-      this.tenantPolicy.registerSession(context,{id:sessionId,directory:session.directory,parentID:session.parentID});
+      const ancestry=[session],seen=new Set([sessionId]);let parentId=session.parentID;
+      while(parentId){
+        if(seen.has(parentId)||ancestry.length>=20)throw workspaceError('conversation_history_invalid',503);
+        seen.add(parentId);const parent=await this.conversationRouter.read(owner,parentId);
+        if(parent.directory!==session.directory)throw workspaceError('conversation_owner_mismatch',403);
+        ancestry.push(parent);parentId=parent.parentID;
+      }
+      this.tenantPolicy.registerSessionList(context,ancestry);
       if(operation.operation==="sessionRead")value=session;
       else if(operation.operation==="sessionChildren") {
         value=(await this.conversationRouter.list(owner,{limit:10000})).filter(row=>row.parentID===sessionId);
@@ -1175,9 +1182,12 @@ export class PlatformServer {
         if (!body) return;
         try {
           const owner = await this.#researchOwner(user, sessionId, access, worker);
-          if (owner.runtime !== task.runtime || resolve(owner.directory) !== task.directory) throw Object.assign(new Error("research task belongs to a different assistant or workspace"), { status: 409 });
+          const nativeHandover=nativeResearch&&executionAdmission?.identity.runtime==='codex'&&owner.runtime==='codex'&&
+            executionAdmission.identity.userId===user.id&&executionAdmission.identity.conversationId===sessionId&&
+            this.cliRuntime.assistantPolicy.isExecutionCurrent(executionAdmission.identity);
+          if (owner.runtime !== task.runtime&&!nativeHandover || resolve(owner.directory) !== task.directory) throw Object.assign(new Error("research task belongs to a different assistant or workspace"), { status: 409 });
           promptBody = await this.researchTasks.prepare(user.id, sessionId, body, owner,
-            nativeResearch?{onPrepared:nativeResearch.prepared}:undefined);
+            nativeResearch?{onPrepared:nativeResearch.prepared,...(nativeHandover?{nativeHandover:executionAdmission.identity}:{})}:undefined);
           serializedBody = JSON.stringify(promptBody);
         } catch (error) {
           sendJson(response, error.status ?? 400, { error: error.message });
@@ -1459,7 +1469,8 @@ export class PlatformServer {
   async #researchRunning(task) {
     if (task.runtime !== "opencode") {
       const state = await this.cliRuntime.ensureUser(task.userId);
-      return [...state.sessions.values()].some((session) => (session.id === task.sessionId || session.parentId === task.sessionId) && session.status === "running");
+      // The new send already holds its own reservation while preparing research.
+      return this.#nativeResearchSessions(state,task).some(session=>session.status==='running');
     }
     const statuses = await this.#workerResearchRequest(task, "/session/status");
     const busy = (sid) => statuses[sid]?.type === "busy" || statuses[sid]?.type === "retry";
@@ -1473,6 +1484,21 @@ export class PlatformServer {
     };
     return visit(task.sessionId);
   }
+  #nativeResearchSessions(state,task) {
+    const roots=[...state.sessions.values()].filter(session=>session.runtime===task.runtime&&(session.publicConversationId??session.id)===task.sessionId);
+    if(roots.length>1)throw recoveryError('session_context_unavailable');
+    const selected=new Map(roots.map(session=>[session.id,session]));
+    for(let depth=0;depth<20;depth++){
+      let added=false;
+      for(const session of state.sessions.values())if(session.runtime===task.runtime&&!selected.has(session.id)&&selected.has(session.parentId)){
+        if(session.directory!==roots[0].directory)throw recoveryError('session_context_unavailable');
+        selected.set(session.id,session);added=true;
+      }
+      if(!added)return [...selected.values()];
+    }
+    throw recoveryError('session_context_unavailable');
+  }
+
   async #cancelResearch(task) {
     const workerContext=this.workerManager.getWorker(workerIdForUser(task.userId));
     if (task.generation !== undefined && (task.instanceId !== workerContext?.id || task.generation !== workerContext?.generation)) return;
@@ -1488,8 +1514,8 @@ export class PlatformServer {
     }
     if (task.runtime !== "opencode") {
       const state = await this.cliRuntime?.ensureUser(task.userId);
-      for (const session of state?.sessions.values() ?? []) if (session.parentId === task.sessionId) await this.cliRuntime.abortSession(task.userId, session.id, true);
-      await this.cliRuntime?.abortSession(task.userId, task.sessionId, true);
+      for(const session of state?this.#nativeResearchSessions(state,task).reverse():[])
+        await this.cliRuntime.abortSession(task.userId,session.id,true);
       return;
     }
     // Forked reviews and subagents are ordinary session descendants.

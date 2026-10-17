@@ -39,6 +39,27 @@ test('native aliases persist owned canonical ancestry and refuse direct private 
  assert.equal(saved.sessions.find(value=>value.id===child.id).publicConversationId,'legacy-child');
  assert.equal(f.manager.processes.size,0);
 });
+test('concurrent first handovers serialize alias creation across the asynchronous deny read',async t=>{
+ const f=await fixture(t,{run:async()=>{throw Error('No inference');}});
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:'legacy-race',title:'Owned race',parentId:null,lifecycle:'active'});
+ let entered,secondRead,release,calls=0;
+ const ready=new Promise(resolve=>entered=resolve),secondReady=new Promise(resolve=>secondRead=resolve),gate=new Promise(resolve=>release=resolve);
+ const readDenies=async()=>{if(++calls===1)entered();else secondRead();await gate;return [];};
+ const first=f.manager.ensureNativeConversation({conversations,owner,conversationId:'legacy-race',readDenies});await ready;
+ const second=f.manager.ensureNativeConversation({conversations,owner,conversationId:'legacy-race',readDenies});
+ await Promise.race([secondReady,new Promise(resolve=>setTimeout(resolve,100))]);release();
+ const aliases=await Promise.all([first,second]);assert.equal(aliases[0].id,aliases[1].id);assert.equal(calls,1);
+ const saved=JSON.parse(await readFile((await f.manager.ensureUser('a')).paths.sessionsPath,'utf8'));
+ assert.equal(saved.sessions.filter(value=>value.publicConversationId==='legacy-race').length,1);
+ assert.equal((await f.manager.getOwnedSession('a','legacy-race')).session.id,aliases[0].id);
+});
+test('concurrent cold native user loads share the same mutable session state',async t=>{
+ const f=await fixture(t,{run:async()=>{throw Error('No inference');}});
+ const [first,second]=await Promise.all([f.manager.ensureUser('cold-user'),f.manager.ensureUser('cold-user')]);
+ assert.equal(first,second);assert.equal(f.manager.userStates.get('cold-user'),first);
+});
 test('native message and part events never cross project subscriptions or expose hidden session aliases',async t=>{
  const f=await fixture(t,{run:async()=>{throw Error('No inference');}}),own=[],other=[];
  f.manager.workspaceAccess=async(_user,directory)=>{assert.equal(directory,f.project);};

@@ -272,7 +272,7 @@ export class ResearchTasks {
       return this.save(task);
     });
   }
-  async prepare(userId, sessionId, body, owner, {onPrepared} = {}) {
+  async prepare(userId, sessionId, body, owner, {onPrepared,nativeHandover} = {}) {
     return this.locked(userId, sessionId, async () => {
       const task = await this.load(userId, sessionId);
       if (!task) return null;
@@ -283,11 +283,15 @@ export class ResearchTasks {
       }
       await this.refreshUnlocked(task);
       if (this.pending(task).length) throw error("confirm the pending research decision before continuing", 409);
+      if(nativeHandover&&(nativeHandover.runtime!=='codex'||owner?.runtime!=='codex'||nativeHandover.userId!==userId||
+        nativeHandover.conversationId!==sessionId||nativeHandover.instanceId!==owner.instanceId||nativeHandover.generation!==owner.generation||
+        task.userId!==userId||task.directory!==owner.directory))throw error('Native task handover does not match the admitted execution',409);
       for (let index = 0; index < task.inputVersions.length; index++) {
         if (!task.inputVersions[index].exists) task.inputVersions[index] = await this.artifact(task, task.inputVersions[index].path);
       }
       const previousReport=structuredClone(task.report);
       task.execution++;
+      if(nativeHandover)task.runtime=owner.runtime;
       if (owner && Number.isSafeInteger(owner.generation)) { task.instanceId = owner.instanceId; task.generation = owner.generation; }
       task.executionActive = true;
       task.status = "running";

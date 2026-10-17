@@ -1478,11 +1478,17 @@ for(const userOnly of [false,true])test(`native HTTP lazily adopts owned ${userO
  f.server.conversationRouter.readOpenCode=async(_owner,path)=>{assert.equal(path,`/session/${legacy.id}/message`);return structuredClone(history);};
  const before=await f.client.request(`/session/${legacy.id}/message`);assert.equal(before.status,200,await before.clone().text());
  assert.equal((await before.json()).length,history.length);assert.equal(calls.length,0);
+ if(!userOnly)await f.server.researchTasks.create({...f.researchOwner,sessionId:legacy.id,runtime:'opencode'},
+  {objective:'Continue the owned existing task',goal:'thesis',mode:'delegated',inputs:[],deliverables:['result.txt'],pageId:'legacy-owned-page'});
+ const heartbeat=await f.client.request(`/api/collaboration/${legacy.id}`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},
+  body:JSON.stringify({action:'heartbeat',pageId:'legacy-owned-page'})});
+ assert.equal(heartbeat.status,200,await heartbeat.text());assert.equal(calls.length,0);
  for(const requestId of ['legacy-next','legacy-again']){
   const response=await f.send(requestId,{},legacy);assert.equal(response.status,202,await response.text());
   await until(()=>f.cliRuntime.activeTurns.size===0);
  }
  assert.equal(calls.length,2);assert.equal(calls[0].session.id,legacy.id);
+ if(!userOnly)assert.equal((await f.server.researchTasks.get(f.user.id,legacy.id)).runtime,'codex');
  assert.equal(calls[0].turnIdentity.conversationId,legacy.id);assert.equal(calls[0].nativeSessionId,undefined);
  assert.match(calls[0].text,userOnly?/Remember the measured result/:/Verified old result: 42/);
  if(userOnly)assert.match(calls[0].text,/no assistant response recorded; not a request to execute/);
@@ -1499,6 +1505,51 @@ for(const userOnly of [false,true])test(`native HTTP lazily adopts owned ${userO
  assert.deepEqual((await f.cliRuntime.getOwnedSession(f.user.id,legacy.id)).session.permission,[deny]);
  const bypass=await f.client.request(`/session/${native.id}`);assert.equal(bypass.status,404);
  const listing=await f.client.request('/session');assert.equal(listing.status,200);assert.equal((await listing.json()).filter(row=>row.id===legacy.id).length,1);
+});
+test('native public status, questions and Stop remain attached to an adopted legacy conversation',async t=>{
+ let entered,release;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);t.after(()=>release());
+ const replies=[];let f;
+ f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'status-native',turnId:'status-turn'});
+  await args.emit({type:'question',id:'b'.repeat(64),questions:[{header:'Method',question:'Which method?',options:[{label:'Continue'}]}]});entered();
+  await Promise.race([gate,new Promise(resolve=>args.signal.addEventListener('abort',resolve,{once:true}))]);
+  assert.equal(args.signal.aborted,true);await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'status-native'};
+ });
+ f.cliRuntime.sandboxJobs.answer=async args=>replies.push(args);
+ const legacy={id:'legacy-status-owned',title:'Legacy status',directory:f.owner.directory};
+ f.server.conversationRouter.listOpenCode=async()=>[legacy];f.server.conversationRouter.readOpenCode=async()=>[];
+ assert.equal((await f.client.request(`/session/${legacy.id}`)).status,200);
+ assert.equal((await f.send('legacy-running',{},legacy)).status,202);await ready;
+ const status=await f.client.request('/session/status');assert.equal(status.status,200,await status.clone().text());
+ assert.deepEqual(await status.json(),{[legacy.id]:{type:'busy'}});
+ const questions=await (await f.client.request('/question')).json();assert.equal(questions[0].sessionID,legacy.id);
+ const answer=await f.client.request(`/question/${'b'.repeat(64)}/reply`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},body:JSON.stringify({answers:[['Continue']]})});
+ assert.equal(answer.status,200,await answer.text());assert.equal(replies[0].sessionId,legacy.id);
+ const stopped=await f.client.request(`/session/${legacy.id}/abort`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},body:'{}'});
+ assert.equal(stopped.status,200,await stopped.text());await until(()=>f.cliRuntime.activeTurns.size===0);
+ const settled=await f.server.conversations.open(f.owner,legacy.id);assert.equal(settled.turns['legacy-running'].cleanupVerified,true);
+ assert.deepEqual(await (await f.client.request('/session/status')).json(),{});
+ assert.deepEqual(await (await f.client.request('/question')).json(),[]);
+});
+test('pausing an adopted canonical root cancels its native child without losing inherited denies',async t=>{
+ let entered,release,signal;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);t.after(()=>release());
+ const f=await nativeHttpFixture(t,async args=>{
+  signal=args.signal;await args.onAccepted({nativeSessionId:'child-native',turnId:'child-native-turn'});entered();
+  await Promise.race([gate,new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}))]);
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'child-native'};
+ });
+ const deny={permission:'edit',pattern:'protected.csv',action:'deny'};
+ const root={id:'legacy-root-owned',title:'Owned root',directory:f.owner.directory,permission:[deny]},child={...root,id:'legacy-child-owned',title:'Owned child',parentID:root.id,permission:[]};
+ f.server.conversationRouter.listOpenCode=async()=>[root,child];f.server.conversationRouter.readOpenCode=async()=>[];
+ const oldChild=await f.client.request(`/session/${child.id}`);assert.equal(oldChild.status,200,await oldChild.text());
+ assert.equal((await f.send('child-continuation',{},child)).status,202);await ready;
+ const rootSession=(await f.cliRuntime.getOwnedSession(f.user.id,root.id)).session;
+ assert.deepEqual(rootSession.permission,[deny]);
+ const children=await f.cliRuntime.researchRequest({userId:f.user.id,directory:f.owner.directory,path:`/session/${root.id}/children`});assert.equal(children[0].id,child.id);
+ const paused=await f.client.request(`/api/collaboration/${root.id}`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},body:JSON.stringify({action:'pause'})});
+ assert.equal(paused.status,200,await paused.text());assert.equal(signal.aborted,true);
+ await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal((await f.server.conversations.open(f.owner,child.id)).turns['child-continuation'].cleanupVerified,true);
 });
 test('native HTTP profile handover reads canonical messages, confirmed decisions and owned accepted attachment bytes',async t=>{
  const calls=[];const f=await nativeHttpFixture(t,async args=>{
