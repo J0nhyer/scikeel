@@ -167,6 +167,8 @@ test("feasibility uses the repository download pin and never a host Codex instal
   const fixture = await readFile(new URL("../fixtures/native-protocol.mjs", import.meta.url), "utf8");
   assert.ok(fixture.includes('const binary = "/opt/scikeel/tools/bin/codex"'));
   assert.ok(!fixture.includes("/home/ubuntu/.codex"));
+  assert.ok(fixture.includes("/proc/net/dev"), "the isolation probe must use the proc network view under seccomp");
+  assert.ok(!fixture.includes("socket.if_nameindex"), "the isolation probe must not require the blocked netlink interface API");
   const source = await readFile(workflow, "utf8");
   assert.ok(source.includes("--network=none --read-only --user 1000:1000 --memory=768m"));
   assert.ok(source.includes("--cap-drop=ALL --security-opt no-new-privileges"), "CI must retain the production zero-capability/no-new-privileges boundary");

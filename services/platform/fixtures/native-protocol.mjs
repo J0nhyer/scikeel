@@ -333,7 +333,7 @@ except OSError as error:
  assert error.errno in (errno.EACCES,errno.EROFS,errno.EPERM),error.errno
 else:
  raise AssertionError('outside workspace write succeeded')
-interfaces=sorted(name for _,name in socket.if_nameindex())
+interfaces=sorted({line.split(':',1)[0].strip() for line in pathlib.Path('/proc/net/dev').read_text().splitlines()[2:] if ':' in line})
 assert interfaces==['lo'],interfaces
 denials=[]
 for address,port,expected in [('127.0.0.1',${port},errno.ECONNREFUSED),('172.31.240.1',4792,errno.ENETUNREACH),('1.1.1.1',443,errno.ENETUNREACH)]:
