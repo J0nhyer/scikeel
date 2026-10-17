@@ -3,7 +3,7 @@ import { SandboxNativeJobs } from "./sandbox-native-jobs.mjs";
 import { ManagedCodexProfile } from "./cli-profile.mjs";
 import { lstat, readFile } from "node:fs/promises";
 import { ModelBroker } from "./model-broker.mjs";
-import { readManagedModelCatalog, readManagedDefaultModel, saveManagedDefaultModel } from "./managed-model-catalog.mjs";
+import { createManagedModelCatalogReader, readManagedDefaultModel, saveManagedDefaultModel } from "./managed-model-catalog.mjs";
 import { resolveOpenCodeFreeCatalog } from "./opencode-free-catalog.mjs";
 import { EgressBroker } from "./egress-broker.mjs";
 import { PackageBroker } from "./package-broker.mjs";
@@ -194,7 +194,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     issueNativeGrant:input=>nativeProfileResolver.issueNativeGrant(input)});
   manager.inspectNative = context => nativeJobs.inspect(context);
   plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, searchProvider: config.searchProvider, nativeJobs, nativeProfileResolver,
-    runtimeCatalog: (context, { access }) => readManagedModelCatalog({ config, context, access }),
+    runtimeCatalog: createManagedModelCatalogReader({config}),
     saveRuntimeDefaultModel: (context, model) => saveManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId, model }),
     async close() {
       try { await manager.close(); }

@@ -21,6 +21,7 @@ if (!port || !token || !workspace || !stateDir) {
 
 const projects = [];
 const managedHistory = [];
+const canonicalSessions=new Map();
 let managedPermission = [];
 const server = createServer(async (request, response) => {
   if (request.url === "/v1/health") {
@@ -64,13 +65,33 @@ const server = createServer(async (request, response) => {
     return;
   }
   const runtimeUrl=new URL(request.url,"http://worker.invalid");
+  if(runtimeUrl.pathname==='/session'&&request.method==='POST'&&request.headers.authorization===expectedBasic){
+    const chunks=[];for await(const chunk of request)chunks.push(chunk);
+    const body=JSON.parse(Buffer.concat(chunks).toString());
+    const id=`ses_canonical_${canonicalSessions.size+1}`,session={id,title:body.title,directory:runtimeUrl.searchParams.get('directory')??workspace,permission:body.permission??[]};
+    canonicalSessions.set(id,{session,history:[]});response.setHeader('content-type','application/json');response.end(JSON.stringify(session));return;
+  }
   if(request.method==='GET'&&['/session/status','/permission','/question','/experimental/session'].includes(runtimeUrl.pathname)){
     if(request.headers.authorization!==expectedBasic){response.writeHead(401);response.end();return;}
-    response.setHeader('content-type','application/json');response.end(JSON.stringify(runtimeUrl.pathname==='/session/status'?{}:[]));return;
+    response.setHeader('content-type','application/json');response.end(JSON.stringify(runtimeUrl.pathname==='/session/status'?{}:
+      runtimeUrl.pathname==='/experimental/session'?[...canonicalSessions.values()].map(value=>value.session):[]));return;
   }
   if(runtimeUrl.pathname.startsWith("/session/")) {
     if(request.headers.authorization!==expectedBasic){response.writeHead(401);response.end();return;}
     response.setHeader("content-type","application/json");
+    const native=/^\/session\/([A-Za-z0-9_-]+)(?:\/(message|prompt_async|children|abort))?$/.exec(runtimeUrl.pathname),owned=canonicalSessions.get(native?.[1]);
+    if(owned){
+      let body={};if(['POST','PATCH'].includes(request.method)){const chunks=[];for await(const chunk of request)chunks.push(chunk);body=JSON.parse(Buffer.concat(chunks).toString()||'{}');}
+      if(!native[2]){if(body.permission)owned.session.permission=body.permission;response.end(JSON.stringify(owned.session));return;}
+      if(native[2]==='message'&&request.method==='GET'){response.end(JSON.stringify(owned.history));return;}
+      if(native[2]==='children'){response.end('[]');return;}
+      if(native[2]==='abort'){response.end('true');return;}
+      if(['prompt_async','message'].includes(native[2])&&request.method==='POST'){
+        owned.history.push({info:{id:body.messageID,role:'user',sessionID:owned.session.id},parts:body.parts,fixtureSystem:body.system,fixturePermission:owned.session.permission});
+        if(!body.noReply)owned.history.push({info:{id:`msg_answer_${owned.history.length}`,role:'assistant',sessionID:owned.session.id,time:{completed:1}},parts:[{type:'text',text:'OpenCode continued with actual fixture history'}]});
+        response.writeHead(202);response.end('{}');return;
+      }
+    }
     const match=/^\/session\/([A-Za-z0-9_-]+)(?:\/(message|prompt_async)(?:\/([A-Za-z0-9_-]+))?)?$/.exec(runtimeUrl.pathname);
     if(!match || match[1]!=="owned"){response.writeHead(404);response.end();return;}
     if(!match[2]){

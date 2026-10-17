@@ -6,6 +6,7 @@ import { readAssistantLedgerInventory } from "./assistant-inventory.mjs";
 import { ConversationState } from "./conversation-state.mjs";
 import { ConversationRouter } from "./conversation-router.mjs";
 import { ConversationRevert } from "./conversation-revert.mjs";
+import { OpenCodeConversation } from './opencode-conversation.mjs';
 import { WorkspaceAdmission } from "./workspace-admission.mjs";
 import { WorkspaceFiles } from "./workspace-files.mjs";
 import { WorkspaceUploads } from "./workspace-uploads.mjs";
@@ -343,6 +344,7 @@ export class PlatformServer {
         await this.workspaceManagement?.assertAccessible(owner, owner.directory);
       } });
     this.promptAdmissions=new Map();
+    this.openCodeTurns=new Map();
     const resolveContext=async(userId)=>{const worker=workerManager.getWorker(workerIdForUser(userId));
       if(!worker || worker.userId!==userId || worker.status!=="running")throw new Error("managed worker unavailable");
       return {userId,instanceId:worker.id,generation:worker.generation};};
@@ -360,6 +362,19 @@ export class PlatformServer {
       readOpenCode:(owner,path)=>this.#workspaceGateway(owner,path+(path.includes("?")?"&":"?")+new URLSearchParams({directory:owner.directory})),
       listOpenCode:owner=>this.#listConversationSources(owner),
     }) : null;
+    this.openCodeConversations=this.conversationRouter?new OpenCodeConversation({
+      conversations:this.conversations,cliRuntime,router:this.conversationRouter,
+      profile:async owner=>{
+        const access=workerManager.getWorkerAccess(owner.instanceId);
+        const catalog=await this.runtimeCatalog?.({...owner,workspaceDir:owner.directory},{access});
+        return {runtime:'opencode',identityRevision:catalog?.identityRevision,defaultModel:catalog?.model,
+          models:(catalog?.providers??[]).flatMap(provider=>Object.keys(provider.models??{}).map(id=>({...provider.models[id],id:`${provider.id}/${id}`})))};
+      },
+      request:(owner,path,method,body)=>this.#rawOpenCodeRequest(owner,path,method,body),
+      projection:(owner,id)=>this.conversationRevert?.projection(owner,id)??{version:0,hiddenMessageIds:[]},
+      handover:(owner,id,conversation)=>this.#nativeHandoverState({id:owner.userId},owner,id,conversation,
+        workerManager.getWorkerAccess(owner.instanceId),workerManager.getWorker(owner.instanceId)),
+    }):null;
     this.researchTasks = new ResearchTasks({
       rootDir: resolve(workerManager.rootDir, "../research"),
       retainUnverifiedExecution:typeof workerManager.assistantInventory==="function",
@@ -394,6 +409,9 @@ export class PlatformServer {
     this.sessionAuthority = tenantPolicy ? new SessionAuthority({ policy:tenantPolicy,
       getContext:async(context)=>resolveContext(context.userId),
       readSession:async(context,id,signal)=>{
+        const account=tenantPolicy.account(context),owner={...context,workspaceDir:account.workspaceDir,directory:account.workspaceDir};
+        const target=await this.openCodeConversations?.resolve(owner,id,{internal:true});
+        if(target?.conversation.id===id)return {id,directory:target.conversation.directory,parentID:target.conversation.parentId};
         const access=workerManager.getWorkerAccess(context.instanceId);
         if(!access)throw new Error("managed worker unavailable");
         const result=await fetch(new URL(`/session/${encodeURIComponent(id)}`,access.url),{
@@ -584,7 +602,7 @@ export class PlatformServer {
     await this.init();
     this.researchTimer = setInterval(() => {
       if (this.researchTick) return;
-      this.researchTick = Promise.all([this.researchTasks.tick(),this.collaboration.tick(),this.answerAutomaticToolPermissions()]).catch((error) => {
+      this.researchTick = Promise.all([this.researchTasks.tick(),this.collaboration.tick(),this.answerAutomaticToolPermissions(),this.#settleOpenCodeTurns()]).catch((error) => {
         this.logger({ type: "research.monitor_error", error: error.message });
       }).finally(() => { this.researchTick = null; });
     }, 2000);
@@ -1075,7 +1093,10 @@ export class PlatformServer {
     }
     // This branch is enabled only for explicitly migrated managed accounts.
     // It never invokes the legacy host CLI adapters.
-    if (this.tenantPolicy && (!this.cliRuntime?.isManaged(user.id) || (request.method==="GET" && (request.url??"").split("?")[0]==="/skill")) && !(request.url ?? "").startsWith("/v1/")) {
+    const crossRevertRoute=request.method==='POST'&&(request.url??'').split('?')[0].match(/^\/session\/([A-Za-z0-9_-]+)\/(revert|unrevert)$/);
+    const crossRevert=crossRevertRoute&&this.openCodeConversations&&await this.openCodeConversations.resolve({userId:user.id,instanceId:worker.id,generation:worker.generation,
+      workspaceDir:worker.workspaceDir,directory:worker.workspaceDir},crossRevertRoute[1]);
+    if (!crossRevert&&this.tenantPolicy && (!this.cliRuntime?.isManaged(user.id) || (request.method==="GET" && (request.url??"").split("?")[0]==="/skill")) && !(request.url ?? "").startsWith("/v1/")) {
       await this.#managedRuntimeProxy(request, response, access, user, worker);
       return;
     }
@@ -1115,8 +1136,9 @@ export class PlatformServer {
     }
     const parsed = new URL(request.url ?? "/", "http://platform.invalid");
     const nativeRevert=parsed.pathname.match(/^\/session\/([^/]+)\/(revert|unrevert)$/);
-    if(nativeRevert&&request.method==='POST'&&this.cliRuntime?.sandboxJobs&&this.cliRuntime.isManaged(user.id)){
+    if(nativeRevert&&request.method==='POST'&&this.cliRuntime?.sandboxJobs&&(this.cliRuntime.isManaged(user.id)||crossRevert)){
       try{
+        if(request.headers.origin!==`${this.secureCookies?'https':'http'}://${request.headers.host}`||request.headers['sec-fetch-site']==='cross-site')throw workspaceError('foreign_origin',403);
         if(!this.conversationRevert||!this.conversationRouter)throw workspaceError('revert_unavailable',503);
         const body=await this.#readPayload(request,response);if(!body)return;
         const operation=classifyRuntimeRoute(request.method,parsed.pathname),input=validateRuntimeInput(operation,{query:parsed.searchParams,body,headers:request.headers});
@@ -1378,10 +1400,75 @@ export class PlatformServer {
     }
   }
 
+  async #rawOpenCodeRequest(owner,path,method='GET',body){
+    const worker=this.workerManager.getWorker(owner.instanceId),access=this.workerManager.getWorkerAccess(owner.instanceId);
+    if(worker?.userId!==owner.userId||worker.status!=='running'||worker.generation!==owner.generation||!access)throw recoveryError('stale_workspace_context');
+    this.tenantPolicy.directory(owner,owner.directory);
+    const url=new URL(path,access.url);url.searchParams.set('directory',owner.directory);
+    const result=await fetch(url,{method,redirect:'error',headers:{authorization:`Basic ${workerBasicToken(access.token)}`,'content-type':'application/json'},
+      ...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000)});
+    if(!result.ok){await result.body?.cancel();throw workspaceError('conversation_history_unavailable',503);}
+    const bytes=[];let size=0;
+    for await(const chunk of result.body??[]){size+=chunk.length;if(size>this.maxBodyBytes)throw workspaceError('conversation_history_limit',503);bytes.push(chunk);}
+    const current=this.workerManager.getWorker(owner.instanceId);
+    if(current?.generation!==owner.generation||current.status!=='running')throw recoveryError('stale_workspace_context');
+    return JSON.parse(Buffer.concat(bytes).toString('utf8'));
+  }
+
+  async #settleOpenCodeTurns(){
+    for(const [key,record] of this.openCodeTurns){
+      const {turn}=record,owner=turn.owner;
+      const worker=this.workerManager.getWorker(owner.instanceId);
+      if(worker?.generation!==owner.generation||worker.status!=='running'){
+        await turn.settle({cleanupVerified:false});this.openCodeTurns.delete(key);continue;
+      }
+      const statuses=await this.#rawOpenCodeRequest(owner,'/session/status');
+      if(!statuses||typeof statuses!=='object'||Array.isArray(statuses))throw workspaceError('runtime_state_unknown',503);
+      const sessions=new Set();
+      const visit=async id=>{
+        if(sessions.has(id)||sessions.size>=256)throw workspaceError('runtime_state_unknown',503);
+        sessions.add(id);
+        const children=await this.#rawOpenCodeRequest(owner,`/session/${id}/children`);
+        if(!Array.isArray(children))throw workspaceError('runtime_state_unknown',503);
+        for(const child of children){
+          if(typeof child.id!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(child.id)||child.directory!==owner.directory||child.parentID!==id)
+            throw workspaceError('runtime_state_unknown',503);
+          await visit(child.id);
+        }
+      };
+      await visit(turn.nativeSessionId);
+      if([...sessions].some(id=>statuses[id]&&statuses[id].type!=='idle'))continue;
+      const interactions=await Promise.all(['/permission','/question'].map(path=>this.#rawOpenCodeRequest(owner,path)));
+      if(interactions.some(rows=>!Array.isArray(rows)))throw workspaceError('runtime_state_unknown',503);
+      if(interactions.some(rows=>rows.some(row=>sessions.has(row.sessionID))))continue;
+      if(this.modelBroker?.inferenceInventory().some(effect=>effect.userId===owner.userId&&effect.instanceId===owner.instanceId&&effect.generation===owner.generation))continue;
+      const history=await this.#rawOpenCodeRequest(owner,`/session/${turn.nativeSessionId}/message`);
+      if(!Array.isArray(history))throw workspaceError('conversation_history_unavailable',503);
+      const index=history.findIndex(message=>message.info?.id===record.messageID&&message.info.role==='user');
+      if(index<0)throw workspaceError('prompt_delivery_unknown',503);
+      const replies=history.slice(index+1).filter(message=>message.info?.role==='assistant');
+      if(!record.noReply&&!record.stopped&&(!replies.length||replies.some(message=>!Number.isFinite(message.info.time?.completed))))continue;
+      if(history.slice(index).some(message=>(message.parts??[]).some(part=>part.type==='tool'&&['pending','running'].includes(part.state?.status))))continue;
+      await this.conversationRouter.index(owner,turn.conversationId);
+      await this.conversationRouter.messages(owner,turn.conversationId);
+      if(record.captured)await this.conversationRevert.complete(owner,{conversationId:turn.conversationId,requestId:turn.identity.requestId,
+        messageID:turn.publicMessageId(record.messageID),cleanupVerified:true});
+      await turn.settle({cleanupVerified:true});
+      if(this.openCodeTurns.get(key)===record)this.openCodeTurns.delete(key);
+    }
+  }
+
   async #attachmentHistory(user, sessionId, access) {
     if (this.cliRuntime?.isManaged(user.id)) {
       const { session } = await this.cliRuntime.getOwnedSession(user.id, sessionId);
       return structuredClone(session.history);
+    }
+    if(this.openCodeConversations){
+      const worker=this.workerManager.getWorker(workerIdForUser(user.id));
+      const owner={userId:user.id,instanceId:worker.id,generation:worker.generation,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir};
+      if(await this.openCodeConversations.resolve(owner,sessionId)){
+        await this.conversationRouter.index(owner,sessionId);return this.conversationRouter.messages(owner,sessionId);
+      }
     }
     access ??= (await this.#ensureWorker(user)).access;
     const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}/message`, access.url), {
@@ -1447,6 +1534,24 @@ export class PlatformServer {
       const context={userId:task.userId,instanceId:worker.id,generation:worker.generation};
       await this.#assertRuntimeMutation(context);await this.workspaceFiles?.confirmPending(context);
     }
+    const account=this.tenantPolicy?.account({userId:task.userId,instanceId:worker.id,generation:worker.generation});
+    const canonicalOwner=account?{userId:task.userId,instanceId:worker.id,generation:worker.generation,workspaceDir:account.workspaceDir,directory:task.directory}:null;
+    const match=path.match(/^\/session\/([A-Za-z0-9_-]+)(?=\/|\?|$)/);
+    const target=canonicalOwner&&match?await this.openCodeConversations?.resolve(canonicalOwner,match[1],{internal:true}):null;
+    if(target){
+      if(task.directory!==target.conversation.directory)throw workspaceError('conversation_owner_mismatch',403);
+      if(!target.nativeSessionId){
+        if(method==='GET'&&path===`/session/${target.conversation.id}`)return {id:target.conversation.id,title:target.conversation.title,directory:target.conversation.directory,parentID:target.conversation.parentId};
+        if(method==='GET'&&path===`/session/${target.conversation.id}/message`)return this.conversationRouter.messages(canonicalOwner,target.conversation.id);
+        if(method==='GET'&&path===`/session/${target.conversation.id}/children`)return [];
+        throw workspaceError('conversation_handover_required',409);
+      }
+      path=path.replace(`/session/${match[1]}`,`/session/${target.nativeSessionId}`);
+      if(method==='PATCH'&&Array.isArray(body?.permission)){
+        const denies=await this.conversationRouter.explicitDenies(canonicalOwner,target.conversation.id);
+        body={...body,permission:[...body.permission,...denies]};
+      }
+    }
     const url = new URL(path, access.url);
     url.searchParams.set("directory", task.directory);
     const run=async completed=>{
@@ -1457,7 +1562,8 @@ export class PlatformServer {
     });
     const text=await result.text();completed?.();
     if (!result.ok) throw Object.assign(new Error("research session is unavailable"), { status: result.status });
-    return JSON.parse(text);
+    const value=JSON.parse(text);
+    return canonicalOwner&&this.openCodeConversations?this.openCodeConversations.publicValue(canonicalOwner,value,{status:url.pathname==='/session/status'}):value;
     };
     return this.workspaceManagement && !["GET","HEAD"].includes(method) && !stopping
       ?this.#runtimeWrite({userId:task.userId,instanceId:worker.id,generation:worker.generation},run):run();
@@ -1498,6 +1604,22 @@ export class PlatformServer {
         this.tenantPolicy.registerSessionList(context,ancestry);
       }
       return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime };
+    }
+    if(this.openCodeConversations&&this.tenantPolicy){
+      const context={userId:user.id,instanceId:worker.id,generation:worker.generation},account=this.tenantPolicy.account(context);
+      const owner={...context,workspaceDir:account.workspaceDir,directory:account.workspaceDir};
+      const target=await this.openCodeConversations.resolve(owner,sessionId,{internal:true});
+      if(target){
+        const ancestry=[],seen=new Set();let value=target.conversation;
+        while(value){
+          if(seen.has(value.id)||ancestry.length>=20||value.directory!==target.conversation.directory)throw recoveryError('session_context_unavailable');
+          seen.add(value.id);ancestry.push({id:value.id,directory:value.directory,parentID:value.parentId});
+          value=value.parentId?await this.conversations.open(owner,value.parentId):null;
+        }
+        await this.workspaceManagement?.assertAccessible(context,target.conversation.directory);
+        this.tenantPolicy.registerSessionList(context,ancestry);
+        return {...owner,sessionId:target.conversation.id,directory:target.conversation.directory,runtime:'opencode'};
+      }
     }
     if(this.tenantPolicy) {
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
@@ -1837,7 +1959,13 @@ export class PlatformServer {
   }
 
   async #managedRuntimeProxy(request, response, access, user, worker) {
-    let interaction,attachmentTurn,collaborationExecution;
+    let interaction,attachmentTurn,collaborationExecution,canonicalTurn,canonicalDispatched=false,canonicalAccepted=false,canonicalCaptured=false;
+    let canonicalFinished=false;
+    const finishCanonical=async()=>{
+      if(!canonicalTurn||canonicalAccepted||canonicalFinished)return;
+      if(canonicalCaptured&&!canonicalDispatched)await this.conversationRevert.discard(canonicalTurn.owner,{conversationId:canonicalTurn.conversationId,requestId:canonicalTurn.identity.requestId});
+      await canonicalTurn.settle({cleanupVerified:!canonicalDispatched});canonicalFinished=true;
+    };
     const admission=new PromptAdmission({collaboration:this.collaboration,researchTasks:this.researchTasks});
     let executionSend=false;
     const heldAdmissions=[];
@@ -1903,6 +2031,14 @@ export class PlatformServer {
         sessionId=pending.sessionID;
       }
       if (sessionId) {
+        const account=this.tenantPolicy.account(context),owner={...context,workspaceDir:account.workspaceDir,directory:account.workspaceDir};
+        const target=await this.openCodeConversations?.resolve(owner,sessionId,{internal:Boolean(operation.identifiers.requestId)});
+        if(target&&['sessionPrompt_async','sessionMessage'].includes(operation.operation)&&request.method==='POST'){
+          canonicalTurn=await this.openCodeConversations.prepare({...owner,directory:target.conversation.directory},target.conversation.id,
+            {body,requestId:request.headers['x-scikeel-request-id']??body.attachmentTurn?.turnId,policyRevision:Number(request.headers['x-scikeel-assistant-revision'])});
+          if(canonicalTurn.replay){sendJson(response,202,{receipt:{requestId:canonicalTurn.identity.requestId,state:canonicalTurn.receipt.state}});return;}
+          body=canonicalTurn.body;
+        }
         const session = await this.sessionAuthority.ensure(context, sessionId);
         if (input.directory !== undefined && operation.operation !== "sessionMove" && input.directory !== session.directory)
           throw Object.assign(new Error("directory does not match session"), { statusCode: 403 });
@@ -2022,7 +2158,16 @@ export class PlatformServer {
           permissionDecision.release = release; this.permissionDecisions.set(key, permissionDecision);
         }
       }
-      const target = new URL(`${operation.path}${parsed.search}`, access.url);
+      let upstreamPath=operation.path;
+      if(operation.identifiers.sessionId&&this.openCodeConversations){
+        const account=this.tenantPolicy.account(context),owner={...context,workspaceDir:account.workspaceDir,directory};
+        const target=await this.openCodeConversations.resolve(owner,operation.identifiers.sessionId);
+        if(target){
+          if(!target.nativeSessionId)throw workspaceError('conversation_handover_required',409);
+          upstreamPath=upstreamPath.replace(`/session/${operation.identifiers.sessionId}`,`/session/${target.nativeSessionId}`);
+        }
+      }
+      const target = new URL(`${upstreamPath}${parsed.search}`, access.url);
       const controller = new AbortController();
       // Finish validated asynchronous prompts and interaction replies even if
       // the browser disconnects before acknowledgement. Explicit Stop remains
@@ -2039,7 +2184,15 @@ export class PlatformServer {
           if(root)await this.collaboration.assertAdmission(root.owner,root.execution);
           if(admission.research)await this.researchTasks.assertAdmission(admission.research);
           this.#requireWriteContext(request,user,worker);
+          if(canonicalTurn&&this.conversationRevert){
+            const snapshot=await this.conversationRevert.begin(canonicalTurn.owner,{conversationId:sessionId,requestId:canonicalTurn.identity.requestId});
+            canonicalCaptured=snapshot.captured===true;
+          }
+          if(root)await this.collaboration.assertAdmission(root.owner,root.execution);
+          if(admission.research)await this.researchTasks.assertAdmission(admission.research);
+          await canonicalTurn?.submitted();
           admission.dispatch();
+          canonicalDispatched=Boolean(canonicalTurn);
         }
         const upstream = await fetch(target, { method: operation.method, redirect: "error", signal: controller.signal,
           headers: { authorization: `Basic ${workerBasicToken(access.token)}`, accept: operation.operation === "event"
@@ -2050,6 +2203,7 @@ export class PlatformServer {
         if (stopping && upstream.ok) {
           for (const { owner, stopId } of stopping.sessions) await this.toolOutcomes.confirmStop(owner, stopId);
           await this.network?.cancelExecution(context, stopping.owner.sessionId, stopping.state.execution, "stop");
+          const record=this.openCodeTurns.get(JSON.stringify([user.id,sessionId]));if(record)record.stopped=true;
         }
         if (permissionDecision) { permissionDecision.allowed = upstream.ok && body.reply !== "reject"; permissionDecision.release(); }
         if (operation.operation === "event" && upstream.ok) {
@@ -2092,6 +2246,11 @@ export class PlatformServer {
                   const id = properties.part.sessionID; this.tenantPolicy.session(context, id);
                   properties.part = await this.decorateToolPart(user.id, id, properties.part);
                 }
+                if(this.openCodeConversations){
+                  const account=this.tenantPolicy.account(context);
+                  event=await this.openCodeConversations.publicValue({...context,workspaceDir:account.workspaceDir,directory},event);
+                  if(!event||event.properties===null||event.payload===null)continue;
+                }
                 if (!response.write(`data: ${JSON.stringify(event)}\n\n`)) {
                   await new Promise((resolve, reject) => {
                     const onDrain = () => { cleanup(); resolve(); };
@@ -2120,6 +2279,13 @@ export class PlatformServer {
               (upstream.status!==202 && upstream.status!==204 || upstream.status===202 && (!value || typeof value!=="object" || Array.isArray(value))))
             throw Object.assign(new Error("Send delivery is not confirmed. Reload the conversation before retrying."),{statusCode:502,code:"prompt_delivery_unknown"});
           admission.accepted();
+          if(canonicalTurn){
+            await canonicalTurn.accepted(body.messageID);
+            await this.conversationRevert?.accept(canonicalTurn.owner,{conversationId:sessionId,requestId:canonicalTurn.identity.requestId});
+            const key=JSON.stringify([user.id,sessionId]);
+            this.openCodeTurns.set(key,{turn:canonicalTurn,messageID:body.messageID,noReply:body.noReply===true,captured:canonicalCaptured});
+            canonicalAccepted=true;
+          }
           await attachmentTurn?.finish(true);
         }
         if (upstream.ok) {
@@ -2180,6 +2346,10 @@ export class PlatformServer {
           if (operation.operation === "sessionDelete") this.tenantPolicy.removeSession(context, sessionId);
           if (operation.operation === "sessionMove") this.tenantPolicy.registerSession(context, { id: sessionId, directory });
         }
+        if(this.openCodeConversations){
+          const account=this.tenantPolicy.account(context);
+          value=await this.openCodeConversations.publicValue({...context,workspaceDir:account.workspaceDir,directory},value,{status:operation.operation==='sessionStatus'});
+        }
         const safe=scrubRuntimeSecrets(value ?? null);
         const code=safe?.code ?? safe?.name ?? safe?._tag;
         if(typeof code==="string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(code))trace.code=code;
@@ -2199,6 +2369,7 @@ export class PlatformServer {
           error=Object.assign(new Error("Send delivery is not confirmed. Reload the conversation before retrying."),{statusCode:502,code:"prompt_delivery_unknown"});
         }
       }
+      await finishCanonical();
       const status = error.statusCode ?? error.status ?? (error.code === "body_too_large" ? 413 : 502);
       if (status === 502 && !request.aborted && !response.destroyed) this.workerManager.noteTransportFailure?.({ instanceId: worker.id, generation: worker.generation });
       if(typeof error.code==="string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(error.code))trace.code=error.code;
@@ -2207,6 +2378,7 @@ export class PlatformServer {
       if (response.headersSent) { response.destroy(); return; }
       sendJson(response, status, body);
     } finally {
+      await finishCanonical();
       for(const {key,held} of heldAdmissions) {
         if(this.promptAdmissions.get(key)!==held)continue;
         if(admission.disposition==="unknown") {

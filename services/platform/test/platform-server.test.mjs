@@ -16,6 +16,7 @@ import { WorkspaceRpc } from "../src/workspace-rpc.mjs";
 import { recoveryError } from "../src/workspace-recovery.mjs";
 import { WorkspaceAdmission } from "../src/workspace-admission.mjs";
 import {localRevertFiles} from '../fixtures/conversation-revert-files.mjs';
+import {createManagedModelCatalogReader} from '../src/managed-model-catalog.mjs';
 
 const fakeOsd = fileURLToPath(new URL("../fixtures/fake-osd.mjs", import.meta.url));
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
@@ -1458,10 +1459,71 @@ async function nativeHttpFixture(t,run,options={}){
   body:JSON.stringify({parts:[{type:'text',text:'Research'}],model:{providerID:'codex',modelID:'approved'},...body})});
  return {...f,client,user,owner,session,create,send,researchOwner:{...owner,sessionId:session.id}};
 }
-async function until(check){
- for(let n=0;n<100;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
+async function until(check,attempts=100){
+ for(let n=0;n<attempts;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
  assert.fail('Timed out waiting for native turn settlement');
 }
+test('canonical Codex conversation continues through the actual OpenCode HTTP worker and returns to a fresh Codex binding',async t=>{
+ const starts=[];let f;const files=localRevertFiles({workspaceDir:()=>f.owner.workspaceDir});
+ f=await nativeHttpFixture(t,async args=>{
+  starts.push(args);const nativeSessionId=args.nativeSessionId??`codex-handover-${starts.length}`;
+  await args.onAccepted({nativeSessionId,turnId:`turn-${starts.length}`});
+  await args.emit({type:'text',text:'Intervening Codex scientific result'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ },{enableWorkspaceManagement:true,workspaceFiles:files});
+ f.session.permission=[{permission:'edit',pattern:'protected.csv',action:'deny'}];
+ assert.equal((await f.send('first-native')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const access=f.manager.getWorkerAccess(f.owner.instanceId),headers={authorization:`Basic ${Buffer.from(`opencode:${access.token}`).toString('base64')}`};
+ f.server.conversationRouter.listOpenCode=async()=>{const response=await fetch(`${access.url}/experimental/session`,{headers});return response.json();};
+ f.server.runtimeCatalog=createManagedModelCatalogReader({config:{defaultProvider:'broker',providers:{broker:{enabledModels:['allowed']}}},
+  fetchImpl:async url=>({ok:true,json:async()=>new URL(url).pathname==='/global/config'?{model:'broker/allowed'}:{providers:[{id:'broker',models:{allowed:{variants:{}}}}]}})});
+ await f.cliRuntime.selectAssistant({runtime:'opencode',expectedRevision:2,operationId:'reverse-handover'});
+ const request=()=>f.client.request(`/session/${f.session.id}/prompt_async`,{method:'POST',headers:{'content-type':'application/json',
+  'x-scikeel-assistant-revision':'3','x-scikeel-request-id':'reverse-request'},body:JSON.stringify({parts:[{type:'text',text:'Continue the result'}],model:{providerID:'broker',modelID:'allowed'}})});
+ const response=await request();assert.equal(response.status,202,await response.text());
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['reverse-request']?.state==='settled',300);
+ const value=await f.server.conversations.open(f.owner,f.session.id),binding=value.bindings.find(binding=>binding.id===value.currentBindingId);
+ assert.equal(binding.runtime,'opencode');assert.notEqual(binding.nativeSessionId,f.session.id);
+ const raw=await (await fetch(`${access.url}/session/${binding.nativeSessionId}/message`,{headers})).json();
+ assert.equal(raw.length,2);assert.match(raw[0].fixtureSystem,/Intervening Codex scientific result/);
+ assert(raw[0].fixturePermission.some(rule=>rule.action==='deny'&&rule.pattern==='protected.csv'));
+ const history=await (await f.client.request(`/session/${f.session.id}/message`)).json();assert.equal(history.length,4);
+ const messageID=history[2].info.id;
+ for(const operation of ['revert','unrevert']){
+  const restored=await f.client.request(`/session/${f.session.id}/${operation}`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'3'},
+   body:JSON.stringify(operation==='revert'?{messageID}:{})});assert.equal(restored.status,200,await restored.text());
+  assert.equal((await (await f.client.request(`/session/${f.session.id}/message`)).json()).length,operation==='revert'?2:4);
+ }
+ assert.equal((await request()).status,202);assert.equal((await (await fetch(`${access.url}/session/${binding.nativeSessionId}/message`,{headers})).json()).length,2,'Receipt retry cannot redispatch');
+ const privateWrite=await f.client.request(`/session/${binding.nativeSessionId}/prompt_async`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({parts:[]})});
+ assert.equal(privateWrite.status,404);
+ await f.cliRuntime.selectAssistant({runtime:'codex',expectedRevision:3,operationId:'native-again'});
+ const back=await f.client.request(`/session/${f.session.id}/prompt_async`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'4','x-scikeel-request-id':'native-return'},
+  body:JSON.stringify({parts:[{type:'text',text:'Continue after OpenCode'}],model:{providerID:'codex',modelID:'approved'}})});
+ assert.equal(back.status,202,await back.text());await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal(starts[1].nativeSessionId,undefined);assert.match(starts[1].text,/OpenCode continued with actual fixture history/);
+ assert.equal((await (await f.client.request(`/session/${f.session.id}/message`)).json()).length,6);
+});
+test('canonical OpenCode delivery without exact persisted acceptance remains unknown and cannot retry or switch',async t=>{
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'native-before-unknown',turnId:'turn-before-unknown'});await args.emit({type:'text',text:'Saved context'});
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'native-before-unknown'};
+ });
+ assert.equal((await f.send('known-native')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const access=f.manager.getWorkerAccess(f.owner.instanceId),headers={authorization:`Basic ${Buffer.from(`opencode:${access.token}`).toString('base64')}`};
+ f.server.conversationRouter.listOpenCode=async()=>{const response=await fetch(`${access.url}/experimental/session`,{headers});return response.json();};
+ f.server.runtimeCatalog=createManagedModelCatalogReader({config:{defaultProvider:'broker',providers:{broker:{enabledModels:['allowed']}}},
+  fetchImpl:async url=>({ok:true,json:async()=>new URL(url).pathname==='/global/config'?{model:'broker/allowed'}:{providers:[{id:'broker',models:{allowed:{}}}]}})});
+ await f.cliRuntime.selectAssistant({runtime:'opencode',expectedRevision:2,operationId:'unknown-reverse'});
+ const rawRequest=f.server.openCodeConversations.request;
+ f.server.openCodeConversations.request=async(...args)=>args[1].endsWith('/message')?[]:rawRequest(...args);
+ const send=()=>f.client.request(`/session/${f.session.id}/prompt_async`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'3','x-scikeel-request-id':'unknown-reverse-send'},
+  body:JSON.stringify({parts:[{type:'text',text:'Do not replay'}],model:{providerID:'broker',modelID:'allowed'}})});
+ assert.equal((await send()).status,502);
+ const value=await f.server.conversations.open(f.owner,f.session.id);assert.equal(value.turns['unknown-reverse-send'].state,'unknown');
+ const id=value.bindings.at(-1).nativeSessionId;
+ assert.equal((await send()).status,202);assert.equal((await (await fetch(`${access.url}/session/${id}/message`,{headers})).json()).length,2);
+ await assert.rejects(f.cliRuntime.selectAssistant({runtime:'codex',expectedRevision:3,operationId:'unsafe-switch'}),{code:'assistant_recovery_required'});
+});
 test('native checked revert routes the owned canonical user message instead of a private origin ID',async t=>{
  const f=await nativeHttpFixture(t,async args=>{
   await args.onAccepted({nativeSessionId:'revert-http-native',turnId:'revert-http-turn'});await args.emit({type:'text',text:'File created'});

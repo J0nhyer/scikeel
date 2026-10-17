@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash,randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -34,6 +34,17 @@ export async function saveManagedDefaultModel({ root, userId, model }) {
 const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const label = (value, fallback) => typeof value === "string" && value.length > 0 && value.length <= 512 ? value : fallback;
 const unavailable = () => Object.assign(new Error("OpenCode model catalog unavailable"), { statusCode: 503 });
+
+// This opaque lifetime identity binds the immutable administrator configuration
+// snapshot, including credential changes, without publishing a secret digest.
+export function createManagedModelCatalogReader({config,fetchImpl=fetch}){
+  const snapshot=structuredClone(config),configurationIdentity=randomUUID();
+  return async(context,{access})=>{
+    const catalog=await readManagedModelCatalog({config:snapshot,context,access,fetchImpl});
+    const identityRevision=createHash('sha256').update(JSON.stringify([configurationIdentity,catalog])).digest('hex');
+    return {...catalog,identityRevision};
+  };
+}
 
 /** Read the current tenant runtime, then expose only model metadata allowed by
  * its managed broker profile. Never return raw runtime/provider configuration. */

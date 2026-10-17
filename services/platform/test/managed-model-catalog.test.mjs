@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readManagedModelCatalog, readManagedDefaultModel, saveManagedDefaultModel } from "../src/managed-model-catalog.mjs";
+import { createManagedModelCatalogReader, readManagedModelCatalog, readManagedDefaultModel, saveManagedDefaultModel } from "../src/managed-model-catalog.mjs";
 import { brokerProfile, validateBrokerConfiguration } from "../src/sandbox-control-plane.mjs";
 
 const config = { defaultProvider: "research", defaultModel: "approved", providers: {
@@ -25,6 +25,16 @@ function fetchFixture(catalog = runtime, model = "research/approved") {
     return { ok: true, json: async () => new URL(url).pathname === "/config/providers" ? catalog : { model, provider: { secret: "hidden" } } };
   };
 }
+test('internal managed catalog binds one trusted configuration snapshot and actual filtered model metadata',async()=>{
+ const source=structuredClone(config),reader=createManagedModelCatalogReader({config:source,fetchImpl:fetchFixture()});
+ const first=await reader(context,{access});assert.match(first.identityRevision,/^[a-f0-9]{64}$/);
+ assert.equal((await reader(context,{access})).identityRevision,first.identityRevision);
+ source.providers.research.enabledModels=['unexpected'];
+ assert.equal((await reader(context,{access})).identityRevision,first.identityRevision,'External mutation cannot replace the loaded trusted snapshot');
+ const replacement=createManagedModelCatalogReader({config,fetchImpl:fetchFixture()});
+ assert.notEqual((await replacement(context,{access})).identityRevision,first.identityRevision,'Reloaded server configuration invalidates native reuse without hashing secrets');
+ assert(!JSON.stringify(first).includes(access.token));
+});
 
 test("OpenCode catalog uses live models and metadata rather than the broker's static or Codex lists", async () => {
   const catalog = await readManagedModelCatalog({ config, access, context, fetchImpl: fetchFixture() });

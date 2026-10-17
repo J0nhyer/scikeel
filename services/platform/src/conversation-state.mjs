@@ -429,6 +429,7 @@ export class ConversationState {
     binding={...native,id:bindingId(id,native),importCursor:null};value.bindings.push(binding);
    }
    value.currentBindingId=binding.id;
+   binding.representedSequence=Math.max(binding.representedSequence,representedSequence);
    turn.state='accepted';turn.nativeAcceptance=structuredClone(input.nativeAcceptance);
    value.revision++;await this.#save(data,owner);return structuredClone(turn);
   });
