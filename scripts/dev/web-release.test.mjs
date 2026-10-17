@@ -409,6 +409,43 @@ test('a missing required scientific image cannot pass the release gate', async (
   await assert.rejects(validateInstalledImage({ selection: { imageRequired: true } }, null), /digest is missing/);
   assert.equal((await validateInstalledImage({ selection: { imageRequired: false } }, null)).imageDigest, null);
 });
+test('an already active attested image can be reused only with identical complete source inputs and measured bytes', async t => {
+  const root = await fixture(t), digest = 'sha256:' + 'a'.repeat(64);
+  const { sha256 } = await import('./web-release-source.mjs');
+  await mkdir(join(root, 'runtime/sandbox/image'), { recursive: true });
+  await mkdir(join(root, 'scripts/dev'), { recursive: true });
+  const lock = join(root, 'runtime/sandbox/image/uv.lock'); await writeFile(lock, 'synthetic locked dependency bytes');
+  const hash = await sha256(lock);
+  await writeFile(join(root, 'scripts/dev/stage-sandbox-image.mjs'),
+    `export * from ${JSON.stringify(new URL('./stage-sandbox-image.mjs', import.meta.url).href)};\n`);
+  const runnerFiles = {};
+  for (const name of ['runner.mjs', 'file-rpc.mjs', 'cli-jobs.mjs', 'project-environment.py', 'science-environment.mjs']) {
+    await writeFile(join(root, 'runtime/sandbox', name), 'synthetic locked dependency bytes');
+    runnerFiles['opt/scikeel/tools/' + name] = hash;
+  }
+  const files = await inventorySource(root, { git: false });
+  const { imageInputPath } = await import('./web-release-policy.mjs');
+  const sourceInputs = files.filter(file => imageInputPath(file.path)).map(({ path, sha256 }) => ({ path, sha256 })).sort((a,b) => a.path.localeCompare(b.path));
+  const manifest = { schema: 1, name: 'science-v1', variant: 'production', architecture: 'linux/amd64',
+    rootfsSha256: 'a'.repeat(64), imageDigest: digest, python: '3.12.12', uv: '0.11.26', baselineLockSha256: hash,
+    toolLockSha256: hash, uncompressedBytes: 1000000, fileCount: 100, sourceInputs, runnerFiles,
+    provenance: { repository: 'J0nhyer/scikeel', commit: 'b'.repeat(40), workflow: 'sandbox-image.yml' },
+    tools: Object.fromEntries(['osd','opencode','node','uv','python','git'].map(name => [name, {
+      version: name === 'opencode' ? '1.18.32' : name === 'uv' ? '0.11.26' : name === 'python' ? '3.12.12' : '1.0.0',
+      sha256: hash, path: 'opt/scikeel/tools/bin/' + name }])), enabledRuntimes: ['opencode'] };
+  let changedInstalled = false;
+  const execute = (_command, args) => {
+    if (args.includes('sha256sum')) return (changedInstalled ? 'f'.repeat(64) : hash) + '  measured';
+    if (args.includes('python3')) return '[]';
+    return JSON.stringify(args.at(-1).endsWith('ready.json') ? { imageDigest: digest } : manifest);
+  };
+  const candidate = { source: { root, files }, production: { imageDigest: digest }, selection: { imageRequired: true } };
+  assert.equal((await validateInstalledImage(candidate, digest, { execute })).reused, true);
+  manifest.sourceInputs = sourceInputs.slice(1);
+  await assert.rejects(validateInstalledImage(candidate, digest, { execute }), /source inputs do not match/);
+  manifest.sourceInputs = sourceInputs; changedInstalled = true;
+  await assert.rejects(validateInstalledImage(candidate, digest, { execute }), /tool identity changed/);
+});
 
 test('a stopped or partially switched service can recover only its recorded configuration', () => {
   const candidate = { selection: { deployPlatform: true }, source: { root: '/new/source' }, production: { source: '/old/source', webRoot: '/old/web' }, artifacts: { web: { directory: '/new/web' }, image: { imageDigest: 'new-image' } } };

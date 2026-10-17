@@ -81,7 +81,6 @@ export async function validateInstalledImage(candidate, digest, { execute = comm
   const imageRoot = `/var/lib/scikeel/images/${digest.slice(7)}`;
   const manifest = JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'image-manifest.json')]));
   const ready = JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'ready.json')]));
-  if (candidate.selection?.imageRequired && digest === candidate.production.imageDigest) throw new Error('Changed image inputs require a newly installed CI-attested image');
   if (candidate.selection?.imageRequired) {
     const inputs = candidate.source.files.filter((file) => imageInputPath(file.path)).map(({ path, sha256 }) => ({ path, sha256 })).sort((a, b) => a.path.localeCompare(b.path));
     if (!Array.isArray(manifest.sourceInputs) || JSON.stringify(manifest.sourceInputs) !== JSON.stringify(inputs)) throw new Error('CI-attested image source inputs do not match candidate');
