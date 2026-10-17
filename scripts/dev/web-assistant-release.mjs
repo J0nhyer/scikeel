@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { join, resolve, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { command } from './web-release-source.mjs';
 import { validManagedModelSelection } from '../../services/platform/src/managed-model-policy.mjs';
 
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -34,12 +33,8 @@ export function verifyAssistantEvidence(target, evidence) {
 
 export function managedDataDirectory(production) {
   if (production.managedEnv !== '/etc/scikeel/platform-sandbox.env') throw new Error('Unsafe managed environment path');
-  const environment = command('sudo', ['-n', 'cat', production.managedEnv], { trim: false });
-  const entries = environment.split('\n').filter(line => line.startsWith('PLATFORM_DATA_DIR='));
-  if (entries.length > 1) throw new Error('Ambiguous managed data directory');
-  let directory = entries[0]?.slice('PLATFORM_DATA_DIR='.length) ?? '/srv/osd/platform';
-  if (/^(["']).*\1$/.test(directory)) directory = directory.slice(1, -1);
-  if (!isAbsolute(directory) || resolve(directory) !== directory || directory === '/' || /[\0\r\n]/.test(directory))
+  const directory = production.dataDir;
+  if (typeof directory !== 'string' || !isAbsolute(directory) || resolve(directory) !== directory || directory === '/' || /[\0\r\n]/.test(directory))
     throw new Error('Unsafe managed data directory');
   return directory;
 }

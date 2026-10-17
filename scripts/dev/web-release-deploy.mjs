@@ -9,7 +9,7 @@ import { inspectProduction, validateCandidate, command, sha256, commonStore, fin
 import { writeManifest, readManifest } from './web-release-state.mjs';
 import { artifactFiles, productionFingerprint, validateInstalledImage } from './web-release.mjs';
 import { verifyTaskLocks } from './web-build.mjs';
-import { assertAssistantTargetCurrent, runSelectedAssistantLive, readAssistantSelection, restoreAssistantSelection } from './web-assistant-release.mjs';
+import { assertAssistantTargetCurrent, runSelectedAssistantLive, readAssistantSelection, restoreAssistantSelection, managedDataDirectory } from './web-assistant-release.mjs';
 import { loadCompatibleRecovery, compatibleRecoveryPrevious, markCompatibleRecoveryRestored } from './web-release-recovery.mjs';
 
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -282,6 +282,7 @@ async function deploymentOperations(candidate, store) {
     },
     switchConfiguration: async () => {
       let environment = await privateRead(candidate.production.managedEnv);
+      environment = replaceEnvironmentValue(environment, 'PLATFORM_DATA_DIR', managedDataDirectory(candidate.production));
       environment = replaceEnvironmentValue(environment, 'PLATFORM_WEB_ROOT', candidate.artifacts.web?.directory ?? candidate.production.webRoot);
       if (candidate.artifacts.image.imageDigest) environment = replaceEnvironmentValue(environment, 'PLATFORM_SANDBOX_IMAGE_DIGEST', candidate.artifacts.image.imageDigest);
       if (candidate.selection.deployPlatform) {
@@ -296,7 +297,7 @@ async function deploymentOperations(candidate, store) {
     verifyProduction: async () => {
       const actual = await inspectProduction();
       const expectedSource = candidate.selection.deployPlatform ? candidate.source.root : candidate.production.source;
-      if (actual.source !== expectedSource || actual.webRoot !== (candidate.artifacts.web?.directory ?? candidate.production.webRoot) || actual.imageDigest !== candidate.artifacts.image.imageDigest) throw new Error('Running deployment identity differs');
+      if (actual.source !== expectedSource || actual.dataDir !== candidate.production.dataDir || actual.webRoot !== (candidate.artifacts.web?.directory ?? candidate.production.webRoot) || actual.imageDigest !== candidate.artifacts.image.imageDigest) throw new Error('Running deployment identity differs');
       const webDirectory = candidate.artifacts.web?.directory ?? candidate.production.webRoot;
       const webFiles = candidate.artifacts.web?.files ?? await artifactFiles(webDirectory);
       await verifyDelivery(actual, webDirectory, webFiles);
@@ -321,8 +322,7 @@ async function deploymentOperations(candidate, store) {
       // Freeze lifecycle metadata before deciding whether an old backend may serve it.
       command('sudo',['-n','systemctl','stop','osd-platform.service']);
       let environment = await privateRead(value.production.managedEnv);
-      const dataDir=environmentValue(environment,'PLATFORM_DATA_DIR')??'/srv/osd/platform';
-      if(!dataDir.startsWith('/') || resolve(dataDir)!==dataDir)throw new Error('Unsafe workspace lifecycle state path');
+      const dataDir=managedDataDirectory(value.production);
       const policy=await lifecycleRollbackPolicy(value.sourceBackup?.root??value.production.source,dataDir).catch(()=>({compatible:false,reason:'workspace_state_unverified'}));
       if(!policy.compatible){
         candidate.status='rollback-maintenance';candidate.rollback.lifecyclePolicy=policy;
@@ -337,6 +337,7 @@ async function deploymentOperations(candidate, store) {
           { code: 'ASSISTANT_ROLLBACK_MAINTENANCE' });
       }
       environment = replaceEnvironmentValue(environment, 'PLATFORM_WEB_ROOT', value.production.webRoot);
+      environment = replaceEnvironmentValue(environment, 'PLATFORM_DATA_DIR', managedDataDirectory(value.production));
       if (value.production.imageDigest) environment = replaceEnvironmentValue(environment, 'PLATFORM_SANDBOX_IMAGE_DIGEST', value.production.imageDigest);
       else environment = environment.split('\n').filter((line) => !line.startsWith('PLATFORM_SANDBOX_IMAGE_DIGEST=')).join('\n');
       await installPrivate(environment, value.production.managedEnv, recoveryDir, 'environment.restore');

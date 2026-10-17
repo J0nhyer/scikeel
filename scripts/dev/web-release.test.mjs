@@ -383,16 +383,31 @@ test('production inspection reads a private managed drop-in and excludes process
     if (binary === 'systemctl' && args[0] === 'show') return args.includes('WorkingDirectory') ? source : '42';
     if (binary === 'systemctl' && args[0] === 'cat') throw new Error('Private drop-in is unreadable without elevation');
     if (binary === 'sudo' && args[1] === 'readlink') return source;
-    if (binary === 'sudo' && args[1] === 'cat') return `PLATFORM_WEB_ROOT=${web}\0PLATFORM_ADMIN_PASSWORD=fixture-private-credential\0`;
+    if (binary === 'sudo' && args[1] === 'cat') return `PLATFORM_WEB_ROOT=${web}\0PLATFORM_DATA_DIR=${root}/effective-data\0PLATFORM_ADMIN_PASSWORD=fixture-private-credential\0`;
     if (binary === 'sudo' && args[1] === 'systemctl' && args[2] === 'cat') return environmentFiles;
     throw new Error('Unexpected service probe');
   };
   const actual = await inspectProduction({ run });
   assert.equal(actual.source, source); assert.equal(actual.webRoot, web);
   assert.equal(actual.managedEnv, '/etc/scikeel/platform-sandbox.env');
+  assert.equal(actual.dataDir, join(root, 'effective-data'));
   assert(!JSON.stringify(actual).includes('fixture-private-credential'));
   environmentFiles += 'EnvironmentFile=/etc/unmanaged.env\n';
   await assert.rejects(inspectProduction({ run }), /ambiguous/);
+});
+
+test('assistant target and recovery use frozen effective data directory, not an env-file fallback', async () => {
+  const { managedDataDirectory } = await import('./web-assistant-release.mjs');
+  const production = { managedEnv: '/etc/scikeel/platform-sandbox.env', dataDir: '/fixture/effective-platform-data' };
+  assert.equal(managedDataDirectory(production), production.dataDir);
+  for (const dataDir of [undefined, '/', 'relative', '/fixture/../other', '/fixture\nother'])
+    assert.throws(() => managedDataDirectory({ ...production, dataDir }), /data directory/);
+  assert.throws(() => managedDataDirectory({ ...production, managedEnv: '/untrusted' }), /environment/);
+  const source = await readFile(new URL('./web-release-deploy.mjs', import.meta.url), 'utf8');
+  assert.match(source, /const dataDir\s*=\s*managedDataDirectory\(value\.production\)/);
+  assert.doesNotMatch(source, /environmentValue\(environment,\s*'PLATFORM_DATA_DIR'\)/);
+  for (const owner of ['candidate', 'value'])
+    assert(source.includes(`replaceEnvironmentValue(environment, 'PLATFORM_DATA_DIR', managedDataDirectory(${owner}.production))`));
 });
 
 test('publication health waits through connection refusal and startup responses', async () => {

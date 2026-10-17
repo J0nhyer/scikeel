@@ -163,7 +163,7 @@ export async function inspectProduction({ run = command } = {}) {
   const safe = {};
   for (const entry of raw.split('\0')) {
     const index = entry.indexOf('='); const key = entry.slice(0, index);
-    if (['PLATFORM_WEB_ROOT', 'PLATFORM_SANDBOX_IMAGE_DIGEST', 'PLATFORM_PORT', 'PLATFORM_HOST'].includes(key)) safe[key] = entry.slice(index + 1);
+    if (['PLATFORM_WEB_ROOT', 'PLATFORM_DATA_DIR', 'PLATFORM_SANDBOX_IMAGE_DIGEST', 'PLATFORM_PORT', 'PLATFORM_HOST'].includes(key)) safe[key] = entry.slice(index + 1);
   }
   const actualSource = run('sudo', ['-n', 'readlink', `/proc/${pid}/cwd`]);
   if (await realpath(source) !== await realpath(actualSource)) throw new Error('Effective service source differs from running process');
@@ -175,7 +175,7 @@ export async function inspectProduction({ run = command } = {}) {
   if (envFiles.at(-1) !== managedEnv) throw new Error('Effective managed platform configuration is ambiguous');
   const platformFiles = await inventorySource(join(source, 'services/platform/src'), { git: false });
   const webFiles = await inventorySource(webRoot, { git: false });
-  return { source: await realpath(source), platformFingerprint: fingerprintFiles(platformFiles), webFingerprint: fingerprintFiles(webFiles), webRoot: await realpath(webRoot), imageDigest: safe.PLATFORM_SANDBOX_IMAGE_DIGEST ?? null,
+  return { source: await realpath(source), dataDir: safe.PLATFORM_DATA_DIR ?? '/srv/osd/platform', platformFingerprint: fingerprintFiles(platformFiles), webFingerprint: fingerprintFiles(webFiles), webRoot: await realpath(webRoot), imageDigest: safe.PLATFORM_SANDBOX_IMAGE_DIGEST ?? null,
     entryHash: await sha256(join(webRoot, 'index.html')), managedEnv, host: safe.PLATFORM_HOST ?? '127.0.0.1', port: Number(safe.PLATFORM_PORT ?? 4790),
     unitHash: createHash('sha256').update(configuration).digest('hex') };
 }

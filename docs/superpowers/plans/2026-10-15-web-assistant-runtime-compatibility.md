@@ -412,6 +412,8 @@ Narrow storage preparation, October 16: a RED regression demonstrated that an un
 
 ### Task 15: Frozen Candidate, Explicit Publication and Final Acceptance
 
+October 17 publication checkpoint: candidate `2026-10-17T12-17-17-894Z-9aab91ab` at frozen source `a2d71b4` passed lint/typecheck, 71 workflow tests, 2,194 frontend tests, 1,103 platform tests with six optional skips, all three Rust checks and actual installed-image verification. It stopped before Web build or application deployment because target capture inferred `/srv/osd/platform` from the final managed env file while the active service inherits `/opt/open-science-desktop/.deploy/platform-data` from an earlier file. Production inspection now freezes the effective process data directory without publishing credentials; target capture and recovery compatibility checks use that same validated absolute path rather than reparsing a partial env stack. Two observed REDs pass in release 72/72, and a read-only real target capture confirms the existing independent service profile is ready with only `gpt-6.1-sol`. No real profile, host configuration, selection or deployed source was changed. A new frozen candidate remains required for Web/browser/recovery and actual nine-capability acceptance; no old frozen source or manifest may be patched.
+
 **Read/modify evidence only:** Existing release manifest and `PROGRESS.md`.
 
 - [ ] Review the complete spec-to-task matrix, staged source identity, CI image artifact and compatible rollback reader. Ensure all required Codex capabilities passed; ask the user about any unresolved native limitation or plaintext-upstream remediation rather than silently accepting weaker behavior.
