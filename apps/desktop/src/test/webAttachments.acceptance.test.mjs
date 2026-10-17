@@ -101,8 +101,16 @@ test.skipIf(!process.env.OSD_ATTACHMENTS_ACCEPTANCE)("uploads, restores, downloa
         await page.getByRole("button",{name:"Preview paper.pdf",exact:true}).click();await page.getByRole("dialog").locator("canvas").first().waitFor();await page.getByRole("button",{name:"Close preview"}).click();
         await page.locator("textarea").first().fill("Use the earlier CSV again without another upload.");const follow=page.waitForResponse((r)=>r.request().method()==="POST" && /\/prompt_async/.test(r.url()));await page.getByRole("button",{name:width===390?"发送":"Send",exact:true}).click();expect((await follow).status()).toBe(202);
         await expect.poll(async()=>{const state=await cliRuntime.ensureUser(user.id);return [...state.sessions.values()].filter((s)=>s.history.filter((m)=>m.info.role==="user").length>=2 && s.status==="idle").length;}).toBeGreaterThan(0);
+        // A removable pending card is visible before the upload acknowledgement.
+        await page.route("**/api/attachments/upload?**", async (route) => {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          await route.continue();
+        }, { times: 1 });
+        const uploadAcknowledged = page.waitForResponse((response) => response.request().method() === "POST" && /\/api\/attachments\/upload\?/.test(response.url()));
         await page.locator('input[type="file"]').first().setInputFiles([originals[2]]);
         await page.getByRole("button", { name: "Remove data.csv" }).waitFor();
+        expect((await uploadAcknowledged).ok()).toBe(true);
+        await expect.poll(async () => page.locator('[data-attachment-id]').count(), { timeout: 10000 }).toBe(4);
         const send = page.getByRole("button", { name: width === 390 ? "发送" : "Send", exact: true });
         for (const text of ["", "   "]) {
           await page.locator("textarea").first().fill(text);
