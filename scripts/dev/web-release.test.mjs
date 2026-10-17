@@ -640,6 +640,22 @@ test('selected native acceptance checks the frozen target before and after execu
  assert.equal(runs,2);
 });
 
+test('live acceptance records temporary legacy seeding selection but cannot pass until the target is restored',async()=>{
+ const {runSelectedAssistantLive,assistantTargetHash,requiredAssistantCapabilities}=await import('./web-assistant-release.mjs');
+ const target={schema:2,runtime:'codex',model:'gpt-6.1-sol'};
+ const candidate={selection:{liveGateVersion:2},assistantTarget:target},selections=[];
+ const evidence={schema:2,status:'passed',runtime:target.runtime,model:target.model,targetHash:assistantTargetHash(target),
+  policyRevision:4,userId:'fixture',capabilities:Object.fromEntries(requiredAssistantCapabilities.map(name=>[name,'passed']))};
+ const options={connect:async()=>({close:async()=>{}}),capture:async()=>target,recordSelection:async value=>selections.push(value)};
+ await runSelectedAssistantLive(candidate,{}, {...options,runAcceptance:async({onSelection})=>{
+  await onSelection({runtime:'opencode',revision:3});await onSelection({runtime:'codex',revision:4});return evidence;
+ }});
+ assert.deepEqual(selections,[{runtime:'opencode',revision:3},{runtime:'codex',revision:4}]);
+ await assert.rejects(runSelectedAssistantLive(candidate,{}, {...options,runAcceptance:async({onSelection})=>{
+  await onSelection({runtime:'opencode',revision:4});return evidence;
+ }}),/activation receipt/);
+});
+
 test('failed native activation restores only the prior committed Admin selection through a fresh revisioned request',async()=>{
  const {readAssistantSelection,restoreAssistantSelection}=await import('./web-assistant-release.mjs');
  const admin={origin:'http://127.0.0.1:4790',headers:{cookie:'private-test-cookie',origin:'http://127.0.0.1:4790'}};

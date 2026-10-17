@@ -88,13 +88,14 @@ export async function runSelectedAssistantLive(candidate, production, { connect,
   try {
     let selected;
     const onSelection=async receipt=>{
-      if(receipt?.runtime!==candidate.assistantTarget.runtime||!Number.isSafeInteger(receipt.revision)||receipt.revision<1)
+      if(!['opencode',candidate.assistantTarget.runtime].includes(receipt?.runtime)||!Number.isSafeInteger(receipt.revision)||receipt.revision<1)
         throw Error('Selected assistant activation receipt is invalid');
       selected={runtime:receipt.runtime,revision:receipt.revision};await recordSelection(selected);
     };
     const evidence = await runAcceptance({ production, target: structuredClone(candidate.assistantTarget), admin: client, request, onSelection });
     await assertAssistantTargetCurrent(candidate, capture);
-    if(!selected||evidence?.policyRevision!==selected.revision)throw Error('Selected assistant activation receipt is missing or stale');
+    if(!selected||selected.runtime!==candidate.assistantTarget.runtime||evidence?.policyRevision!==selected.revision)
+      throw Error('Selected assistant activation receipt is missing or stale');
     return verifyAssistantEvidence(candidate.assistantTarget, evidence);
   } finally { await client.close(); }
 }
