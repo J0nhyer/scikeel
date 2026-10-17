@@ -31,6 +31,8 @@ export class ConversationRouter {
   const sources=new Map(),hidden=new Set();
   for(const row of cli) {
    if(!runtimes.has(row.runtime)||row.runtime==='opencode')throw fail('conversation_history_invalid');
+   if(row.bindingHistory!==undefined&&(!Array.isArray(row.bindingHistory)||row.bindingHistory.length>128||
+    row.bindingHistory.some(binding=>!id(binding?.nativeSessionId)||!id(binding.identityRevision))))throw fail('conversation_history_invalid');
    try {await this.#row(owner,row);}catch(error){if(error.code==='project_trashed')continue;throw error;}
    if(sources.has(row.id))throw fail('conversation_origin_conflict');
    sources.set(row.id,{row,runtime:row.runtime,sourceId:row.id});
@@ -46,11 +48,14 @@ export class ConversationRouter {
    const bindingSources=new Map();
    for(const binding of value.bindings) {
     const candidates=rawSources.filter(source=>source.runtime===binding.runtime &&
-     (binding.runtime==='opencode'?source.sourceId===binding.nativeSessionId:source.row.nativeSessionId===binding.nativeSessionId));
+     (binding.runtime==='opencode'?source.sourceId===binding.nativeSessionId:source.row.nativeSessionId===binding.nativeSessionId||
+      source.row.bindingHistory?.some(previous=>previous.nativeSessionId===binding.nativeSessionId&&previous.identityRevision===binding.identityRevision)));
     if(candidates.length>1)throw fail('conversation_origin_conflict');
     if(candidates[0]) {
      const candidate=candidates[0];
-     if(candidate.row.directory!==value.directory||binding.runtime!=='opencode'&&binding.identityRevision&&candidate.row.identityRevision!==binding.identityRevision)
+     if(candidate.row.directory!==value.directory||binding.runtime!=='opencode'&&binding.identityRevision&&
+       !(candidate.row.nativeSessionId===binding.nativeSessionId&&candidate.row.identityRevision===binding.identityRevision)&&
+       !candidate.row.bindingHistory?.some(previous=>previous.nativeSessionId===binding.nativeSessionId&&previous.identityRevision===binding.identityRevision))
       throw fail('conversation_origin_conflict');
      bindingSources.set(binding.id,candidate);if(candidate.sourceId!==value.id)hidden.add(candidate.sourceId);
     }
@@ -59,7 +64,8 @@ export class ConversationRouter {
    if(archival?.row.directory!==undefined&&archival.row.directory!==value.directory)throw fail('conversation_origin_conflict');
    if(archival&&archival.sourceId!==value.id)hidden.add(archival.sourceId);
    const base=rawSources.find(source=>source.sourceId===value.id),origin=bindingSources.get(value.currentBindingId)??archival??base;
-   if(base&&base!==archival&&![...bindingSources.values()].includes(base))throw fail('conversation_origin_conflict');
+   const unbound=!value.bindings.length&&!value.historicalSource&&!(value.events??[]).length;
+   if(base&&base!==archival&&![...bindingSources.values()].includes(base)&&!unbound)throw fail('conversation_origin_conflict');
    const row={...(origin?.row??{}),id:value.id,title:value.title,directory:value.directory,parentID:value.parentId,
     metadata:{...(origin?.row.metadata??{}),...(value.lifecycle==='archived'?{archived:true}:{})}};
    await this.#row(owner,row);
@@ -128,6 +134,27 @@ export class ConversationRouter {
   return {...message,info:{...message.info,id:messageId,sessionID:conversationId},
    parts:message.parts.map(part=>({...part,sessionID:conversationId,messageID:messageId}))};
  }
+ #originMessages(source,value,origin,record,rows) {
+  const origins=new Map(source.bindingSources);
+  if(value.historicalSource)origins.set(value.historicalSource.id,source.archival);
+  const sameSource=other=>other&&other.runtime===record.runtime&&other.sourceId===record.sourceId;
+  const shared=new Set([...origins].filter(([,other])=>sameSource(other)).map(([key])=>key));
+  const assigned=new Map();
+  for(const event of value.events??[]) {
+   const key=event.bindingId??event.historicalSourceId;if(!shared.has(key))continue;
+   if(assigned.has(event.nativeMessageId)&&assigned.get(event.nativeMessageId)!==key)throw fail('conversation_origin_conflict');
+   assigned.set(event.nativeMessageId,key);
+  }
+  // A shared append-only transcript is not a second copy of every binding.
+  // Only the current origin may acquire previously unindexed messages.
+  const active=value.currentBindingId??value.historicalSource?.id;
+  return rows.filter(message=>{
+   const previous=assigned.get(message.info.id);
+   if(previous)return previous===origin;
+   if(!shared.has(active))throw fail('conversation_history_changed',409);
+   return origin===active;
+  });
+ }
  async messages(owner,conversationId) {
   const source=await this.#resolve(owner,conversationId);
   if(!source.canonical)return clone((await this.#validatedMessages(owner,source,source.rawSources)).map(message=>this.#publicMessage(message,conversationId)));
@@ -136,7 +163,7 @@ export class ConversationRouter {
   const found=new Map();
   for(const [origin,record] of origins) {
    if(!record)throw fail('conversation_history_unavailable');
-   const rows=await this.#validatedMessages(owner,record,source.rawSources);
+   const rows=this.#originMessages(source,value,origin,record,await this.#validatedMessages(owner,record,source.rawSources));
    for(const message of rows)found.set(JSON.stringify([origin,message.info.id]),message);
   }
   for(const event of value.events??[]) {
@@ -156,13 +183,16 @@ export class ConversationRouter {
   const jobs=[];
   if(!value)jobs.push({record:source,historical:{runtime:source.runtime,sessionId:source.sourceId}});
   else {
+   if(!value.historicalSource&&!value.bindings.length&&source.sourceId)
+    jobs.push({record:source,historical:{runtime:source.runtime,sessionId:source.sourceId}});
    if(value.historicalSource)jobs.push({record:source.archival,historical:{runtime:value.historicalSource.runtime,sessionId:value.historicalSource.sessionId}});
    for(const binding of value.bindings)jobs.push({record:source.bindingSources.get(binding.id),binding});
   }
   for(const job of jobs) {
    if(!job.record)throw fail('conversation_history_unavailable');
-   const messages=await this.#validatedMessages(owned,job.record,source.rawSources);
+   const rows=await this.#validatedMessages(owned,job.record,source.rawSources);
    const originId=job.historical?value?.historicalSource?.id:job.binding.id;
+   const messages=value&&(value.historicalSource||value.bindings.length)?this.#originMessages(source,value,originId,job.record,rows):rows;
    const events=messages.map(message=>{
     const previous=value?.events.filter(event=>(event.bindingId??event.historicalSourceId)===originId&&event.nativeMessageId===message.info.id)??[];
     if(previous.length>1)throw fail('conversation_origin_conflict');

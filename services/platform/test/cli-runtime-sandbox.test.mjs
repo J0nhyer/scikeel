@@ -49,6 +49,38 @@ test('HTTP admission rejects stale selection, unsupported model and missing requ
   assert.equal((await conversations.open(owner,f.session.id)).execution,0);assert.equal(f.session.status,'idle');
  }
 });
+test('canonical native continuation resumes only a current represented binding and replays no intervening or stale native state',async t=>{
+ const calls=[];const f=await fixture(t,{run:async args=>{calls.push(args);const nativeSessionId=args.nativeSessionId??`native-fresh-${calls.length}`;
+  await args.onAccepted({nativeSessionId,turnId:`turn-${calls.length}`});await args.emit({type:'text',text:'Verified completed evidence'});
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId};}});
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ let value=await conversations.open(owner,f.session.id);
+ value=await conversations.importHistorical(owner,{conversationId:f.session.id,expectedRevision:value.revision,title:'Owned',parentId:null,lifecycle:'active',
+  source:{runtime:'opencode',sessionId:'original-opencode'},events:[{nativeEventId:'old-user',nativeMessageId:'old-user',publicMessageId:'old-user',role:'user',state:'completed',contentHash:'a'.repeat(64)},
+   {nativeEventId:'old-answer',nativeMessageId:'old-answer',publicMessageId:'old-answer',role:'assistant',state:'completed',contentHash:'b'.repeat(64)}],cursor:'legacy-read'});
+ const canonicalHistory=[{info:{id:'old-user',role:'user',time:{completed:1}},parts:[{type:'text',text:'Original question'}]},
+  {info:{id:'old-answer',role:'assistant',time:{completed:2}},parts:[{type:'text',text:'Original completed evidence'}]}];
+ f.session.history=[{info:{id:'private-user',role:'user',time:{completed:1}},parts:[{type:'text',text:'Private stale question'}]},
+  {info:{id:'private-answer',role:'assistant',time:{completed:2}},parts:[{type:'text',text:'Do not use private transcript as canonical history'}]}];
+ const send=async id=>{
+  const body={parts:[{type:'text',text:'New authorized request'}]},executionAdmission=await f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId:id,policyRevision:'2',body,
+   readHandover:async()=>({history:canonicalHistory,decisions:[{id:'confirmed-choice',answer:'Use the confirmed research method'}],
+    attachments:[{id:'owned-data',name:'data.csv',path:'.scikeel/attachments/data.csv'}]})});
+  await f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'New authorized request',executionAdmission});
+  return conversations.open(owner,f.session.id);
+ };
+ value=await send('fresh-context');assert(!calls[0].nativeSessionId);assert.match(calls[0].text,/Original completed evidence/);
+ assert(!calls[0].text.includes('Do not use private transcript'));assert.match(calls[0].text,/Use the confirmed research method/);
+ assert.match(calls[0].text,/\.scikeel\/attachments\/data.csv/);
+ assert.equal(value.bindings[0].representedSequence,2,'Accepted bounded completed context covers the historical sequence boundary');
+ value=await send('same-binding');assert.equal(calls[1].nativeSessionId,'native-fresh-1');assert(!calls[1].text.includes('Original completed evidence'));
+ // A different binding contributed later history; switching back must create a fresh native thread.
+ value=await conversations.bind(owner,f.session.id,{expectedRevision:value.revision,binding:{runtime:'claude',nativeSessionId:'other-native',identityRevision:'other-profile',representedSequence:value.sequence}});
+ value=await send('intervening-binding');assert.equal(calls[2].nativeSessionId,undefined);assert.match(calls[2].text,/Original completed evidence/);
+ assert(!calls[2].text.includes('other-native'));assert.notEqual(value.currentBindingId,value.bindings.find(binding=>binding.runtime==='claude').id);
+});
 test('an admitted native turn carries its canonical identity and settles only after verified cleanup',async t=>{
  for(const verified of [true,false]){
   let f,admitted;
@@ -83,6 +115,37 @@ test('Stop during asynchronous HTTP admission prevents a late native reservation
  await ready;await f.manager.abortSession('a',f.session.id);release();
  await assert.rejects(pending,{code:'turn_cancelled'});
  assert.equal((await conversations.open(owner,f.session.id)).execution,0);assert.equal(f.manager.turnReservations.size,0);
+});
+test('a completion cannot replace the accepted native identity or settle its lease with contradictory evidence',async t=>{
+ const f=await fixture(t,{run:async args=>{
+  await args.onAccepted({nativeSessionId:'accepted-native',turnId:'accepted-turn'});
+  await args.emit({type:'text',text:'Partial response'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'different-native'};
+ }});
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ const executionAdmission=await f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId:'contradictory-completion',policyRevision:'2',body:{parts:[{type:'text',text:'Research'}]}});
+ await f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'Research',executionAdmission});
+ assert.equal(f.session.nativeSessionId,'accepted-native');
+ assert.equal((await conversations.open(owner,f.session.id)).turns['contradictory-completion'].state,'unknown');
+ assert.equal(f.manager.assistantSnapshot('a').recoveryRequired,true);
+});
+test('Stop, changed canonical revision and unavailable owned history all prevent native handover dispatch',async t=>{
+ for(const mode of ['stop','revision','unavailable']) {
+  const f=await fixture(t,{run:async()=>{throw Error('No inference after rejected context read');}});
+  const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+  const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+  await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+  const readHandover=async current=>{
+   if(mode==='stop')await f.manager.abortSession('a',f.session.id);
+   if(mode==='revision')await conversations.bind(owner,f.session.id,{expectedRevision:current.revision,binding:{runtime:'codex',nativeSessionId:'intervening-native',identityRevision:'owned-profile',representedSequence:0}});
+   if(mode==='unavailable')throw Object.assign(Error('Missing owned history'),{code:'conversation_history_unavailable',statusCode:503});
+   return {history:[],decisions:[],attachments:[]};
+  };
+  await assert.rejects(f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId:'context-rejected',policyRevision:'2',
+   body:{parts:[{type:'text',text:'Research'}]},readHandover}),{code:mode==='stop'?'turn_cancelled':mode==='revision'?'conversation_revision_conflict':'conversation_history_unavailable'});
+  assert.equal((await conversations.open(owner,f.session.id)).execution,0);assert.equal(f.manager.turnReservations.size,0);
+ }
 });
 test("existing Codex conversations use sandbox transport with preserved history and no host credentials or child processes",async(t)=>{
   const calls=[];const f=await fixture(t,{run:async args=>{

@@ -1379,7 +1379,7 @@ test('native HTTP prompt obtains a canonical policy lease before research and at
  policy.registerAccount(owner);
  const session=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir,title:'Owned'});
  await f.server.conversations.create(owner,{conversationId:session.id,title:'Owned',parentId:null,lifecycle:'active'});
- f.server.conversationRouter={index:async()=>f.server.conversations.open(owner,session.id)};
+ f.server.conversationRouter.listOpenCode=async()=>[];
  let phase,scope;
  f.server.researchTasks.get=async()=>{
   const saved=await f.server.conversations.open(owner,session.id),receipt=saved.turns['http-owned'];
@@ -1447,10 +1447,11 @@ async function nativeHttpFixture(t,run){
  const create=async parentId=>{
   const session=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir});
   if(parentId)session.parentId=parentId;
+  await cliRuntime.persistUser(await cliRuntime.ensureUser(user.id));
   await f.server.conversations.create(owner,{conversationId:session.id,title:'Owned',parentId:parentId??null,lifecycle:'active'});
   return session;
  };
- const session=await create();f.server.conversationRouter={index:(scope,id)=>f.server.conversations.open(scope,id)};
+ const session=await create();f.server.conversationRouter.listOpenCode=async()=>[];
  const send=(requestId,body={},target=session)=>client.request(`/session/${target.id}/prompt_async`,{method:'POST',
   headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2','x-scikeel-request-id':requestId},
   body:JSON.stringify({parts:[{type:'text',text:'Research'}],model:{providerID:'codex',modelID:'approved'},...body})});
@@ -1460,6 +1461,42 @@ async function until(check){
  for(let n=0;n<100;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
  assert.fail('Timed out waiting for native turn settlement');
 }
+test('native HTTP profile handover reads canonical messages, confirmed decisions and owned accepted attachment bytes',async t=>{
+ const calls=[];const f=await nativeHttpFixture(t,async args=>{
+  calls.push(args);const nativeSessionId=args.nativeSessionId??`http-native-${calls.length}`;
+  await args.onAccepted({nativeSessionId,turnId:`http-turn-${calls.length}`});
+  await args.emit({type:'text',text:'Completed canonical research evidence'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ });
+ const paths=[];f.server.attachments.materializeCopies=async({files})=>Promise.all(files.map(async file=>{
+  const path=join(f.owner.workspaceDir,`${file.id}.csv`);const bytes=await readFile(file.sourcePath);
+  assert.equal(bytes.toString(),'value\n2\n');await writeFile(path,bytes);paths.push(path);
+  const {sourcePath:_,...metadata}=file;return {...metadata,path,workDir:f.owner.workspaceDir};
+ }));
+ const draft=await f.server.attachments.createDraft(f.user.id),file=await f.server.attachments.upload(f.user.id,{draftId:draft.id},'values.csv',Readable.from(['value\n2\n']));
+ const first=await f.send('initial-context',{attachmentTurn:{draftId:draft.id,turnId:'initial-context',attachmentIds:[file.id]}});
+ assert.equal(first.status,202,await first.text());await until(()=>f.cliRuntime.activeTurns.size===0);
+ const task=await f.server.researchTasks.create(f.researchOwner,{objective:'Reproduce a verified result',goal:'thesis',mode:'collaborative',inputs:[],deliverables:['result.txt'],pageId:'owned-page'});
+ await writeFile(join(f.owner.directory,task.reportPath),JSON.stringify({version:1,execution:task.execution,status:'waiting_input',
+  decisions:[{id:'task-method',question:'Which input transformation?'}],steps:[],artifacts:[],checks:[]}));
+ await f.server.researchTasks.action(f.user.id,f.session.id,{action:'decide',id:'task-method',answer:'Confirmed task-specific transformation'});
+ let state=await f.server.collaboration.get(f.researchOwner);
+ state=await f.server.collaboration.begin(f.researchOwner,state.revision);
+ state=await f.server.collaboration.checkpoint(f.researchOwner,{execution:state.execution,kind:'method',question:'Which method?',suggestedAnswer:'Method A'});
+ state=await f.server.collaboration.answer(f.researchOwner,{id:state.pending.id,execution:state.execution,revision:state.revision,answer:'Confirmed durable method B'});
+ await f.server.collaboration.settled(f.researchOwner,state.execution);
+ const refresh=f.cliRuntime.profileResolver.refresh;
+ f.cliRuntime.profileResolver.refresh=async runtime=>({...await refresh(runtime),identityRevision:'updated-service-profile'});
+ const second=await f.send('profile-handover');assert.equal(second.status,202,await second.text());await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal(calls.length,2);assert.equal(calls[1].nativeSessionId,undefined);
+ assert.match(calls[1].text,/Completed canonical research evidence/);assert.match(calls[1].text,/Confirmed durable method B/);
+ assert.match(calls[1].text,/"source":"collaboration"/);assert.match(calls[1].text,/"source":"research-task"/);
+ assert.match(calls[1].text,/Confirmed task-specific transformation/);
+ assert.match(calls[1].text,/values.csv/);assert(calls[1].text.includes(file.sha256));assert(!calls[1].text.includes(file.sourcePath??'/attachments/users/'));
+ assert.equal((await readFile(paths.at(-1))).toString(),'value\n2\n');
+ const response=await f.client.request(`/session/${f.session.id}/message`);assert.equal(response.status,200);
+ const history=await response.json();assert.equal(history.length,4);assert.equal(new Set(history.map(message=>message.info.id)).size,4);
+ const rows=await f.cliRuntime.readHistoricalSessions(f.owner);assert.deepEqual(rows[0].bindingHistory,[{nativeSessionId:'http-native-1',identityRevision:'service-profile'}]);
+});
 test('native HTTP research starts before preparation and remains held until verified cleanup',async t=>{
  let finish,entered;const gate=new Promise(resolve=>finish=resolve),ready=new Promise(resolve=>entered=resolve);t.after(()=>finish());
  let text;const f=await nativeHttpFixture(t,async args=>{
@@ -1545,9 +1582,10 @@ test('native HTTP root completion cannot settle an active descendant research ex
  const rootGate=new Promise(resolve=>finishRoot=resolve),childGate=new Promise(resolve=>finishChild=resolve);
  t.after(()=>{finishRoot();finishChild();});
  const f=await nativeHttpFixture(t,async args=>{
-  await args.onAccepted({nativeSessionId:args.session.parentId?'native-child':'native-root',turnId:'native-turn'});
+  const nativeSessionId=args.session.parentId?'native-child':'native-root';
+  await args.onAccepted({nativeSessionId,turnId:'native-turn'});
   if(!args.session.parentId)entered();
-  await (args.session.parentId?childGate:rootGate);await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'native-owned'};
+  await (args.session.parentId?childGate:rootGate);await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
  });
  try{
   assert.equal((await f.send('root-research')).status,202);await ready;const child=await f.create(f.session.id);
@@ -1555,6 +1593,8 @@ test('native HTTP root completion cannot settle an active descendant research ex
   await until(()=>f.session.status==='idle'&&!f.cliRuntime.turnReservations.has(f.session.id));
   assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
   finishChild();await until(()=>f.cliRuntime.activeTurns.size===0);
+  assert.equal(f.server.promptAdmissions.size,0,'Verified descendant cleanup releases its held admission');
+  assert.equal((await f.server.conversations.open(f.owner,child.id)).turns['active-child'].state,'settled');
   f.server.collaboration.now=()=>Date.now()+10000;await f.server.collaboration.tick();
   assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'idle');assert.equal(f.server.promptAdmissions.size,0);
  }finally{finishRoot();finishChild();}

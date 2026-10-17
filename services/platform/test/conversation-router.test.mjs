@@ -121,3 +121,35 @@ test('completed attachment references are included in canonical history integrit
  await router.index(owner,'old-cli');assert.equal((await router.messages(owner,'old-cli'))[0].attachments[0].name,'original.pdf');
  attachment='changed.pdf';await assert.rejects(router.messages(owner,'old-cli'),{code:'conversation_history_changed'});
 });
+test('one append-only native transcript assigns each message once across archival and successive native bindings',async t=>{
+ const rootDir=await mkdtemp(join(tmpdir(),'conversation-native-boundaries-'));t.after(()=>rm(rootDir,{recursive:true,force:true}));
+ let nativeSessionId=null,identityRevision=null;const bindingHistory=[],messages=[];
+ const message=(id,role,text)=>({info:{id,sessionID:'old-cli',role,time:{completed:1}},parts:[{id:`part-${id}`,type:'text',text}]});
+ messages.push(message('legacy-user','user','Original question'),message('legacy-answer','assistant','Original evidence'));
+ const {router}=fixture({cli:{readHistoricalSessions:async()=>[{...row('old-cli'),runtime:'codex',nativeSessionId,identityRevision,bindingHistory}],
+  readHistoricalMessages:async()=>({session:row('old-cli'),sourceRevision:'snapshot',messages:structuredClone(messages),nextCursor:null})}});
+ router.conversations=new ConversationState({rootDir,authorize:router.authorize});
+ let value=await router.index(owner,'old-cli');assert.equal(value.sequence,2);
+ nativeSessionId='native-one';identityRevision='profile-one';
+ value=await router.conversations.bind(owner,'old-cli',{expectedRevision:value.revision,binding:{runtime:'codex',nativeSessionId,identityRevision,representedSequence:2}});
+ messages.push(message('one-user','user','First continuation'),message('one-answer','assistant','First response'));
+ value=await router.index(owner,'old-cli');assert.equal(value.sequence,4,'Closed archival prefix is not reimported into the new binding');
+ assert.deepEqual((await router.messages(owner,'old-cli')).map(item=>item.info.id),['legacy-user','legacy-answer',...value.events.slice(2).map(event=>event.publicMessageId)]);
+ bindingHistory.push({nativeSessionId,identityRevision});nativeSessionId='native-two';identityRevision='profile-two';
+ value=await router.conversations.bind(owner,'old-cli',{expectedRevision:value.revision,binding:{runtime:'codex',nativeSessionId,identityRevision,representedSequence:4}});
+ messages.push(message('two-user','user','Second continuation'),message('two-answer','assistant','Second response'));
+ value=await router.index(owner,'old-cli');assert.equal(value.sequence,6);
+ const history=await router.messages(owner,'old-cli');assert.deepEqual(history.map(item=>item.parts[0].text),messages.map(item=>item.parts[0].text));
+ router.conversations=new ConversationState({rootDir,authorize:router.authorize});assert.deepEqual(await router.messages(owner,'old-cli'),history);
+ assert.equal((await router.index(owner,'old-cli')).sequence,6);
+ messages[0].parts[0].text='Changed archival evidence';
+ await assert.rejects(router.messages(owner,'old-cli'),{code:'conversation_history_changed'});
+ await assert.rejects(router.index(owner,'old-cli'),{code:'conversation_origin_conflict'});
+});
+test('a freshly created canonical conversation indexes its owned native record before the first native acceptance',async t=>{
+ const rootDir=await mkdtemp(join(tmpdir(),'conversation-unbound-native-'));t.after(()=>rm(rootDir,{recursive:true,force:true}));
+ const {router}=fixture();router.conversations=new ConversationState({rootDir,authorize:router.authorize});
+ await router.conversations.create(owner,{conversationId:'old-cli',title:'Owned',parentId:null,lifecycle:'active'});
+ const value=await router.index(owner,'old-cli');assert.equal(value.sequence,1);
+ assert.equal((await router.messages(owner,'old-cli'))[0].info.id,'message-cli');
+});

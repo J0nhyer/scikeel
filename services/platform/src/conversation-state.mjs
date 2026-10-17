@@ -192,14 +192,20 @@ export class ConversationState {
   if(value.instanceId!==owner.instanceId || value.workspaceDir!==owner.workspaceDir)throw fail('conversation_denied',403);
   await this.authorize({...owner,directory:value.directory});return value;
  }
- async open(owner,id) {owner=await this.#owner(owner);return structuredClone(await this.#owned(await this.#load(owner.userId),owner,id));}
+ async open(owner,id) {
+  owner=await this.#owner(owner);
+  return this.#serialized(owner.userId,async()=>structuredClone(await this.#owned(await this.#load(owner.userId),owner,id)));
+ }
  async list(owner) {
-  owner=await this.#owner(owner);const data=await this.#load(owner.userId),values=[];
-  for(const id of Object.keys(data.conversations).sort()) {
-   try {values.push(structuredClone(await this.#owned(data,owner,id)));}
-   catch(error){if(error.code!=='project_trashed')throw error;}
-  }
-  return values;
+  owner=await this.#owner(owner);
+  return this.#serialized(owner.userId,async()=>{
+   const data=await this.#load(owner.userId),values=[];
+   for(const id of Object.keys(data.conversations).sort()) {
+    try {values.push(structuredClone(await this.#owned(data,owner,id)));}
+    catch(error){if(error.code!=='project_trashed')throw error;}
+   }
+   return values;
+  });
  }
  async create(owner,input) {
   owner=await this.#owner(owner);
@@ -391,7 +397,7 @@ export class ConversationState {
  }
  async previewTurn(owner,id,input) {
   owner=await this.#owner(owner);this.#turnInput(owner,input);
-  return this.#turnCandidate(owner,await this.#owned(await this.#load(owner.userId),owner,id),input);
+  return this.#serialized(owner.userId,async()=>this.#turnCandidate(owner,await this.#owned(await this.#load(owner.userId),owner,id),input));
  }
  async prepareTurn(owner,id,input) {
   owner=await this.#owner(owner);this.#turnInput(owner,input);
@@ -406,14 +412,17 @@ export class ConversationState {
  // submission response never supplies native acceptance or creates a binding.
  async acceptNativeTurn(owner,id,input) {
   owner=await this.#owner(owner);
-  if(!exact(input,['requestId','expectedRevision','nativeAcceptance']) || !name(input.requestId) ||
+  if(!record(input)||Object.keys(input).some(key=>!['requestId','expectedRevision','nativeAcceptance','representedSequence'].includes(key))||!name(input.requestId) ||
       !integer(input.expectedRevision) || !acceptance(input.nativeAcceptance))throw invalid();
+  const representedSequence=input.representedSequence??0;
+  if(!integer(representedSequence))throw invalid();
   return this.#serialized(owner.userId,async()=>{
    const data=await this.#load(owner.userId),value=await this.#owned(data,owner,id),turn=value.turns[input.requestId];
    if(value.revision!==input.expectedRevision)throw fail('conversation_revision_conflict');
+   if(representedSequence>value.sequence)throw fail('invalid_native_binding',400);
    if(!turn || turn.state!=='submitted' || input.nativeAcceptance.runtime!==turn.identity.runtime)throw fail('invalid_conversation_transition');
    const native=bindingInput({runtime:turn.identity.runtime,nativeSessionId:input.nativeAcceptance.nativeSessionId,
-    identityRevision:turn.identityRevision,representedSequence:0});
+    identityRevision:turn.identityRevision,representedSequence});
    let binding=this.#findBinding(data,id,native);
    if(!binding){
     if(value.bindings.length>=64)throw fail('conversation_metadata_full',507);

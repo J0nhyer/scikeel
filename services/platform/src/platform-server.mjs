@@ -915,6 +915,30 @@ export class PlatformServer {
       held.rootSessionId===owner.sessionId&&held.rootExecution===execution);
   }
 
+  async #nativeHandoverState(user,owner,sessionId,conversation,access,worker) {
+    const history=await this.conversationRouter.messages(owner,sessionId);
+    const researchOwner=await this.#collaborationOwner(user,sessionId,access,worker);
+    const collaboration=await this.collaboration.get(researchOwner);
+    const decisions=collaboration.decisions.map(decision=>({...decision,source:'collaboration',sessionId:researchOwner.sessionId}));
+    for(const id of new Set([sessionId,researchOwner.sessionId])) {
+      const task=await this.researchTasks.get(user.id,id);
+      if(!task)continue;
+      if(task.userId!==user.id||task.directory!==owner.directory)throw workspaceError('conversation_owner_mismatch',403);
+      decisions.push(...task.decisions.map(decision=>({...decision,source:'research-task',sessionId:id})));
+    }
+    const listing=await this.attachments.list(user.id,sessionId);
+    const visible=new Set(history.map(message=>message.info.id));
+    for(const event of conversation.events)if(visible.has(event.publicMessageId))visible.add(event.nativeMessageId);
+    const ids=[...new Set(listing.turns.filter(turn=>turn.status==='accepted'&&visible.has(turn.messageID)).flatMap(turn=>turn.attachmentIds))];
+    const files=ids.length?await this.attachments.materialize(user.id,sessionId,ids):[];
+    const attachments=files.map(file=>{
+      const path=relative(owner.workspaceDir,file.path);
+      if(isAbsolute(path)||path==='..'||path.startsWith('../')||path.includes('\\'))throw workspaceError('handover_attachment_unavailable',409);
+      return {id:file.id,name:file.name,path,sha256:file.sha256,size:file.size,mime:file.mime};
+    });
+    return {history,decisions,attachments};
+  }
+
   async #prepareNativeResearch(executionAdmission,owner,sessionId,body) {
     const admission=new PromptAdmission({collaboration:this.collaboration,researchTasks:this.researchTasks}),held=[];
     const hold=(kind,ticket)=>{
@@ -1086,7 +1110,8 @@ export class PlatformServer {
             await this.conversationRouter.index(owner,sessionId);
             executionAdmission=await this.cliRuntime.admitHttpPrompt({conversations:this.conversations,owner,sessionId,
               body:promptBody,requestId:request.headers["x-scikeel-request-id"]??promptBody.attachmentTurn?.turnId,
-              policyRevision:request.headers["x-scikeel-assistant-revision"]});
+              policyRevision:request.headers["x-scikeel-assistant-revision"],
+              readHandover:conversation=>this.#nativeHandoverState(user,owner,sessionId,conversation,access,worker)});
             if(executionAdmission.replay){sendJson(response,202,{receipt:{requestId:executionAdmission.identity.requestId,state:executionAdmission.receipt.state}});return;}
             // A rejected preparation has dispatched no model operation. Actual
             // native dispatch and cleanup are owned by the admitted turn below.

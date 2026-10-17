@@ -302,6 +302,21 @@ test('overlapping metadata writer instances cannot overwrite an already reserved
  }finally{release();await pending;}
  assert.equal((await second.open(owner,first.id)).events.at(-1).nativeEventId,'first-writer');
 });
+test('owned reads queue behind an in-flight local commit instead of racing its checked atomic replacement',async t=>{
+ let hold=false,entered,release;
+ const gate=new Promise(resolve=>release=resolve),waiting=new Promise(resolve=>entered=resolve);
+ const {state}=await fixture(t,{beforeCommit:async()=>{if(hold){entered();await gate;}}});
+ const first=await state.importNative(owner,imported);hold=true;
+ const write=state.prepareTurn(owner,first.id,{...turn,expectedRevision:first.revision});await waiting;
+ const completed=[];
+ const reads=[state.open(owner,first.id).then(value=>{completed.push('open');return value;}),
+  state.list(owner).then(value=>{completed.push('list');return value;}),
+  state.previewTurn(owner,first.id,{...turn,expectedRevision:first.revision}).then(value=>{completed.push('preview');return value;})];
+ try {await new Promise(resolve=>setTimeout(resolve,20));assert.deepEqual(completed,[]);}
+ finally {release();await write;}
+ const [opened,listed,preview]=await Promise.all(reads);
+ assert.equal(opened.turns[turn.requestId].state,'prepared');assert.equal(listed[0].revision,opened.revision);assert.equal(preview.replay,true);
+});
 test('an accepted or unknown delivery cannot switch the active native binding',async t=>{
  const {state}=await fixture(t);const first=await state.importNative(owner,imported);
  await state.prepareTurn(owner,first.id,{...turn,expectedRevision:1});
