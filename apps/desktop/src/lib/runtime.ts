@@ -3782,15 +3782,57 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     ++modelCatalogVersion;
     const selected = get().gatewayRuntime;
     const account = get().gatewayUser?.id;
+    const observedContext = get().gatewayContext;
+    const observedClient = opencodeClient;
+    const observedRevision = get().gatewayPolicyRevision;
     set({ gatewayCatalogState: "loading" });
     try {
       const signal = AbortSignal.timeout(15000);
-      const data = await withSignal((async () => {
+      const readMetadata = async () => {
         const response = await fetch(`${gatewayOrigin()}/api/runtime`, { credentials: "same-origin", signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json() as Promise<{ available?: GatewayRuntimeOption[]; runtime?: GatewayRuntimeId; policyRevision?: number }>;
-      })(), signal);
+        return response.json() as Promise<{ available?: GatewayRuntimeOption[]; runtime?: GatewayRuntimeId; policyRevision?: number;
+          kind?: RuntimeKind; label?: string; context?: { instanceId: string; generation: number } | null }>;
+      };
+      let data = await withSignal(readMetadata(), signal);
       if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected || get().gatewayUser?.id !== account) return;
+      if (isPlatformWeb && data.runtime !== selected) {
+        const nextRuntime = data.runtime;
+        if (!nextRuntime || !["opencode", "codex", "claude"].includes(nextRuntime) || !observedClient)
+          throw new Error("Assistant catalog is unavailable");
+        if (!data.context) {
+          const warm = await fetch(`${gatewayOrigin()}/v1/whoami`, { credentials: "same-origin", signal });
+          if (!warm.ok) throw new Error("Workspace identity is unavailable");
+          data = await withSignal(readMetadata(), signal);
+        }
+        const context = data.context;
+        if (data.runtime !== nextRuntime || data.kind !== (nextRuntime === "opencode" ? "opencode" : "server") ||
+            !Number.isSafeInteger(data.policyRevision) || data.policyRevision! <= (observedRevision ?? 0) || !Array.isArray(data.available) ||
+            !context || !isWorkspaceReport({ context, state: "healthy", activity: "unknown", canRestart: false, retryAfterMs: 0 }))
+          throw new Error("Assistant identity is unavailable");
+        // The gateway protocol stays the same across assistants. Refresh its
+        // authority and catalog without disposing the client's owned drafts.
+        const [providers, configured] = await Promise.all([
+          listProvidersWithAvailability(observedClient, undefined, { signal, timeoutMs: 15000 }),
+          observedClient.getDefaultModel({ signal, timeoutMs: 15000 }),
+        ]);
+        const verified = await withSignal(readMetadata(), signal);
+        if (verified.runtime !== nextRuntime || verified.policyRevision !== data.policyRevision ||
+            verified.context?.instanceId !== context.instanceId || verified.context.generation !== context.generation)
+          throw new Error("Assistant identity changed while loading its catalog");
+        if (version !== gatewayCatalogVersion || opencodeClient !== observedClient || get().gatewayRuntime !== selected ||
+            get().gatewayUser?.id !== account || get().gatewayContext !== observedContext) return;
+        setPlatformAssistantRevision(data.policyRevision!); setPlatformWorkspaceGeneration(context.generation);
+        set(state => ({ gatewayRuntime: nextRuntime, runtimeKind: data.kind!, acpAgentName: nextRuntime === "opencode" ? null : data.label ?? nextRuntime,
+          gatewayPolicyRevision: data.policyRevision!, gatewayContext: context, providers,
+          ...reconcileGatewayModels({ ...state, gatewayRuntime: nextRuntime, providers, defaultModel: configured }, data.available!),
+          interactions: Object.fromEntries(Object.entries(state.interactions).map(([id, entry]) =>
+            [id, transitionInteraction(entry, "expired", "runtime_context_changed")])),
+        }));
+        for (const source of new Set([observedClient, ...streamClients.values()])) fencePlatformClient(source, get());
+        void get().reconcileRunning();
+        return;
+      }
       if (data.runtime !== selected || !Array.isArray(data.available)) throw new Error("Assistant catalog is unavailable");
       if (isPlatformWeb && (!Number.isSafeInteger(data.policyRevision) || data.policyRevision! < 1)) throw new Error("Assistant revision is unavailable");
       const source = opencodeClient;
