@@ -153,3 +153,51 @@ test('a freshly created canonical conversation indexes its owned native record b
  const value=await router.index(owner,'old-cli');assert.equal(value.sequence,1);
  assert.equal((await router.messages(owner,'old-cli'))[0].info.id,'message-cli');
 });
+test('synchronized native history renders the exact indexed snapshot while new messages continue arriving',async t=>{
+ const rootDir=await mkdtemp(join(tmpdir(),'conversation-streaming-snapshot-'));t.after(()=>rm(rootDir,{recursive:true,force:true}));
+ const message=id=>({info:{id,sessionID:'old-cli',role:id==='user'?'user':'assistant',time:{completed:1}},parts:[{id:`part-${id}`,type:'text',text:id}]});
+ const messages=[message('user')];let streaming=false,reads=0;
+ const {router}=fixture({cli:{readHistoricalMessages:async()=>{
+  reads++;const snapshot=structuredClone(messages);if(streaming)messages.push(message(`answer-${reads}`));
+  return {session:row('old-cli'),sourceRevision:`source-${reads}`,messages:snapshot,nextCursor:null};
+ }}});
+ router.conversations=new ConversationState({rootDir,authorize:router.authorize});
+ await router.index(owner,'old-cli');messages.push(message('answer-first'));streaming=true;
+ const before=reads,history=await router.messages(owner,'old-cli',{synchronize:true});
+ assert.deepEqual(history.map(message=>message.parts[0].text),['user','answer-first']);
+ assert.equal(reads,before+1,'Indexing and rendering must not reread a changing native transcript');
+ assert.equal((await router.messages(owner,'old-cli',{synchronize:true})).length,3);
+ assert.equal((await router.conversations.open(owner,'old-cli')).sequence,3);
+});
+test('synchronized history preserves an indexed partial reply while native text advances',async t=>{
+ const rootDir=await mkdtemp(join(tmpdir(),'conversation-partial-snapshot-'));t.after(()=>rm(rootDir,{recursive:true,force:true}));
+ const message={info:{id:'answer',sessionID:'old-cli',role:'assistant',time:{created:1}},parts:[{id:'part-answer',type:'text',text:'first'}]};
+ let streaming=false,reads=0;
+ const {router}=fixture({cli:{readHistoricalMessages:async()=>{
+  const snapshot=structuredClone(message);reads++;if(streaming)message.parts[0].text+=' next';
+  return {session:row('old-cli'),sourceRevision:`source-${reads}`,messages:[snapshot],nextCursor:null};
+ }}});
+ router.conversations=new ConversationState({rootDir,authorize:router.authorize});
+ await router.index(owner,'old-cli');message.parts[0].text='progress';streaming=true;
+ const history=await router.messages(owner,'old-cli',{synchronize:true});
+ assert.equal(history[0].parts[0].text,'progress');assert.equal((await router.conversations.open(owner,'old-cli')).events[0].state,'partial');
+});
+test('synchronized history still rejects rewrites of completed native evidence',async t=>{
+ const rootDir=await mkdtemp(join(tmpdir(),'conversation-completed-snapshot-'));t.after(()=>rm(rootDir,{recursive:true,force:true}));
+ let text='original';const {router}=fixture({cli:{readHistoricalMessages:async()=>({session:row('old-cli'),sourceRevision:'source',
+  messages:[{info:{id:'answer',sessionID:'old-cli',role:'assistant',time:{completed:1}},parts:[{id:'part-answer',type:'text',text}]}],nextCursor:null})}});
+ router.conversations=new ConversationState({rootDir,authorize:router.authorize});await router.index(owner,'old-cli');text='changed';
+ await assert.rejects(router.messages(owner,'old-cli',{synchronize:true}),{code:'conversation_origin_conflict'});
+ assert.equal((await router.conversations.open(owner,'old-cli')).sequence,1);
+});
+test('synchronized history retries only canonical revision conflicts and bounds repeated contention',async t=>{
+ const rootDir=await mkdtemp(join(tmpdir(),'conversation-snapshot-contention-'));t.after(()=>rm(rootDir,{recursive:true,force:true}));
+ const {router}=fixture();router.conversations=new ConversationState({rootDir,authorize:router.authorize});
+ await router.index(owner,'old-cli');const open=router.conversations.open.bind(router.conversations);let attempts=0;
+ router.conversations.open=async(...args)=>{if(++attempts===1)throw Object.assign(Error('changed'),{code:'conversation_revision_conflict'});return open(...args);};
+ assert.equal((await router.messages(owner,'old-cli',{synchronize:true})).length,1);assert.equal(attempts,2);
+ attempts=0;router.conversations.open=async()=>{attempts++;throw Object.assign(Error('changed'),{code:'conversation_revision_conflict'});};
+ await assert.rejects(router.messages(owner,'old-cli',{synchronize:true}),{code:'conversation_revision_conflict'});assert.equal(attempts,3);
+ attempts=0;router.conversations.open=async()=>{attempts++;throw Object.assign(Error('denied'),{code:'conversation_owner_mismatch'});};
+ await assert.rejects(router.messages(owner,'old-cli',{synchronize:true}),{code:'conversation_owner_mismatch'});assert.equal(attempts,1);
+});

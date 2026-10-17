@@ -943,7 +943,7 @@ export class PlatformServer {
     }else {
       let session=await this.conversationRouter.read(owner,sessionId);
       if(input.directory!==undefined&&directory!==session.directory)throw workspaceError("conversation_denied",403);
-      if(typeof this.conversationRouter.index==="function") {
+      if(typeof this.conversationRouter.index==="function"&&!["sessionMessage","sessionMessageRead"].includes(operation.operation)) {
         await this.conversationRouter.index(owner,sessionId);
         session=await this.conversationRouter.read(owner,sessionId);
       }
@@ -960,7 +960,7 @@ export class PlatformServer {
         value=(await this.conversationRouter.list(owner,{limit:10000})).filter(row=>row.parentID===sessionId);
       }else {
         const owned={...owner,directory:session.directory,sessionId};
-        value=await this.conversationRouter.messages(owned,sessionId);
+        value=await this.conversationRouter.messages(owned,sessionId,{synchronize:true});
         value=await this.attachmentTurns.decorate(user,owned,value);
         const outcomes=await this.toolOutcomes.list({userId:user.id,sessionId});
         value=await Promise.all(value.map(async message=>({...message,parts:await Promise.all((message.parts??[])

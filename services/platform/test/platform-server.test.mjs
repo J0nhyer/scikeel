@@ -1355,7 +1355,7 @@ test('managed history reads use owned public routing before assistant-specific d
     index:async()=>{indexes++;},
     list:async owner=>{assert.equal(owner.userId,user.id);return[{id:'retained',title:'Retained',directory:worker.workspaceDir}];},
     read:async(owner,id)=>{assert.equal(owner.generation,1);return{id,title:'Retained',directory:worker.workspaceDir};},
-    messages:async(_owner,id)=>{assert(indexes>0);reads++;return[{info:{id:'retained-message',sessionID:id,role:'assistant'},parts:[]}];},
+    messages:async(_owner,id,options)=>{assert.equal(options.synchronize,true);assert.equal(indexes,0);reads++;return[{info:{id:'retained-message',sessionID:id,role:'assistant'},parts:[]}];},
   };
   const listed=await client.request('/experimental/session?limit=200');assert.equal(listed.status,200);
   assert.equal((await listed.json())[0].id,'retained');
@@ -1463,6 +1463,27 @@ async function until(check,attempts=100){
  for(let n=0;n<attempts;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
  assert.fail('Timed out waiting for native turn settlement');
 }
+test('native HTTP history remains readable when a real turn completes between indexing and rendering',async t=>{
+ let finish,accepted=false;const completed=new Promise(resolve=>{finish=resolve;});
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'streaming-native-thread',turnId:'streaming-turn'});accepted=true;
+  await completed;await args.emit({type:'text',text:'Completed during the history read'});
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'streaming-native-thread'};
+ });
+ t.after(()=>finish());
+ const sent=await f.send('streaming-history-read');assert.equal(sent.status,202,await sent.text());await until(()=>accepted);
+ const original=f.cliRuntime.readHistoricalMessages.bind(f.cliRuntime);let reads=0;
+ f.cliRuntime.readHistoricalMessages=async owner=>{
+  const snapshot=await original(owner);
+  if(reads++===0){finish();await until(()=>f.cliRuntime.activeTurns.size===0);}
+  return snapshot;
+ };
+ const response=await f.client.request(`/session/${f.session.id}/message`);
+ assert.equal(response.status,200,await response.clone().text());const history=await response.json();
+ assert.deepEqual(history.map(message=>message.info.role),['user','assistant']);
+ assert.equal(history[1].parts[0].text,'Completed during the history read');
+ assert(history.every(message=>message.info.sessionID===f.session.id));
+});
 test('canonical Codex conversation continues through the actual OpenCode HTTP worker and returns to a fresh Codex binding',async t=>{
  const starts=[];let f;const files=localRevertFiles({workspaceDir:()=>f.owner.workspaceDir});
  f=await nativeHttpFixture(t,async args=>{

@@ -178,15 +178,28 @@ export class ConversationRouter {
    return origin===active;
   });
  }
- async messages(owner,conversationId,{includeReverted=false}={}) {
+ async messages(owner,conversationId,{includeReverted=false,synchronize=false}={}) {
+  if(!synchronize)return this.#renderMessages(owner,conversationId,{includeReverted});
+  for(let attempt=0;attempt<3;attempt++) {
+   try {
+    const snapshots=new Map(),value=await this.#index(owner,conversationId,snapshots);
+    return await this.#renderMessages(owner,conversationId,{includeReverted,snapshots,revision:value.revision});
+   }catch(error) {
+    if(error.code!=='conversation_revision_conflict'||attempt===2)throw error;
+   }
+  }
+ }
+ async #renderMessages(owner,conversationId,{includeReverted,snapshots,revision}) {
   const source=await this.#resolve(owner,conversationId);
+  if(snapshots&&source.canonical?.revision!==revision)throw fail('conversation_revision_conflict',409);
   if(!source.canonical)return clone((await this.#validatedMessages(owner,source,source.rawSources)).map(message=>this.#publicMessage(message,conversationId)));
   const value=source.canonical,origins=new Map(source.bindingSources),all=[];
   if(value.historicalSource)origins.set(value.historicalSource.id,source.archival);
   const found=new Map();
   for(const [origin,record] of origins) {
    if(!record)throw fail('conversation_history_unavailable');
-   const rows=this.#originMessages(source,value,origin,record,await this.#validatedMessages(owner,record,source.rawSources));
+   if(snapshots&&!snapshots.has(origin))throw fail('conversation_revision_conflict',409);
+   const rows=snapshots?snapshots.get(origin):this.#originMessages(source,value,origin,record,await this.#validatedMessages(owner,record,source.rawSources));
    for(const message of rows)found.set(JSON.stringify([origin,message.info.id]),message);
   }
   for(const event of value.events??[]) {
@@ -205,6 +218,9 @@ export class ConversationRouter {
   return clone(all);
  }
  async index(owner,conversationId) {
+  return this.#index(owner,conversationId);
+ }
+ async #index(owner,conversationId,snapshots) {
   const source=await this.#resolve(owner,conversationId),owned={...owner,directory:source.row.directory};
   let value=source.canonical;
   if(source.row.parentID&&!value)await this.index(owned,source.row.parentID);
@@ -229,6 +245,9 @@ export class ConversationRouter {
      role:message.info.role,state:messageState(message),contentHash:messageHash(message)};
    });
    const completeCursor=`index_${hash(events)}`,stored=job.historical?value?.historicalSource:value?.bindings.find(binding=>binding.id===job.binding.id);
+   // Render exactly the owned bytes imported below; the native transcript may
+   // append messages or update a partial reply before the next native read.
+   if(snapshots&&stored)snapshots.set(stored.id,clone(messages));
    if(stored?.importCursor===completeCursor&&events.every(event=>value.events.some(previous=>
       (previous.bindingId??previous.historicalSourceId)===stored.id&&Object.entries(event).every(([key,item])=>previous[key]===item))))continue;
    for(let offset=0;offset<events.length||offset===0;offset+=1000) {
@@ -239,6 +258,7 @@ export class ConversationRouter {
      await this.conversations.importNative(owned,{...input,binding:{runtime:job.binding.runtime,nativeSessionId:job.binding.nativeSessionId,
       identityRevision:job.binding.identityRevision,representedSequence:0}});
    }
+   if(snapshots)snapshots.set(job.historical?value.historicalSource.id:job.binding.id,clone(messages));
   }
   return value;
  }
