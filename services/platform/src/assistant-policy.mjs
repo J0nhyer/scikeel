@@ -218,6 +218,42 @@ export class AssistantPolicy {
       return this.#commitTransition();
     });
   }
+  // Internal maintenance entry point. The caller must prove retirement and
+  // reconcile the canonical receipt; no HTTP input supplies cleanup evidence.
+  async recoverExecution(input, reconcile) {
+    return this.#serial(async () => {
+      this.#assertAvailable();
+      if (!exact(input, identityFields) || typeof reconcile !== "function") throw error("invalid_assistant_identity", 400);
+      const captured = identity(input);
+      if (captured.policyRevision !== this.#state.revision || captured.runtime !== this.#state.activeRuntime)
+        throw error("assistant_revision_conflict");
+      const entries = Object.entries(this.#state.executions);
+      const matching = entries.filter(([, execution]) => identityFields.split(",").every(key => execution.identity[key] === captured[key]));
+      if (matching.length > 1 || entries.length && matching.length !== 1 ||
+          matching.some(([id, execution]) => execution.status !== "unknown" || this.#live.has(id)))
+        throw error("assistant_recovery_required", 503);
+      const inventory = await this.#inventory();
+      const owns = effect => effect.source === "conversation" &&
+        identityFields.split(",").every(key => effect[key] === captured[key]);
+      if (inventory.activeExecutions.length || inventory.uncertainEffects.some(effect => !owns(effect)))
+        throw error("assistant_recovery_required", 503);
+      this.#uncertain = true;
+      // Any failure keeps synchronous admission closed until reconcile() reads
+      // durable state again. A crash after canonical cleanup is safe to retry.
+      const proof = await reconcile(structuredClone(captured));
+      if (!exact(proof, "cleanupVerified") || proof.cleanupVerified !== true)
+        throw error("assistant_recovery_required", 503);
+      const after = await this.#inventory();
+      if (after.activeExecutions.length || after.uncertainEffects.length) throw error("assistant_recovery_required", 503);
+      if (matching.length) {
+        const next = structuredClone(this.#state);
+        delete next.executions[matching[0][0]];
+        await this.#save(next);
+      }
+      this.#uncertain = false;
+      return { state: "settled" };
+    });
+  }
   async admit(input, reserve) {
     return this.#serial(async () => {
       this.#assertAvailable();
