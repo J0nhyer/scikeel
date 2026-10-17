@@ -10,6 +10,33 @@ import {makeToolOutcome,ToolOutcomeError} from '../../../packages/sdk/src/tool-o
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
 const acceptance={nativeSessionId:"native-owned",turnId:"turn-owned"};
+test('native command observations require the actual guarded call and never dispatch a platform tool',async()=>{
+ for(const failure of [null,'unguarded','wrong-kind','changed-input']){
+  const policy=new TenantPolicy({accounts:[context]}),events=[],calls=[];let batch=0;
+  const identity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
+  const hook={session_id:'native-owned',turn_id:'turn-owned',tool_use_id:'command-real',cwd:session.directory,hook_event_name:'PreToolUse',tool_name:'Bash',
+   tool_input:{nativeTool:'exec_command',nativeInput:{cmd:'python research.py'},canonicalInput:{command:'python research.py'}}};
+  let transport;
+  transport=new ManagedNativeJobs({tenantPolicy:policy,delayMs:1,
+   issueNativeGrant:async()=>({identityRevision:'owned-profile',configuration:{model:'approved'},renew:()=>{},revoke:async()=>{}}),
+   workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release(){}})},files:{job:async(_owner,request)=>{
+    calls.push(request);if(request.operation==='start')return {jobId:'b'.repeat(64),...acceptance};
+    if(request.operation==='abort')return {stopped:true};
+    if(batch++===0){
+     if(failure!=='unguarded')await transport.authorizeEffect({...context,turnIdentity:identity},hook);
+     return {jobId:request.jobId,status:'running',...acceptance,events:[
+      {type:'tool',callId:'command-real',tool:failure==='wrong-kind'?'edit':'bash',state:{status:'running',input:{command:'python research.py'},output:'',metadata:{nativeItemType:'commandExecution'}},sessionID:'owned',sequence:1,...acceptance},
+      {type:'tool',callId:'command-real',tool:'bash',state:{status:'completed',input:{command:failure==='changed-input'?'unrelated command':'python research.py'},output:'Actual output',metadata:{nativeItemType:'commandExecution',exitCode:0}},sessionID:'owned',sequence:2,...acceptance}]};
+    }
+    return {jobId:request.jobId,status:'completed',...acceptance,events:[]};
+   }}});
+  transport.configureEffects({prepare:async()=>({researchExecution:1}),permissions:{authorize:async()=>({allowed:true}),assertCurrent:async()=>true},callTool:async()=>{throw Error('Must not dispatch');}});
+  const run=transport.run({userId:'a',session,model:'approved',text:'Research',turnIdentity:identity,identityRevision:'owned-profile',emit:async event=>events.push(event)});
+  if(failure)await assert.rejects(run);else await run;
+  assert.equal(events.length,failure==='changed-input'?1:failure?0:2,failure);
+  assert.equal(calls.some(call=>call.operation==='toolResult'),false);
+ }
+});
 test('native network dispatch binds accepted identity, guard decision and the private active tool reply ID',async()=>{
  const policy=new TenantPolicy({accounts:[context]}),controller=new AbortController(),steps=[];
  const identity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};

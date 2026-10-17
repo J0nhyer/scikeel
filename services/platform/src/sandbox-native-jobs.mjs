@@ -180,11 +180,24 @@ export class SandboxNativeJobs {
             !Array.isArray(batch.events)||batch.events.length>10000)throw new Error("invalid native event batch");
         for(const event of batch.events) {
           if(event.sessionID!==session.id||event.nativeSessionId!==started.nativeSessionId||event.turnId!==started.turnId||
-              event.sequence!==after+1||!["approval","question","tool-call","text","tool-output","completed"].includes(event.type))
+              event.sequence!==after+1||!["approval","question","tool-call","tool","text","tool-output","completed"].includes(event.type))
             throw new Error("foreign native event");
           after=event.sequence;
           if(event.type==='tool-call'){
             await this.#tool(reservation,event,context,started,signal,emit);continue;
+          }
+          if(event.type==='tool'){
+            const record=reservation.guards.get(event.callId),state=event.state;
+            if(!this.#effects||!record?.decision||record.decision.allowed!==true||record.action.tool!==event.tool||
+              !['command','edit'].includes(record.action.kind)||!state||!['running','completed','error'].includes(state.status)||
+              !state.input||typeof state.input!=='object'||typeof state.output!=='string'||
+              state.metadata?.nativeItemType!==(event.tool==='bash'?'commandExecution':'fileChange')||
+              record.observation&&(record.observation.status!=='running'||JSON.stringify(record.observation.input)!==JSON.stringify(state.input))||
+              !record.observation&&state.status!=='running')throw Error('Unbound native effect observation');
+            // This observes the already guarded native effect; it never calls a
+            // platform tool, answers an approval, or grants new authority.
+            record.observation={input:structuredClone(state.input),status:state.status};
+            await emit({...event,callID:event.callId});continue;
           }
           if(["approval","question"].includes(event.type))this.tenantPolicy.registerRequest(context,{id:event.id,sessionID:session.id});
           if(event.type==="approval") {

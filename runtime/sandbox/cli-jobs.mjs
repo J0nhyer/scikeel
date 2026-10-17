@@ -83,10 +83,10 @@ export function runtimeArgv({ runtime, model, sessionId }) {
 // One private native app-server per turn. All argv/configuration is fixed here;
 // callers cannot send a host command or choose a different transport endpoint.
 const nativeTurnEvents=new Set(["item/tool/requestUserInput","item/commandExecution/requestApproval",
-  "item/fileChange/requestApproval","item/tool/call","item/agentMessage/delta","item/commandExecution/outputDelta","turn/completed"]);
+  "item/fileChange/requestApproval","item/tool/call","item/started","item/completed","item/agentMessage/delta","item/commandExecution/outputDelta","turn/completed"]);
 export class CodexAppServer {
   #child; #pending=new Map(); #approvals=new Map(); #questions=new Map(); #next=1; #buffer=""; #bytes=0; #closed=false; #thread; #turn; #closing; #exited;
-  #startingTurn=false; #deferredEvents=[]; #tools=new Map(); #seenCalls=new Set();
+  #startingTurn=false; #deferredEvents=[]; #tools=new Map(); #seenCalls=new Set(); #items=new Map(); #projectDir;
   constructor({spawnImpl,emit,onStopped=()=>{},verifyRuntime=verifyManagedCodexRuntime,timeoutMs=1200000,requestTimeoutMs=30000}) {
     if(typeof spawnImpl!=="function" || typeof emit!=="function" || typeof onStopped!=="function" || !Number.isSafeInteger(timeoutMs) || timeoutMs<1 || timeoutMs>1200000 ||
         !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs<1 || requestTimeoutMs>30000)throw new Error("invalid native turn configuration");
@@ -116,6 +116,7 @@ export class CodexAppServer {
         (effort!==undefined&&(typeof effort!=='string'||!/^[a-z][a-z0-9_-]{0,31}$/.test(effort)))||signal?.aborted)
       throw new Error("invalid native turn");
     const env=buildJobEnvironment({privateHome,projectDir,environment,brokers});
+    this.#projectDir=projectDir;
     if(!brokers.modelToken)throw new Error("native model capability required");
     env.CODEX_HOME=posix.join(posix.dirname(privateHome),"codex-home");
     await this.verifyRuntime();
@@ -232,11 +233,60 @@ export class CodexAppServer {
       const id=String(value.id);this.#approvals.set(id,{rpcId:value.id,threadId:params.threadId,turnId:params.turnId});
       await this.emit({type:"approval",id,kind:value.method.includes("commandExecution")?"command":"edit",command:params.command ? this.redact(params.command) : null,...scope,itemId:params.itemId});return;
     }
-    if(value.method==="item/agentMessage/delta" && typeof params.delta==="string")await this.emit({type:"text",text:this.redact(params.delta),...scope});
-    else if(value.method==="item/commandExecution/outputDelta" && typeof params.delta==="string")await this.emit({type:"tool-output",text:this.redact(params.delta),...scope});
+    if(["item/started","item/completed"].includes(value.method))await this.#item(value.method,params.item,scope);
+    else if(value.method==="item/agentMessage/delta" && typeof params.delta==="string")await this.emit({type:"text",text:this.redact(params.delta),...scope});
+    else if(value.method==="item/commandExecution/outputDelta") {
+      const item=this.#items.get(params.itemId);
+      if(!item||item.tool!=='bash'||item.state.status!=='running'||typeof params.delta!=='string')throw Error('Unbound native command output');
+      item.state.output+=this.redact(params.delta);
+      if(Buffer.byteLength(item.state.output)>256*1024)throw Error('Native command output limit');
+      await this.emit({type:'tool',callId:params.itemId,...structuredClone(item),...scope});
+    }
     else if(value.method==="turn/completed") {
       await this.emit({type:"completed",status:params.turn?.status==="completed"?"completed":"failed",...scope});await this.close();
     }
+  }
+  async #item(method,item,scope) {
+    // Pinned protocol v2/item.rs: lifecycle notifications observe execution;
+    // neither a started item nor its output grants permission to run a tool.
+    if(!item||typeof item.type!=='string')throw Error('Invalid native item');
+    if(!['commandExecution','fileChange'].includes(item.type))return;
+    if(!/^[A-Za-z0-9_-]{1,128}$/.test(item.id??'')||!['inProgress','completed','failed','declined'].includes(item.status))throw Error('Invalid native item state');
+    const command=item.type==='commandExecution';
+    const ownedPath=value=>typeof value==='string'&&value.length<=4096&&!/[\0\\]/.test(value)&&
+      (value===this.#projectDir||value.startsWith(`${this.#projectDir}/`))&&posix.normalize(value)===value;
+    let input;
+    if(command){
+      if(typeof item.command!=='string'||!item.command||Buffer.byteLength(item.command)>512*1024||!ownedPath(item.cwd)||
+        item.aggregatedOutput!=null&&typeof item.aggregatedOutput!=='string'||
+        item.exitCode!=null&&!Number.isSafeInteger(item.exitCode)||item.durationMs!=null&&(!Number.isSafeInteger(item.durationMs)||item.durationMs<0))throw Error('Invalid native command item');
+      input={command:this.redact(item.command),cwd:item.cwd};
+    }else{
+      if(!Array.isArray(item.changes)||!item.changes.length||item.changes.length>256)throw Error('Invalid native edit item');
+      input={changes:item.changes.map(change=>{
+        if(!ownedPath(change?.path)||!['add','delete','update'].includes(change.kind?.type)||
+          Object.keys(change.kind).some(key=>!['type',...(change.kind.type==='update'?['move_path']:[])].includes(key))||
+          change.kind.move_path!=null&&!ownedPath(change.kind.move_path)||
+          typeof change.diff!=='string'||Buffer.byteLength(change.diff)>512*1024)throw Error('Invalid native file change');
+        return {path:change.path,kind:structuredClone(change.kind),diff:this.redact(change.diff)};
+      })};
+    }
+    let record=this.#items.get(item.id);
+    if(method==='item/started'){
+      if(record||this.#items.size>=256||item.status!=='inProgress')throw Error('Invalid native item start');
+      record={tool:command?'bash':'edit',state:{status:'running',input,output:'',metadata:{nativeItemType:item.type}}};
+      this.#items.set(item.id,record);
+    }else{
+      if(!record||record.state.status!=='running'||record.tool!==(command?'bash':'edit')||JSON.stringify(record.state.input)!==JSON.stringify(input))throw Error('Unbound native item completion');
+      record.state.status=item.status==='inProgress'?'running':item.status==='completed'?'completed':'error';
+      if(command){
+        if(item.aggregatedOutput!=null)record.state.output=this.redact(item.aggregatedOutput);
+        if(Buffer.byteLength(record.state.output)>256*1024)throw Error('Native command output limit');
+        Object.assign(record.state.metadata,{exitCode:item.exitCode??null,durationMs:item.durationMs??null});
+      }
+      if(record.state.status==='error')record.state.error=`Native ${item.type} ${item.status}`;
+    }
+    await this.emit({type:'tool',callId:item.id,...structuredClone(record),...scope});
   }
   approve({id,decision}) {
     if(!["accept","decline","cancel"].includes(decision))throw new Error("invalid native approval decision");
@@ -259,7 +309,7 @@ export class CodexAppServer {
     if(this.#closing)return this.#closing;
     this.#closed=true;clearTimeout(this.deadline);this.signal?.removeEventListener("abort",this.abort);
     for(const pending of this.#pending.values()){clearTimeout(pending.timer);pending.reject(new Error("native runtime stopped"));}
-    this.#pending.clear();this.#approvals.clear();this.#questions.clear();this.#tools.clear();this.#deferredEvents=[];const child=this.#child;
+    this.#pending.clear();this.#approvals.clear();this.#questions.clear();this.#tools.clear();this.#items.clear();this.#deferredEvents=[];const child=this.#child;
     this.#closing=(async()=>{
       if(!child)return;
       const signalGroup=signal=>{
@@ -401,7 +451,7 @@ export class CliJobs {
           if(job.networkTasks.size)void Promise.allSettled([...job.networkTasks]).then(()=>{if(job.status==='settling')job.status='failed';});
         }
       },emit:async event=>{
-        if(job.status!=="running"||!event||!['approval','question','tool-call','text','tool-output','completed'].includes(event.type)||
+        if(job.status!=="running"||!event||!['approval','question','tool-call','tool','text','tool-output','completed'].includes(event.type)||
             !/^[A-Za-z0-9_-]{1,128}$/.test(event.nativeSessionId??"")||!/^[A-Za-z0-9_-]{1,128}$/.test(event.turnId??"")||
             (request.nativeSessionId&&event.nativeSessionId!==request.nativeSessionId)||
             (job.nativeSessionId&&event.nativeSessionId!==job.nativeSessionId)||(job.turnId&&event.turnId!==job.turnId))

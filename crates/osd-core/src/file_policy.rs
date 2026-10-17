@@ -597,6 +597,12 @@ mod linux {
             parent.sync_all()
         }
         pub fn list(&self, root: &str, name: &str, maximum: usize) -> io::Result<Vec<PolicyEntry>> {
+            self.list_entries(root, name, maximum, false)
+        }
+        pub fn list_strict(&self, root: &str, name: &str, maximum: usize) -> io::Result<Vec<PolicyEntry>> {
+            self.list_entries(root, name, maximum, true)
+        }
+        fn list_entries(&self, root: &str, name: &str, maximum: usize, strict: bool) -> io::Result<Vec<PolicyEntry>> {
             if maximum == 0 || maximum > 10000 {
                 return Err(denied());
             }
@@ -645,9 +651,13 @@ mod linux {
                         "directory exceeds limit",
                     ));
                 }
-                let Ok(text) = name.to_str() else { continue };
+                let text = match name.to_str() {
+                    Ok(text) => text,
+                    Err(_) if strict => return Err(denied()),
+                    Err(_) => continue,
+                };
                 // Match existing browser filtering; never expose private metadata.
-                if text.starts_with('.') {
+                if !strict && text.starts_with('.') {
                     continue;
                 }
                 let mut meta = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -660,13 +670,16 @@ mod linux {
                     )
                 } < 0
                 {
+                    if strict { return Err(io::Error::last_os_error()); }
                     continue;
                 }
                 let meta = unsafe { meta.assume_init() };
                 let kind = meta.st_mode & libc::S_IFMT;
                 if kind != libc::S_IFREG && kind != libc::S_IFDIR {
+                    if strict { return Err(denied()); }
                     continue;
                 }
+                if strict && kind == libc::S_IFREG && meta.st_nlink != 1 { return Err(denied()); }
                 out.push(PolicyEntry {
                     name: text.to_owned(),
                     is_dir: kind == libc::S_IFDIR,

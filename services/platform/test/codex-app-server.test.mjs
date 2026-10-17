@@ -9,6 +9,20 @@ import {CodexAppServer} from "../../../runtime/sandbox/cli-jobs.mjs";
 const fixture=fileURLToPath(new URL("../fixtures/sandbox-cli.mjs",import.meta.url));
 const request={privateHome:"/tenant/home",projectDir:"/tenant/workspace/project",environment:{kind:"base",python:"/opt/scikeel/science/bin/python"},
   brokers:{modelToken:"a".repeat(64)},model:"fixture/approved",text:"Do research"};
+test('native command and edit lifecycle preserves real item identity, input, output and completion',async t=>{
+ const events=[];let stopped;const closed=new Promise(resolve=>stopped=resolve);
+ const server=new CodexAppServer({verifyRuntime:async()=>{},requestTimeoutMs:1000,timeoutMs:2000,onStopped:stopped,emit:async event=>events.push(event),
+  spawnImpl:(_command,_args,options)=>spawn(process.execPath,[fixture,'native-items'],{...options,cwd:undefined})});
+ t.after(()=>server.close());await server.start(request);await closed;
+ const tools=events.filter(event=>event.type==='tool');assert.equal(tools.length,5);
+ assert.deepEqual(tools.map(event=>[event.callId,event.tool,event.state.status]),[
+  ['command-real','bash','running'],['command-real','bash','running'],['command-real','bash','completed'],
+  ['edit-real','edit','running'],['edit-real','edit','completed']]);
+ assert.equal(tools[1].state.output,'measured result');assert.equal(tools[2].state.input.command,'python research.py');
+ assert.equal(tools[2].state.metadata.exitCode,0);assert.equal(tools[4].state.input.changes[0].path,'/tenant/workspace/project/result.txt');
+ assert(tools.every(event=>event.nativeSessionId==='native-owned'&&event.turnId==='turn-owned'));
+ assert.equal(events.at(-1).status,'completed');
+});
 test('native startup enables fixed dynamic tools and current-project sandbox, with one-shot scoped native tool results',async t=>{
  const events=[];let stopped;const done=new Promise(resolve=>stopped=resolve);let verified=0;
  const server=new CodexAppServer({verifyRuntime:async()=>{verified++;},requestTimeoutMs:500,timeoutMs:1500,onStopped:stopped,
@@ -25,7 +39,7 @@ test('missing immutable managed guard resources reject before native spawn',asyn
  let spawns=0;const server=new CodexAppServer({verifyRuntime:async()=>{throw Error('Untrusted guard');},emit:async()=>{},spawnImpl:()=>{spawns++;}});
  await assert.rejects(server.start(request),/guard/);assert.equal(spawns,0);
 });
-for(const mode of ["foreign-completion","missing-completion-thread","missing-delta-turn","missing-approval-item"]) {
+for(const mode of ["foreign-completion","missing-completion-thread","missing-delta-turn","missing-approval-item",'foreign-item','missing-item-turn','unstarted-item-output','foreign-edit-move']) {
   test(`native events reject ${mode} before exposing completion, output or approval`,async(t)=>{
     const events=[];let stopped;const closed=new Promise(resolve=>stopped=resolve);
     const server=new CodexAppServer({verifyRuntime:async()=>{},requestTimeoutMs:1000,timeoutMs:2000,onStopped:stopped,emit:async event=>events.push(event),

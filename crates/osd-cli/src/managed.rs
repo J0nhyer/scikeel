@@ -130,6 +130,24 @@ mod tests {
     }
 
     #[test]
+    fn checked_revert_inventory_never_omits_hidden_or_unsafe_entries() {
+        let fixture=ManagedFixture::new();
+        let policy=fixture.env.managed_files().unwrap();
+        std::fs::write(fixture.workspace.join(".hidden-result"),[0,255,10]).unwrap();
+        std::fs::write(fixture.workspace.join("result.txt"),"measured").unwrap();
+        let request=json!({"operation":"listStrict","root":"workspace","path":""});
+        let entries=dispatch(policy,request.clone()).expect("strict inventory must be available");
+        assert_eq!(entries["entries"].as_array().unwrap().len(),2);
+        assert!(entries["entries"].as_array().unwrap().iter().any(|entry|entry["name"]==".hidden-result"));
+        assert_eq!(dispatch(policy,json!({"operation":"list","root":"workspace","path":""})).unwrap()["entries"].as_array().unwrap().len(),1);
+        std::os::unix::fs::symlink("result.txt",fixture.workspace.join("alias")).unwrap();
+        assert!(dispatch(policy,request.clone()).is_err(),"links must reject rather than disappear");
+        std::fs::remove_file(fixture.workspace.join("alias")).unwrap();
+        std::fs::hard_link(fixture.workspace.join("result.txt"),fixture.workspace.join("alias")).unwrap();
+        assert!(dispatch(policy,request).is_err(),"multiply linked files cannot be snapshotted");
+    }
+
+    #[test]
     fn workspace_management_no_replace_move_and_conditional_save() {
         let fixture=ManagedFixture::new();
         let policy=osd_core::file_policy::ManagedFilePolicy::new("a".into(),1,vec![("workspace".into(),fixture.workspace.clone())]).unwrap();
@@ -273,6 +291,7 @@ fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
             policy.write_atomic("workspace",path,text.as_bytes()).map_err(|_|"file write denied")?;json!({"written":true})
         },
         Some("list") if !object.contains_key("text")=>json!({"entries":policy.list("workspace",path,1000).map_err(|_|"file list denied")?}),
+        Some("listStrict") if !object.contains_key("text")=>json!({"entries":policy.list_strict("workspace",path,1000).map_err(|_|"strict file list denied")?}),
         Some("mkdir") if !object.contains_key("text")=> {policy.mkdir("workspace",path).map_err(|_|"directory creation denied")?;json!({"created":true})},
         _=>return Err("unsupported file operation".into()),
     };Ok(result)

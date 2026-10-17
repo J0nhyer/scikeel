@@ -23,6 +23,24 @@ input.on("line",line=>{
     }
     if(process.argv[2]==="early-delta")send({method:"item/agentMessage/delta",params:{threadId:"native-owned",turnId:"turn-owned",itemId:"message-a",delta:"Accepted output"}});
     send({id:value.id,result:{turn:{id:"turn-owned"}}});started=true;
+    if(process.argv[2]==='native-items'){
+      const scope={threadId:'native-owned',turnId:'turn-owned'};
+      const command={type:'commandExecution',id:'command-real',command:'python research.py',cwd:'/tenant/workspace/project',status:'inProgress',commandActions:[],aggregatedOutput:null,exitCode:null,durationMs:null};
+      send({method:'item/started',params:{...scope,item:command,startedAtMs:1}});
+      send({method:'item/commandExecution/outputDelta',params:{...scope,itemId:command.id,delta:'measured result'}});
+      send({method:'item/completed',params:{...scope,item:{...command,status:'completed',aggregatedOutput:'measured result',exitCode:0,durationMs:5}}});
+      const edit={type:'fileChange',id:'edit-real',changes:[{path:'/tenant/workspace/project/result.txt',kind:{type:'add'},diff:'+measured result'}],status:'inProgress'};
+      send({method:'item/started',params:{...scope,item:edit,startedAtMs:2}});
+      send({method:'item/completed',params:{...scope,item:{...edit,status:'completed'}}});
+      send({method:'turn/completed',params:{threadId:'native-owned',turn:{id:'turn-owned',status:'completed'}}});return;
+    }
+    if(['foreign-item','missing-item-turn','unstarted-item-output','foreign-edit-move'].includes(process.argv[2])){
+      const scope={threadId:'native-owned',...(process.argv[2]==='missing-item-turn'?{}:{turnId:'turn-owned'})};
+      if(process.argv[2]==='unstarted-item-output')send({method:'item/commandExecution/outputDelta',params:{...scope,itemId:'not-started',delta:'unbound result'}});
+      else if(process.argv[2]==='foreign-edit-move')send({method:'item/started',params:{...scope,item:{type:'fileChange',id:'edit-foreign',status:'inProgress',changes:[{path:'/tenant/workspace/project/a',kind:{type:'update',move_path:'/tenant/workspace/peer/b'},diff:'private'}]}}});
+      else send({method:'item/started',params:{...scope,...(process.argv[2]==='foreign-item'?{threadId:'foreign'}:{}),item:{type:'commandExecution',id:'unbound',command:'never expose',cwd:'/tenant/workspace/project',status:'inProgress'}}});
+      send({method:'turn/completed',params:{threadId:'native-owned',turn:{id:'turn-owned',status:'completed'}}});return;
+    }
     if(process.argv[2]==="early-delta") {send({method:"turn/completed",params:{threadId:"native-owned",turn:{id:"turn-owned",status:"completed"}}});return;}
     if(process.argv[2]==="foreign-completion") {send({method:"turn/completed",params:{threadId:"native-owned",turn:{id:"another-turn",status:"completed"}}});return;}
     if(process.argv[2]==="missing-completion-thread") {send({method:"turn/completed",params:{turn:{id:"turn-owned",status:"completed"}}});return;}

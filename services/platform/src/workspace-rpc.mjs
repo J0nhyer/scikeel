@@ -50,7 +50,7 @@ export class WorkspaceRpc {
   async #send(context,request,path,signal) {
     this.#owned(context);
     signal?.throwIfAborted();
-    const lease=this.workerManager.retainWorker(context.instanceId, { maintenance: path === "/environments", readOnly: ["read", "readChunk", "list", "stat", "readText", "inspect", "events"].includes(request.operation) });
+    const lease=this.workerManager.retainWorker(context.instanceId, { maintenance: path === "/environments", readOnly: ["read", "readChunk", "list", "listStrict", "stat", "readText", "inspect", "events"].includes(request.operation) });
     try {
       if(lease.generation!==context.generation) throw generationChanged();
       const access=this.workerManager.getWorkerAccess(context.instanceId);

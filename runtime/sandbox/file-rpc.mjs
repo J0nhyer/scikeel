@@ -3,7 +3,7 @@ import { posix } from "node:path";
 export const managementStatuses={entry_not_found:404,name_conflict:409,revision_conflict:409,entry_unavailable:403};
 
 export function fileRequest(value) {
-  const fields = { read:["operation","root","path"], list:["operation","root","path"], mkdir:["operation","root","path"],
+  const fields = { read:["operation","root","path"], list:["operation","root","path"], listStrict:["operation","root","path"], mkdir:["operation","root","path"],
     mkdirAll:["operation","root","path"], remove:["operation","root","path"], write:["operation","root","path","text"],
     readChunk:["operation","root","path","offset","limit"], writeChunk:["operation","root","path","offset","bytes"],
     stat:["operation","root","path"],snapshot:["operation","root","path"],readText:["operation","root","path"],createText:["operation","root","path","text"],

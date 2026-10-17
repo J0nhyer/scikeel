@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { FileRpc, fileRequest } from "../../../runtime/sandbox/file-rpc.mjs";
 
+test('checked revert uses strict bounded file enumeration without browser filtering',()=>{
+ const request={operation:'listStrict',root:'workspace',path:''};
+ assert.deepEqual(fileRequest(request),request);
+ for(const patch of [{root:'state'},{path:'../peer'},{includeSecrets:true},{maximum:Infinity}])
+  assert.throws(()=>fileRequest({...request,...patch}));
+});
+
 test("file RPC allows only bounded owned workspace operations", () => {
   assert.equal(fileRequest({ operation: "read", root: "workspace", path: "papers/a.txt" }).path, "papers/a.txt");
   for (const request of [{ operation: "exec", root: "workspace", path: "a" }, { operation: "read", root: "state", path: "a" },
