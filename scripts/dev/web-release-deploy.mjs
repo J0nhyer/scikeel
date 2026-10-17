@@ -307,7 +307,12 @@ async function deploymentOperations(candidate, store) {
     requiredLiveAcceptance: async () => {
       if (candidate.selection.liveAssistant)
         candidate.deployment.liveAssistant = await runSelectedAssistantLive(candidate, candidate.deployment.production, { connect: sessionClient,
-          recordSelection:async receipt=>{candidate.deployment.assistantSelection=receipt;await writeManifest(path,candidate);} });
+          recordSelection:async receipt=>{candidate.deployment.assistantSelection=receipt;await writeManifest(path,candidate);},
+          recordFailure:async failure=>{
+            console.error(JSON.stringify({type:'assistant.acceptance.failed',...failure}));
+            candidate.deployment.liveAssistantFailure=failure;
+            await writeManifest(path,candidate);
+          } });
     },
     markPublished: async () => {
       candidate.status = 'publishing'; await writeManifest(path, candidate);

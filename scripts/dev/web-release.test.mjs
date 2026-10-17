@@ -870,3 +870,33 @@ test('live gate uses asynchronous Web transport and requires completed history a
  await assert.rejects(verifyAsyncModelReply(async(_path,options)=>options?{}:[{info:{role:'assistant',error:{name:'MessageAbortedError'}},parts:[]}],'ses_fixture',{},'OK'),/reply failed/);
  await assert.rejects(verifyAsyncModelReply(async(_path,options)=>options?{}:[],'ses_fixture',{},'OK',{now:()=>clock,wait:async(ms)=>{clock+=ms;},timeoutMs:1000}),/deadline exceeded/);
 });
+
+test('selected assistant failure evidence preserves controlled gateway details and rejects secrets or arbitrary causes',async()=>{
+ const {assistantFailureEvidence}=await import('./web-assistant-release.mjs');
+ assert.equal(typeof assistantFailureEvidence,'function');
+ for(const message of ['Acceptance gateway rejected GET /session/ses_fixture/message (409)',
+  'Acceptance gateway request failed: POST /api/admin/runtime','Acceptance timed out: completed native reply',
+  'Selected assistant native execution failed','Legacy context did not reach the selected native assistant'])
+  assert.deepEqual(assistantFailureEvidence(Error(message)),{schema:1,stage:'selected-assistant',reason:message});
+ for(const message of ['upstream body contains a private credential','Acceptance gateway rejected GET /api/runtime?token=secret (403)',
+  'Acceptance timed out: private-user-content','Acceptance gateway rejected GET https://private.example/path (403)'])
+  assert.deepEqual(assistantFailureEvidence(Error(message)),{schema:1,stage:'selected-assistant',reason:'Selected assistant verification failed'});
+ assert.deepEqual(assistantFailureEvidence(new Error('Publication failed',{cause:Error('Acceptance gateway rejected GET /session/ses_fixture/message (409)')})),
+  {schema:1,stage:'selected-assistant',reason:'Acceptance gateway rejected GET /session/ses_fixture/message (409)'});
+});
+
+test('selected assistant failure is durably reported before recovery without changing the thrown cause or skipping login cleanup',async()=>{
+ const {runSelectedAssistantLive}=await import('./web-assistant-release.mjs');
+ const target={schema:2,runtime:'codex',model:'gpt-6.1-sol'};
+ const candidate={selection:{liveGateVersion:2},assistantTarget:target};
+ let closed=0;const reported=[],original=Error('Acceptance gateway rejected GET /session/ses_fixture/message (409)');
+ await assert.rejects(runSelectedAssistantLive(candidate,{}, {capture:async()=>target,
+  connect:async()=>({close:async()=>closed++}),runAcceptance:async()=>{throw original;},
+  recordFailure:async failure=>reported.push(failure)}),error=>error===original);
+ assert.equal(closed,1);assert.deepEqual(reported,[{schema:1,stage:'selected-assistant',reason:original.message}]);
+ let reportingAttempted=false;
+ await assert.rejects(runSelectedAssistantLive(candidate,{}, {capture:async()=>target,
+  connect:async()=>({close:async()=>closed++}),runAcceptance:async()=>{throw original;},
+  recordFailure:async()=>{reportingAttempted=true;throw Error('diagnostic disk failure');}}),error=>error===original);
+ assert.equal(closed,2);assert.equal(reportingAttempted,true);
+});

@@ -94,31 +94,75 @@ export async function assertAssistantTargetCurrent(candidate, capture = captureR
     throw new Error('Selected assistant profile or release identity changed; prepare again');
 }
 
-export async function runSelectedAssistantLive(candidate, production, { connect, request = fetch,
-  capture = captureReleaseAssistantTarget, runAcceptance, recordSelection = async () => {} } = {}) {
-  if (candidate.selection.liveGateVersion !== 2) throw new Error('Legacy assistant acceptance cannot authorize this release');
-  await assertAssistantTargetCurrent(candidate, capture);
-  if (!runAcceptance) {
-    let acceptance;
-    try { acceptance = await import(pathToFileURL(join(candidate.source.root, 'services/platform/fixtures/assistant-runtime-live.mjs'))); }
-    catch { throw new Error('Required selected-assistant native acceptance helper is unavailable'); }
-    runAcceptance = acceptance.runSelectedAssistantAcceptance;
+// Only errors constructed by our acceptance helper may enter release records.
+// Never persist arbitrary upstream text, headers, credentials, or query strings.
+const safeAssistantFailures = new Set([
+  'Acceptance gateway returned invalid JSON', 'Acceptance history is unavailable',
+  'Acceptance cleanup state is unavailable', 'Acceptance runtime context is unavailable',
+  'Selected assistant native execution failed', 'Assistant selection changed during acceptance',
+  'Selected runtime revision does not match Admin activation',
+  'Legacy context did not reach the selected native assistant',
+  'Legacy conversation history changed after assistant handover',
+  'Native file write/read verification failed', 'Completed native file tool evidence is missing',
+  'Native file turn public message is missing', 'Native file revert verification failed',
+  'Native file restoration verification failed', 'Native history restoration verification failed',
+  'Native question state is unavailable', 'Native question options are invalid',
+  'Native question answer did not reach the assistant', 'Completed scoped fetch tool evidence is missing',
+  'Research delivery or original input verification failed',
+  'Reload lost selected runtime, conversation, or workspace state',
+  'Stopped command continued writing after verified cleanup',
+  'A stopped native execution still blocks the next prompt',
+  'Admin assistant selection changed during native acceptance',
+  'Selected assistant workflow evidence is incomplete',
+]);
+export function assistantFailureEvidence(error) {
+  let reason = 'Selected assistant verification failed';
+  for (let depth = 0; error && depth < 4; depth++, error = error.cause) {
+    const message = error.message;
+    if (typeof message !== 'string' || message.length > 512) continue;
+    if (safeAssistantFailures.has(message) ||
+        /^Acceptance gateway rejected (?:GET|POST|PATCH|DELETE|PUT) \/(?:api|auth|v1|session|question|permission)(?:\/[A-Za-z0-9_-]+)* \([1-5][0-9]{2}\)$/.test(message) ||
+        /^Acceptance gateway request failed: (?:GET|POST|PATCH|DELETE|PUT) \/(?:api|auth|v1|session|question|permission)(?:\/[A-Za-z0-9_-]+)*$/.test(message) ||
+        /^Acceptance timed out: (?:completed native reply|native cleanup|native question|research checkpoint|running command marker)$/.test(message) ||
+        /^Native turn ended without (?:the requested native question|the requested research checkpoint|a running command marker)$/.test(message)) {
+      reason = message; break;
+    }
   }
-  if (typeof runAcceptance !== 'function' || typeof connect !== 'function') throw new Error('Required selected-assistant native acceptance is unavailable');
-  const client = await connect(production);
+  return { schema: 1, stage: 'selected-assistant', reason };
+}
+
+export async function runSelectedAssistantLive(candidate, production, { connect, request = fetch,
+  capture = captureReleaseAssistantTarget, runAcceptance, recordSelection = async () => {}, recordFailure = async () => {} } = {}) {
   try {
-    let selected;
-    const onSelection=async receipt=>{
-      if(!['opencode',candidate.assistantTarget.runtime].includes(receipt?.runtime)||!Number.isSafeInteger(receipt.revision)||receipt.revision<1)
-        throw Error('Selected assistant activation receipt is invalid');
-      selected={runtime:receipt.runtime,revision:receipt.revision};await recordSelection(selected);
-    };
-    const evidence = await runAcceptance({ production, target: structuredClone(candidate.assistantTarget), admin: client, request, onSelection });
+    if (candidate.selection.liveGateVersion !== 2) throw new Error('Legacy assistant acceptance cannot authorize this release');
     await assertAssistantTargetCurrent(candidate, capture);
-    if(!selected||selected.runtime!==candidate.assistantTarget.runtime||evidence?.policyRevision!==selected.revision)
-      throw Error('Selected assistant activation receipt is missing or stale');
-    return verifyAssistantEvidence(candidate.assistantTarget, evidence);
-  } finally { await client.close(); }
+    if (!runAcceptance) {
+      let acceptance;
+      try { acceptance = await import(pathToFileURL(join(candidate.source.root, 'services/platform/fixtures/assistant-runtime-live.mjs'))); }
+      catch { throw new Error('Required selected-assistant native acceptance helper is unavailable'); }
+      runAcceptance = acceptance.runSelectedAssistantAcceptance;
+    }
+    if (typeof runAcceptance !== 'function' || typeof connect !== 'function') throw new Error('Required selected-assistant native acceptance is unavailable');
+    const client = await connect(production);
+    try {
+      let selected;
+      const onSelection=async receipt=>{
+        if(!['opencode',candidate.assistantTarget.runtime].includes(receipt?.runtime)||!Number.isSafeInteger(receipt.revision)||receipt.revision<1)
+          throw Error('Selected assistant activation receipt is invalid');
+        selected={runtime:receipt.runtime,revision:receipt.revision};await recordSelection(selected);
+      };
+      const evidence = await runAcceptance({ production, target: structuredClone(candidate.assistantTarget), admin: client, request, onSelection });
+      await assertAssistantTargetCurrent(candidate, capture);
+      if(!selected||selected.runtime!==candidate.assistantTarget.runtime||evidence?.policyRevision!==selected.revision)
+        throw Error('Selected assistant activation receipt is missing or stale');
+      return verifyAssistantEvidence(candidate.assistantTarget, evidence);
+    } finally { await client.close(); }
+  } catch (error) {
+    // Best-effort diagnostics must neither hide the original cause nor prevent
+    // publishRelease() from restoring the compatible reader.
+    try { await recordFailure(assistantFailureEvidence(error)); } catch { /* Keep the original failure. */ }
+    throw error;
+  }
 }
 
 export async function readAssistantSelection(admin,{request=fetch}={}) {
