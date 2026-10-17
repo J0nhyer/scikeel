@@ -19,6 +19,17 @@ test('the published integration schema requires and validates the loopback patch
  assert.ok(integration.required.includes('bwrapPatchSha256'));
  assert.deepEqual(integration.properties.bwrapPatchSha256,{type:'string',pattern:'^[a-f0-9]{64}$'});
 });
+test('the final production image must execute native effects inside the pinned gVisor runtime',async()=>{
+ const {load}=await import('js-yaml');
+ const workflow=load(await readFile(new URL('../../../.github/workflows/sandbox-image.yml',import.meta.url),'utf8'));
+ const steps=workflow.jobs['science-probe-image'].steps;
+ const gate=steps.find(step=>step.name==='Verify actual native effects and isolation in the final production image under gVisor');
+ assert.ok(gate,'missing final-image nested sandbox effect gate');
+ assert.match(gate.run,/--runtime=scikeel-gvisor/);
+ assert.match(gate.run,/scikeel-science-probe:ci/);
+ assert.match(gate.run,/--native-capabilities/);
+ assert.doesNotMatch(gate.run,/tools\/bin:\/opt\/scikeel\/tools\/bin/);
+});
 const nativeInputs=['runtime/codex-patches/required-effect-guard.patch','runtime/codex-patches/required-effect-guard-tests.patch','runtime/codex-patches/loopback-address.patch',
  'runtime/codex-patches/required-effect-guard.lock.json','scripts/dev/build-codex-guard-runtime.mjs',
  'scripts/dev/probe-production-runner.mjs','services/platform/fixtures/native-protocol.mjs',
