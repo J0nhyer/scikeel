@@ -1,5 +1,5 @@
 allowed_approval_policies = ["on-request"]
-allowed_sandbox_modes = ["workspace-write"]
+allowed_sandbox_modes = ["read-only", "workspace-write"]
 allowed_web_search_modes = ["disabled"]
 allow_managed_hooks_only = true
 mcp_servers = {}

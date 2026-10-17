@@ -17,6 +17,22 @@ import * as integration from "../../../scripts/dev/build-codex-guard-runtime.mjs
 
 const workflow = new URL("../../../.github/workflows/sandbox-image.yml", import.meta.url);
 
+test("native feasibility stages the complete production requirements, including the pinned read-only profile prerequisite", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "scikeel-native-requirements-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "requirements.toml");
+  await protocol.stageNativeRequirements(path);
+  const content = await readFile(path, "utf8");
+  assert.equal(content, await readFile(new URL("../../../runtime/sandbox/codex-requirements.toml", import.meta.url), "utf8"));
+  // ConfigRequirements::try_from in the pinned native source rejects every
+  // PermissionProfile unless the managed sandbox allowlist includes read-only.
+  assert.match(content, /^allowed_sandbox_modes = \["read-only", "workspace-write"\]$/m);
+  assert.match(content, /^allow_managed_hooks_only = true$/m);
+  assert.match(content, /^plugins = false$/m);
+  assert.match(content, /required-effect-guard\.mjs --guard/);
+  assert.doesNotMatch(content, /danger-full-access/);
+});
+
 test("the native feasibility gate stages the integrity-pinned binary on dedicated CI", async () => {
   const source = await readFile(workflow, "utf8");
   assert.match(source, /native_feasibility_only:/);

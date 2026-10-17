@@ -88,6 +88,10 @@ async function hook() {
     ...(mode === "deny" ? { permissionDecision: "deny", permissionDecisionReason: "Pending research decision" } : { permissionDecision: "allow" }) } }));
 }
 
+export async function stageNativeRequirements(destination) {
+  await writeFile(destination, await readFile(new URL("../../../runtime/sandbox/codex-requirements.toml", import.meta.url)));
+}
+
 export async function prepareNativeProbe() {
   if (process.env.CI !== "true") throw new Error("dedicated CI fixture preparation required");
   await mkdir(".deploy/native-capabilities/config", { recursive: true });
@@ -102,15 +106,9 @@ export async function prepareNativeProbe() {
   if (model?.apply_patch_tool_type !== "freeform" || model.shell_type !== "unified_exec") throw new Error("native tool metadata unavailable");
   // This offline fixture is not the application's host-profile catalog or a model-identity claim.
   await writeFile(".deploy/native-capabilities/config/models.json", JSON.stringify({ models: [{ ...model, slug: "gpt-6.1-sol" }] }));
-  // A managed, read-only requirement is stronger than trusting tenant hooks.json.
-  await writeFile(".deploy/native-capabilities/config/requirements.toml", `
-[hooks]
-[[hooks.PreToolUse]]
-[[hooks.PreToolUse.hooks]]
-type = "command"
-command = "${node} /opt/scikeel/runtime/required-effect-guard.mjs --guard"
-timeout = 5
-`);
+  // Exercise every production constraint. The container substitutes only the
+  // guard executable with this fixture's synthetic broker, never the policy.
+  await stageNativeRequirements(".deploy/native-capabilities/config/requirements.toml");
 }
 
 export function orderedNativeToolEvidence(frames, threadId, turnId, expected) {
