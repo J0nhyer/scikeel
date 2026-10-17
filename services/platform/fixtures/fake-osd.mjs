@@ -64,6 +64,10 @@ const server = createServer(async (request, response) => {
     return;
   }
   const runtimeUrl=new URL(request.url,"http://worker.invalid");
+  if(request.method==='GET'&&['/session/status','/permission','/question','/experimental/session'].includes(runtimeUrl.pathname)){
+    if(request.headers.authorization!==expectedBasic){response.writeHead(401);response.end();return;}
+    response.setHeader('content-type','application/json');response.end(JSON.stringify(runtimeUrl.pathname==='/session/status'?{}:[]));return;
+  }
   if(runtimeUrl.pathname.startsWith("/session/")) {
     if(request.headers.authorization!==expectedBasic){response.writeHead(401);response.end();return;}
     response.setHeader("content-type","application/json");

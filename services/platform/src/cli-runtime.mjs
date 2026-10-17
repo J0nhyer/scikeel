@@ -728,14 +728,17 @@ export class CliRuntimeManager {
       !Array.isArray(context.decisions)||!Array.isArray(context.attachments))throw issue('conversation_history_changed','Owned canonical history changed',409);
     if(reservation.cancelled)throw issue("turn_cancelled","Turn was cancelled",409);
     if((await conversations.open(owner,sessionId)).revision!==current.revision)throw issue('conversation_revision_conflict','Conversation changed during handover',409);
-    const handover=prepareHandover({conversation:current,binding:binding?.nativeSessionId===session.nativeSessionId?binding:null,
-      profile:{runtime:session.runtime,identityRevision:profile.identityRevision},history:context.history,decisions:context.decisions,attachments:context.attachments});
+    const projection=await this.conversationRevert?.projection(owner,sessionId)??{version:0,hiddenMessageIds:[]};
+    const hidden=new Set(projection.hiddenMessageIds),sameProjection=(session.revertVersion??0)===projection.version;
+    const handover=prepareHandover({conversation:current,binding:sameProjection&&binding?.nativeSessionId===session.nativeSessionId?binding:null,
+      profile:{runtime:session.runtime,identityRevision:profile.identityRevision},history:context.history.filter(message=>!hidden.has(message.info.id)),
+      decisions:context.decisions,attachments:context.attachments});
     const admitted=await this.admitConversation({conversations,owner,conversationId:sessionId,expectedRevision:current.revision,
       representedSequence:handover.representedSequence,
       request:{requestId,payloadHash,policyRevision:policy.revision,runtime:session.runtime,generation:owner.generation,
         model,identityRevision:profile.identityRevision}});
     if(reservation.cancelled){await admitted.settle({cleanupVerified:true});throw issue("turn_cancelled","Turn was cancelled",409);}
-    const result={...admitted,model,identityRevision:profile.identityRevision,reservation,handover,
+    const result={...admitted,model,identityRevision:profile.identityRevision,reservation,handover,revertVersion:projection.version,owner:structuredClone(owner),
       settle:async options=>{
         try{return await admitted.settle(options);}
         finally{if(this.turnReservations.get(session.id)===reservation)this.turnReservations.delete(session.id);}
@@ -1420,8 +1423,13 @@ export class CliRuntimeManager {
     const assistant={info:{id:`msg_cli_${randomUUID()}`,role:"assistant",sessionID:session.id,time:{created:timestamp}},parts:[]};
     if(!turn.executionAdmission)this.emitMessageUpdated(userId,session,assistant);
     const stale=Boolean(session.nativeSessionId && session.identityRevision!==profile.identityRevision);
-    let acceptedNativeSessionId;
+    let acceptedNativeSessionId,captured=false;
+    const revertOwner=turn.executionAdmission?.owner??(turn.workspaceContext&&{...turn.workspaceContext,userId,directory:session.directory});
+    const revertInput=turn.executionAdmission&&{conversationId:turn.executionAdmission.identity.conversationId,requestId:turn.executionAdmission.identity.requestId};
     try {
+      if(this.conversationRevert&&revertOwner&&revertInput){
+        const result=await this.conversationRevert.begin(revertOwner,revertInput);captured=result?.captured===true;
+      }
       if(turn.executionAdmission){await turn.executionAdmission.submitted();turn.executionAdmission.dispatched=true;}
       const handover=turn.executionAdmission?.handover;
       const result=await this.sandboxJobs.run({userId,session:{...session,id:session.publicConversationId??session.id},workspaceContext:turn.workspaceContext,model:chosen,variant:chosenVariant,text:`${handover?.context??(stale?handoverText(session.history):"")}${text}`,
@@ -1431,6 +1439,7 @@ export class CliRuntimeManager {
           if(typeof native.nativeSessionId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(native.nativeSessionId))throw issue('invalid_native_acceptance','Invalid native acceptance',503);
           if(turn.executionAdmission)await turn.executionAdmission.acceptedNative({runtime:session.runtime,...native});
           acceptedNativeSessionId=native.nativeSessionId;
+          if(this.conversationRevert&&revertOwner&&revertInput)await this.conversationRevert.accept?.(revertOwner,revertInput);
           if(session.nativeSessionId&&session.identityRevision&&(session.nativeSessionId!==native.nativeSessionId||session.identityRevision!==profile.identityRevision)) {
             const history=session.bindingHistory??=[];
             if(!history.some(previous=>previous.nativeSessionId===session.nativeSessionId&&previous.identityRevision===session.identityRevision)) {
@@ -1439,6 +1448,7 @@ export class CliRuntimeManager {
             }
           }
           session.nativeSessionId=native.nativeSessionId;session.identityRevision=profile.identityRevision;
+          if(turn.executionAdmission)session.revertVersion=turn.executionAdmission.revertVersion??0;
           await this.persistUser(state);
           if(turn.executionAdmission){
             session._publicMessageId=turn.executionAdmission.publicMessageId;
@@ -1485,9 +1495,18 @@ export class CliRuntimeManager {
       assistant.info.time.completed=now();
       if(!turn.executionAdmission||acceptedNativeSessionId)this.emitMessageUpdated(userId,session,assistant);
       if(assistant.parts.length || assistant.info.error)session.history.push(assistant);
-      session.status="idle";session.updatedAt=now();
-      this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
-      this.emit(userId,{type:"session.idle",properties:{sessionID:session.id}});
+      session.updatedAt=now();
+      try{
+        if(captured){
+          await this.persistUser(state);
+          if(acceptedNativeSessionId&&turn.nativeCleanupVerified===true)await this.conversationRevert.complete(revertOwner,
+            {...revertInput,messageID:turn.executionAdmission.publicMessageId(userMessageId),cleanupVerified:true});
+          else if(!acceptedNativeSessionId)await this.conversationRevert.discard(revertOwner,revertInput);
+        }
+      }finally{
+        session.status="idle";this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
+        this.emit(userId,{type:"session.idle",properties:{sessionID:session.id}});
+      }
     }
   }
 

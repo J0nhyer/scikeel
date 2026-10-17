@@ -15,6 +15,7 @@ import { TenantPolicy } from "../src/tenant-policy.mjs";
 import { WorkspaceRpc } from "../src/workspace-rpc.mjs";
 import { recoveryError } from "../src/workspace-recovery.mjs";
 import { WorkspaceAdmission } from "../src/workspace-admission.mjs";
+import {localRevertFiles} from '../fixtures/conversation-revert-files.mjs';
 
 const fakeOsd = fileURLToPath(new URL("../fixtures/fake-osd.mjs", import.meta.url));
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
@@ -1431,14 +1432,14 @@ test('native collaboration resolves owned child ancestry without querying the Op
  assert.throws(()=>policy.session(context,unregistered.id));assert.equal(workerReads,0);
 });
 
-async function nativeHttpFixture(t,run){
+async function nativeHttpFixture(t,run,options={}){
  const root=await mkdtemp(join(tmpdir(),'scikeel-native-http-research-'));
  const cliRuntime=new CliRuntimeManager({rootDir:join(root,'native'),sandboxJobs:{run},
   profileResolver:{refresh:async runtime=>({runtime,enabledByProfile:runtime==='codex',models:runtime==='codex'?[{id:'approved',variants:{}}]:[],
    defaultModel:runtime==='codex'?'approved':null,identityRevision:'service-profile',catalogRevision:'catalog',status:'ready',files:{}})},
   assistantAuthority:{prepare:async()=>{},revoke:async()=>{},inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}});
  await cliRuntime.init();await cliRuntime.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'native-http-research'});
- const policy=new TenantPolicy(),f=await makeFixture({root,tenantPolicy:policy,cliRuntime}),client=makeClient(f.base);
+ const policy=new TenantPolicy(),f=await makeFixture({root,tenantPolicy:policy,cliRuntime,...options}),client=makeClient(f.base);
  const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
  const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
  f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
@@ -1461,6 +1462,79 @@ async function until(check){
  for(let n=0;n<100;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
  assert.fail('Timed out waiting for native turn settlement');
 }
+test('native checked revert routes the owned canonical user message instead of a private origin ID',async t=>{
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'revert-http-native',turnId:'revert-http-turn'});await args.emit({type:'text',text:'File created'});
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'revert-http-native'};
+ });
+ assert.equal((await f.send('before-revert')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const history=await (await f.client.request(`/session/${f.session.id}/message`)).json(),target=history.find(message=>message.info.role==='user');
+ assert(target);assert.notEqual(target.info.id,f.session.history[0].info.id);const calls=[];
+ f.server.conversationRevert={projection:async()=>({version:0,revert:null,hiddenMessageIds:[]}),execute:async(owner,input)=>{
+  assert.equal(owner.directory,f.owner.directory);assert.equal(owner.userId,f.user.id);assert.equal(owner.generation,1);
+  assert.equal(input.messageID,target.info.id);assert.equal(input.expectedRevision,(await f.server.conversations.open(f.owner,f.session.id)).revision);
+  calls.push(input);return {state:'committed',revert:{messageID:target.info.id}};
+ }};
+ const response=await f.client.request(`/session/${f.session.id}/revert`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messageID:target.info.id})});
+ assert.equal(response.status,200,await response.text());assert.equal(calls.length,1);
+ const wrong=await f.client.request(`/session/${f.session.id}/revert`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messageID:f.session.history[0].info.id})});
+ assert.equal(wrong.status,404);assert.equal(calls.length,1,'Private origin IDs are not accepted as public revert targets');
+});
+test('native HTTP integrates durable checked file restore, canonical visibility and fresh-thread edit-message resend',async t=>{
+ let f;const calls=[],files=localRevertFiles({workspaceDir:()=>f.owner.workspaceDir});
+ f=await nativeHttpFixture(t,async args=>{
+  calls.push(args);const nativeSessionId=args.nativeSessionId??`actual-thread-${calls.length}`;
+  await args.onAccepted({nativeSessionId,turnId:`actual-turn-${calls.length}`});
+  if(calls.length===1)await writeFile(join(f.owner.workspaceDir,'output.bin'),Buffer.from([0,255,128]));
+  await args.emit({type:'text',text:calls.length===1?'Revoked future answer':'New explicit answer'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ },{enableWorkspaceManagement:true,workspaceFiles:files});
+ await writeFile(join(f.owner.workspaceDir,'input.csv'),'preserved');
+ assert.equal((await f.send('real-file-turn')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const original=await (await f.client.request(`/session/${f.session.id}/message`)).json(),messageID=original.find(message=>message.info.role==='user')?.info.id;
+ assert(messageID);assert.deepEqual(await readFile(join(f.owner.workspaceDir,'output.bin')),Buffer.from([0,255,128]));
+ const change=async(method,id)=>{
+  const result=await f.client.request(`/session/${f.session.id}/${method}`,{method:'POST',headers:{'content-type':'application/json','x-request-id':id},
+   body:JSON.stringify(method==='revert'?{messageID}:{})});assert.equal(result.status,200,await result.text());
+ };
+ await change('revert','actual-revert');
+ await assert.rejects(readFile(join(f.owner.workspaceDir,'output.bin')),{code:'ENOENT'});assert.equal(await readFile(join(f.owner.workspaceDir,'input.csv'),'utf8'),'preserved');
+ assert.deepEqual(await (await f.client.request(`/session/${f.session.id}/message`)).json(),[]);
+ assert.equal((await (await f.client.request(`/session/${f.session.id}`)).json()).revert.messageID,messageID);
+ await change('unrevert','actual-unrevert');assert.deepEqual(await readFile(join(f.owner.workspaceDir,'output.bin')),Buffer.from([0,255,128]));
+ assert.deepEqual(await (await f.client.request(`/session/${f.session.id}/message`)).json(),original);
+ await change('revert','actual-revert-again');
+ assert.equal((await f.send('edited-resend')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal(calls[1].nativeSessionId,undefined);assert(!calls[1].text.includes('Revoked future answer'));
+ assert.equal((await (await f.client.request(`/session/${f.session.id}`)).json()).revert,null);
+ const edited=await (await f.client.request(`/session/${f.session.id}/message`)).json();assert.equal(edited.length,2);assert.equal(original.length,2);
+ assert.notEqual(edited[0].info.id,messageID);assert(!JSON.stringify(edited).includes('Revoked future answer'));
+});
+for(const [partial,wrongFence] of [[false,false],[true,false],[false,true]])test(`native HTTP ${partial?'partial':wrongFence?'foreign-fenced':'fully applied'} lost-ack revert reconciles after platform reconstruction without replaying effects`,async t=>{
+ let f,restores=0,loseAck=true;const files=localRevertFiles({workspaceDir:()=>f.owner.workspaceDir,afterRestore:async()=>{
+  restores++;if(loseAck){loseAck=false;throw Error('restore acknowledgement lost');}
+ }});
+ f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'lost-ack-thread',turnId:'lost-ack-turn'});
+  await writeFile(join(f.owner.workspaceDir,'a-result'),'actual effect');if(partial)await writeFile(join(f.owner.workspaceDir,'b-result'),'second actual effect');
+  await args.emit({type:'text',text:'Effect completed'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'lost-ack-thread'};
+ },{enableWorkspaceManagement:true,workspaceFiles:files});
+ assert.equal((await f.send('effect-before-lost-ack')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const original=await (await f.client.request(`/session/${f.session.id}/message`)).json(),messageID=original.find(message=>message.info.role==='user').info.id;
+ const request={method:'POST',headers:{'content-type':'application/json','x-request-id':'lost-ack-revert','x-scikeel-assistant-revision':'2'},body:JSON.stringify({messageID})};
+ assert.equal((await f.client.request(`/session/${f.session.id}/revert`,request)).status,503);assert.equal(restores,1);
+ assert(await f.server.workspaceManagement.state.runtimeMutation(f.owner));
+ if(wrongFence)await f.server.workspaceManagement.state.update(f.user.id,data=>{data.runtimeMutation.requestId='unrelated-runtime-effect';});
+ const policy=f.server.tenantPolicy;await f.server.close();
+ f.server=new PlatformServer({authStore:f.authStore,workerManager:f.manager,cliRuntime:f.cliRuntime,tenantPolicy:policy,workspaceFiles:files,enableWorkspaceManagement:true});
+ fixtures.find(fixture=>fixture.root===f.root).server=f.server;
+ const address=await f.server.listen();f.server.conversationRouter.listOpenCode=async()=>[];
+ const client=makeClient(`http://${address.host}:${address.port}`);await login(client,'admin','admin-password');
+ const retry=await client.request(`/session/${f.session.id}/revert`,request);
+ assert.equal(retry.status,partial||wrongFence?503:200,await retry.text());assert.equal(restores,1,'Read-only reconciliation never replays any restore');
+ const history=await (await client.request(`/session/${f.session.id}/message`)).json();
+ if(partial||wrongFence){assert(await f.server.workspaceManagement.state.runtimeMutation(f.owner));assert.deepEqual(history,original);if(partial)assert.equal(await readFile(join(f.owner.workspaceDir,'b-result'),'utf8'),'second actual effect');}
+ else {assert.equal(await f.server.workspaceManagement.state.runtimeMutation(f.owner),null);assert.deepEqual(history,[]);}
+});
 for(const userOnly of [false,true])test(`native HTTP lazily adopts owned ${userOnly?'user-only':'completed'} OpenCode history without changing public identity`,async t=>{
  const calls=[];const f=await nativeHttpFixture(t,async args=>{
   calls.push(args);const nativeSessionId=args.nativeSessionId??'adopted-native-thread';

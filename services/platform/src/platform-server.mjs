@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { WorkspaceState, workspaceError } from "./workspace-state.mjs";
 import { readAssistantLedgerInventory } from "./assistant-inventory.mjs";
 import { ConversationState } from "./conversation-state.mjs";
 import { ConversationRouter } from "./conversation-router.mjs";
+import { ConversationRevert } from "./conversation-revert.mjs";
 import { WorkspaceAdmission } from "./workspace-admission.mjs";
 import { WorkspaceFiles } from "./workspace-files.mjs";
 import { WorkspaceUploads } from "./workspace-uploads.mjs";
@@ -500,6 +501,38 @@ export class PlatformServer {
           response.writeHead(200,headers);await pipeline(Readable.fromWeb(upstream.body),response);
         }});
     }
+    if(this.conversationRouter&&workspaceFiles&&this.workspaceAdmission){
+      this.conversationRevert=new ConversationRevert({rootDir:resolve(workerManager.rootDir,'../conversation-revert'),files:workspaceFiles,
+        authorize:async owner=>{
+          const current=await resolveContext(owner.userId);
+          if(current.instanceId!==owner.instanceId||current.generation!==owner.generation)throw recoveryError('stale_workspace_context');
+          const account=tenantPolicy.account(owner);
+          if(account.workspaceDir!==owner.workspaceDir)throw workspaceError('conversation_owner_mismatch',403);
+          tenantPolicy.directory(owner,owner.directory);await this.workspaceManagement.assertAccessible(owner,owner.directory);
+        },
+        assertIdle:async owner=>{if(await this.#workspaceBusy(owner.userId))throw workspaceError('workspace_busy',409);},
+        readConversation:async(owner,id)=>{
+          await this.conversationRouter.index(owner,id);
+          const value=await this.conversations.open(owner,id);
+          return {revision:value.revision,messages:await this.conversationRouter.messages(owner,id,{includeReverted:true})};
+        },
+        withMutation:(owner,run)=>this.workspaceAdmission.mutate(owner.userId,()=>this.#runtimeWrite(owner,async(finish,mutation)=>{
+          try{const result=await run(mutation);if(result.state==='committed')finish();return result;}
+          catch(error){if(!await this.conversationRevert.pending(owner))finish();throw error;}
+        })),
+        withReconciliation:(owner,run,mutation)=>this.workspaceAdmission.start(owner.userId,async()=>{
+          const pending=await this.workspaceManagement.state.runtimeMutation(owner);
+          if(!pending||['requestId','instanceId','generation'].some(key=>pending[key]!==mutation[key])||this.workspaceProxyRequests.has(pending.requestId))return {state:'unknown'};
+          this.workspaceProxyRequests.add(pending.requestId);
+          try{
+            const result=await run();
+            if(result.state==='committed')await this.workspaceManagement.state.finishRuntimeMutation(owner,pending.requestId);
+            return result;
+          }finally{this.workspaceProxyRequests.delete(pending.requestId);}
+        }),
+      });
+      cliRuntime.conversationRevert=this.conversationRevert;this.conversationRouter.conversationRevert=this.conversationRevert;
+    }
     this.server = null;
     this.listenPromise = null;
   }
@@ -749,7 +782,14 @@ export class PlatformServer {
   }
 
   async #assertRuntimeMutation(context) {
-    const pending=await this.workspaceManagement?.state.runtimeMutation(context);
+    let pending=await this.workspaceManagement?.state.runtimeMutation(context);
+    if(pending&&!this.workspaceProxyRequests.has(pending.requestId)&&this.conversationRevert){
+      const worker=this.workerManager.getWorker(context.instanceId);
+      if(worker?.status==='running'&&worker.userId===context.userId&&worker.generation===context.generation){
+        await this.conversationRevert.reconcileMutation({...context,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir},pending);
+        pending=await this.workspaceManagement.state.runtimeMutation(context);
+      }
+    }
     if(pending && !this.workspaceProxyRequests.has(pending.requestId))throw recoveryError("runtime_unresponsive",{context,action:"confirm_restart"});
   }
   async #runtimeWrite(context,run) {
@@ -758,7 +798,7 @@ export class PlatformServer {
     this.workspaceProxyRequests.add(requestId);
     let complete=false;
     try{
-      return await run(()=>{complete=true;});
+      return await run(()=>{complete=true;},{requestId,instanceId:context.instanceId,generation:context.generation});
     }finally{
       try{if(complete)await this.workspaceManagement.state.finishRuntimeMutation(context,requestId);}
       finally{this.workspaceProxyRequests.delete(requestId);this.workerManager.noteTransportFailure?.({instanceId:context.instanceId,generation:context.generation});}
@@ -923,7 +963,7 @@ export class PlatformServer {
   }
 
   async #nativeHandoverState(user,owner,sessionId,conversation,access,worker) {
-    const history=await this.conversationRouter.messages(owner,sessionId);
+    const history=await this.conversationRouter.messages(owner,sessionId,{includeReverted:true});
     const researchOwner=await this.#collaborationOwner(user,sessionId,access,worker);
     const collaboration=await this.collaboration.get(researchOwner);
     const decisions=collaboration.decisions.map(decision=>({...decision,source:'collaboration',sessionId:researchOwner.sessionId}));
@@ -1074,6 +1114,32 @@ export class PlatformServer {
       }
     }
     const parsed = new URL(request.url ?? "/", "http://platform.invalid");
+    const nativeRevert=parsed.pathname.match(/^\/session\/([^/]+)\/(revert|unrevert)$/);
+    if(nativeRevert&&request.method==='POST'&&this.cliRuntime?.sandboxJobs&&this.cliRuntime.isManaged(user.id)){
+      try{
+        if(!this.conversationRevert||!this.conversationRouter)throw workspaceError('revert_unavailable',503);
+        const body=await this.#readPayload(request,response);if(!body)return;
+        const operation=classifyRuntimeRoute(request.method,parsed.pathname),input=validateRuntimeInput(operation,{query:parsed.searchParams,body,headers:request.headers});
+        const sessionId=decodeURIComponent(nativeRevert[1]),owner=await this.#researchOwner(user,sessionId,access,worker);
+        if(input.directory!==undefined&&input.directory!==owner.directory)throw workspaceError('conversation_owner_mismatch',403);
+        if(body.partID!==undefined)throw workspaceError('revert_partial_unavailable',400);
+        await this.conversationRouter.index(owner,sessionId);
+        const conversation=await this.conversations.open(owner,sessionId),undo=nativeRevert[2]==='unrevert';
+        if(!undo){
+          const message=(await this.conversationRouter.messages(owner,sessionId,{includeReverted:true})).find(message=>message.info.id===body.messageID);
+          if(!message)throw workspaceError('revert_message_not_found',404);
+          if(message.info.role!=='user')throw workspaceError('revert_message_not_user',400);
+        }
+        const supplied=request.headers['x-scikeel-request-id']??request.headers['x-request-id'];
+        if(supplied!==undefined&&(typeof supplied!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(supplied)))throw workspaceError('invalid_revert_request',400);
+        const operationId=supplied??`revert_${createHash('sha256').update(JSON.stringify([sessionId,body.messageID??null,undo,conversation.revision])).digest('hex').slice(0,40)}`;
+        const receipt=await this.conversationRevert.execute(owner,{conversationId:sessionId,...(!undo?{messageID:body.messageID}:{}),
+          expectedRevision:conversation.revision,operationId,undo});
+        const session=await this.conversationRouter.read(owner,sessionId);
+        sendJson(response,200,{...session,revert:receipt.revert});
+      }catch(error){sendJson(response,error.statusCode??error.status??503,{error:'Checked file restoration unavailable',code:error.code});}
+      return;
+    }
     const sessionRoute = parsed.pathname.match(/^\/session\/([^/]+)(?:\/(message|fork))?$/);
     if (sessionRoute && request.method === "GET" && sessionRoute[2] === "message") {
       const sessionId = decodeURIComponent(sessionRoute[1]);
@@ -2209,7 +2275,14 @@ export class PlatformServer {
       if(this.workspaceAdmission && !["GET","HEAD"].includes(request.method) && !stopping && !request.workspaceAdmitted &&
           !path.startsWith("/api/workspace/") && !path.startsWith("/auth/") && !path.startsWith("/api/admin/")) {
         const admittedUser=await this.#currentUser(request);
-        if(admittedUser){const reserve=()=>{request.workspaceAdmitted=true;return this.workspaceAdmission.start(admittedUser.id,async()=>{
+        if(admittedUser){
+          const current=this.workerManager.getWorker(workerIdForUser(admittedUser.id));
+          if(this.conversationRevert&&current?.status==='running'&&request.headers['x-scikeel-runtime-generation']===String(current.generation)&&
+              request.headers.origin===`${this.secureCookies?'https':'http'}://${request.headers.host}`&&request.headers['sec-fetch-site']!=='cross-site'){
+            await this.cliRuntime.assertAssistantRevision(request.headers['x-scikeel-assistant-revision']);
+            await this.#assertRuntimeMutation({userId:admittedUser.id,instanceId:current.id,generation:current.generation});
+          }
+          const reserve=()=>{request.workspaceAdmitted=true;return this.workspaceAdmission.start(admittedUser.id,async()=>{
           if(request.aborted || response.destroyed || response.writableEnded)return;
           let complete;const completed=new Promise(done=>{complete=done;response.once("finish",done);response.once("close",done);});
           try{

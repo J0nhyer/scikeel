@@ -107,7 +107,11 @@ export class ConversationRouter {
   }
   return ancestors;
  }
- async read(owner,conversationId) {return clone((await this.#resolve(owner,conversationId)).row);}
+ async read(owner,conversationId) {
+  const row=clone((await this.#resolve(owner,conversationId)).row);
+  if(this.conversationRevert)row.revert=(await this.conversationRevert.projection({...owner,directory:row.directory},conversationId)).revert;
+  return row;
+ }
  async explicitDenies(owner,conversationId) {
   const source=await this.#resolve(owner,conversationId),records=[source,...source.bindingSources?.values()??[],source.archival].filter(Boolean),rules=new Map();
   for(const record of records){
@@ -174,7 +178,7 @@ export class ConversationRouter {
    return origin===active;
   });
  }
- async messages(owner,conversationId) {
+ async messages(owner,conversationId,{includeReverted=false}={}) {
   const source=await this.#resolve(owner,conversationId);
   if(!source.canonical)return clone((await this.#validatedMessages(owner,source,source.rawSources)).map(message=>this.#publicMessage(message,conversationId)));
   const value=source.canonical,origins=new Map(source.bindingSources),all=[];
@@ -193,7 +197,12 @@ export class ConversationRouter {
   if(found.size)throw fail('conversation_history_index_required',409);
   const current=await this.conversations.open(owner,conversationId);
   if(current.revision!==value.revision)throw fail('conversation_revision_conflict',409);
-  await this.authorize({...owner,directory:source.row.directory});return clone(all);
+  await this.authorize({...owner,directory:source.row.directory});
+  if(!includeReverted&&this.conversationRevert){
+   const projection=await this.conversationRevert.projection({...owner,directory:source.row.directory},conversationId),hidden=new Set(projection.hiddenMessageIds);
+   return clone(all.filter(message=>!hidden.has(message.info.id)));
+  }
+  return clone(all);
  }
  async index(owner,conversationId) {
   const source=await this.#resolve(owner,conversationId),owned={...owner,directory:source.row.directory};

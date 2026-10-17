@@ -39,6 +39,64 @@ test('native aliases persist owned canonical ancestry and refuse direct private 
  assert.equal(saved.sessions.find(value=>value.id===child.id).publicConversationId,'legacy-child');
  assert.equal(f.manager.processes.size,0);
 });
+test('native file versions bind the actual public accepted message and verified cleanup before settling admission',async t=>{
+ const observed=[];let complete=false;
+ const f=await fixture(t,{run:async args=>{
+  assert.equal(observed[0].kind,'begin');await args.onAccepted({nativeSessionId:'native-revert',turnId:'turn-revert'});
+  await args.emit({type:'text',text:'Actual native file effect'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'native-revert'};
+ }});
+ f.manager.conversationRevert={begin:async(owner,input)=>{observed.push({kind:'begin',owner,input});return {captured:true};},
+  complete:async(owner,input)=>{observed.push({kind:'complete',owner,input});complete=true;},
+  discard:async()=>assert.fail('Accepted effects must retain versions'),projection:async()=>({version:0,hiddenMessageIds:[],revert:null})};
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ const executionAdmission=await f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId:'snapshot-send',policyRevision:'2',body:{parts:[{type:'text',text:'Create file'}]}});
+ await f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'Create file',executionAdmission,workspaceContext:owner});
+ assert(complete);assert.equal(observed[1].input.cleanupVerified,true);assert.equal(observed[1].input.conversationId,f.session.id);
+ assert.equal(observed[1].input.messageID,executionAdmission.publicMessageId(f.session.history[0].info.id));
+ assert.notEqual(observed[1].input.messageID,f.session.history[0].info.id);assert.equal((await conversations.open(owner,f.session.id)).turns['snapshot-send'].state,'settled');
+});
+test('a changed checked-revert projection forces a fresh native binding with only visible canonical context',async t=>{
+ const f=await fixture(t,{run:async()=>{throw Error('Admission must not dispatch');}});
+ f.session.nativeSessionId='pre-revert-native';f.session.identityRevision='owned-profile';f.session.revertVersion=1;
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ await conversations.bind(owner,f.session.id,{expectedRevision:1,binding:{runtime:'codex',nativeSessionId:'pre-revert-native',identityRevision:'owned-profile',representedSequence:0}});
+ f.manager.conversationRevert={projection:async()=>({version:2,hiddenMessageIds:[],revert:{messageID:'public-reverted-user'}})};
+ const admission=await f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId:'after-revert',policyRevision:'2',body:{parts:[{type:'text',text:'Edit and resend'}]}});
+ assert.equal(admission.handover.resumeNativeSessionId,undefined);assert.equal(admission.revertVersion,2);await admission.settle({cleanupVerified:true});
+});
+test('revert and unrevert both send a fresh native thread and only the projected canonical context to the actual runner',async t=>{
+ const calls=[],f=await fixture(t,{run:async args=>{
+  calls.push(args);const nativeSessionId=`fresh-projection-${calls.length}`;
+  await args.onAccepted({nativeSessionId,turnId:`turn-${calls.length}`});await args.emit({type:'text',text:'Current result'});
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ }});
+ const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ const history=['visible-user','visible-answer','future-user','future-answer'].map((id,index)=>({info:{id,role:index%2?'assistant':'user',time:{completed:1}},
+  parts:[{type:'text',text:index<2?'Preserved visible context':'Revoked future answer must not leak'}]}));
+ let current=await conversations.open(owner,f.session.id);
+ current=await conversations.importHistorical(owner,{conversationId:f.session.id,expectedRevision:current.revision,title:'Owned',parentId:null,lifecycle:'active',
+  source:{runtime:'opencode',sessionId:'legacy'},cursor:'all-context',events:history.map(message=>({nativeEventId:message.info.id,nativeMessageId:message.info.id,
+   publicMessageId:message.info.id,role:message.info.role,state:'completed',contentHash:'a'.repeat(64)}))});
+ f.session.nativeSessionId='contains-revoked-future';f.session.identityRevision='owned-profile';f.session.revertVersion=0;
+ await conversations.bind(owner,f.session.id,{expectedRevision:current.revision,binding:{runtime:'codex',nativeSessionId:f.session.nativeSessionId,identityRevision:'owned-profile',representedSequence:current.sequence}});
+ let projection={version:1,hiddenMessageIds:['future-user','future-answer'],revert:{messageID:'future-user'}};
+ f.manager.conversationRevert={projection:async()=>projection,begin:async()=>({captured:false,reason:'revert_snapshot_limit'})};
+ const send=async requestId=>{
+  const executionAdmission=await f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId,policyRevision:'2',body:{parts:[{type:'text',text:'New explicit request'}]},
+   readHandover:async()=>({history,decisions:[],attachments:[]})});
+  await f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'New explicit request',executionAdmission,workspaceContext:owner});
+ };
+ await send('after-revert');assert.equal(calls[0].nativeSessionId,undefined);assert.match(calls[0].text,/Preserved visible context/);
+ assert(!calls[0].text.includes('Revoked future'));assert(!calls[0].text.includes('contains-revoked-future'));assert.equal(f.session.revertVersion,1);
+ projection={version:2,hiddenMessageIds:[],revert:null};await send('after-unrevert');
+ assert.equal(calls[1].nativeSessionId,undefined);assert.match(calls[1].text,/Revoked future answer/);assert.equal(f.session.revertVersion,2);
+});
 test('concurrent first handovers serialize alias creation across the asynchronous deny read',async t=>{
  const f=await fixture(t,{run:async()=>{throw Error('No inference');}});
  const owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
