@@ -19,6 +19,7 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
       );
     const { AuthStore } = await source("auth-store");
     const { PlatformServer } = await source("platform-server");
+    const { CliRuntimeManager } = await source("cli-runtime");
     const { CollaborationStore } = await source("collaboration");
     const root = await mkdtemp(join(tmpdir(), "scikeel-collaboration-web-"));
     await mkdir(join(root, "workers"));
@@ -108,6 +109,8 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
     const platform = new PlatformServer({
       authStore,
       workerManager: manager,
+      cliRuntime: new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: join(root, "codex"), claudeConfigDir: join(root, "claude"),
+        assistantAuthority: { inventory: async () => ({ activeExecutions: [], uncertainEffects: [] }) } }),
       webRoot,
     });
     const address = await platform.listen();
@@ -243,7 +246,7 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
   async () => {
     const {chromium}=createRequire(import.meta.url)(process.env.OSD_PLAYWRIGHT_PATH);
     const source=name=>import(pathToFileURL(resolve(`../../services/platform/src/${name}.mjs`)).href);
-    const {AuthStore}=await source("auth-store"),{PlatformServer}=await source("platform-server"),{TenantPolicy}=await source("tenant-policy");
+    const {AuthStore}=await source("auth-store"),{PlatformServer}=await source("platform-server"),{TenantPolicy}=await source("tenant-policy"),{CliRuntimeManager}=await source("cli-runtime");
     const webRoot=process.env.OSD_WEB_CANDIDATE || (await readFile(resolve("../../.deploy/attachments-build-path"),"utf8")).trim();
     const browser=await chromium.launch({executablePath:process.env.OSD_CHROMIUM_PATH,headless:true,args:["--no-sandbox","--disable-dev-shm-usage"]});
     try {
@@ -279,6 +282,8 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
           getWorker:()=>({...worker,id:`user-${userId}`,userId}),getWorkerAccess:()=>({url:`http://127.0.0.1:${runtime.address().port}`,token:"a".repeat(64)}),
           acquireOperation:()=>()=>{},retainWorker:()=>({generation:1,release(){}}),listWorkers:()=>[]};
         const platform=new PlatformServer({authStore,workerManager:manager,tenantPolicy:policy,workspaceFiles:{call:async()=>({})},
+          cliRuntime:new CliRuntimeManager({rootDir:join(root,"cli"),codexHome:join(root,"codex"),claudeConfigDir:join(root,"claude"),
+            assistantAuthority:{inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}}),
           runtimeCatalog:async()=>catalog,webRoot});
         const address=await platform.listen(),origin=`http://${address.host}:${address.port}`;
         clearInterval(platform.researchTimer);platform.collaboration.cancel=async()=>{};platform.researchTasks.cancel=async()=>{};
@@ -311,7 +316,7 @@ test.skipIf(!process.env.OSD_COLLABORATION_BROWSER)(
           await page.getByRole("button",{name:strings.send.aria,exact:true}).click();
           await expect.poll(()=>nativePrompts.length).toBe(1);await expect.poll(()=>composer.inputValue()).toBe("");expect(posts).toHaveLength(2);
           const stateOwner={...owner,sessionId:"owned",runtime:"opencode",directory:workspace};const state=await platform.collaboration.get(stateOwner);
-          const replay=await context.request.post(`${origin}/session/owned/prompt_async`,{headers:{origin,"x-scikeel-runtime-generation":"1"},data:{...posts[1],collaborationRevision:state.revision}});
+          const replay=await context.request.post(`${origin}/session/owned/prompt_async`,{headers:{origin,"x-scikeel-runtime-generation":"1","x-scikeel-assistant-revision":"1"},data:{...posts[1],collaborationRevision:state.revision}});
           expect(replay.status()).toBe(202);expect(nativePrompts).toHaveLength(1);
           await platform.collaboration.settled(stateOwner,state.execution);busy=false;
           for(const stream of streams)stream.write(`data: ${JSON.stringify({type:"session.status",properties:{sessionID:"owned",status:{type:"idle"}}})}\n\n`);

@@ -23,7 +23,7 @@ test.skipIf(!process.env.OSD_PROJECTS_ACCEPTANCE && !process.env.OSD_PROJECTS_LI
   const authStore = new AuthStore({ filePath: join(root, "auth.json"), bootstrapAdmin: { username: "fixture", password: "fixture-password" } });
   await authStore.createUser({ username: "other", password: "other-password" });
   const workerManager = new WorkerManager({ rootDir: join(root, "workers"), osdCommand: process.execPath, osdArgs: [resolve("../../services/platform/fixtures/fake-osd.mjs")] });
-  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: home, codexCommand: process.execPath, codexArgs: [resolve("../../services/platform/fixtures/fake-cli.mjs"), "codex"] });
+  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), runtime: "codex", assistantAuthority: { inventory: async () => ({ activeExecutions: [], uncertainEffects: [] }) }, codexHome: home, claudeConfigDir: join(root, "claude"), codexCommand: process.execPath, codexArgs: [resolve("../../services/platform/fixtures/fake-cli.mjs"), "codex"] });
   const platform = new PlatformServer({ authStore, workerManager, cliRuntime, webRoot: process.env.OSD_PROJECTS_WEB_ROOT });
   const address = await platform.listen(); const origin = `http://${address.host}:${address.port}`;
   const browser = await chromium.launch({ executablePath: process.env.OSD_CHROMIUM_PATH, args: ["--no-sandbox", "--disable-dev-shm-usage"], headless: true });
@@ -32,7 +32,7 @@ test.skipIf(!process.env.OSD_PROJECTS_ACCEPTANCE && !process.env.OSD_PROJECTS_LI
       const context = await browser.newContext({ viewport: { width, height: 900 } });
       try {
         const login = await context.request.post(`${origin}/auth/login`, { headers: { accept: "application/json" }, data: { username: "fixture", password: "fixture-password" } });
-        expect(login.status()).toBe(200); const { user } = await login.json(); await cliRuntime.setUserRuntime(user.id, "codex");
+        expect(login.status()).toBe(200); const { user } = await login.json();
         const instanceId = `user-${user.id}`;
         await workerManager.ensureWorker({ instanceId, userId: user.id });
         // The isolated legacy fake has no launcher; its simulated owned generation is fixed.
@@ -105,7 +105,6 @@ test.skipIf(!process.env.OSD_PROJECTS_ACCEPTANCE && !process.env.OSD_PROJECTS_LI
             const otherLogin = await other.request.post(`${origin}/auth/login`, { headers: { accept: "application/json" }, data: { username: "other", password: "other-password" } });
             expect(otherLogin.status()).toBe(200);
             const otherUser = (await otherLogin.json()).user;
-            await cliRuntime.setUserRuntime(otherUser.id, "codex");
             expect([403, 404]).toContain((await other.request.get(`${origin}/session/${aId}?directory=${encodeURIComponent(a.path)}`)).status());
             expect((await other.request.get(`${origin}/v1/fs/read?dir=${encodeURIComponent(a.path)}&path=scope.txt`)).status()).toBe(403);
           } finally { await other.close(); }

@@ -14,7 +14,7 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE && !process.env.OSD_PROJEC
  if(!webRoot)throw new Error('OSD_WEB_CANDIDATE must identify the guarded candidate Web build');
  await access(join(webRoot,'index.html'));
  const module=name=>import(pathToFileURL(resolve(`../../services/platform/src/${name}.mjs`)).href);
- const [{AuthStore},{PlatformServer},{TenantPolicy}]=await Promise.all(['auth-store','platform-server','tenant-policy'].map(module));
+ const [{AuthStore},{PlatformServer},{TenantPolicy},{CliRuntimeManager}]=await Promise.all(['auth-store','platform-server','tenant-policy','cli-runtime'].map(module));
  const root=await mkdtemp(join(tmpdir(),'project-files-browser-'));
  let worker;let busy=false;let renameFailure=false,loseChunkReply=false,loseMoveBeforeDispatch=false,loseTextBeforeDispatch=false,loseTextReply=false;
  let revision=0;const payloads=new Map();const nextRevision=()=> (++revision).toString(16).padStart(64,'0');
@@ -79,6 +79,8 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE && !process.env.OSD_PROJEC
   ensureWorker:async({userId})=>{worker={id:'user-'+userId,userId,generation:1,status:'running',workspaceDir:root+'/workspace'};policy.registerAccount({...worker,instanceId:worker.id});},
   retainWorker:()=>({release(){}})};
  const platform=new PlatformServer({authStore,workerManager:manager,tenantPolicy:policy,workspaceFiles:native,enableWorkspaceManagement:true,webRoot,
+  cliRuntime:new CliRuntimeManager({rootDir:join(root,'cli'),codexHome:join(root,'codex'),claudeConfigDir:join(root,'claude'),
+   assistantAuthority:{inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}}),
   runtimeCatalog:async()=>({providers:[{id:'fixture',name:'Fixture',models:{model:{id:'model',providerID:'fixture',name:'Fixture'}}}],connected:['fixture'],default:{fixture:'model'},model:'fixture/model'})});
  const address=await platform.listen(),origin=`http://${address.host}:${address.port}`;
  const {chromium}=createRequire(import.meta.url)(process.env.OSD_PLAYWRIGHT_PATH);
