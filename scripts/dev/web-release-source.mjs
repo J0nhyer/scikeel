@@ -129,8 +129,13 @@ export async function freezeSource(root, destination, files, { linkDependencies 
           }
         } else {
           const actual = await realpath(input);
-          await symlink(actual, target, process.platform === 'win32' ? 'junction' : undefined);
-          views.push({ path: relative(destination, target), target: actual });
+          if ((await lstat(actual)).isFile()) {
+            await copyFile(actual, target);
+            if (await sha256(target) !== await sha256(actual)) throw new Error('Installed dependency changed during snapshot');
+          } else {
+            await symlink(actual, target, process.platform === 'win32' ? 'junction' : undefined);
+            views.push({ path: relative(destination, target), target: actual });
+          }
         }
       }
       for (const name of await readdir(ref.resolved)) await linkEntry(join(ref.resolved, name), join(output, name), name);

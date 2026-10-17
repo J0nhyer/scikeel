@@ -444,7 +444,10 @@ test('dependency snapshots accept installed scoped package links and local works
 
 test('a frozen dependency view can be frozen again without mistaking installed files for escapes', async (t) => {
   const root = await fixture(t); const install = join(root, 'install'); const source = join(root, 'source');
-  await mkdir(join(install, 'node_modules/.pnpm'), { recursive: true });
+  const sharedStore = join(root, 'shared/node_modules/.pnpm');
+  await mkdir(sharedStore, { recursive: true });
+  await mkdir(join(install, 'node_modules'), { recursive: true });
+  await symlink(sharedStore, join(install, 'node_modules/.pnpm'));
   await mkdir(join(install, 'apps/desktop/node_modules'), { recursive: true });
   await mkdir(join(source, 'apps/desktop'), { recursive: true });
   await writeFile(join(install, 'node_modules/.pnpm/lock.yaml'), 'locked');
@@ -461,6 +464,11 @@ test('a frozen dependency view can be frozen again without mistaking installed f
   await freezeSource(frozen, next, files);
   const identity = await dependencyIdentity(next);
   assert.match(identity.fingerprint, /^[a-f0-9]{64}$/);
+  assert.equal((await lstat(join(next, 'node_modules/.modules.yaml'))).isSymbolicLink(), false);
+  assert.equal(await readFile(join(next, 'node_modules/.modules.yaml'), 'utf8'), 'installed');
+  await mkdir(join(root, 'outside')); await writeFile(join(root, 'outside/private'), 'fixture');
+  await symlink(join(root, 'outside'), join(next, 'node_modules/escape'));
+  await assert.rejects(dependencyIdentity(next), /escapes approved roots/);
 });
 
 test('session verification includes recovery even when continuity already exists', async (t) => {
