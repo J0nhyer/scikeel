@@ -259,6 +259,20 @@ test('configuration rewrite preserves unrelated values and rejects duplicates or
   assert.throws(() => replaceEnvironmentValue('A=keep\n', 'PLATFORM_WEB_ROOT', '/new\nOTHER=bad'), /Unsafe/);
 });
 
+test('publication and recovery configuration pin the effective data directory through the actual rewrite contract', () => {
+  const effective = '/opt/open-science-desktop/.deploy/platform-data';
+  const original = 'PLATFORM_WEB_ROOT=/old\nUNRELATED=keep\n';
+  const pinned = replaceEnvironmentValue(original, 'PLATFORM_DATA_DIR', effective);
+  assert.equal(pinned, original + `PLATFORM_DATA_DIR=${effective}\n`);
+  const deployed = replaceEnvironmentValue(pinned, 'PLATFORM_WEB_ROOT', '/candidate/web');
+  const restored = replaceEnvironmentValue(deployed, 'PLATFORM_WEB_ROOT', '/recovery/web');
+  assert.equal(replaceEnvironmentValue(restored, 'PLATFORM_DATA_DIR', effective), restored);
+  assert.match(restored, /UNRELATED=keep\n/);
+  assert.throws(() => replaceEnvironmentValue('PLATFORM_DATA_DIR=/a\nPLATFORM_DATA_DIR=/b\n', 'PLATFORM_DATA_DIR', effective), /ambiguous/);
+  assert.throws(() => replaceEnvironmentValue('', 'PLATFORM_DATA_DIR', effective + '\nINJECTED=bad'), /Unsafe/);
+  assert.throws(() => replaceEnvironmentValue('', 'PLATFORM_ADMIN_PASSWORD', 'not-allowed'), /Unsafe/);
+});
+
 
 test('snapshot validation rejects added inputs and executable-mode changes', async (t) => {
   const root = await fixture(t); await mkdir(join(root, 'apps/desktop/src'), { recursive: true });

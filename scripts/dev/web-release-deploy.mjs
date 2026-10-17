@@ -91,7 +91,7 @@ export async function lifecycleRollbackPolicy(sourceRoot,dataDir) {
   return {compatible:supportedSchema>=requiredSchema,requiredSchema,supportedSchema};
 }
 export function replaceEnvironmentValue(text, key, value) {
-  if (!['PLATFORM_WEB_ROOT', 'PLATFORM_SANDBOX_IMAGE_DIGEST'].includes(key) || /[\r\n\0%\s'"\\]/.test(value)) throw new Error('Unsafe managed configuration value');
+  if (!['PLATFORM_WEB_ROOT', 'PLATFORM_SANDBOX_IMAGE_DIGEST', 'PLATFORM_DATA_DIR'].includes(key) || /[\r\n\0%\s'"\\]/.test(value)) throw new Error('Unsafe managed configuration value');
   const lines = text.split('\n'); const matches = lines.filter((line) => line.startsWith(key + '='));
   if (matches.length > 1) throw new Error('Managed configuration key is ambiguous');
   if (matches.length) return lines.map((line) => line.startsWith(key + '=') ? `${key}=${value}` : line).join('\n');
