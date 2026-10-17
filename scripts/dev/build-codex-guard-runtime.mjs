@@ -21,7 +21,7 @@ export function validateGuardLock(lock) {
       !/^[a-f0-9]{64}$/.test(lock.testPatchSha256 ?? "") ||
       !/^[a-f0-9]{64}$/.test(lock.upstreamLockSha256 ?? "") || !/^[a-f0-9]{64}$/.test(lock.workspaceLockSha256 ?? "") ||
       lock.lockFormat !== "smol-toml@1.9.0" ||
-      lock.bwrapSha256 !== "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c")
+      !/^[a-f0-9]{64}$/.test(lock.bwrapPatchSha256 ?? "") || !/^[a-f0-9]{64}$/.test(lock.bwrapSha256 ?? ""))
     throw new Error("Invalid pinned native guard inputs");
   return lock;
 }
@@ -67,20 +67,44 @@ export async function buildGuardRuntime() {
   const lock = validateGuardLock(JSON.parse(await readFile(join(patches, "required-effect-guard.lock.json"), "utf8")));
   const patch = join(patches, "required-effect-guard.patch");
   const testPatch = join(patches, "required-effect-guard-tests.patch");
+  const bwrapPatch = join(patches, "loopback-address.patch");
   if (sha256(await readFile(patch)) !== lock.patchSha256) throw new Error("Native guard patch identity mismatch");
   if (sha256(await readFile(testPatch)) !== lock.testPatchSha256) throw new Error("Native guard test identity mismatch");
+  if (sha256(await readFile(bwrapPatch)) !== lock.bwrapPatchSha256) throw new Error("Native sandbox patch identity mismatch");
   if (run("git", ["rev-parse", "HEAD"]) !== lock.upstreamCommit || run("git", ["status", "--porcelain"]))
     throw new Error("Fresh pinned native source required");
   if (!run("rustc", ["--version"], join(source, "codex-rs")).startsWith(`rustc ${lock.rustVersion} `))
     throw new Error("Native compiler identity mismatch");
-  const bwrapSha256 = await digest(join(output, "codex-resources/bwrap"));
-  if (bwrapSha256 !== lock.bwrapSha256) throw new Error("Native sandbox resource identity mismatch");
   const workspaceLock = join(source, "codex-rs/Cargo.lock");
   const originalLock = await readFile(workspaceLock);
   if (sha256(originalLock) !== lock.upstreamLockSha256) throw new Error("Native upstream dependency lock changed");
   const reconciled = stringify(reconcileWorkspaceVersions(parse(originalLock.toString("utf8"))));
   if (sha256(reconciled) !== lock.workspaceLockSha256) throw new Error("Native workspace dependency lock changed");
   await writeFile(workspaceLock, reconciled);
+  // Build the vendored helper statically from the same pinned source. Do not
+  // depend on the CI host's glibc/libcap being available in the final image.
+  run("git", ["apply", "--check", bwrapPatch]);
+  run("git", ["apply", bwrapPatch]);
+  const epoch = run("git", ["show", "-s", "--format=%ct", lock.upstreamCommit]);
+  run("cargo", ["build", "--locked", "--release", "--jobs", "1", "--package", "codex-bwrap", "--bin", "bwrap",
+    "--target", "x86_64-unknown-linux-gnu", "--target-dir", "target/bwrap-static"], join(source, "codex-rs"), {
+    RUSTFLAGS: `-C target-feature=+crt-static --remap-path-prefix=${source}=/codex-source`,
+    CFLAGS: `-ffile-prefix-map=${source}=/codex-source`, PKG_CONFIG_ALL_STATIC: "1", SOURCE_DATE_EPOCH: epoch,
+    CODEX_BWRAP_SOURCE_DIR: join(source, "codex-rs/vendor/bubblewrap"), CODEX_SKIP_BWRAP_BUILD: undefined,
+    CARGO_PROFILE_RELEASE_DEBUG: "0", CARGO_PROFILE_RELEASE_LTO: "false", stdio: "inherit",
+  });
+  const bwrap = join(source, "codex-rs/target/bwrap-static/x86_64-unknown-linux-gnu/release/bwrap");
+  const headers = run("readelf", ["--wide", "--program-headers", "--dynamic", bwrap]);
+  if (/\bINTERP\b|\(NEEDED\)/.test(headers)) throw new Error("Native sandbox resource must be statically linked");
+  const bwrapSha256 = await digest(bwrap);
+  await mkdir(join(repository, ".deploy/native-capabilities/output"), { recursive: true });
+  await writeFile(join(repository, ".deploy/native-capabilities/output/bwrap-resource.json"), JSON.stringify({
+    schema: 1, source: process.env.GITHUB_SHA, upstreamCommit: lock.upstreamCommit, patchSha256: lock.bwrapPatchSha256,
+    rustVersion: lock.rustVersion, static: true, version: run(bwrap, ["--version"]), bwrapSha256,
+  }, null, 2) + "\n");
+  // A first measurement intentionally stops here until its digest is committed.
+  if (bwrapSha256 !== lock.bwrapSha256) throw new Error("Native sandbox resource identity mismatch; review the measured resource before updating its lock");
+  await copyFile(bwrap, join(output, "codex-resources/bwrap"));
   const environment = { ...process.env, CARGO_PROFILE_RELEASE_DEBUG: "0", CARGO_PROFILE_RELEASE_LTO: "false",
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16", CARGO_PROFILE_RELEASE_OPT_LEVEL: "1", CODEX_BWRAP_SHA256: bwrapSha256 };
   const parserIncludes = ["--include=codex-rs/hooks/src/engine/output_parser.rs", "--include=codex-rs/hooks/src/events/pre_tool_use.rs"];
@@ -103,7 +127,8 @@ export async function buildGuardRuntime() {
       testsPassed: 8, testPatchSha256: lock.testPatchSha256 }) + "\n");
   const paths = run("git", ["diff", "--name-only"]).split("\n").sort();
   if (JSON.stringify(paths) !== JSON.stringify(["codex-rs/Cargo.lock", "codex-rs/core/src/hook_runtime.rs", "codex-rs/core/src/tools/registry.rs",
-    "codex-rs/hooks/src/engine/mod.rs", "codex-rs/hooks/src/engine/mod_tests.rs", "codex-rs/hooks/src/engine/output_parser.rs", "codex-rs/hooks/src/events/pre_tool_use.rs"]))
+    "codex-rs/hooks/src/engine/mod.rs", "codex-rs/hooks/src/engine/mod_tests.rs", "codex-rs/hooks/src/engine/output_parser.rs", "codex-rs/hooks/src/events/pre_tool_use.rs",
+    "codex-rs/vendor/bubblewrap/network.c"]))
     throw new Error("Unexpected native source changes");
   run("cargo", ["build", "--locked", "--release", "--jobs", "1", "--package", "codex-cli", "--bin", "codex"],
     join(source, "codex-rs"), { CARGO_PROFILE_RELEASE_DEBUG: "0", CARGO_PROFILE_RELEASE_LTO: "false",

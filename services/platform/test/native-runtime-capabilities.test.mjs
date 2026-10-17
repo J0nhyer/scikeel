@@ -17,6 +17,24 @@ import * as integration from "../../../scripts/dev/build-codex-guard-runtime.mjs
 
 const workflow = new URL("../../../.github/workflows/sandbox-image.yml", import.meta.url);
 
+test('the pinned bubblewrap fix makes only loopback address creation idempotent and keeps errors fatal',async()=>{
+ const lock=JSON.parse(await readFile(new URL('../../../runtime/codex-patches/required-effect-guard.lock.json',import.meta.url),'utf8'));
+ const patch=await readFile(new URL('../../../runtime/codex-patches/loopback-address.patch',import.meta.url),'utf8');
+ assert.equal(lock.bwrapPatchSha256,createHash('sha256').update(patch).digest('hex'));
+ assert.deepEqual(patch.split('\n').filter(line=>line.startsWith('+')&&!line.startsWith('+++')),
+  ['+                               NLM_F_CREATE | NLM_F_REPLACE | NLM_F_ACK,']);
+ assert.deepEqual(patch.split('\n').filter(line=>line.startsWith('-')&&!line.startsWith('---')),
+  ['-                               NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK,']);
+ assert.match(patch,/codex-rs\/vendor\/bubblewrap\/network\.c/);
+});
+
+test('native feasibility executes the real effect fixture in gVisor as well as ordinary Docker',async()=>{
+ const source=await readFile(workflow,'utf8');
+ assert.match(source,/--runtime=scikeel-gvisor/);
+ assert.match(source,/runsc version release-20260928\.0/);
+ assert.match(source,/native-gvisor-capabilities-/);
+});
+
 test("native feasibility stages the complete production requirements, including the pinned read-only profile prerequisite", async t => {
   const directory = await mkdtemp(join(tmpdir(), "scikeel-native-requirements-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -97,13 +115,21 @@ test("the native gate cannot pass with any missing, skipped or failed pre-effect
     "crashed-command", "crashed-edit", "crashed-custom", "stopped-command", "stopped-edit", "stopped-custom", "allowed-question", "denied-question",
     "allowed-running-command", "stopped-running-command",
     ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
-  const cases = names.map(name => ({ name, passed: true }));
+  const cases = names.map(name => ({ name, passed: true, ...(name === 'allowed-command' ? { isolationVerified: true } : {}) }));
   assert.equal(capabilityResult(cases).activationEligible, true);
   for (const name of names) {
     assert.equal(capabilityResult(cases.filter(value => value.name !== name)).activationEligible, false);
     assert.equal(capabilityResult(cases.map(value => value.name === name ? { ...value, passed: false } : value)).activationEligible, false);
     assert.equal(capabilityResult(cases.map(value => value.name === name ? { ...value, passed: undefined, skipped: true } : value)).activationEligible, false);
   }
+});
+
+test('native success without actual workspace and network isolation evidence remains ineligible', () => {
+  const names = ['denied-command','allowed-command','denied-edit','allowed-edit','denied-custom','allowed-custom',
+    'crashed-command','crashed-edit','crashed-custom','stopped-command','stopped-edit','stopped-custom',
+    'allowed-question','denied-question','allowed-running-command','stopped-running-command',
+    ...['malformed','empty','timedout','missing'].flatMap(mode=>['command','edit','custom'].map(kind=>`${mode}-${kind}`))];
+  assert.equal(capabilityResult(names.map(name=>({name,passed:true}))).activationEligible,false);
 });
 
 test("the integrated native guard patch is immutable and requires explicit allow, not hook process success", async () => {
@@ -115,7 +141,7 @@ test("the integrated native guard patch is immutable and requires explicit allow
   assert.ok(patch.includes('required_guard_count == 1'));
   assert.ok(patch.includes('hook_events.len() == required_guard_count'));
   assert.deepEqual(validateGuardLock(lock), lock);
-  for (const key of ["policy", "upstreamCommit", "upstreamVersion", "rustVersion", "patchSha256", "bwrapSha256", "lockFormat", "upstreamLockSha256", "workspaceLockSha256"])
+  for (const key of ["policy", "upstreamCommit", "upstreamVersion", "rustVersion", "patchSha256", "bwrapPatchSha256", "bwrapSha256", "lockFormat", "upstreamLockSha256", "workspaceLockSha256"])
     assert.throws(() => validateGuardLock({ ...lock, [key]: "foreign" }), /Invalid pinned/);
   if (process.env.CI !== "true") await assert.rejects(buildGuardRuntime(), /Dedicated native CI required/);
 });

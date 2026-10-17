@@ -40,6 +40,7 @@ export function capabilityResult(cases) {
     "allowed-running-command", "stopped-running-command",
     ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
   const checks = Object.fromEntries(required.map(name => [name, cases.some(value => value.name === name && value.passed === true)]));
+  checks.workspaceAndNetworkIsolation = cases.some(value => value.name === 'allowed-command' && value.passed === true && value.isolationVerified === true);
   return { checks, activationEligible: Object.values(checks).every(Boolean) };
 }
 
@@ -322,6 +323,28 @@ export async function runNativeProtocolProbe() {
       const directory = `${root}/${name}`;
       await mkdir(`${directory}/workspace`, { recursive: true }); await mkdir(`${directory}/home`);
       const marker = `${directory}/workspace/result.txt`;
+      const outside = `${directory}/outside-canary.txt`;
+      if (kind === 'command' && mode === 'allow') await writeFile(outside, 'unchanged');
+      const isolationScript = `import errno,json,pathlib,socket
+outside=pathlib.Path(${JSON.stringify(outside)})
+try:
+ outside.write_text('escaped')
+except OSError as error:
+ assert error.errno in (errno.EACCES,errno.EROFS,errno.EPERM),error.errno
+else:
+ raise AssertionError('outside workspace write succeeded')
+interfaces=sorted(name for _,name in socket.if_nameindex())
+assert interfaces==['lo'],interfaces
+denials=[]
+for address,port,expected in [('127.0.0.1',${port},errno.ECONNREFUSED),('172.31.240.1',4792,errno.ENETUNREACH),('1.1.1.1',443,errno.ENETUNREACH)]:
+ with socket.socket() as client:
+  client.settimeout(1)
+  result=client.connect_ex((address,port))
+  assert result==expected,(address,result)
+  denials.append(result)
+pathlib.Path('isolation.json').write_text(json.dumps({'interfaces':interfaces,'denials':denials,'outsideWriteDenied':True}))
+pathlib.Path('result.txt').write_text('verified-native-write')
+`;
       const callId = `call-${name}`;
       const item = kind === "edit" ? { type: "custom_tool_call", call_id: callId, name: "apply_patch",
         input: "*** Begin Patch\n*** Add File: result.txt\n+verified-native-write\n*** End Patch" } : {
@@ -329,7 +352,8 @@ export async function runNativeProtocolProbe() {
         arguments: JSON.stringify(isCommand ? kind === "running-command" ? {
           cmd: '(printf child-ready > child-ready.txt; sleep 4; printf verified-native-write > result.txt) & child=$!; printf parent-ready > parent-ready.txt; wait "$child"',
           yield_time_ms: 10000, max_output_tokens: 1000,
-        } : { cmd: "printf verified-native-write > result.txt" } : kind === "question" ? {
+        } : { cmd: mode === 'allow' ? `python3 -c "import base64;exec(base64.b64decode('${Buffer.from(isolationScript).toString('base64')}'))"`
+          : "printf verified-native-write > result.txt" } : kind === "question" ? {
           questions: [{ id: "fixture_choice", header: "Choice", question: "Select fixture outcome?", options: [
             { label: "Continue", description: "Continue fixture" }, { label: "Pause", description: "Pause fixture" }] }],
         } : { checkpoint: "fixture" }),
@@ -395,6 +419,14 @@ export async function runNativeProtocolProbe() {
         record.effect = kind === "question" ? connection.questionAnswers > 0 : kind === "custom" ? connection.customEffects > 0 : file !== undefined;
         record.bytesVerified = kind === "question" ? connection.questionAnswers === 1 && current.toolResults?.some(value => value.includes("Continue"))
           : kind === "custom" ? connection.customEffects === 1 : file?.trim() === "verified-native-write";
+        if (kind === 'command' && mode === 'allow') {
+          let proof;
+          try { proof = JSON.parse(await readFile(`${directory}/workspace/isolation.json`, 'utf8')); }
+          catch (error) { if (error.code !== 'ENOENT') throw error; }
+          record.isolationVerified = isDeepStrictEqual(proof, { interfaces: ['lo'], denials: [111,101,101], outsideWriteDenied: true }) &&
+            await readFile(outside, 'utf8') === 'unchanged';
+          record.isolation = proof ?? null;
+        }
         record.nativeToolStarted = connection.frames.some(frame => frame.method === "item/started");
         record.nativeToolCompleted = connection.frames.some(frame => frame.method === "item/completed");
         record.orderedToolEvidence = orderedNativeToolEvidence(connection.frames, connection.thread, connection.turn,
@@ -413,6 +445,7 @@ export async function runNativeProtocolProbe() {
           (mode === "missing" ? record.guardCalls === 0 : record.boundGuardCalls > 0 && record.guardCalls === record.boundGuardCalls) && record.unexpectedRequests === 0 &&
           (kind !== "running-command" || record.nativeStartedBeforeStop && (mode !== "stopped" || record.lateEffectWindowObserved)) &&
           (mode === "allow" ? record.effect && record.bytesVerified : !record.effect && record.customDispatches === 0);
+        if (kind === 'command' && mode === 'allow') record.passed &&= record.isolationVerified;
       } catch (error) {
         record.failure = error.message;
         record.nativeItemEvidence = connection.frames.filter(frame => ["item/started", "item/completed"].includes(frame.method))

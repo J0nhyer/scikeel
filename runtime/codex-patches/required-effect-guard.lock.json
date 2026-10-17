@@ -9,5 +9,6 @@
   "lockFormat": "smol-toml@1.9.0",
   "upstreamLockSha256": "72efa81ed947d07ed4fbb3e10b094715ff00626126d758aaed56733c97887e5f",
   "workspaceLockSha256": "10ab1433e7299b299253fb23a40562042076911c2e3997205b97a08e59fe54b6",
+  "bwrapPatchSha256": "293a956fbd30ee08a56de6af125f7c74b8ebbe4d17688a90e69a367bf3be678d",
   "bwrapSha256": "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c"
 }

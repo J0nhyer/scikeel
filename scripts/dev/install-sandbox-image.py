@@ -123,7 +123,7 @@ def validate_native(manifest, listing, tool_lock):
     fixed = {"schema": 1, "policy": "required-effect-guard-v1", "upstreamVersion": "0.157.1",
              "upstreamCommit": "36650394c5b38c2990ccf2a3457165ca3e9d9726", "rustVersion": "1.95.0",
              "target": "x86_64-unknown-linux-gnu", "lockFormat": "smol-toml@1.9.0", "version": "codex-cli 0.157.1"}
-    hashes = {"patchSha256", "testPatchSha256", "upstreamLockSha256", "workspaceLockSha256", "bwrapSha256", "binarySha256"}
+    hashes = {"patchSha256", "testPatchSha256", "bwrapPatchSha256", "upstreamLockSha256", "workspaceLockSha256", "bwrapSha256", "binarySha256"}
     if (set(native) != {"integration", "resources"} or set(integration) != set(fixed) | hashes | {"source"}
             or any(integration.get(key) != value for key, value in fixed.items())
             or any(not re.fullmatch(r"[a-f0-9]{64}", str(integration.get(key, ""))) for key in hashes)
@@ -149,6 +149,7 @@ def validate_native(manifest, listing, tool_lock):
         source_map[source["path"]] = source["sha256"]
     if (source_map.get("runtime/codex-patches/required-effect-guard.patch") != integration["patchSha256"]
             or source_map.get("runtime/codex-patches/required-effect-guard-tests.patch") != integration["testPatchSha256"]
+            or source_map.get("runtime/codex-patches/loopback-address.patch") != integration["bwrapPatchSha256"]
             or "runtime/codex-patches/required-effect-guard.lock.json" not in source_map
             or "scripts/dev/build-codex-guard-runtime.mjs" not in source_map
             or "scripts/dev/probe-production-runner.mjs" not in source_map

@@ -13,7 +13,13 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {validateInstalledImage} from '../../../scripts/dev/web-release.mjs';
 const hash=value=>createHash('sha256').update(value).digest('hex');
-const nativeInputs=['runtime/codex-patches/required-effect-guard.patch','runtime/codex-patches/required-effect-guard-tests.patch',
+test('the published integration schema requires and validates the loopback patch digest', async()=>{
+ const schema=JSON.parse(await readFile(new URL('../../../runtime/sandbox/image-manifest.schema.json',import.meta.url),'utf8'));
+ const integration=schema.properties.codexRuntime.properties.integration;
+ assert.ok(integration.required.includes('bwrapPatchSha256'));
+ assert.deepEqual(integration.properties.bwrapPatchSha256,{type:'string',pattern:'^[a-f0-9]{64}$'});
+});
+const nativeInputs=['runtime/codex-patches/required-effect-guard.patch','runtime/codex-patches/required-effect-guard-tests.patch','runtime/codex-patches/loopback-address.patch',
  'runtime/codex-patches/required-effect-guard.lock.json','scripts/dev/build-codex-guard-runtime.mjs',
  'scripts/dev/probe-production-runner.mjs','services/platform/fixtures/native-protocol.mjs',
  'runtime/sandbox/native-tools.mjs','runtime/sandbox/required-effect-guard.mjs','runtime/sandbox/codex-requirements.toml',
@@ -63,13 +69,14 @@ test('a guarded image binds the binary, compiler/dependency locks, exact patch s
  const value=await guardedManifest();assert.doesNotThrow(()=>validateImageManifest(value));
  for(const patch of [{rustVersion:'9.9.9'},{target:'unmeasured-target'},{binarySha256:'c'.repeat(64)},
   {source:'d'.repeat(40)},{patchSha256:'e'.repeat(64)},{testPatchSha256:'f'.repeat(64)},{upstreamLockSha256:'0'.repeat(64)},
-  {workspaceLockSha256:'1'.repeat(64)},{unknown:true}])
+  {workspaceLockSha256:'1'.repeat(64)},{bwrapPatchSha256:'2'.repeat(64)},{unknown:true}])
   assert.throws(()=>validateImageManifest({...value,codexRuntime:{...value.codexRuntime,integration:{...value.codexRuntime.integration,...patch}}}),/native|guard|integration/);
  for(const resources of [{},{...value.codexRuntime.resources,'opt/scikeel/tools/bin/auth.json':'a'.repeat(64)},
   {...value.codexRuntime.resources,'opt/scikeel/tools/bin/codex-resources/bwrap':'a'.repeat(64)}])
   assert.throws(()=>validateImageManifest({...value,codexRuntime:{...value.codexRuntime,resources}}),/native|guard|resource/);
  for(const sourceInputs of [[],value.sourceInputs.slice(1),[...value.sourceInputs,value.sourceInputs[0]],
   value.sourceInputs.filter(item=>item.path!=='services/platform/fixtures/native-protocol.mjs'),
+  value.sourceInputs.filter(item=>item.path!=='runtime/codex-patches/loopback-address.patch'),
   value.sourceInputs.map((item,index)=>index?item:{...item,sha256:'f'.repeat(64)})])
   assert.throws(()=>validateImageManifest({...value,sourceInputs}),/native|guard|source/);
 });
@@ -135,12 +142,18 @@ with tempfile.TemporaryDirectory() as folder:
  assert all(listing['toolHashes'].get(name)==sha(data) for name,data in files.items()), 'unmeasured native archive bytes'
  lock={'schema':1,'tools':manifest['tools'],'baselineLockSha256':manifest['baselineLockSha256'],'sourceInputs':manifest['sourceInputs'],'codexRuntime':manifest['codexRuntime']}
  installer.validate_native(manifest,listing,lock)
- for target in ['metadata','resource','tool-lock','extra-resource']:
+ for target in ['metadata','resource','tool-lock','extra-resource','sandbox-patch']:
   changed=json.loads(json.dumps(listing));changed_lock=json.loads(json.dumps(lock))
   if target=='metadata':changed['nativeIntegration']['source']='d'*40
   if target=='resource':changed['toolHashes']['opt/scikeel/tools/bin/codex-resources/bwrap']='e'*64
   if target=='tool-lock':changed_lock['codexRuntime']['integration']['binarySha256']='f'*64
   if target=='extra-resource':changed['entries'].append({'path':'opt/scikeel/tools/bin/codex-resources/extra-helper','type':'file','size':1})
+  if target=='sandbox-patch':
+   altered=json.loads(json.dumps(manifest));altered['sourceInputs']=[row for row in altered['sourceInputs'] if row['path']!='runtime/codex-patches/loopback-address.patch']
+   try:installer.validate_native(altered,changed,changed_lock)
+   except ValueError:pass
+   else:raise AssertionError('installer accepted missing sandbox patch')
+   continue
   try:installer.validate_native(manifest,changed,changed_lock)
   except ValueError:pass
   else:raise AssertionError('installer accepted altered '+target)

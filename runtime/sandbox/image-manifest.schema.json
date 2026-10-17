@@ -189,7 +189,7 @@
       "properties": {
         "integration": {
           "type": "object",
-          "required": ["schema", "policy", "upstreamVersion", "upstreamCommit", "patchSha256", "testPatchSha256", "rustVersion", "lockFormat", "upstreamLockSha256", "workspaceLockSha256", "bwrapSha256", "target", "binarySha256", "source", "version"],
+          "required": ["schema", "policy", "upstreamVersion", "upstreamCommit", "patchSha256", "testPatchSha256", "bwrapPatchSha256", "rustVersion", "lockFormat", "upstreamLockSha256", "workspaceLockSha256", "bwrapSha256", "target", "binarySha256", "source", "version"],
           "properties": {
             "schema": {"const": 1},
             "policy": {"const": "required-effect-guard-v1"},
@@ -197,6 +197,7 @@
             "upstreamCommit": {"const": "36650394c5b38c2990ccf2a3457165ca3e9d9726"},
             "patchSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
             "testPatchSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "bwrapPatchSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
             "rustVersion": {"const": "1.95.0"},
             "lockFormat": {"const": "smol-toml@1.9.0"},
             "upstreamLockSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},

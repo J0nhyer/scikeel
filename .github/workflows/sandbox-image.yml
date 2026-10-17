@@ -84,6 +84,8 @@ jobs:
       - name: Build only the pinned Web guard integration on dedicated CI
         id: native-build
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcap-dev pkg-config
           rustup toolchain install 1.95.0 --profile minimal
           pnpm install --frozen-lockfile --ignore-scripts --filter @ai4s/platform...
           pnpm runtime:codex:build
@@ -115,6 +117,40 @@ jobs:
             -e CI=true -e SCIKEEL_NATIVE_CAPABILITY_CONTAINER=1 -e GITHUB_SHA="$GITHUB_SHA" \
             --entrypoint /opt/scikeel/tools/bin/node "$(cat .deploy/native-capabilities/output/container-image.txt)" \
             /fixture/repo/scripts/dev/probe-production-runner.mjs --native-capabilities
+      - name: Install the exact production gVisor release for nested sandbox acceptance
+        run: |
+          mkdir -p .deploy/gvisor .deploy/native-gvisor-capabilities/output
+          curl --fail --location --retry 3 --output .deploy/gvisor/archive.tar.zstd https://storage.googleapis.com/gvisor/releases/release/20260928.0/x86_64/gvisor.tar.zstd
+          echo '4ce35ca83aef7f96b06cde668e0b23aa98b05aa1829508e974196c2a1e02786c95f5bf79315fd7ddcfd88fe7a00f083ed8053e25eff7673d28d5256440caae8b  .deploy/gvisor/archive.tar.zstd' | sha512sum --check
+          tar --zstd -xf .deploy/gvisor/archive.tar.zstd -C .deploy/gvisor
+          test "$(.deploy/gvisor/runsc --version | head -n 1)" = 'runsc version release-20260928.0'
+          sha256sum .deploy/gvisor/runsc > .deploy/native-gvisor-capabilities/output/runsc.sha256
+          sudo .deploy/gvisor/runsc install --runtime=scikeel-gvisor -- --platform=systrap --network=sandbox --host-uds=none --directfs=false
+          sudo systemctl restart docker
+          chmod 777 .deploy/native-gvisor-capabilities/output
+      - name: Verify the same real writes, guard denials, isolation and Stop in gVisor
+        run: |
+          timeout --signal=TERM --kill-after=10s 300s docker run --rm --name scikeel-native-gvisor-test --runtime=scikeel-gvisor \
+            --network=none --read-only --user 1000:1000 --memory=768m --memory-swap=896m --pids-limit=128 --cpus=1 \
+            --cap-drop=ALL --security-opt no-new-privileges \
+            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            --tmpfs /fixture/native:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
+            -v "$PWD:/fixture/repo:ro" \
+            -v "$PWD/.deploy/science-context/tools/bin:/opt/scikeel/tools/bin:ro" \
+            -v "$PWD/services/platform/fixtures/native-protocol.mjs:/opt/scikeel/runtime/required-effect-guard.mjs:ro" \
+            -v "$PWD/.deploy/native-capabilities/config/requirements.toml:/etc/codex/requirements.toml:ro" \
+            -v "$PWD/.deploy/native-capabilities/config:/fixture/config:ro" \
+            -v "$PWD/.deploy/native-gvisor-capabilities/output:/fixture/output:rw" \
+            -e CI=true -e SCIKEEL_NATIVE_CAPABILITY_CONTAINER=1 -e GITHUB_SHA="$GITHUB_SHA" \
+            --entrypoint /opt/scikeel/tools/bin/node "$(cat .deploy/native-capabilities/output/container-image.txt)" \
+            /fixture/repo/scripts/dev/probe-production-runner.mjs --native-capabilities
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-gvisor-capabilities-${{ github.sha }}
+          path: .deploy/native-gvisor-capabilities/output/
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -133,7 +169,7 @@ jobs:
           retention-days: 14
       - name: Clean up the disposable native fixture
         if: always()
-        run: docker rm -f scikeel-native-capability-test 2>/dev/null || true
+        run: docker rm -f scikeel-native-capability-test scikeel-native-gvisor-test 2>/dev/null || true
   science-probe-image:
     needs: native-feasibility
     if: ${{ !inputs.native_feasibility_only }}

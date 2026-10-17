@@ -22,7 +22,7 @@ const nativePaths = ["runtime/codex-patches/required-effect-guard.patch", "runti
   "runtime/codex-patches/required-effect-guard.lock.json", "scripts/dev/build-codex-guard-runtime.mjs",
   "scripts/dev/probe-production-runner.mjs", "services/platform/fixtures/native-protocol.mjs",
   "runtime/sandbox/native-tools.mjs", "runtime/sandbox/required-effect-guard.mjs", "runtime/sandbox/codex-requirements.toml",
-  "runtime/sandbox/native-network.mjs", "runtime/sandbox/native-network.py"];
+  "runtime/sandbox/native-network.mjs", "runtime/sandbox/native-network.py", "runtime/codex-patches/loopback-address.patch"];
 const nativeInputs = Object.fromEntries(await Promise.all(nativePaths.map(async path => [path,
   createHash("sha256").update(await readFile(join(repo, path))).digest("hex")])));
 export const managedNativeSources = Object.freeze({
@@ -111,7 +111,8 @@ export function validateImageManifest(v) {
     }
     if (Object.entries(nativeInputs).some(([path, sha]) => sources.get(path) !== sha) ||
         Object.entries(managedNativeSources).some(([path, source]) => native.resources[path] !== sources.get(source)) ||
-        sources.get(nativePaths[0]) !== native.integration.patchSha256 || sources.get(nativePaths[1]) !== native.integration.testPatchSha256)
+        sources.get(nativePaths[0]) !== native.integration.patchSha256 || sources.get(nativePaths[1]) !== native.integration.testPatchSha256 ||
+        sources.get("runtime/codex-patches/loopback-address.patch") !== native.integration.bwrapPatchSha256)
       throw new Error("native guard source inputs mismatch");
   } else if (v.codexRuntime) throw new Error("unexpected native integration identity");
   if (v.sessionTitleRuntime?.networkRuntime) validateNetworkRuntime(v.sessionTitleRuntime.networkRuntime, networkRuntimeLock);
