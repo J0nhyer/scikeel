@@ -140,7 +140,9 @@ export async function publishViaGitAPI(job, env, {
       if (blob.sha !== blobSHA) throw new Error('Git API blob identity mismatch');
       entries.push({ path, mode, type: 'blob', sha: blobSHA });
     }
-    const tree = await request('git/trees', { ...(parents.length ? { base_tree: parents[0].tree.sha } : {}), tree: entries });
+    const tree = entries.length === 0 && parents.length
+      ? parents[0].tree
+      : await request('git/trees', { ...(parents.length ? { base_tree: parents[0].tree.sha } : {}), tree: entries });
     if (tree.sha !== payload.tree) throw new Error('Git API tree identity mismatch');
     const commit = await request('git/commits', payload);
     if (commit.sha !== sha) throw new Error('Git API commit identity mismatch; publication refused');
