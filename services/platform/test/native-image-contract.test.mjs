@@ -13,6 +13,20 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {validateInstalledImage} from '../../../scripts/dev/web-release.mjs';
 const hash=value=>createHash('sha256').update(value).digest('hex');
+test('both gVisor gates install their pinned helpers outside the private runner home',async()=>{
+ const {load}=await import('js-yaml');
+ const workflow=load(await readFile(new URL('../../../.github/workflows/sandbox-image.yml',import.meta.url),'utf8'));
+ for(const job of ['native-feasibility','science-probe-image']){
+  const step=workflow.jobs[job].steps.find(step=>step.run?.includes('runsc install --runtime=scikeel-gvisor'));
+  assert.ok(step,`${job}: missing runtime installation`);
+  assert.match(step.run,/sudo install -d -m 0755 \/usr\/local\/lib\/scikeel-gvisor\/gvisor-bin/);
+  assert.match(step.run,/sudo install -m 0755 \.deploy\/gvisor\/runsc \/usr\/local\/lib\/scikeel-gvisor\/runsc/);
+  assert.match(step.run,/sudo install -m 0755 \.deploy\/gvisor\/gvisor-bin\/\* \/usr\/local\/lib\/scikeel-gvisor\/gvisor-bin\//);
+  assert.match(step.run,/sudo -u nobody test -x "\$helper"/);
+  assert.match(step.run,/sudo \/usr\/local\/lib\/scikeel-gvisor\/runsc install --runtime=scikeel-gvisor/);
+  assert.doesNotMatch(step.run,/sudo \.deploy\/gvisor\/runsc install|chmod.*\/home\/runner/);
+ }
+});
 test('the published integration schema requires and validates the loopback patch digest', async()=>{
  const schema=JSON.parse(await readFile(new URL('../../../runtime/sandbox/image-manifest.schema.json',import.meta.url),'utf8'));
  const integration=schema.properties.codexRuntime.properties.integration;

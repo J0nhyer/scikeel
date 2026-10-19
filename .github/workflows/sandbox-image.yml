@@ -123,9 +123,15 @@ jobs:
           curl --fail --location --retry 3 --output .deploy/gvisor/archive.tar.zstd https://storage.googleapis.com/gvisor/releases/release/20260928.0/x86_64/gvisor.tar.zstd
           echo '4ce35ca83aef7f96b06cde668e0b23aa98b05aa1829508e974196c2a1e02786c95f5bf79315fd7ddcfd88fe7a00f083ed8053e25eff7673d28d5256440caae8b  .deploy/gvisor/archive.tar.zstd' | sha512sum --check
           tar --zstd -xf .deploy/gvisor/archive.tar.zstd -C .deploy/gvisor
-          test "$(.deploy/gvisor/runsc --version | head -n 1)" = 'runsc version release-20260928.0'
-          sha256sum .deploy/gvisor/runsc > .deploy/native-gvisor-capabilities/output/runsc.sha256
-          sudo .deploy/gvisor/runsc install --runtime=scikeel-gvisor -- --platform=systrap --network=sandbox --host-uds=none --directfs=false
+          sudo install -d -m 0755 /usr/local/lib/scikeel-gvisor/gvisor-bin
+          sudo install -m 0755 .deploy/gvisor/runsc /usr/local/lib/scikeel-gvisor/runsc
+          sudo install -m 0755 .deploy/gvisor/gvisor-bin/* /usr/local/lib/scikeel-gvisor/gvisor-bin/
+          for helper in /usr/local/lib/scikeel-gvisor/runsc /usr/local/lib/scikeel-gvisor/gvisor-bin/*; do
+            sudo -u nobody test -x "$helper"
+          done
+          test "$(/usr/local/lib/scikeel-gvisor/runsc --version | head -n 1)" = 'runsc version release-20260928.0'
+          sha256sum /usr/local/lib/scikeel-gvisor/runsc > .deploy/native-gvisor-capabilities/output/runsc.sha256
+          sudo /usr/local/lib/scikeel-gvisor/runsc install --runtime=scikeel-gvisor -- --platform=systrap --network=sandbox --host-uds=none --directfs=false
           sudo systemctl restart docker
           chmod 777 .deploy/native-gvisor-capabilities/output
       - name: Verify the same real writes, guard denials, isolation and Stop in gVisor
@@ -291,9 +297,15 @@ jobs:
           curl --fail --location --retry 3 --output .deploy/gvisor/archive.tar.zstd https://storage.googleapis.com/gvisor/releases/release/20260928.0/x86_64/gvisor.tar.zstd
           echo '4ce35ca83aef7f96b06cde668e0b23aa98b05aa1829508e974196c2a1e02786c95f5bf79315fd7ddcfd88fe7a00f083ed8053e25eff7673d28d5256440caae8b  .deploy/gvisor/archive.tar.zstd' | sha512sum --check
           tar --zstd -xf .deploy/gvisor/archive.tar.zstd -C .deploy/gvisor
-          test "$(.deploy/gvisor/runsc --version | head -n 1)" = 'runsc version release-20260928.0'
-          sha256sum .deploy/gvisor/runsc > .deploy/production-native-capabilities/output/runsc.sha256
-          sudo .deploy/gvisor/runsc install --runtime=scikeel-gvisor -- --platform=systrap --network=sandbox --host-uds=none --directfs=false
+          sudo install -d -m 0755 /usr/local/lib/scikeel-gvisor/gvisor-bin
+          sudo install -m 0755 .deploy/gvisor/runsc /usr/local/lib/scikeel-gvisor/runsc
+          sudo install -m 0755 .deploy/gvisor/gvisor-bin/* /usr/local/lib/scikeel-gvisor/gvisor-bin/
+          for helper in /usr/local/lib/scikeel-gvisor/runsc /usr/local/lib/scikeel-gvisor/gvisor-bin/*; do
+            sudo -u nobody test -x "$helper"
+          done
+          test "$(/usr/local/lib/scikeel-gvisor/runsc --version | head -n 1)" = 'runsc version release-20260928.0'
+          sha256sum /usr/local/lib/scikeel-gvisor/runsc > .deploy/production-native-capabilities/output/runsc.sha256
+          sudo /usr/local/lib/scikeel-gvisor/runsc install --runtime=scikeel-gvisor -- --platform=systrap --network=sandbox --host-uds=none --directfs=false
           sudo systemctl restart docker
           node services/platform/fixtures/native-protocol.mjs --prepare
           chmod 777 .deploy/production-native-capabilities/output
