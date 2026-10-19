@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {configureNativeEffects} from '../src/native-effects.mjs';
+import {CollaborationStore} from '../src/collaboration.mjs';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 
 const identity={userId:'owner',instanceId:'user-owner',generation:2,conversationId:'child',execution:3,
  requestId:'request-owned',policyRevision:4,runtime:'codex'};
@@ -53,6 +57,37 @@ test('native research delivery uses existing platform verification and the exact
  assert.deepEqual(f.calls.at(-1),{sessionId:'child',action:'delivery',callId:'call-delivery',operation:'verify',execution:7,inputs:input.inputs,deliverables:input.deliverables});
  f.setCurrent(false);
  await assert.rejects(f.effects.callTool({context,identity,sessionId:'child',callId:'late',tool:'research_delivery',input,signal:new AbortController().signal}),/authority/);
+});
+test('native method checkpoint without an optional suggestion persists and waits for a real nonempty answer',async t=>{
+ const f=fixture(),root=await mkdtemp(join(tmpdir(),'native-checkpoint-'));
+ const controller=new AbortController();
+ t.after(async()=>{controller.abort();await rm(root,{recursive:true,force:true});});
+ const owner={...context,sessionId:'root',runtime:'codex',directory:session.directory,workspaceDir:'/workspace'};
+ const store=new CollaborationStore({rootDir:root});
+ let state=await store.setMode(owner,'delegated',0);state=await store.begin(owner,state.revision);
+ f.scope.researchExecution=state.execution;
+ let registered;const pending=new Promise(resolve=>{registered=resolve;});
+ f.platform.runtimeCollaboration=async(_context,body)=>{
+  assert.equal(body.sessionId,'child');
+  if(body.action==='checkpoint'){
+   const state=await store.checkpoint(owner,body);registered(state);return {state};
+  }
+  assert.equal(body.action,'state');return {state:await store.get(owner)};
+ };
+ const completed=f.effects.callTool({context,identity,sessionId:'child',callId:'checkpoint-owned',tool:'research_checkpoint',
+  input:{kind:'method',question:'Release method decision'},signal:controller.signal});
+ completed.catch(()=>{});
+ const waiting=await Promise.race([pending,completed.then(()=>{throw Error('Checkpoint completed without a user answer');})]);
+ assert.equal(waiting.phase,'waiting_input');assert.equal(waiting.pending.suggestedAnswer,'');
+ assert.equal((await store.guard(owner)).blocked,true);
+ assert.equal((await new CollaborationStore({rootDir:root}).get(owner)).pending.id,waiting.pending.id);
+ await assert.rejects(store.answer(owner,{id:waiting.pending.id,execution:waiting.execution,revision:waiting.revision,answer:''}),/answer or question/);
+ await store.answer(owner,{id:waiting.pending.id,execution:waiting.execution,revision:waiting.revision,answer:'Use all observations.'});
+ assert.deepEqual(JSON.parse(await completed),{decision:waiting.pending.id,userAnswer:'Use all observations.'});
+ for(const suggestedAnswer of [null,'',42,{},[]]){
+  await assert.rejects(store.checkpoint(owner,{kind:'method',question:'Another method?',suggestedAnswer}),/answer or question/);
+  assert.equal((await store.get(owner)).pending,null);
+ }
 });
 test('native tools cannot silently bypass a missing scoped network executor',async()=>{
  const f=fixture();

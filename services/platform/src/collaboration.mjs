@@ -220,7 +220,7 @@ export class CollaborationStore {
         execution: s.execution,
         kind: value.kind,
         question: text(value.question),
-        suggestedAnswer: text(value.suggestedAnswer),
+        suggestedAnswer: value.suggestedAnswer === undefined ? "" : text(value.suggestedAnswer),
       };
       s.phase = "waiting_input";
       s.revision++;
