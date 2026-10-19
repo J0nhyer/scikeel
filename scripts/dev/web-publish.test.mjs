@@ -4,11 +4,57 @@ import { selectSuccessfulRun, selectImageArtifact, publishPipeline, parsePublish
 import {publishViaGitAPI} from './web-publish.mjs';
 import * as publication from './web-publish.mjs';
 import {execFileSync} from 'node:child_process';
-import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
+import {inventorySource,fingerprintFiles} from './web-release-source.mjs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const sha = 'a'.repeat(40);
 const cacheRef='ci/web-publication-2026-10-17T21-44-34-881Z-fixture';
+test('a reused CI ref can bind a later explicit publication without rewriting its original record',()=>{
+ const id='2026-10-17T23-29-06-083Z-fixture';
+ const args=['start','--source','/repo','--ci-ref',cacheRef,'--ci-ref-publication',id];
+ assert.equal(parsePublishArguments(args)['ci-ref-publication'],id);
+ const previous={schema:1,id,branch:`ci/web-publication-${id}`,ciRef:cacheRef,commit:'d'.repeat(40),sourceFingerprint:'e'.repeat(64)};
+ assert.equal(publication.validateCIRefSource(cacheRef,previous,id),previous.commit);
+ for(const patch of [{id:'foreign'},{branch:cacheRef},{ciRef:'ci/web-publication-foreign'},{commit:'invalid'},{sourceFingerprint:'invalid'}])
+  assert.throws(()=>publication.validateCIRefSource(cacheRef,{...previous,...patch},id));
+ assert.throws(()=>parsePublishArguments(['start','--source','/repo','--ci-ref-publication',id]));
+ assert.throws(()=>parsePublishArguments([...args.slice(0,-1),'../foreign']));
+ assert.throws(()=>parsePublishArguments(['resume','--job',id,'--ci-ref-publication',id]));
+});
+test('the recorded CI ref source binds real frozen bytes and the exact terminal workflow run',async t=>{
+ const store=await mkdtemp(join(tmpdir(),'scikeel-ci-ref-'));t.after(()=>rm(store,{recursive:true,force:true}));
+ const id='2026-10-17T23-29-06-083Z-fixture',directory=join(store,'web-publications',id),source=join(directory,'source');
+ await mkdir(source,{recursive:true});execFileSync('git',['init','-q'],{cwd:source});
+ await writeFile(join(source,'package.json'),'{}\n');
+ const previous={schema:1,id,branch:`ci/web-publication-${id}`,ciRef:cacheRef,commit:'d'.repeat(40),source,
+  sourceFingerprint:fingerprintFiles(await inventorySource(source)),runID:123};
+ const path=join(directory,'job.json');await writeFile(path,JSON.stringify(previous));const original=await readFile(path,'utf8');
+ const terminal={id:123,head_sha:previous.commit,head_branch:cacheRef,event:'workflow_dispatch',status:'completed',conclusion:'failure',path:'.github/workflows/sandbox-image.yml'};
+ const request=async endpoint=>{assert.equal(endpoint,'actions/runs/123');return terminal;};
+ assert.deepEqual(await publication.loadCIRefPublication(cacheRef,id,{store,request}),
+  {publication:id,commit:previous.commit,sourceFingerprint:previous.sourceFingerprint,runID:123});
+ assert.equal(await readFile(path,'utf8'),original);
+ for(const patch of [{id:456},{head_sha:sha},{head_branch:'main'},{event:'push'},{status:'in_progress'},{conclusion:null},{path:'.github/workflows/foreign.yml'}])
+  await assert.rejects(publication.loadCIRefPublication(cacheRef,id,{store,request:async()=>({...terminal,...patch})}));
+ for(const patch of [{source:store},{runID:0}]){
+  await writeFile(path,JSON.stringify({...previous,...patch}));
+  await assert.rejects(publication.loadCIRefPublication(cacheRef,id,{store,request}));
+ }
+ await writeFile(path,original);await writeFile(join(source,'package.json'),'{"tampered":true}\n');
+ await assert.rejects(publication.loadCIRefPublication(cacheRef,id,{store,request}),/source changed/i);
+});
+test('the current ref must still have the explicit previous publication terminal run before its lease moves',async()=>{
+ const job={commit:sha,ciRef:cacheRef,ciRefExpectedCommit:'d'.repeat(40),ciRefRunID:123};let head=job.ciRefExpectedCommit,pushes=0;
+ const terminal={id:123,head_sha:head,head_branch:cacheRef,event:'workflow_dispatch',status:'completed'};
+ const request=async path=>path.startsWith('git/ref/')?{object:{sha:head}}:{workflow_runs:[terminal]};
+ await assert.rejects(publication.advanceCIRef(job,{request:async path=>path.startsWith('git/ref/')?{object:{sha:head}}:
+  {workflow_runs:[{...terminal,id:456}]},push:async(_ref,commit)=>{pushes++;head=commit;}}));
+ assert.equal(pushes,0);head=job.ciRefExpectedCommit;
+ await publication.advanceCIRef(job,{request,push:async(ref,commit,expected)=>{
+  assert.equal(ref,cacheRef);assert.equal(expected,'d'.repeat(40));assert.equal(commit,sha);pushes++;head=commit;
+ }});assert.equal(pushes,1);
+});
 test('CI cache ref reuse requires an exact locally recorded publication identity',()=>{
  assert.equal(parsePublishArguments(['start','--source','/repo','--ci-ref',cacheRef])['ci-ref'],cacheRef);
  const prior={schema:1,id:cacheRef.slice('ci/web-publication-'.length),branch:cacheRef,commit:'b'.repeat(40),sourceFingerprint:'c'.repeat(64)};

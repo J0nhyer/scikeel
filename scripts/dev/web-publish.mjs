@@ -20,7 +20,7 @@ export function parsePublishArguments(args) {
   const options = { command };
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i]?.slice(2);
-    if (!['source', 'branch', 'job', 'image-digest', 'assistant', 'ci-ref'].includes(key) || rest[i] !== '--' + key || !rest[i + 1] || options[key]) throw new Error('Invalid or duplicate publication option');
+    if (!['source', 'branch', 'job', 'image-digest', 'assistant', 'ci-ref', 'ci-ref-publication'].includes(key) || rest[i] !== '--' + key || !rest[i + 1] || options[key]) throw new Error('Invalid or duplicate publication option');
     options[key] = rest[i + 1];
   }
   if (command === 'start') {
@@ -30,14 +30,33 @@ export function parsePublishArguments(args) {
     if (options['image-digest'] && !/^sha256:[a-f0-9]{64}$/.test(options['image-digest'])) throw new Error('Invalid installed image digest');
     if (options.branch && (!/^ci\/[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$/.test(options.branch) || options.branch.includes('..') || options.branch.endsWith('/'))) throw new Error('Only a safe isolated ci/ branch may be published');
     if (options['ci-ref'] && !publicationCIRef.test(options['ci-ref'])) throw new Error('Only a recorded publication CI ref may be reused');
-  } else if (!/^[A-Za-z0-9_-]{1,100}$/.test(options.job ?? '') || options.source || options.branch || options['image-digest'] || options.assistant || options['ci-ref']) throw new Error('An explicit --job is required');
+    if (options['ci-ref-publication'] && (!options['ci-ref'] || !/^[A-Za-z0-9][A-Za-z0-9_-]{1,99}$/.test(options['ci-ref-publication'])))
+      throw new Error('An explicit recorded publication requires a safe CI ref');
+  } else if (!/^[A-Za-z0-9_-]{1,100}$/.test(options.job ?? '') || options.source || options.branch || options['image-digest'] || options.assistant || options['ci-ref'] || options['ci-ref-publication']) throw new Error('An explicit --job is required');
   return options;
 }
-export function validateCIRefSource(ref, previous) {
+export function validateCIRefSource(ref, previous, publicationId) {
   const match=publicationCIRef.exec(ref);
-  if(!match||previous?.schema!==1||previous.id!==match[1]||previous.branch!==ref||!hex.test(previous.commit??'')||
+  const id=publicationId??match?.[1];
+  if(!match||!/^[A-Za-z0-9][A-Za-z0-9_-]{1,99}$/.test(id??'')||previous?.schema!==1||previous.id!==id||
+    previous.branch!==`ci/web-publication-${id}`||(previous.ciRef??previous.branch)!==ref||!hex.test(previous.commit??'')||
     !/^[a-f0-9]{64}$/.test(previous.sourceFingerprint??''))throw new Error('CI ref does not match a recorded publication');
   return previous.commit;
+}
+export async function loadCIRefPublication(ref, publicationId, {store,request}) {
+  const match=publicationCIRef.exec(ref),id=publicationId??match?.[1];
+  if(!match||!/^[A-Za-z0-9][A-Za-z0-9_-]{1,99}$/.test(id??''))throw new Error('Invalid recorded CI publication');
+  const directory=join(store,'web-publications',id);
+  const previous=JSON.parse(await readFile(join(directory,'job.json'),'utf8'));
+  const commit=validateCIRefSource(ref,previous,id);
+  if(previous.source!==join(directory,'source')||!Number.isSafeInteger(previous.runID)||previous.runID<=0)
+    throw new Error('Recorded CI publication has no verified source or run');
+  if(fingerprintFiles(await inventorySource(previous.source))!==previous.sourceFingerprint)throw new Error('Recorded CI source changed');
+  const run=await request(`actions/runs/${previous.runID}`);
+  if(run.id!==previous.runID||run.head_sha!==commit||run.head_branch!==ref||run.event!=='workflow_dispatch'||
+    run.status!=='completed'||typeof run.conclusion!=='string'||!run.conclusion||run.path!=='.github/workflows/sandbox-image.yml')
+    throw new Error('Recorded CI workflow is not terminal or has a different identity');
+  return {publication:id,commit,sourceFingerprint:previous.sourceFingerprint,runID:previous.runID};
 }
 export async function advanceCIRef(job,{request,push}) {
   if(!publicationCIRef.test(job.ciRef??'')||!hex.test(job.commit??'')||!hex.test(job.ciRefExpectedCommit??''))throw new Error('Invalid CI ref identity');
@@ -46,7 +65,7 @@ export async function advanceCIRef(job,{request,push}) {
   if(before.object?.sha!==job.ciRefExpectedCommit)throw new Error('CI ref changed from its recorded publication');
   const response=await request(`actions/runs?branch=${encodeURIComponent(job.ciRef)}&per_page=100`),runs=response.workflow_runs;
   if(!Array.isArray(runs)||runs.length>=100||runs.some(run=>run.status!=='completed')||!runs.some(run=>
-    run.head_sha===job.ciRefExpectedCommit&&run.head_branch===job.ciRef&&run.event==='workflow_dispatch'&&run.status==='completed'))
+    (!job.ciRefRunID||run.id===job.ciRefRunID)&&run.head_sha===job.ciRefExpectedCommit&&run.head_branch===job.ciRef&&run.event==='workflow_dispatch'&&run.status==='completed'))
     throw new Error('CI ref has active or unverified prior workflows');
   // Only this recorded ref may move; the snapshot branch and Git objects remain immutable.
   await push(job.ciRef,job.commit,job.ciRefExpectedCommit);
@@ -176,7 +195,7 @@ export async function publishViaGitAPI(job, env, {
   if (existing) { if (existing.object.sha !== job.commit) throw new Error('Remote publication branch identity mismatch'); return; }
   await request('git/refs', { ref: `refs/heads/${job.branch}`, sha: job.commit });
 }
-async function snapshot(job, directory) {
+async function snapshot(job, directory, githubEnv) {
   const files = await inventorySource(job.originalSource);
   const env = { GIT_INDEX_FILE: join(directory, 'snapshot-index') };
   const git = args => execute('git', args, { cwd: job.originalSource, env, capture: true });
@@ -201,11 +220,10 @@ async function snapshot(job, directory) {
   await freezeSource(job.originalSource, job.source, files);
   job.productionBefore = await inspectProduction();
   if(job.ciRef){
-    const match=publicationCIRef.exec(job.ciRef);
-    if(!match)throw new Error('Invalid recorded CI ref');
-    const previous=JSON.parse(await readFile(join(commonStore(root),'web-publications',match[1],'job.json'),'utf8'));
-    job.ciRefExpectedCommit=validateCIRefSource(job.ciRef,previous);
-    if(fingerprintFiles(await inventorySource(previous.source))!==previous.sourceFingerprint)throw new Error('Recorded CI source changed');
+    const previous=await loadCIRefPublication(job.ciRef,job.ciRefPublication,{store:commonStore(root),request:path=>github(path,githubEnv)});
+    job.ciRefExpectedCommit=previous.commit;
+    job.ciRefRunID=previous.runID;
+    job.ciRefSource=previous;
   }
   if (job.requestedImage) {
     await validateInstalledImage({ source: { root: job.source, files }, selection: { imageRequired: true }, production: job.productionBefore }, job.requestedImage);
@@ -221,7 +239,7 @@ async function worker(job, directory, store) {
   }
   const ops = {
     save: () => save(path, job),
-    snapshot: () => snapshot(job, directory),
+    snapshot: () => snapshot(job, directory, env),
     push: async () => {
       if (job.reusedInstalledImage) return;
       console.log(`Publishing frozen commit ${job.commit} to ${job.branch}`);
@@ -321,7 +339,8 @@ async function cli(args) {
     const directory = join(store, 'web-publications', id); await mkdir(directory, { recursive: true, mode: 0o700 });
     const job = { schema: 1, id, status: 'queued', originalSource: options.source, branch: options.branch ?? `ci/web-publication-${id}`, stages: {},
       ...(options['image-digest'] ? { requestedImage: options['image-digest'] } : {}), ...(options.assistant ? { requestedAssistant: options.assistant } : {}),
-      ...(options['ci-ref'] ? {ciRef:options['ci-ref']} : {}) };
+      ...(options['ci-ref'] ? {ciRef:options['ci-ref']} : {}),
+      ...(options['ci-ref-publication'] ? {ciRefPublication:options['ci-ref-publication']} : {}) };
     await credentials(store); await save(join(directory, 'job.json'), job); await startService(job, directory);
     console.log(JSON.stringify({ job: id, status: job.status, state: join(directory, 'job.json'), log: join(directory, 'output.log') }, null, 2)); return;
   }
