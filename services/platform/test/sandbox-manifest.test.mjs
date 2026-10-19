@@ -78,7 +78,7 @@ async function installedImage(t, { codex = false } = {}) {
       "runtime/codex-patches/required-effect-guard.lock.json", "scripts/dev/build-codex-guard-runtime.mjs",
       "scripts/dev/probe-production-runner.mjs", "services/platform/fixtures/native-protocol.mjs",
       "runtime/sandbox/native-tools.mjs", "runtime/sandbox/required-effect-guard.mjs", "runtime/sandbox/codex-requirements.toml",
-      "runtime/sandbox/native-network.mjs", "runtime/sandbox/native-network.py"];
+      "runtime/sandbox/native-network.mjs", "runtime/sandbox/native-network.py", "runtime/codex-patches/loopback-address.patch"];
     const hash = bytes => createHash("sha256").update(bytes).digest("hex");
     const lock = JSON.parse(await readFile(new URL("../../../runtime/codex-patches/required-effect-guard.lock.json", import.meta.url), "utf8"));
     manifest.sourceInputs = await Promise.all(paths.map(async path => ({ path, sha256: hash(await readFile(new URL(`../../../${path}`, import.meta.url))) })));
@@ -129,15 +129,16 @@ test("a sealed native manifest preserves the measured guard identity without adv
 });
 
 test("sealed native readiness rejects missing or altered execution resources and source inputs", async t => {
-  for (const change of ["missing-resource", "altered-resource", "missing-source", "altered-source"]) {
+  for (const change of ["missing-resource", "altered-resource", "missing-source", "altered-source", "missing-bwrap-source", "altered-bwrap-source"]) {
     await t.test(change, async t => {
       const fixture = await installedImage(t, { codex: true });
       const resource = "opt/scikeel/runtime/required-effect-guard.mjs";
-      const source = fixture.manifest.sourceInputs.find(input => input.path === "runtime/sandbox/required-effect-guard.mjs");
+      const sourcePath = change.includes("bwrap") ? "runtime/codex-patches/loopback-address.patch" : "runtime/sandbox/required-effect-guard.mjs";
+      const source = fixture.manifest.sourceInputs.find(input => input.path === sourcePath);
       if (change === "missing-resource") delete fixture.manifest.codexRuntime.resources[resource];
       if (change === "altered-resource") fixture.manifest.codexRuntime.resources[resource] = "f".repeat(64);
-      if (change === "missing-source") fixture.manifest.sourceInputs = fixture.manifest.sourceInputs.filter(input => input !== source);
-      if (change === "altered-source") source.sha256 = "f".repeat(64);
+      if (change === "missing-source" || change === "missing-bwrap-source") fixture.manifest.sourceInputs = fixture.manifest.sourceInputs.filter(input => input !== source);
+      if (change === "altered-source" || change === "altered-bwrap-source") source.sha256 = "f".repeat(64);
       await fixture.save();
       await assert.rejects(fixture.load(), /image|native|guard/i);
     });
