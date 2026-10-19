@@ -103,6 +103,7 @@ const platform = new PlatformServer({
 });
 
 if(controlPlane) {
+  controlPlane.nativeJobs.logger=event=>console.error(JSON.stringify(event));
   cliRuntime.assistantAuthority = createAssistantRuntimeAuthority({configuration:sandbox,controlPlane,platform});
   controlPlane.assistantPolicy=context=>cliRuntime.assistantSnapshot(context.userId);
   controlPlane.executionAuthority=identity=>cliRuntime.assistantSnapshot(identity.userId).recoveryRequired===false&&

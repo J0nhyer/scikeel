@@ -12,6 +12,88 @@ import {makeToolOutcome,ToolOutcomeError} from '../../../packages/sdk/src/tool-o
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
 const acceptance={nativeSessionId:"native-owned",turnId:"turn-owned"};
+for(const mode of ["answered","pending","stale","stop","reply-failure"])test(`checkpoint result boundary ${mode} preserves current effect authority`,async()=>{
+ const identity={userId:"a",instanceId:"user-a",generation:1,conversationId:"owned",execution:1,requestId:"checkpoint-reply",policyRevision:1,runtime:"codex"};
+ const input={kind:"method",question:"Release method decision"},controller=new AbortController();
+ const hook=(callId,nativeTool,nativeInput)=>({session_id:acceptance.nativeSessionId,turn_id:acceptance.turnId,tool_use_id:callId,cwd:session.directory,
+  hook_event_name:"PreToolUse",tool_name:nativeTool==="exec_command"?"Bash":nativeTool,
+  tool_input:{nativeTool,nativeInput,canonicalInput:nativeInput}});
+ let transport,batch=0,resumed=false,blockedBeforeAnswer=false,current=true,released=0,aborted=0,replied=0;
+ const command=()=>transport.authorizeEffect({...context,turnIdentity:identity},hook("after-answer","exec_command",{cmd:"printf approved"}));
+ transport=new ManagedNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),delayMs:1,
+  issueNativeGrant:async()=>({identityRevision:"owned-profile",configuration:{model:"approved"},renew(){},async revoke(){}}),
+  workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release(){released++;}})},
+  files:{job:async(_owner,request)=>{
+   if(request.operation==="start")return {jobId:"b".repeat(64),...acceptance};
+   if(request.operation==="abort"){aborted++;await assert.rejects(command());return {stopped:true};}
+   if(request.operation==="toolResult"){
+    replied++;if(mode==="reply-failure")throw Error("fixture reply failed");
+    resumed=(await command()).allowed===true;return {replied:true};
+   }
+   if(batch++===0){
+    await transport.authorizeEffect({...context,turnIdentity:identity},hook("checkpoint","research_checkpoint",input));
+    return {jobId:request.jobId,status:"running",...acceptance,events:[{type:"tool-call",id:"d".repeat(64),callId:"checkpoint",
+     tool:"research_checkpoint",input,sessionID:session.id,sequence:1,...acceptance}]};
+   }
+   return {jobId:request.jobId,status:"completed",...acceptance,events:[]};
+  }}});
+ transport.configureEffects({prepare:async()=>({researchExecution:7}),permissions:{authorize:async()=>({allowed:true}),assertCurrent:async()=>current},
+  callTool:async()=>{
+   if(mode==="pending"){await assert.rejects(command());blockedBeforeAnswer=true;}
+   if(mode==="stale")current=false;
+   if(mode==="stop")controller.abort();
+   return JSON.stringify({decision:"approved-checkpoint",userAnswer:"Approved"});
+  }});
+ const running=transport.run({userId:"a",session,model:"approved",text:"Research",turnIdentity:identity,identityRevision:"owned-profile",signal:controller.signal,emit:async()=>{}});
+ if(["stale","stop","reply-failure"].includes(mode)){await assert.rejects(running);assert.equal(aborted,1);}
+ else {await running;assert.equal(resumed,true);}
+ if(mode==="pending")assert.equal(blockedBeforeAnswer,true);
+ assert.equal(replied,["stop","stale"].includes(mode)?0:1);assert.equal(released,1);
+ await assert.rejects(command());
+});
+test("native transport records only fixed failure reasons and still drains the failed job",async()=>{
+ for(const [failure,reason] of [[Error("Unbound native effect observation"),"unbound_native_effect_observation"],
+  [Object.assign(Error("private message must not appear"),{code:"historical_source_unavailable"}),"historical_source_unavailable"],
+  [Error("Bearer fixture-private-token https://private.example/?key=fixture-secret"),"native_execution_failed"]]){
+  const logs=[],calls=[];let released=0,revoked=0;
+  const identity={userId:"a",instanceId:"user-a",generation:1,conversationId:"owned",execution:1,requestId:"diagnostic",policyRevision:1,runtime:"codex"};
+  const transport=new ManagedNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),logger:event=>logs.push(event),
+   workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release(){released++;}})},
+   issueNativeGrant:async()=>({identityRevision:"owned-profile",configuration:{model:"approved"},renew(){},async revoke(){revoked++;}}),
+   files:{job:async(_owner,input)=>{calls.push(input.operation);if(input.operation==="start")return {jobId:"b".repeat(64),...acceptance};
+    if(input.operation==="abort")return {stopped:true};throw failure;}}});
+  await assert.rejects(transport.run({userId:"a",session,model:"approved",text:"Private prompt",turnIdentity:identity,identityRevision:"owned-profile",emit:async()=>{}}),error=>error===failure);
+  assert.deepEqual(logs,[{type:"native.execution.failed",operation:"run",reason,userId:"a",instanceId:"user-a",generation:1,conversationId:"owned",execution:1,jobId:"b".repeat(64)}]);
+  assert.equal(released,1);assert.equal(revoked,1);assert.deepEqual(calls,["start","events","abort"]);
+  assert(!JSON.stringify(logs).includes("fixture-secret"));
+ }
+});
+test("effect rejection records a fixed reason without inputs and explicitly reports a broken logger",async()=>{
+ const logs=[],transport=new ManagedNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),files:{},workerManager:{},logger:event=>logs.push(event)});
+ await assert.rejects(transport.authorizeEffect(context,{}),/Invalid native guard envelope/);
+ assert.deepEqual(logs,[{type:"native.execution.failed",operation:"effect",reason:"invalid_native_guard_envelope"}]);
+ transport.logger=()=>{throw Error("broken logging sink");};
+ await assert.rejects(transport.authorizeEffect(context,{}),error=>error instanceof AggregateError&&error.errors[0].message==="Invalid native guard envelope"&&error.errors[1].message==="broken logging sink");
+});
+test("broken native diagnostics report only after cleanup and retain an unverified worker lease",async()=>{
+ for(const clean of [true,false]){
+  const calls=[];let released=0,revoked=0,cleanup;
+  const failure=Error("Unbound native effect observation"),loggingFailure=Error("broken logging sink");
+  const identity={userId:"a",instanceId:"user-a",generation:1,conversationId:"owned",execution:1,requestId:"diagnostic",policyRevision:1,runtime:"codex"};
+  const transport=new ManagedNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),logger:()=>{throw loggingFailure;},
+   workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release(){released++;}}),stopWorker:async()=>{calls.push("stop-worker");throw Error("unconfirmed stop");}},
+   issueNativeGrant:async()=>({identityRevision:"owned-profile",configuration:{model:"approved"},renew(){},async revoke(){revoked++;}}),
+   files:{job:async(_owner,input)=>{calls.push(input.operation);if(input.operation==="start")return {jobId:"b".repeat(64),...acceptance};
+    if(input.operation==="abort")return {stopped:clean};throw failure;}}});
+  await assert.rejects(transport.run({userId:"a",session,model:"approved",text:"Private prompt",turnIdentity:identity,identityRevision:"owned-profile",emit:async()=>{},onCleanup:async value=>{cleanup=value;}}),error=>{
+   if(clean){assert(error instanceof AggregateError);assert.deepEqual(error.errors,[failure,loggingFailure]);}
+   else {assert.match(error.message,/native cleanup unverified/);assert(error instanceof AggregateError);
+    assert.deepEqual(error.errors[0].errors,[failure,loggingFailure]);}return true;
+  });
+  assert.equal(released,clean?1:0);assert.equal(revoked,1);assert.equal(cleanup.cleanupVerified,clean);
+  assert.deepEqual(calls,clean?["start","events","abort"]:["start","events","abort","stop-worker"]);
+ }
+});
 for(const mode of ['reject-initialize','reject-turn-start','foreign-pre-effect'])test(`actual runner ${mode} releases only a verified owned pre-effect failure`,async t=>{
  const manifest={schema:1,instanceId:context.instanceId,generation:1,workspaceDir:context.workspaceDir,home:'/tenant/home',stateDir:'/tenant/state',scratchDir:'/tenant/scratch'};
  const policy=new TenantPolicy({accounts:[context]}),identity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'startup-request',policyRevision:1,runtime:'codex'};

@@ -5,16 +5,39 @@ import {readToolError} from '../../../packages/sdk/src/tool-outcome.mjs';
 
 const sameIdentity=(left,right)=>left&&right&&Object.keys(left).length===8&&Object.keys(right).length===8&&
   Object.keys(left).every(key=>left[key]===right[key]);
+const failureMessages=new Set([
+  'Invalid native guard envelope','Unsafe native command','Invalid native tool input','Native effect scope denied',
+  'Native acceptance unavailable','Native effect stopped','Native effect denied','Native tool authorization changed',
+  'Native research execution unavailable','Native research execution changed','Native execution authority unavailable',
+  'Native permission rules unavailable','Native ancestry denied','Native approval authority changed',
+  'Unbound native effect observation','invalid native event batch','foreign native event','native turn failed',
+  'native turn cancelled','native worker generation changed','native execution identity changed','invalid native runner reply',
+  'Native tool result denied','Native tool result unavailable','native automatic permission unavailable',
+]);
+const failureCodes=new Set(['historical_source_unavailable','historical_source_conflict','conversation_history_unavailable',
+  'conversation_history_invalid','conversation_history_changed','conversation_history_index_required','conversation_origin_conflict',
+  'conversation_revision_conflict','workspace_rpc_unavailable','workspace_rpc_denied','native_pre_effect_failure']);
 
 // Native CLI transport remains inside the assigned runner. This adapter owns
 // the long-lived worker lease; it never spawns a model process on the platform.
 export class SandboxNativeJobs {
   #turns=new Map(); #effects;
-  constructor({files,workerManager,tenantPolicy,issueNativeGrant=null,delayMs=250}) {
+  constructor({files,workerManager,tenantPolicy,issueNativeGrant=null,delayMs=250,logger=()=>{}}) {
     if(!files || !workerManager || !tenantPolicy || !Number.isSafeInteger(delayMs) || delayMs<1 || delayMs>5000)
       throw new Error("invalid native job transport");
-    if(issueNativeGrant!==null&&typeof issueNativeGrant!=='function')throw new Error('invalid native grant authority');
-    Object.assign(this,{files,workerManager,tenantPolicy,issueNativeGrant,delayMs});
+    if(issueNativeGrant!==null&&typeof issueNativeGrant!=='function'||typeof logger!=='function')throw new Error('invalid native grant authority');
+    Object.assign(this,{files,workerManager,tenantPolicy,issueNativeGrant,delayMs,logger});
+  }
+  #recordFailure(error,operation,identity,jobId){
+    const reason=failureCodes.has(error?.code)?error.code:failureMessages.has(error?.message)?
+      error.message.toLowerCase().replaceAll(' ','_'):'native_execution_failed';
+    const owned=identity&&['userId','instanceId','conversationId','requestId'].every(key=>/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(identity[key]??''))&&
+      ['generation','execution','policyRevision'].every(key=>Number.isSafeInteger(identity[key])&&identity[key]>0)&&identity.runtime==='codex';
+    try{this.logger({type:'native.execution.failed',operation,reason,...(owned?{userId:identity.userId,instanceId:identity.instanceId,
+      generation:identity.generation,conversationId:identity.conversationId,execution:identity.execution}:{}),
+      ...(/^[a-f0-9]{64}$/.test(jobId??'')?{jobId}:{})});}
+    catch(loggingError){return new AggregateError([error,loggingError],'Native failure diagnostics unavailable');}
+    return error;
   }
   configureEffects(effects){
     if(this.#turns.size||!effects||typeof effects.prepare!=='function'||typeof effects.callTool!=='function'||
@@ -28,6 +51,10 @@ export class SandboxNativeJobs {
     return {context:{...turn.context},session:{...turn.session},researchExecution:turn.researchExecution,rootSessionId:turn.rootSessionId};
   }
   async authorizeEffect(context,input,{signal}={}){
+    try{return await this.#authorizeEffect(context,input,{signal});}
+    catch(error){throw this.#recordFailure(error,'effect',context?.turnIdentity);}
+  }
+  async #authorizeEffect(context,input,{signal}={}){
     const body=structuredClone(input),action=effectRequest(body),identity=context.turnIdentity;
     const turn=this.#turns.get(`${context.userId}/${identity?.conversationId}`);
     if(!this.#effects||!turn||!sameIdentity(turn.identity,identity)||turn.context?.instanceId!==context.instanceId||
@@ -96,11 +123,18 @@ export class SandboxNativeJobs {
       }
       signal.throwIfAborted();
       if(!this.executionScope(turn.identity)||typeof text!=='string'||Buffer.byteLength(text)>256*1024)throw Error('Native tool result denied');
+      if(event.tool==='research_checkpoint'&&!outcome){
+        if(turn.barrier!==event.callId||!await this.#effects.permissions.assertCurrent(record.decision)||!this.executionScope(turn.identity))
+          throw Error('Native tool authorization changed');
+        signal.throwIfAborted();
+        // A delivered answer can resume the runner before its RPC ack arrives.
+        // The durable decision is complete; release only this checkpoint fence.
+        turn.barrier=null;
+      }
       const reply=await this.files.job(context,{operation:'toolResult',jobId:started.jobId,id:event.id,success:!outcome,text},{signal});
       if(reply?.replied!==true)throw Error('Native tool result unavailable');
       await emit({...event,type:'tool',callID:event.callId,state:outcome?{status:'error',input,error:text,metadata:{scikeelOutcome:outcome}}:
         {status:'completed',input,output:text}});
-      if(event.tool==='research_checkpoint'&&!outcome)turn.barrier=null;
     }finally{turn.activeTool=null;turn.activeToolId=null;}
   }
   async inspect(context) {
@@ -231,7 +265,9 @@ export class SandboxNativeJobs {
         });
       }
     } catch(error) {
-      if (reservation.recovering) { cleanupVerified=false; throw error; }
+      reservation.accepted=false;
+      const reported=this.#recordFailure(error,'run',turnIdentity,started?.jobId);
+      if (reservation.recovering) { cleanupVerified=false; throw reported; }
       if(submitted&&!started&&error?.code==='native_pre_effect_failure'&&error.cleanupVerified===true&&sameIdentity(error.turnIdentity,turnIdentity)){
         // The authenticated runner observed process-group cleanup before it
         // ever submitted turn/start. Keep the helper generation usable; a
@@ -243,10 +279,13 @@ export class SandboxNativeJobs {
           cleanupVerified=true;
         } catch {
           try {await this.workerManager.stopWorker(context.instanceId,{expectedGeneration:context.generation});cleanupVerified=true;}
-          catch {throw new Error("native cleanup unverified; workspace remains reserved");}
+          catch {
+            const failure=new Error('native cleanup unverified; workspace remains reserved');
+            throw reported===error?failure:new AggregateError([reported,failure],failure.message);
+          }
         }
       }
-      throw error;
+      throw reported;
     } finally {
       reservation.accepted=false;rejectAcceptance(Error('Native execution ended'));
       signal.removeEventListener('abort',revoke);
