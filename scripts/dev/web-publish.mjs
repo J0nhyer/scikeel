@@ -325,11 +325,16 @@ async function worker(job, directory, store) {
   await publishPipeline(job, ops);
   console.log(`Published ${job.id}: ${job.commit} (${job.imageDigest})`);
 }
+export function publicationWorkerTemporaryArguments(store) {
+  return ["TMPDIR", "TMP", "TEMP"].map(key => `--setenv=${key}=${join(store, "test-tmp")}`);
+}
 async function startService(job, directory) {
   const fd = await open(join(directory, 'output.log'), 'a', 0o600); await fd.close();
   const store = commonStore(root);
+  await mkdir(join(store, "test-tmp"), { recursive: true, mode: 0o700 });
   await execute('systemd-run', ['--user', `--unit=scikeel-web-publish-${job.id}`, '--collect', '-p', 'MemoryHigh=256M', '-p', 'MemoryMax=384M', '-p', 'MemorySwapMax=64M',
     '-p', `StandardOutput=append:${join(directory, 'output.log')}`, '-p', `StandardError=append:${join(directory, 'output.log')}`, '--working-directory', root, `--setenv=PATH=${process.env.PATH}`,
+    ...publicationWorkerTemporaryArguments(store),
     'flock', '--conflict-exit-code', '75', '-n', join(store, 'web-publish.lock'), process.execPath, fileURLToPath(import.meta.url), 'worker', '--job', job.id]);
 }
 async function cli(args) {

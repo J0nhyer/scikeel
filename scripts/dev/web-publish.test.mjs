@@ -9,6 +9,14 @@ import {inventorySource,fingerprintFiles} from './web-release-source.mjs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const sha = 'a'.repeat(40);
+test('background publication workers explicitly keep host temporary files inside the project',()=>{
+ assert.equal(typeof publication.publicationWorkerTemporaryArguments,'function');
+ assert.deepEqual(publication.publicationWorkerTemporaryArguments('/project/.deploy'),[
+  '--setenv=TMPDIR=/project/.deploy/test-tmp',
+  '--setenv=TMP=/project/.deploy/test-tmp',
+  '--setenv=TEMP=/project/.deploy/test-tmp',
+ ]);
+});
 const cacheRef='ci/web-publication-2026-10-17T21-44-34-881Z-fixture';
 test('a reused CI ref can bind a later explicit publication without rewriting its original record',()=>{
  const id='2026-10-17T23-29-06-083Z-fixture';
