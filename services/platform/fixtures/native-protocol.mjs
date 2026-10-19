@@ -37,6 +37,13 @@ export function validNativeIsolationProof(proof) {
     isDeepStrictEqual(proof, { interfaces: ['lo'], denials: proof.denials, outsideWriteDenied: true });
 }
 
+export function validFallbackPatchHelperProof(proof) {
+  return [1, 13, 30].includes(proof?.outsideErrno) && isDeepStrictEqual(proof, {
+    loginShellHelper: true, bytesVerified: true, insideUpdateVerified: true,
+    outsideWriteDenied: true, outsideDenial: "permission-denied", outsideErrno: proof.outsideErrno,
+  });
+}
+
 export async function observeLateEffects(startedAt, duration, { now = () => performance.now(), wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   let elapsed = now() - startedAt;
   while (elapsed < duration) {
@@ -370,18 +377,31 @@ pathlib.Path('isolation.json').write_text(json.dumps({'interfaces':interfaces,'d
 pathlib.Path('result.txt').write_text('verified-native-write')
 `;
       const callId = `call-${name}`;
-      const helperPatch="*** Begin Patch\n*** Add File: result.txt\n+verified-native-write\n*** End Patch\n";
-      const outsidePatch=`*** Begin Patch\n*** Add File: ${outside}\n+escaped\n*** End Patch\n`;
-      const patchHelperScript=`import json,pathlib,shlex,subprocess
+      const helperPatch="*** Begin Patch\n*** Add File: result.txt\n+unchanged\n*** End Patch\n";
+      const insideUpdate="*** Begin Patch\n*** Update File: result.txt\n@@\n-unchanged\n+verified-native-write\n*** End Patch\n";
+      const outsidePatch="*** Begin Patch\n*** Update File: ../outside-canary.txt\n@@\n-unchanged\n+escaped\n*** End Patch\n";
+      const patchHelperScript=`import errno,json,os,pathlib,shlex,subprocess
 patch=${JSON.stringify(helperPatch)}
 completed=subprocess.run(["/bin/bash","-lc","apply_patch "+shlex.quote(patch)],capture_output=True,text=True)
 assert completed.returncode==0,(completed.returncode,completed.stderr)
+inside_patch=${JSON.stringify(insideUpdate)}
+updated=subprocess.run(["/bin/bash","-lc","apply_patch "+shlex.quote(inside_patch)],capture_output=True,text=True)
+assert updated.returncode==0,(updated.returncode,updated.stderr)
 assert pathlib.Path("result.txt").read_text().strip()=="verified-native-write"
 outside_patch=${JSON.stringify(outsidePatch)}
 denied=subprocess.run(["/bin/bash","-lc","apply_patch "+shlex.quote(outside_patch)],capture_output=True,text=True)
 assert denied.returncode!=0,"official patch helper wrote outside workspace"
+assert "Failed to write file" in denied.stderr,denied.stderr
+try:
+ descriptor=os.open("../outside-canary.txt",os.O_WRONLY)
+except OSError as error:
+ assert error.errno in (errno.EACCES,errno.EROFS,errno.EPERM),error.errno
+ outside_errno=error.errno
+else:
+ os.close(descriptor)
+ raise AssertionError("outside canary can be opened for writing")
 assert pathlib.Path(${JSON.stringify(outside)}).read_text()=="unchanged"
-pathlib.Path("patch-helper.json").write_text(json.dumps({"loginShellHelper":True,"bytesVerified":True,"outsideWriteDenied":True}))
+pathlib.Path("patch-helper.json").write_text(json.dumps({"loginShellHelper":True,"bytesVerified":True,"insideUpdateVerified":True,"outsideWriteDenied":True,"outsideDenial":"permission-denied","outsideErrno":outside_errno}))
 `;
       const helperCommand=`python3 -c ${JSON.stringify(`import base64;exec(base64.b64decode(${JSON.stringify(Buffer.from(patchHelperScript).toString("base64"))}))`)}`;
       const item = kind === "edit" ? { type: "custom_tool_call", call_id: callId, name: "apply_patch",
@@ -477,8 +497,9 @@ pathlib.Path("patch-helper.json").write_text(json.dumps({"loginShellHelper":True
           if(mode==="allow"){
             const proof=JSON.parse(await readFile(`${directory}/workspace/patch-helper.json`,"utf8"));
             record.fallbackPatchHelperVerified=!record.nativePatchToolAdvertised&&record.bytesVerified&&
-              isDeepStrictEqual(proof,{loginShellHelper:true,bytesVerified:true,outsideWriteDenied:true})&&
+              validFallbackPatchHelperProof(proof)&&
               await readFile(outside,"utf8")==="unchanged";
+            record.fallbackPatchHelperProof=proof;
           }
         }
         record.toolResults = current.toolResults?.map(output => output.replaceAll(directory, "[fixture]").replaceAll("synthetic-not-a-real-key", "[redacted]"));

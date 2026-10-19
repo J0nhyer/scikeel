@@ -22,6 +22,19 @@ import { extractCodexArchive } from "../../../scripts/dev/fetch-sandbox-codex.mj
 import { validateGuardLock, buildGuardRuntime } from "../../../scripts/dev/build-codex-guard-runtime.mjs";
 import * as integration from "../../../scripts/dev/build-codex-guard-runtime.mjs";
 
+test("fallback helper proof requires an actual inside update and an OS permission denial outside", () => {
+  assert.equal(typeof protocol.validFallbackPatchHelperProof, "function");
+  const proof = { loginShellHelper: true, bytesVerified: true, insideUpdateVerified: true,
+    outsideWriteDenied: true, outsideDenial: "permission-denied", outsideErrno: 13 };
+  assert.equal(protocol.validFallbackPatchHelperProof(proof), true);
+  for (const outsideErrno of [1, 30]) assert.equal(protocol.validFallbackPatchHelperProof({ ...proof, outsideErrno }), true);
+  for (const changed of [{ insideUpdateVerified: false }, { outsideDenial: "file-exists" },
+    { outsideDenial: "invalid-patch" }, { outsideDenial: null }, { outsideWriteDenied: false },
+    { outsideErrno: 2 }, { outsideErrno: 17 }, { outsideErrno: null }])
+    assert.equal(protocol.validFallbackPatchHelperProof({ ...proof, ...changed }), false);
+  assert.equal(protocol.validFallbackPatchHelperProof({ loginShellHelper: true, bytesVerified: true, outsideWriteDenied: true }), false);
+});
+
 const workflow = new URL("../../../.github/workflows/sandbox-image.yml", import.meta.url);
 test('restricted native network evidence requires exact EPERM from socket creation or connect, never route errors or success',()=>{
  assert.equal(typeof protocol.nativeNetworkDenialScript,'string');
