@@ -1,5 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+test("fallback-model patch helper effects and every guard failure are mandatory",()=>{
+ const {checks,activationEligible}=capabilityResult([]);
+ for(const mode of ["allowed","denied","crashed","malformed","empty","timedout","missing","stopped"])
+  assert.equal(checks[`${mode}-patch-helper`],false);
+ assert.equal(checks.fallbackPatchHelper,false);
+ assert.equal(activationEligible,false);
+});
 import { readFile, mkdtemp, mkdir, writeFile, rm, access, symlink } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -139,9 +146,12 @@ test("the native gate cannot pass with any missing, skipped or failed pre-effect
   const names = ["denied-command", "allowed-command", "denied-edit", "allowed-edit", "denied-custom", "allowed-custom",
     "crashed-command", "crashed-edit", "crashed-custom", "stopped-command", "stopped-edit", "stopped-custom", "allowed-question", "denied-question",
     "allowed-running-command", "stopped-running-command",
+    ...["allowed","denied","crashed","malformed","empty","timedout","missing","stopped"].map(mode=>`${mode}-patch-helper`),
     ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
-  const cases = names.map(name => ({ name, passed: true, ...(name === 'allowed-command' ? { isolationVerified: true } : {}) }));
+  const cases = names.map(name => ({ name, passed: true, ...(name === 'allowed-command' ? { isolationVerified: true } : {}),
+    ...(name==="allowed-patch-helper"?{fallbackPatchHelperVerified:true}:{}) }));
   assert.equal(capabilityResult(cases).activationEligible, true);
+  assert.equal(capabilityResult(cases.map(value=>({...value,fallbackPatchHelperVerified:false}))).activationEligible,false);
   for (const name of names) {
     assert.equal(capabilityResult(cases.filter(value => value.name !== name)).activationEligible, false);
     assert.equal(capabilityResult(cases.map(value => value.name === name ? { ...value, passed: false } : value)).activationEligible, false);
@@ -153,8 +163,9 @@ test('native success without actual workspace and network isolation evidence rem
   const names = ['denied-command','allowed-command','denied-edit','allowed-edit','denied-custom','allowed-custom',
     'crashed-command','crashed-edit','crashed-custom','stopped-command','stopped-edit','stopped-custom',
     'allowed-question','denied-question','allowed-running-command','stopped-running-command',
+    ...["allowed","denied","crashed","malformed","empty","timedout","missing","stopped"].map(mode=>`${mode}-patch-helper`),
     ...['malformed','empty','timedout','missing'].flatMap(mode=>['command','edit','custom'].map(kind=>`${mode}-${kind}`))];
-  assert.equal(capabilityResult(names.map(name=>({name,passed:true}))).activationEligible,false);
+  assert.equal(capabilityResult(names.map(name=>({name,passed:true,fallbackPatchHelperVerified:true}))).activationEligible,false);
 });
 
 test("the integrated native guard patch is immutable and requires explicit allow, not hook process success", async () => {

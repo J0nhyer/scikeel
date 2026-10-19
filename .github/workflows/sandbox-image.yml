@@ -39,6 +39,11 @@ permissions:
   id-token: write
   attestations: write
 
+env:
+  TMPDIR: ${{ github.workspace }}/.deploy/test-tmp
+  TMP: ${{ github.workspace }}/.deploy/test-tmp
+  TEMP: ${{ github.workspace }}/.deploy/test-tmp
+
 concurrency:
   group: sandbox-image-${{ github.ref }}
   cancel-in-progress: false
@@ -48,9 +53,13 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
+      - name: Prepare project-local temporary directories
+        run: mkdir -p "$TMPDIR"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Recreate the project temporary directory after checkout
+        run: mkdir -p "$TMPDIR"
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.3
@@ -110,6 +119,7 @@ jobs:
             --tmpfs /fixture/native:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
             -v "$PWD:/fixture/repo:ro" \
             -v "$PWD/.deploy/science-context/tools/bin:/opt/scikeel/tools/bin:ro" \
+            -v "$PWD/runtime/sandbox/apply_patch:/usr/local/bin/apply_patch:ro" \
             -v "$PWD/services/platform/fixtures/native-protocol.mjs:/opt/scikeel/runtime/required-effect-guard.mjs:ro" \
             -v "$PWD/.deploy/native-capabilities/config/requirements.toml:/etc/codex/requirements.toml:ro" \
             -v "$PWD/.deploy/native-capabilities/config:/fixture/config:ro" \
@@ -144,6 +154,7 @@ jobs:
             --tmpfs /fixture/native:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
             -v "$PWD:/fixture/repo:ro" \
             -v "$PWD/.deploy/science-context/tools/bin:/opt/scikeel/tools/bin:ro" \
+            -v "$PWD/runtime/sandbox/apply_patch:/usr/local/bin/apply_patch:ro" \
             -v "$PWD/services/platform/fixtures/native-protocol.mjs:/opt/scikeel/runtime/required-effect-guard.mjs:ro" \
             -v "$PWD/.deploy/native-capabilities/config/requirements.toml:/etc/codex/requirements.toml:ro" \
             -v "$PWD/.deploy/native-capabilities/config:/fixture/config:ro" \
@@ -186,7 +197,11 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: 0
       SCIKEEL_IMAGE_VARIANT: production
     steps:
+      - name: Prepare project-local temporary directories
+        run: mkdir -p "$TMPDIR"
       - uses: actions/checkout@v4
+      - name: Recreate the project temporary directory after checkout
+        run: mkdir -p "$TMPDIR"
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -251,6 +266,7 @@ jobs:
           cp .deploy/session-title-runtime/runtime-manifest.json .deploy/science-context/tools/session-title-runtime.json
           cp runtime/sandbox/{runner,file-rpc,cli-jobs,science-environment,collaboration,tool-outcome,native-tools,required-effect-guard,native-network}.mjs .deploy/science-context/tools/
           cp runtime/sandbox/native-network.py .deploy/science-context/tools/
+          cp runtime/sandbox/apply_patch .deploy/science-context/tools/
           cp runtime/sandbox/codex-requirements.toml .deploy/science-context/tools/
           cp runtime/sandbox/project-environment.py .deploy/science-context/tools/
           mkdir -p .deploy/science-context/tools/resources/skills-core

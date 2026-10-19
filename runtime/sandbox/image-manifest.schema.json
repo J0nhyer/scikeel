@@ -212,10 +212,22 @@
         },
         "resources": {
           "type": "object",
-          "required": ["opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json"],
+          "required": ["opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json",
+            "opt/scikeel/tools/native-tools.mjs", "opt/scikeel/runtime/required-effect-guard.mjs",
+            "opt/scikeel/tools/codex-requirements.toml", "etc/codex/requirements.toml",
+            "opt/scikeel/tools/native-network.mjs", "opt/scikeel/tools/native-network.py",
+            "opt/scikeel/tools/apply_patch", "usr/local/bin/apply_patch"],
           "properties": {
             "opt/scikeel/tools/bin/codex-resources/bwrap": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-            "opt/scikeel/tools/bin/native-integration.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+            "opt/scikeel/tools/bin/native-integration.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/native-tools.mjs": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/runtime/required-effect-guard.mjs": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/codex-requirements.toml": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "etc/codex/requirements.toml": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/native-network.mjs": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/native-network.py": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/apply_patch": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "usr/local/bin/apply_patch": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
           },
           "additionalProperties": false
         }

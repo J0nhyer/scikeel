@@ -78,7 +78,7 @@ async function installedImage(t, { codex = false } = {}) {
       "runtime/codex-patches/required-effect-guard.lock.json", "scripts/dev/build-codex-guard-runtime.mjs",
       "scripts/dev/probe-production-runner.mjs", "services/platform/fixtures/native-protocol.mjs",
       "runtime/sandbox/native-tools.mjs", "runtime/sandbox/required-effect-guard.mjs", "runtime/sandbox/codex-requirements.toml",
-      "runtime/sandbox/native-network.mjs", "runtime/sandbox/native-network.py", "runtime/codex-patches/loopback-address.patch"];
+      "runtime/sandbox/native-network.mjs", "runtime/sandbox/native-network.py", "runtime/sandbox/apply_patch", "runtime/codex-patches/loopback-address.patch"];
     const hash = bytes => createHash("sha256").update(bytes).digest("hex");
     const lock = JSON.parse(await readFile(new URL("../../../runtime/codex-patches/required-effect-guard.lock.json", import.meta.url), "utf8"));
     manifest.sourceInputs = await Promise.all(paths.map(async path => ({ path, sha256: hash(await readFile(new URL(`../../../${path}`, import.meta.url))) })));
@@ -92,6 +92,8 @@ async function installedImage(t, { codex = false } = {}) {
       "etc/codex/requirements.toml": "runtime/sandbox/codex-requirements.toml",
       "opt/scikeel/tools/native-network.mjs": "runtime/sandbox/native-network.mjs",
       "opt/scikeel/tools/native-network.py": "runtime/sandbox/native-network.py",
+      "opt/scikeel/tools/apply_patch": "runtime/sandbox/apply_patch",
+      "usr/local/bin/apply_patch": "runtime/sandbox/apply_patch",
     })) manifest.codexRuntime.resources[resource] = manifest.sourceInputs.find(input => input.path === source).sha256;
   }
   const manifestPath = join(imageDirectory, "image-manifest.json"), readyPath = join(imageDirectory, "ready.json");

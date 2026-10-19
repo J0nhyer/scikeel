@@ -117,6 +117,8 @@ def validate_native(manifest, listing, tool_lock):
         "etc/codex/requirements.toml": "runtime/sandbox/codex-requirements.toml",
         "opt/scikeel/tools/native-network.mjs": "runtime/sandbox/native-network.mjs",
         "opt/scikeel/tools/native-network.py": "runtime/sandbox/native-network.py",
+        "opt/scikeel/tools/apply_patch": "runtime/sandbox/apply_patch",
+        "usr/local/bin/apply_patch": "runtime/sandbox/apply_patch",
     }
     expected = {"opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json"} | set(managed_sources)
     tool = manifest.get("tools", {}).get("codex", {})

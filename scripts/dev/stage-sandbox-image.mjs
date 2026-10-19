@@ -22,7 +22,7 @@ const nativePaths = ["runtime/codex-patches/required-effect-guard.patch", "runti
   "runtime/codex-patches/required-effect-guard.lock.json", "scripts/dev/build-codex-guard-runtime.mjs",
   "scripts/dev/probe-production-runner.mjs", "services/platform/fixtures/native-protocol.mjs",
   "runtime/sandbox/native-tools.mjs", "runtime/sandbox/required-effect-guard.mjs", "runtime/sandbox/codex-requirements.toml",
-  "runtime/sandbox/native-network.mjs", "runtime/sandbox/native-network.py", "runtime/codex-patches/loopback-address.patch"];
+  "runtime/sandbox/native-network.mjs", "runtime/sandbox/native-network.py", "runtime/sandbox/apply_patch", "runtime/codex-patches/loopback-address.patch"];
 const nativeInputs = Object.fromEntries(await Promise.all(nativePaths.map(async path => [path,
   createHash("sha256").update(await readFile(join(repo, path))).digest("hex")])));
 export const managedNativeSources = Object.freeze({
@@ -32,6 +32,8 @@ export const managedNativeSources = Object.freeze({
   "etc/codex/requirements.toml": "runtime/sandbox/codex-requirements.toml",
   "opt/scikeel/tools/native-network.mjs": "runtime/sandbox/native-network.mjs",
   "opt/scikeel/tools/native-network.py": "runtime/sandbox/native-network.py",
+  "opt/scikeel/tools/apply_patch": "runtime/sandbox/apply_patch",
+  "usr/local/bin/apply_patch": "runtime/sandbox/apply_patch",
 });
 const nativeResourcePaths = ["opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json",
   ...Object.keys(managedNativeSources)].sort();
@@ -131,7 +133,7 @@ export function validateImageManifest(v) {
 export function validateBuildContext(paths) {
   const fixed = new Set(["Dockerfile", "pyproject.toml", "uv.lock", "tool-lock.json", "tools/session-title-runtime.json",
     "tools/bin/codex-resources/bwrap", "tools/bin/native-integration.json", "tools/native-tools.mjs",
-    "tools/required-effect-guard.mjs", "tools/codex-requirements.toml", "tools/native-network.mjs", "tools/native-network.py"]);
+    "tools/required-effect-guard.mjs", "tools/codex-requirements.toml", "tools/native-network.mjs", "tools/native-network.py", "tools/apply_patch"]);
   for (const path of paths) {
     if (typeof path !== "string" || path.startsWith("/") || path.includes("\\") ||
         path.split("/").some((part) => !part || part === "." || part === "..") ||

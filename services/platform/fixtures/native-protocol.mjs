@@ -62,6 +62,11 @@ export function capabilityResult(cases) {
     "allowed-running-command", "stopped-running-command",
     ...["malformed", "empty", "timedout", "missing"].flatMap(mode => ["command", "edit", "custom"].map(kind => `${mode}-${kind}`))];
   const checks = Object.fromEntries(required.map(name => [name, cases.some(value => value.name === name && value.passed === true)]));
+  for(const mode of ["allowed","denied","crashed","malformed","empty","timedout","missing","stopped"]){
+    const name=`${mode}-patch-helper`;
+    checks[name]=cases.some(value=>value.name===name&&value.passed===true);
+  }
+  checks.fallbackPatchHelper=cases.some(value=>value.name==="allowed-patch-helper"&&value.passed===true&&value.fallbackPatchHelperVerified===true);
   checks.workspaceAndNetworkIsolation = cases.some(value => value.name === 'allowed-command' && value.passed === true && value.isolationVerified === true);
   return { checks, activationEligible: Object.values(checks).every(Boolean) };
 }
@@ -341,15 +346,15 @@ export async function runNativeProtocolProbe() {
     const reachable = await fetch(`http://127.0.0.1:${port}/fixture-reachability`, { signal: AbortSignal.timeout(2000) });
     if (reachable.status !== 404) throw new Error('outer fixture loopback is not reachable');
     report.outerLoopbackReachable = true;
-    for (const kind of ["command", "edit", "custom", "question", "running-command"]) for (const mode of (kind === "question" ? ["deny", "allow"] : kind === "running-command" ? ["allow", "stopped"] : ["deny", "allow", "crash", "malformed", "empty", "timeout", "missing", "stopped"])) {
-      const isCommand = kind === "command" || kind === "running-command";
+    for (const kind of ["command", "edit", "custom", "question", "running-command", "patch-helper"]) for (const mode of (kind === "question" ? ["deny", "allow"] : kind === "running-command" ? ["allow", "stopped"] : ["deny", "allow", "crash", "malformed", "empty", "timeout", "missing", "stopped"])) {
+      const isCommand = kind === "command" || kind === "running-command" || kind === "patch-helper";
       const label = { deny: "denied", allow: "allowed", crash: "crashed", timeout: "timedout" }[mode] ?? mode;
       const name = `${label}-${kind}`;
       const directory = `${root}/${name}`;
       await mkdir(`${directory}/workspace`, { recursive: true }); await mkdir(`${directory}/home`);
       const marker = `${directory}/workspace/result.txt`;
       const outside = `${directory}/outside-canary.txt`;
-      if (kind === 'command' && mode === 'allow') await writeFile(outside, 'unchanged');
+      if ((kind === 'command' || kind === 'patch-helper') && mode === 'allow') await writeFile(outside, 'unchanged');
       const isolationScript = `import errno,json,pathlib,socket
 outside=pathlib.Path(${JSON.stringify(outside)})
 try:
@@ -365,6 +370,20 @@ pathlib.Path('isolation.json').write_text(json.dumps({'interfaces':interfaces,'d
 pathlib.Path('result.txt').write_text('verified-native-write')
 `;
       const callId = `call-${name}`;
+      const helperPatch="*** Begin Patch\n*** Add File: result.txt\n+verified-native-write\n*** End Patch\n";
+      const outsidePatch=`*** Begin Patch\n*** Add File: ${outside}\n+escaped\n*** End Patch\n`;
+      const patchHelperScript=`import json,pathlib,shlex,subprocess
+patch=${JSON.stringify(helperPatch)}
+completed=subprocess.run(["/bin/bash","-lc","apply_patch "+shlex.quote(patch)],capture_output=True,text=True)
+assert completed.returncode==0,(completed.returncode,completed.stderr)
+assert pathlib.Path("result.txt").read_text().strip()=="verified-native-write"
+outside_patch=${JSON.stringify(outsidePatch)}
+denied=subprocess.run(["/bin/bash","-lc","apply_patch "+shlex.quote(outside_patch)],capture_output=True,text=True)
+assert denied.returncode!=0,"official patch helper wrote outside workspace"
+assert pathlib.Path(${JSON.stringify(outside)}).read_text()=="unchanged"
+pathlib.Path("patch-helper.json").write_text(json.dumps({"loginShellHelper":True,"bytesVerified":True,"outsideWriteDenied":True}))
+`;
+      const helperCommand=`python3 -c ${JSON.stringify(`import base64;exec(base64.b64decode(${JSON.stringify(Buffer.from(patchHelperScript).toString("base64"))}))`)}`;
       const item = kind === "edit" ? { type: "custom_tool_call", call_id: callId, name: "apply_patch",
         input: "*** Begin Patch\n*** Add File: result.txt\n+verified-native-write\n*** End Patch" } : {
         type: "function_call", call_id: callId, name: isCommand ? "exec_command" : kind === "question" ? "request_user_input" : "research_checkpoint",
@@ -377,12 +396,13 @@ pathlib.Path('result.txt').write_text('verified-native-write')
             { label: "Continue", description: "Continue fixture" }, { label: "Pause", description: "Pause fixture" }] }],
         } : { checkpoint: "fixture" }),
       };
+      if(kind==="patch-helper")item.arguments=JSON.stringify({cmd:helperCommand,login:false});
       current = { mode, item, guards: [], requests: 0, stopAtGuard: kind !== "running-command", expectedGuard: { cwd: `${directory}/workspace`, call: callId,
         tool: isCommand ? "Bash" : item.name,
         input: nativeGuardInput(item) } };
       const child = spawn(binary, ["app-server", "--listen", "stdio://", "-c", 'model_provider="fixture"', "-c",
         `model_providers.fixture={name="Fixture",base_url="http://127.0.0.1:${port}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}`,
-        "-c", 'model_catalog_json="/fixture/config/models.json"', "-c", 'web_search="disabled"', "-c", `features.hooks=${mode !== "missing"}`, "-c", 'features.unified_exec=true'], {
+        ...(kind==="patch-helper"?[]:["-c", 'model_catalog_json="/fixture/config/models.json"']), "-c", 'web_search="disabled"', "-c", `features.hooks=${mode !== "missing"}`, "-c", 'features.unified_exec=true'], {
         cwd: `${directory}/workspace`, env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", HOME: `${directory}/home`,
           CODEX_HOME: `${directory}/home`, OPENAI_API_KEY: "synthetic-not-a-real-key", LANG: "C.UTF-8" }, detached: true, stdio: ["pipe", "pipe", "pipe"],
       });
@@ -451,6 +471,16 @@ pathlib.Path('result.txt').write_text('verified-native-write')
         record.orderedToolEvidence = orderedNativeToolEvidence(connection.frames, connection.thread, connection.turn,
           { callId, itemType: isCommand ? "commandExecution" : { edit: "fileChange", custom: "dynamicToolCall" }[kind] });
         record.toolCatalog = current.toolCatalog;
+        if(kind==="patch-helper"){
+          record.fallbackModelMetadata=true;
+          record.nativePatchToolAdvertised=current.toolCatalog.some(tool=>tool.name==="apply_patch");
+          if(mode==="allow"){
+            const proof=JSON.parse(await readFile(`${directory}/workspace/patch-helper.json`,"utf8"));
+            record.fallbackPatchHelperVerified=!record.nativePatchToolAdvertised&&record.bytesVerified&&
+              isDeepStrictEqual(proof,{loginShellHelper:true,bytesVerified:true,outsideWriteDenied:true})&&
+              await readFile(outside,"utf8")==="unchanged";
+          }
+        }
         record.toolResults = current.toolResults?.map(output => output.replaceAll(directory, "[fixture]").replaceAll("synthetic-not-a-real-key", "[redacted]"));
         // A crashing guard is not an allow decision, even when native execution continues.
         record.stopAcknowledged = current.stopAcknowledged === true;
@@ -465,6 +495,7 @@ pathlib.Path('result.txt').write_text('verified-native-write')
           (kind !== "running-command" || record.nativeStartedBeforeStop && (mode !== "stopped" || record.lateEffectWindowObserved)) &&
           (mode === "allow" ? record.effect && record.bytesVerified : !record.effect && record.customDispatches === 0);
         if (kind === 'command' && mode === 'allow') record.passed &&= record.isolationVerified;
+        if(kind==="patch-helper"&&mode==="allow")record.passed&&=record.fallbackPatchHelperVerified;
       } catch (error) {
         record.failure = error.message;
         record.nativeItemEvidence = connection.frames.filter(frame => ["item/started", "item/completed"].includes(frame.method))

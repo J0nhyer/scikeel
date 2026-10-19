@@ -1,5 +1,40 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+test("managed images bind the official apply_patch argv0 helper at its login-shell path",async()=>{
+ assert.equal(staging.managedNativeSources["usr/local/bin/apply_patch"],"runtime/sandbox/apply_patch");
+ assert.equal(staging.managedNativeSources["opt/scikeel/tools/apply_patch"],"runtime/sandbox/apply_patch");
+ assert.doesNotThrow(()=>validateBuildContext(["tools/apply_patch"]));
+ const dockerfile=await readFile(new URL("../../../runtime/sandbox/image/Dockerfile",import.meta.url),"utf8");
+ assert.match(dockerfile,/COPY --chmod=0555 tools\/apply_patch \/usr\/local\/bin\/apply_patch/);
+ const helper=await readFile(new URL("../../../runtime/sandbox/apply_patch",import.meta.url),"utf8");
+ assert.equal(helper,"#!/bin/bash\nexec -a apply_patch /opt/scikeel/tools/bin/codex \"$@\"\n");
+});
+test("native archive inspection hashes the real official patch helper bytes",()=>{
+ const result=spawnSync("python3",["-c",`
+import importlib.util,io,json,pathlib,tarfile,tempfile
+root=pathlib.Path.cwd().parents[1]
+spec=importlib.util.spec_from_file_location("inspector",root/"scripts/dev/inspect-sandbox-archive.py")
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as folder:
+ archive=pathlib.Path(folder)/"helper.tar.gz"
+ with tarfile.open(archive,"w:gz") as output:
+  for path in ["usr/local/bin/apply_patch","opt/scikeel/tools/apply_patch"]:
+   entry=tarfile.TarInfo(path);entry.size=6;output.addfile(entry,io.BytesIO(b"helper"))
+ print(json.dumps(module.inspect(archive)["toolHashes"]))
+`],{encoding:"utf8"});
+ assert.equal(result.status,0,result.stderr);
+ assert.deepEqual(JSON.parse(result.stdout),Object.fromEntries(["usr/local/bin/apply_patch","opt/scikeel/tools/apply_patch"].map(path=>[path,hash("helper")])));
+});
+test("CI host child processes inherit project-local temporary directories",async()=>{
+ const {load}=await import("js-yaml");
+ const workflow=load(await readFile(new URL("../../../.github/workflows/sandbox-image.yml",import.meta.url),"utf8"));
+ for(const key of ["TMPDIR","TMP","TEMP"])assert.equal(workflow.env?.[key],"${{ github.workspace }}/.deploy/test-tmp");
+ for(const job of Object.values(workflow.jobs)){
+  const step=job.steps.find(step=>step.name==="Prepare project-local temporary directories");
+  assert.ok(step);assert.match(step.run,/mkdir -p/);
+  assert.ok(job.steps.indexOf(step)<job.steps.findIndex(step=>step.uses?.startsWith("actions/setup-node")));
+ }
+});
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
@@ -48,7 +83,7 @@ const nativeInputs=['runtime/codex-patches/required-effect-guard.patch','runtime
  'runtime/codex-patches/required-effect-guard.lock.json','scripts/dev/build-codex-guard-runtime.mjs',
  'scripts/dev/probe-production-runner.mjs','services/platform/fixtures/native-protocol.mjs',
  'runtime/sandbox/native-tools.mjs','runtime/sandbox/required-effect-guard.mjs','runtime/sandbox/codex-requirements.toml',
- 'runtime/sandbox/native-network.mjs','runtime/sandbox/native-network.py'];
+ 'runtime/sandbox/native-network.mjs','runtime/sandbox/native-network.py','runtime/sandbox/apply_patch'];
 const nativeLock=JSON.parse(await readFile(new URL('../../../runtime/codex-patches/required-effect-guard.lock.json',import.meta.url),'utf8'));
 async function guardedManifest() {
  const sha='a'.repeat(64),commit='b'.repeat(40);
@@ -157,7 +192,8 @@ with tempfile.TemporaryDirectory() as folder:
   'opt/scikeel/tools/codex-requirements.toml':'codex-requirements.toml',
   'etc/codex/requirements.toml':'codex-requirements.toml',
   'opt/scikeel/tools/native-network.mjs':'native-network.mjs',
-  'opt/scikeel/tools/native-network.py':'native-network.py'}.items():
+  'opt/scikeel/tools/native-network.py':'native-network.py',
+  'opt/scikeel/tools/apply_patch':'apply_patch','usr/local/bin/apply_patch':'apply_patch'}.items():
   files[name]=(root/'runtime/sandbox'/source).read_bytes()
  with tarfile.open(path,'w:gz') as archive:
   for name,data in files.items():
@@ -260,6 +296,8 @@ test('managed Codex images require the immutable guard, native tool module and b
   'etc/codex/requirements.toml':'runtime/sandbox/codex-requirements.toml',
   'opt/scikeel/tools/native-network.mjs':'runtime/sandbox/native-network.mjs',
   'opt/scikeel/tools/native-network.py':'runtime/sandbox/native-network.py',
+  'opt/scikeel/tools/apply_patch':'runtime/sandbox/apply_patch',
+  'usr/local/bin/apply_patch':'runtime/sandbox/apply_patch',
  };
  for(const [path,source] of Object.entries(sources)) {
   const sha256=hash(await readFile(new URL('../../../'+source,import.meta.url)));
