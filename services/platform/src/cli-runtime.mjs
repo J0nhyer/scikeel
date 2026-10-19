@@ -56,7 +56,11 @@ async function readPrivateHistory(root, branch, userId) {
       if (!sameHistoryEntry(before, await file.stat({ bigint: true })) || !sameHistoryEntry(before, await fs.lstat(path, { bigint: true }))) throw historyFailure();
       bytes = buffer.subarray(0, length);
     } finally { await file.close(); }
-    for (const [path, before] of directories) if (!sameHistoryEntry(before, await fs.lstat(path, { bigint: true }))) throw historyFailure();
+    for (const [path, before] of directories) {
+      const after = await fs.lstat(path, { bigint: true });
+      if (!privateHistoryEntry(after, true) || before.dev !== after.dev || before.ino !== after.ino || before.mode !== after.mode)
+        throw historyFailure();
+    }
     if (!bytes) return null;
     const data = JSON.parse(bytes.toString("utf8"));
     if (!data || Object.keys(data).sort().join(",") !== "sessions,version" || data.version !== 1 ||
@@ -847,7 +851,12 @@ export class CliRuntimeManager {
     };
   }
 
-  async #historicalSources({ userId, workspaceDir }) {
+  #historicalSources({ userId, workspaceDir }) {
+    assertUserId(userId);
+    return this.#withUserStorage(userId, () => this.#readHistoricalSources({userId, workspaceDir}));
+  }
+
+  async #readHistoricalSources({ userId, workspaceDir }) {
     assertUserId(userId);
     if (typeof workspaceDir !== "string" || !isAbsolute(workspaceDir) || resolve(workspaceDir) !== workspaceDir) throw historyFailure();
     const sessions = new Map(), revisions = [];
@@ -964,10 +973,14 @@ export class CliRuntimeManager {
       sessions: [...state.sessions.values()].map((session) => Object.fromEntries(Object.entries(session)
         .filter(([key]) => key !== "status" && !key.startsWith("_")))),
     };
-    const previous = this.persistQueues.get(state.userId) ?? Promise.resolve();
-    const next = previous.then(() => writePrivate(state.paths.sessionsPath, `${JSON.stringify(snapshot, null, 2)}\n`));
-    this.persistQueues.set(state.userId, next.catch(() => {}));
-    await next;
+    await this.#withUserStorage(state.userId, () => writePrivate(state.paths.sessionsPath, `${JSON.stringify(snapshot, null, 2)}\n`));
+  }
+
+  #withUserStorage(userId, operation) {
+    const previous = this.persistQueues.get(userId) ?? Promise.resolve();
+    const next = previous.then(operation);
+    this.persistQueues.set(userId, next.then(() => undefined, () => undefined));
+    return next;
   }
 
   async ensureSkills(state) {
