@@ -158,6 +158,9 @@ export class ConversationRouter {
    parts:message.parts.map(part=>({...part,sessionID:conversationId,messageID:messageId}))};
  }
  #originMessages(source,value,origin,record,rows) {
+  const awaitingAcceptance=record.runtime==='codex'&&Object.values(value.turns??{}).some(turn=>
+   turn.identity.runtime==='codex'&&!turn.nativeAcceptance&&['prepared','submitted','unknown'].includes(turn.state));
+  if(!value.historicalSource&&!value.bindings.length)return awaitingAcceptance?[]:rows;
   const origins=new Map(source.bindingSources);
   if(value.historicalSource)origins.set(value.historicalSource.id,source.archival);
   const sameSource=other=>other&&other.runtime===record.runtime&&other.sourceId===record.sourceId;
@@ -174,6 +177,8 @@ export class ConversationRouter {
   return rows.filter(message=>{
    const previous=assigned.get(message.info.id);
    if(previous)return previous===origin;
+   // Durable pending input receives its public identity after native acceptance.
+   if(awaitingAcceptance)return false;
    if(!shared.has(active))throw fail('conversation_history_changed',409);
    return origin===active;
   });
@@ -236,7 +241,7 @@ export class ConversationRouter {
    if(!job.record)throw fail('conversation_history_unavailable');
    const rows=await this.#validatedMessages(owned,job.record,source.rawSources);
    const originId=job.historical?value?.historicalSource?.id:job.binding.id;
-   const messages=value&&(value.historicalSource||value.bindings.length)?this.#originMessages(source,value,originId,job.record,rows):rows;
+   const messages=value?this.#originMessages(source,value,originId,job.record,rows):rows;
    const events=messages.map(message=>{
     const previous=value?.events.filter(event=>(event.bindingId??event.historicalSourceId)===originId&&event.nativeMessageId===message.info.id)??[];
     if(previous.length>1)throw fail('conversation_origin_conflict');

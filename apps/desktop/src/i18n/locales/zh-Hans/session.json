@@ -301,7 +301,8 @@
         "unreachable": "暂时无法连接工作区，请重试检查状态。",
         "unresponsive": "工作区运行时未响应。",
         "unknown": "无法确认工作区状态。可以重试，不会中断正在运行的任务。",
-        "capacity": "工作区资源暂时不足，请稍后重试。"
+        "capacity": "工作区资源暂时不足，请稍后重试。",
+        "capacityWaiting": "正在等待工作区资源，系统将自动重新连接。"
       }
     },
     "account": { "signOutFailed": "无法退出登录，请重试。" },

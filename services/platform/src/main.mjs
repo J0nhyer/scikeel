@@ -56,7 +56,8 @@ const authStore = new AuthStore({
   filePath: join(dataDir, "auth.json"),
   bootstrapAdmin: adminPassword ? { username: adminUsername, password: adminPassword } : null,
 });
-const controlPlane = sandbox?.enabled ? await createSandboxControlPlane({ configuration: sandbox, dataDir }) : null;
+const controlPlane = sandbox?.enabled ? await createSandboxControlPlane({ configuration: sandbox, dataDir,
+  logger: event => console.error(JSON.stringify(event)) }) : null;
 let analyticsStore=null;
 if(boolEnv('PLATFORM_AGENT_ANALYTICS',true)){
   try{analyticsStore=createAnalyticsStore({path:join(dataDir,'agent-analytics','metadata.sqlite')});}

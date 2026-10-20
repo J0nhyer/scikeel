@@ -111,6 +111,8 @@ it('fences workspace management mutations while leaving explicit recovery availa
 it("fences platform mutations without sending workspace identity to other origins or authentication", async () => {
   const { mode, fetch } = await setup(true, 200);
   mode.setPlatformWorkspaceGeneration(3);
+  await window.fetch("/session/status");
+  expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).get("x-scikeel-runtime-generation")).toBe("3");
   await window.fetch("/api/collaboration/owned", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).get("x-scikeel-runtime-generation")).toBe("3");
   await window.fetch("/session/owned/abort", { method: "POST", headers: { "x-scikeel-runtime-generation": "2" } });

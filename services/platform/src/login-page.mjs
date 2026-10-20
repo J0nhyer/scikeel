@@ -150,6 +150,12 @@ try {
   form.setAttribute('aria-busy', 'true');
   submit.querySelector('[data-copy]').textContent = locale === 'en' ? 'Signing in…' : '正在登录…';
   let failed = false;
+  document.addEventListener('scikeel:login-waiting', event => {
+    if (failed) return;
+    submit.querySelector('[data-copy]').textContent = event.detail?.waiting
+      ? (locale === 'en' ? 'Waiting for workspace…' : '正在等待工作区…')
+      : (locale === 'en' ? 'Signing in…' : '正在登录…');
+  });
   const signOut = document.createElement('button');
   signOut.type = 'button'; signOut.className = 'sign-out';
   signOut.textContent = locale === 'en' ? 'Sign out' : '退出登录';

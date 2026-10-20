@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { WorkspaceRecovery, recoveryError } from "./workspace-recovery.mjs";
+import { capacityError } from "./workspace-capacity.mjs";
 
 const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
 const unavailable = (message) => Object.assign(new Error(message), { statusCode: 503, retryable: true });
@@ -17,13 +18,13 @@ async function inventoryStatus(response) {
   finally{reader.releaseLock();}
 }
 export class ManagedWorkerManager {
-  #workers = new Map(); #starting = new Map(); #queue = Promise.resolve(); #closed = false; #admissions = new Map();
-  constructor({ rootDir, instancesDir = posix.join(rootDir ?? "", "instances"), imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker, admitWorker, refreshWorker, now = Date.now } = {}) {
+  #workers = new Map(); #starting = new Map(); #queue = Promise.resolve(); #closed = false; #admissions = new Map(); #handoffs = new Map();
+  constructor({ rootDir, instancesDir = posix.join(rootDir ?? "", "instances"), imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker, admitWorker, refreshWorker, now = Date.now, logger = () => {} } = {}) {
     if (typeof rootDir !== "string" || !rootDir.startsWith("/") || rootDir === "/" || posix.normalize(rootDir) !== rootDir ||
         !instancesDir.startsWith("/") || instancesDir === "/" || posix.normalize(instancesDir) !== instancesDir ||
         !/^sha256:[a-f0-9]{64}$/.test(imageDigest ?? "") || !client || !tenantPolicy || typeof fetchImpl !== "function")
       throw new Error("invalid managed worker configuration");
-    Object.assign(this, { rootDir, instancesDir, imageDigest, client, tenantPolicy, fetchImpl, configureWorker, revokeWorker, admitWorker, refreshWorker, now });
+    Object.assign(this, { rootDir, instancesDir, imageDigest, client, tenantPolicy, fetchImpl, configureWorker, revokeWorker, admitWorker, refreshWorker, now, logger });
     this.recovery = new WorkspaceRecovery({ rootDir, now, probe: (context, options) => this.#probe(context, options) });
   }
   async init() { if (this.#closed) throw unavailable("worker manager closed"); }
@@ -191,9 +192,16 @@ export class ManagedWorkerManager {
     const code = { stopped: "workspace_stopped", unresponsive: "runtime_unresponsive", unknown: "workspace_status_unknown", starting: "workspace_recovery_in_progress", recovering: "workspace_recovery_in_progress" }[report.state] ?? "workspace_unreachable";
     return recoveryError(code, { context: report.context, action: report.canRestart ? "confirm_restart" : "retry" });
   }
-  ensureWorker({ instanceId, userId, allowRecovery = true }) {
+  #checkCapacityScope(record, expectedGeneration) {
+    if (this.#handoffs.has(record.id)) throw this.#capacity("workspace_reassigned", record, record, { category: "handoff" });
+    if (expectedGeneration === undefined) return;
+    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1) throw recoveryError("stale_workspace_context", { context: this.#context(record) });
+    const replacement = record.status !== "running" && [...this.#workers.values()].find(other=>other.id!==record.id && ["starting","running"].includes(other.status));
+    if (replacement) throw this.#capacity("workspace_reassigned", record, replacement, { category: "generation_scope" });
+  }
+  ensureWorker({ instanceId, userId, allowRecovery = true, expectedGeneration }) {
     let record;
-    try { record = this.#record({ instanceId, userId }); } catch (error) { return Promise.reject(error); }
+    try { record = this.#record({ instanceId, userId }); this.#checkCapacityScope(record, expectedGeneration); } catch (error) { return Promise.reject(error); }
     if (this.#starting.has(instanceId)) {
       if (allowRecovery) return this.#starting.get(instanceId);
       const generation = record.generation;
@@ -205,6 +213,7 @@ export class ManagedWorkerManager {
     }
     const starting = this.#serialized(async () => {
       if (this.#closed) throw unavailable("worker manager closed");
+      this.#checkCapacityScope(record, expectedGeneration);
       if (record.cleanupUnverified) throw recoveryError("workspace_cleanup_unverified", { context: this.#context(record) });
       await this.#observe(record);
       if (record.generation === null) {
@@ -226,8 +235,7 @@ export class ManagedWorkerManager {
   async #start(record) {
       const { id: instanceId, userId } = record;
       for (const other of this.#workers.values()) if (other.id !== instanceId && other.status === "running") {
-        if (other.activeOperations || !(await this.#idle(other))) throw recoveryError("workspace_capacity_unavailable");
-        await this.#stop(other);
+        await this.#handoff(other, record);
       }
       const registered = await this.client.register({ instanceId, userId });
       record.generation = registered.generation; record.status = "starting";
@@ -235,7 +243,10 @@ export class ManagedWorkerManager {
         const context = { userId, instanceId, generation: record.generation, workspaceDir: record.workspaceDir };
         let admission;
         try { admission = await this.admitWorker?.(context); }
-        catch { throw recoveryError("workspace_capacity_unavailable", { context }); }
+        catch (error) {
+          if (!error?.capacityReason) throw error;
+          throw capacityError(error.capacityReason, { ...error.capacityDetails, context, logger: this.logger, correlationId: error.failure.correlationId });
+        }
         if (admission) this.#admissions.set(instanceId, admission);
         delete record.stoppedGeneration;
         const started = await this.client.start({ instanceId, generation: record.generation, imageDigest: this.imageDigest });
@@ -257,12 +268,13 @@ export class ManagedWorkerManager {
   async #replace(record) {
     const context = this.#context(record);
     if (record.maintenance) throw Object.assign(recoveryError("workspace_recovery_required", { context }), { statusCode: 409 });
-    await this.recovery.reserveReplacement(context);
+    if (record.status !== "stopped") await this.recovery.reserveReplacement(context);
     record.status = "recovering"; this.recovery.invalidate(context);
     try {
       await this.recoveryHooks?.beforeCleanup?.(context);
       await this.#stop(record);
       await this.recoveryHooks?.afterCleanup?.(context);
+      record.status = "stopped";
       return await this.#start(record);
     } catch (error) {
       if (record.status === "recovering") { record.status = "unavailable"; record.cleanupUnverified = true; }
@@ -272,6 +284,7 @@ export class ManagedWorkerManager {
   recoverWorker(input) {
     return this.#serialized(async () => {
       const record = this.#record(input);
+      this.#checkCapacityScope(record, input.expectedGeneration);
       if (input.action === "restart" && (input.generation !== record.generation || record.generation === null)) throw recoveryError("stale_workspace_context", { context: this.#context(record) });
       if (record.cleanupUnverified) throw recoveryError("workspace_cleanup_unverified", { context: this.#context(record) });
       const report = await this.workspaceStatus(input);
@@ -288,16 +301,48 @@ export class ManagedWorkerManager {
     });
   }
   setExecutionProbe(probe) { this.executionProbe = probe; }
-  async #idle(record) {
+  #capacity(reason, record, blocked, details = {}) {
+    return capacityError(reason, { context: this.#context(record), blockedContext: this.#context(blocked),
+      activeOperations: blocked.activeOperations, activeMutations: blocked.activeMutations, maintenance: blocked.maintenance, logger: this.logger, ...details });
+  }
+  async #handoff(other, requested) {
+    const generation = other.generation;
+    const startedAt = performance.now();
+    const rejected = (reason, details = {}) => this.#capacity(reason, requested, other, { ...details, elapsedMs: performance.now() - startedAt });
+    this.#handoffs.set(other.id, {});
+    try {
+      if (other.activeMutations || other.maintenance) throw rejected("active_operations");
+      if (other.activeOperations) {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(rejected("active_operations")), 1000);
+          this.#handoffs.get(other.id).drained = () => { clearTimeout(timer); resolve(); };
+        });
+      }
+      const idle = await this.#idleState(other);
+      if (idle.state !== "idle") throw rejected(idle.state, { category: idle.category });
+      if (this.#closed || other.generation !== generation || other.status !== "running" || other.activeOperations || other.maintenance)
+        throw rejected("active_operations");
+      await this.#stop(other);
+    } finally { this.#handoffs.delete(other.id); }
+  }
+  async #idleState(record) {
+    let body;
     try {
       const response = await this.fetchImpl(`${record.url}/session/status`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${record.token}`).toString("base64")}` }, signal: AbortSignal.timeout(3000) });
-      if (!response.ok) return false;
-      const body = await response.json();
-      const idle = body && typeof body === "object" && !Array.isArray(body) && Object.values(body).every((value) => value?.type === "idle");
-      if (!idle) return false;
-      return !(await this.executionProbe?.({userId:record.userId,instanceId:record.id,generation:record.generation}));
-    } catch { return false; }
+      if (!response.ok) return { state: "idle_unverified", category: "http_status" };
+      body = await response.json();
+    } catch (error) {
+      if (["AbortError", "TimeoutError"].includes(error?.name)) return { state: "idle_unverified", category: "probe_timeout" };
+      if (error instanceof SyntaxError) return { state: "idle_unverified", category: "malformed_status" };
+      if (error instanceof TypeError) return { state: "idle_unverified", category: "probe_unreachable" };
+      throw error;
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.values(body).some(value=>!["idle","busy","retry"].includes(value?.type))) return { state: "idle_unverified", category: "malformed_status" };
+    if (Object.values(body).some(value=>value.type!=="idle")) return { state: "execution_active", category: "runtime_busy" };
+    return await this.executionProbe?.({userId:record.userId,instanceId:record.id,generation:record.generation})
+      ? { state: "execution_active", category: "execution_busy" } : { state: "idle" };
   }
+  async #idle(record) { return (await this.#idleState(record)).state === "idle"; }
   isIdle(context) {
     const record=this.#workers.get(context?.instanceId);
     if(!record || record.userId!==context.userId || record.generation!==context.generation || record.status!=="running")return Promise.resolve(false);
@@ -306,7 +351,7 @@ export class ManagedWorkerManager {
   async acquireMaintenance(context) {
     const record = this.#workers.get(context?.instanceId);
     if (!record || record.userId !== context.userId || record.generation !== context.generation || record.status !== "running" ||
-        record.maintenance || record.activeMutations) throw unavailable("workspace is busy");
+        record.maintenance || record.activeMutations || this.#handoffs.has(record.id)) throw unavailable("workspace is busy");
     // Set before awaiting runtime status, so a new mutating request cannot race the check.
     record.maintenance = true; record.activeOperations++;
     let released = false;
@@ -320,9 +365,13 @@ export class ManagedWorkerManager {
     if (!record || record.status !== "running") throw unavailable("worker is not running");
     if (record.maintenance && !readOnly && !maintenance) throw unavailable("workspace environment installation in progress");
     if (passive && !readOnly) throw new Error("passive leases must be read-only");
+    if (!passive && this.#handoffs.has(instanceId)) throw this.#capacity("workspace_reassigned", record, record, { category: "handoff" });
     if (!passive) record.activeOperations++; if (!readOnly) record.activeMutations++; let released = false;
     const generation = record.generation;
-    return Object.freeze({ generation, release: () => { if (!released) { released = true; if (record.generation === generation) { if (!passive) record.activeOperations--; if (!readOnly) record.activeMutations--; } } } });
+    return Object.freeze({ generation, release: () => { if (!released) { released = true; if (record.generation === generation) {
+      if (!passive) record.activeOperations--; if (!readOnly) record.activeMutations--;
+      if (!record.activeOperations) this.#handoffs.get(instanceId)?.drained?.();
+    } } } });
   }
   async #stop(record) {
     if (record.generation === null || record.status === "stopped" || record.stoppedGeneration === record.generation) return;

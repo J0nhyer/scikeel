@@ -1,5 +1,5 @@
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
-import {afterEach,expect,it,vi} from 'vitest';
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {MemoryRouter} from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import {useRuntimeStore} from '@/lib/runtime';
@@ -8,7 +8,16 @@ const entries=vi.fn(async()=>({directory:'/ws/project-a',capabilities:{create:tr
 vi.mock('@/lib/webMode',async original=>({...await original<typeof import('@/lib/webMode')>(),isGatewayWeb:true,isPlatformWeb:true}));
 vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),workspaceEntries:(...args:unknown[])=>entries(...args as [] )}));
 vi.mock('@/components/inspector/FilePreviewInspector',()=>({FilePreviewInspector:()=>null}));
+beforeEach(()=>useRuntimeStore.setState({webReadOnly:false,gatewayUser:{id:'a',username:'a',role:'admin'},gatewayContext:{instanceId:'user-a',generation:1}}));
 afterEach(cleanup);
+it('disables file creation and upload while workspace identity is loading',async()=>{
+ useRuntimeStore.setState({webReadOnly:true,gatewayContext:null});
+ render(<MemoryRouter initialEntries={['/files?project=123456789abcdef0']}><FilesPage/></MemoryRouter>);
+ await screen.findByText('result.txt');
+ expect(screen.getByRole('button',{name:'New file'})).toBeDisabled();
+ expect(screen.getByRole('button',{name:'New folder'})).toBeDisabled();
+ expect(screen.getByRole('button',{name:'Upload files'})).toBeDisabled();
+});
 it('opens an empty project explorer by ID and keeps its explicit directory',async()=>{
  render(<MemoryRouter initialEntries={['/files?project=123456789abcdef0']}><FilesPage/></MemoryRouter>);
  expect(await screen.findByText('result.txt')).toBeInTheDocument();

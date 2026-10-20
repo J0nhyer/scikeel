@@ -336,10 +336,11 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     // Bind to globalThis — an unbound `fetch` reference throws "Illegal invocation" in browsers.
     const transport = (opts.fetchImpl ?? globalThis.fetch).bind(globalThis);
     this.fetchImpl = (input, init) => {
-      if ((this.gatewayGeneration !== null || this.gatewayAssistantRevision !== null) && !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase())) {
+      const mutation = !["GET", "HEAD"].includes((init?.method ?? "GET").toUpperCase());
+      if (this.gatewayGeneration !== null || (mutation && this.gatewayAssistantRevision !== null)) {
         const headers = new Headers(init?.headers);
         if (this.gatewayGeneration !== null) headers.set("x-scikeel-runtime-generation", String(this.gatewayGeneration));
-        if (this.gatewayAssistantRevision !== null) headers.set("x-scikeel-assistant-revision", String(this.gatewayAssistantRevision));
+        if (mutation && this.gatewayAssistantRevision !== null) headers.set("x-scikeel-assistant-revision", String(this.gatewayAssistantRevision));
         return transport(input, { ...init, headers }).then(response => this.captureContext(response));
       }
       return transport(input, init).then(response => this.captureContext(response));
@@ -1586,6 +1587,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     const params = new URLSearchParams();
     if (this.directory) params.set("directory", this.directory);
     if (this.authToken) params.set("auth_token", this.authToken);
+    if (this.gatewayGeneration !== null) params.set("workspace_generation", String(this.gatewayGeneration));
     const q = params.toString();
     return `${this.baseUrl}/event${q ? `?${q}` : ""}`;
   }

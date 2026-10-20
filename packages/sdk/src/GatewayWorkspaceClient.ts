@@ -11,6 +11,7 @@ export type WorkspaceFailure = {
   code: string; error: string; stage: "workspace" | "runtime" | "capacity" | "recovery";
   retryable: boolean; context: WorkspaceContext | null;
   action: "retry" | "confirm_restart" | "wait" | "none"; retryAfterMs: number;
+  correlationId?: string;
 };
 export class GatewayWorkspaceError extends Error {
   constructor(public status: number, public failure: WorkspaceFailure) { super(failure.error); this.name = "GatewayWorkspaceError"; }
@@ -33,15 +34,18 @@ export function isWorkspaceReport(value: unknown): value is WorkspaceReport {
     ["idle", "running", "maintenance", "unknown"].includes(v.activity) && typeof v.canRestart === "boolean" && backoffValid(v.retryAfterMs) &&
     (!v.canRestart || (v.state === "unresponsive" && contextValid(v.context) && v.activity !== "maintenance" && v.retryAfterMs === 0));
 }
-function decodeFailure(value: unknown): WorkspaceFailure | null {
+export function decodeWorkspaceFailure(value: unknown): WorkspaceFailure | null {
   const v = value as WorkspaceFailure | null;
   if (!v || !Object.prototype.hasOwnProperty.call(messages, v.code) || (v.context !== null && !contextValid(v.context)) || !backoffValid(v.retryAfterMs) ||
       !["workspace", "runtime", "capacity", "recovery"].includes(v.stage) || !["retry", "confirm_restart", "wait", "none"].includes(v.action) ||
-      typeof v.retryable !== "boolean" || (v.action === "confirm_restart" && (v.code !== "runtime_unresponsive" || !contextValid(v.context)))) return null;
-  return { code: v.code, error: messages[v.code], stage: v.stage, retryable: v.retryable, context: v.context,
-    action: v.action, retryAfterMs: v.retryAfterMs };
+      typeof v.retryable !== "boolean" || (v.action === "confirm_restart" && (v.code !== "runtime_unresponsive" || !contextValid(v.context))) ||
+      (v.correlationId !== undefined && (typeof v.correlationId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.correlationId))) ||
+      (v.code === "workspace_capacity_unavailable" && (v.stage !== "capacity" || v.action !== "wait" || !v.retryable))) return null;
+  return { code: v.code, error: messages[v.code], stage: v.stage, retryable: v.retryable,
+    context: v.context ? { instanceId: v.context.instanceId, generation: v.context.generation } : null,
+    action: v.action, retryAfterMs: v.retryAfterMs, ...(v.correlationId ? { correlationId: v.correlationId } : {}) };
 }
-export type WorkspaceReadOptions = { signal: AbortSignal; timeoutMs: number };
+export type WorkspaceReadOptions = { signal: AbortSignal; timeoutMs: number; context?: WorkspaceContext | null };
 export class GatewayWorkspaceClient {
   private fetchImpl: typeof fetch;
   constructor({ fetchImpl = fetch }: { fetchImpl?: typeof fetch } = {}) { this.fetchImpl = fetchImpl; }
@@ -49,8 +53,9 @@ export class GatewayWorkspaceClient {
   recover(command: WorkspaceRecoveryCommand, options: WorkspaceReadOptions): Promise<WorkspaceReport> {
     return this.request("/api/workspace/recover", command, options);
   }
-  private async request(path: string, command: WorkspaceRecoveryCommand | undefined, { signal, timeoutMs }: WorkspaceReadOptions): Promise<WorkspaceReport> {
+  private async request(path: string, command: WorkspaceRecoveryCommand | undefined, { signal, timeoutMs, context }: WorkspaceReadOptions): Promise<WorkspaceReport> {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Workspace request deadline expired");
+    if (context !== undefined && context !== null && !contextValid(context)) throw new Error("Invalid workspace request context");
     const controller = new AbortController();
     const abort = () => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
@@ -65,11 +70,12 @@ export class GatewayWorkspaceClient {
     try {
       return await Promise.race([cancelled, (async () => {
         const response = await this.fetchImpl(path, { method: command ? "POST" : "GET", credentials: "same-origin", signal: controller.signal,
-          headers: { accept: "application/json", ...(command ? { "content-type": "application/json" } : {}) },
+          headers: { accept: "application/json", ...(command ? { "content-type": "application/json" } : {}),
+            ...(context ? { "x-scikeel-runtime-generation": String(context.generation) } : {}) },
           ...(command ? { body: JSON.stringify(command) } : {}) });
         const body: unknown = await response.json().catch(() => null);
         if (!response.ok) {
-          const failure = decodeFailure(body);
+          const failure = decodeWorkspaceFailure(body);
           if (!failure) throw new Error("Workspace status could not be verified");
           throw new GatewayWorkspaceError(response.status, failure);
         }

@@ -5,6 +5,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {CliRuntimeManager} from "../src/cli-runtime.mjs";
 import {ConversationState} from "../src/conversation-state.mjs";
+import {ConversationRouter} from "../src/conversation-router.mjs";
 import {createAnalyticsCollector} from '../src/agent-analytics-collector.mjs';
 async function fixture(t,jobs) {
   const root=await mkdtemp(join(tmpdir(),"scikeel-native-sandbox-"));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -111,6 +112,40 @@ test('verified pre-effect native startup failure discards its snapshot and settl
   assert.deepEqual(f.manager.assistantPolicy.activeExecutionSnapshot(),[]);
  }
  assert.equal(discarded,2);assert.equal(f.session.nativeSessionId,null);
+ assert.deepEqual(f.session.history.map(message=>message.info.role),['user','assistant','user','assistant']);
+ assert(f.session.history.filter(message=>message.info.role==='assistant').every(message=>message.info.error));
+});
+test('history reads during first native startup preserve accepted message identity and settle project execution',async t=>{
+ let router,owner;
+ const f=await fixture(t,{run:async args=>{
+  const saved=JSON.parse(await readFile((await f.manager.ensureUser('a')).paths.sessionsPath,'utf8'));
+  assert.equal(saved.sessions.find(session=>session.id===f.session.id).history[0].parts[0].text,'Project question');
+  assert.deepEqual(await router.messages(owner,f.session.id,{synchronize:true}),[]);
+  await args.onAccepted({nativeSessionId:'first-project-native',turnId:'first-project-turn'});
+  await args.emit({type:'text',text:'Project reply'});await args.onCleanup({cleanupVerified:true});
+  return {nativeSessionId:'first-project-native'};
+ }});
+ owner={userId:'a',instanceId:'user-a',generation:1,workspaceDir:f.workspace,directory:f.project};
+ const conversations=new ConversationState({rootDir:join(f.manager.rootDir,'conversations'),authorize:async()=>{}});
+ router=new ConversationRouter({authorize:async()=>{},conversations,cliRuntime:f.manager,readOpenCode:async()=>[]});
+ await conversations.create(owner,{conversationId:f.session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ await router.index(owner,f.session.id);
+ f.manager.conversationRevert={projection:async()=>({version:0,hiddenMessageIds:[],revert:null}),begin:async()=>{
+   await router.messages(owner,f.session.id,{synchronize:true});return {captured:true};
+  },
+  complete:async(_owner,input)=>{
+   const messages=await router.messages(owner,f.session.id,{synchronize:true});
+   assert(messages.some(message=>message.info.id===input.messageID&&message.info.role==='user'),'Completed file versions reference the actual public user message');
+  }};
+ const executionAdmission=await f.manager.admitHttpPrompt({conversations,owner,sessionId:f.session.id,requestId:'first-project-send',policyRevision:'2',
+  body:{parts:[{type:'text',text:'Project question'}]},readHandover:async()=>({history:await router.messages(owner,f.session.id,{synchronize:true}),decisions:[],attachments:[]})});
+ await f.manager.sendPrompt({userId:'a',sessionId:f.session.id,text:'Project question',executionAdmission,workspaceContext:owner});
+ const saved=await conversations.open(owner,f.session.id);
+ assert.equal(saved.turns['first-project-send'].state,'settled');
+ assert.equal(saved.events[0].bindingId,saved.currentBindingId);
+ assert.deepEqual(f.manager.assistantPolicy.activeExecutionSnapshot(),[]);
+ assert.equal(f.session.status,'idle');
+ assert.deepEqual((await router.messages(owner,f.session.id)).map(message=>message.info.role),['user','assistant']);
 });
 test('a changed checked-revert projection forces a fresh native binding with only visible canonical context',async t=>{
  const f=await fixture(t,{run:async()=>{throw Error('Admission must not dispatch');}});

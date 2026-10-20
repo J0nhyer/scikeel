@@ -4,6 +4,16 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 const report = { context: { instanceId: "user-a", generation: 2 }, state: "healthy", activity: "unknown", canRestart: false, retryAfterMs: 0 };
 afterEach(() => vi.useRealTimers());
 describe("account-scoped workspace transport", () => {
+  it("shares sanitized bootstrap failure decoding and validates correlation identifiers", async()=>{
+    const {decodeWorkspaceFailure}=await import("../../../../packages/sdk/src/GatewayWorkspaceClient");
+    const failure={code:"workspace_capacity_unavailable",error:"private token",stage:"capacity",action:"wait",retryable:true,
+      context:null,retryAfterMs:5000,correlationId:"ccebb9cb-7e4b-4370-aa85-f837a35ec78e"};
+    expect(decodeWorkspaceFailure(failure)).toEqual({...failure,error:"Workspace capacity is unavailable"});
+    expect(decodeWorkspaceFailure({...failure,correlationId:"private token"})).toBeNull();
+    expect(decodeWorkspaceFailure({...failure,stage:"workspace"})).toBeNull();
+    expect(decodeWorkspaceFailure({...failure,action:"confirm_restart"})).toBeNull();
+    expect(decodeWorkspaceFailure({...failure,retryAfterMs:60001})).toBeNull();
+  });
   it("uses fixed relative routes, same-origin cookies, and captured restart generation", async () => {
     const { GatewayWorkspaceClient } = await import("../../../../packages/sdk/src/GatewayWorkspaceClient");
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(report)));

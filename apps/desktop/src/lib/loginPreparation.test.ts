@@ -18,6 +18,15 @@ it("keeps login waiting until connection, conversations and model choice are rea
   current = { ...current, gatewayCatalogState: "ready", defaultModel: "provider/model" }; listener(current);
   expect(ready).toHaveBeenCalledOnce(); expect(unsubscribe).toHaveBeenCalledOnce(); stop();
 });
+it("signals capacity waiting without completing login or exposing a failure",()=>{
+  const waiting=vi.fn();const failed=vi.fn();
+  document.addEventListener("scikeel:login-waiting",waiting);document.addEventListener("scikeel:login-error",failed);
+  const stop=installLoginPreparation(source);
+  current={...current,gatewayWorkspaceReport:{context:null,state:"capacity",activity:"unknown",canRestart:false,retryAfterMs:5000}};
+  listener(current);listener(current);
+  expect(waiting).toHaveBeenCalledOnce();expect(failed).not.toHaveBeenCalled();expect(unsubscribe).not.toHaveBeenCalled();
+  stop();document.removeEventListener("scikeel:login-waiting",waiting);document.removeEventListener("scikeel:login-error",failed);
+});
 
 it("reports an initialization failure while keeping the login screen for retry", () => {
   const failure = vi.fn(); document.addEventListener("scikeel:login-error", failure, { once: true });

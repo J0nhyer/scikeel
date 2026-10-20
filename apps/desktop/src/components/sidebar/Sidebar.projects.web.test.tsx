@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useRuntimeStore } from "@/lib/runtime";
@@ -25,13 +25,16 @@ it("retries entering an already created project without another create request",
   const original = useRuntimeStore.getState();
   const create = vi.fn(async () => project);
   const enter = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
-  useRuntimeStore.setState({ createProject: create, startDraftInWorkspace: enter });
+  const reconnect = vi.fn(async () => { useRuntimeStore.setState({webReadOnly:false}); return true; });
+  useRuntimeStore.setState({ createProject: create, startDraftInWorkspace: enter, connectRetry: reconnect });
   try {
     renderAt("/projects");
     await userEvent.click(await screen.findByRole("button", { name: "New project" }));
     const dialog = await screen.findByRole("dialog", { name: "Name project" });
     await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await within(dialog).findByRole("button", { name: "Retry opening" });
+    await act(async () => useRuntimeStore.setState({ webReadOnly: true }));
     await userEvent.click(await within(dialog).findByRole("button", { name: "Retry opening" }));
-    expect(create).toHaveBeenCalledTimes(1); expect(enter).toHaveBeenCalledTimes(2);
-  } finally { useRuntimeStore.setState({ createProject: original.createProject, startDraftInWorkspace: original.startDraftInWorkspace }); }
+    expect(create).toHaveBeenCalledTimes(1); expect(enter).toHaveBeenCalledTimes(2); expect(reconnect).toHaveBeenCalledOnce();
+  } finally { useRuntimeStore.setState({ createProject: original.createProject, startDraftInWorkspace: original.startDraftInWorkspace, connectRetry: original.connectRetry }); }
 });

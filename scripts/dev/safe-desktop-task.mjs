@@ -24,14 +24,15 @@ const smallLinuxHost = process.platform === "linux" && (totalmem() < 5 * 1024 **
 const liveRecovery = mode === "web-recovery-live";
 const liveProjects = mode === "web-projects-live";
 const liveFiles = mode === "web-files-live";
-const liveVerification = mode === "platform-title-live" || liveRecovery || liveProjects || liveFiles;
+const liveCapacity = mode === "web-capacity-live";
+const liveVerification = mode === "platform-title-live" || liveRecovery || liveProjects || liveFiles || liveCapacity;
 if (liveVerification && args.length) throw new Error("Live verification uses a fixed test only");
 const mib = 1024 ** 2;
 const memoryHigh = 1850 * mib;
 const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
-if (!["codex-guard-build", "web-files-live", "web-projects-live", "web-recovery-live", "platform-title-live", "opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
+if (!["web-capacity-live", "codex-guard-build", "web-files-live", "web-projects-live", "web-recovery-live", "platform-title-live", "opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
   "platform-deps-lock", "platform-deps-install", "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install", "sandbox-migrate"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
@@ -126,7 +127,10 @@ if (smallLinuxHost) {
   const { verifyTaskLocks } = await import("./web-build.mjs");
   verifyTaskLocks({ publicationOnly: liveVerification });
 }
-if (liveRecovery) {
+if (liveCapacity) {
+  process.env.SCIKEEL_CAPACITY_LIVE_ACCEPTANCE = "1";
+  run(process.execPath, ["--test", "--test-concurrency=1", "test/web-workspace-capacity.live.acceptance.mjs"], join(root, "services/platform"));
+} else if (liveRecovery) {
   process.env.SCIKEEL_RECOVERY_LIVE_ACCEPTANCE = "1";
   run(process.execPath, ["--test", "--test-concurrency=1", "test/web-runtime-recovery.live.acceptance.mjs"], join(root, "services/platform"));
 } else if (liveProjects || liveFiles) {

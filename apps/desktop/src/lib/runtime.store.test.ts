@@ -587,6 +587,7 @@ describe("platform connection context", () => {
     await useRuntimeStore.getState().connectRetry(1);
     expect(useRuntimeStore.getState().gatewayUser).toEqual(user);
     expect(useRuntimeStore.getState().status).toBe("error");
+    expect(useRuntimeStore.getState().webReadOnly).toBe(true);
   });
   function response(path: string): Response {
     const data = path.endsWith("/v1/whoami") ? { directory: "/ws/base", mode: "full" }
@@ -595,6 +596,91 @@ describe("platform connection context", () => {
         available: [{ runtime: "opencode", kind: "opencode", managed: false, label: "OpenCode", enabled: true, models: [], defaultModel: null, selectedModel: null }] };
     return new Response(JSON.stringify(data));
   }
+  it("keeps workspace mutations disabled until runtime identity is verified", async () => {
+    let release!: () => void;
+    const metadata = new Promise<void>(resolve => { release = resolve; });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/runtime")) await metadata;
+      return response(path);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useRuntimeStore.setState({ webReadOnly: false, gatewayContext: null });
+    const pending = useRuntimeStore.getState().connectRetry(1);
+    try {
+      await vi.waitFor(() => expect(fetchMock.mock.calls.some(call => String(call[0]).endsWith("/api/runtime"))).toBe(true));
+      expect(useRuntimeStore.getState().gatewayContext).toBeNull();
+      expect(useRuntimeStore.getState().webReadOnly).toBe(true);
+    } finally { release(); await pending; }
+    expect(useRuntimeStore.getState().webReadOnly).toBe(false);
+    expect(useRuntimeStore.getState().gatewayContext).toEqual({ instanceId: "user-usr_fixture", generation: 1 });
+  });
+  it("verifies a failed connection before retrying entry into an existing project", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => response(String(input))));
+    useRuntimeStore.setState({ status: "error", webReadOnly: true, workspace: "/ws/base" });
+    expect(await useRuntimeStore.getState().startDraftInWorkspace("/ws/base")).toBe(true);
+    expect(useRuntimeStore.getState().status).toBe("ready");
+    expect(useRuntimeStore.getState().webReadOnly).toBe(false);
+    expect(mocks.createProject).not.toHaveBeenCalled();
+  });
+  const capacityFailure = { code: "workspace_capacity_unavailable", error: "private upstream data", stage: "capacity", action: "wait",
+    retryable: true, context: null, retryAfterMs: 5000, correlationId: "ccebb9cb-7e4b-4370-aa85-f837a35ec78e" };
+  it("preserves bootstrap capacity failures and waits beyond the generic retry count without replay", async()=>{
+    vi.useFakeTimers({toFake:["setTimeout","clearTimeout","performance"]}); let identities=0;
+    const fetchMock=vi.fn(async(input:RequestInfo|URL)=>{
+      const path=String(input);
+      if(path.endsWith("/v1/whoami") && ++identities<=5)return new Response(JSON.stringify(capacityFailure),{status:503});
+      return response(path);
+    });vi.stubGlobal("fetch",fetchMock);
+    useRuntimeStore.setState({draftWorkspaces:{draft:"/ws/unsent"}});
+    const pending=useRuntimeStore.getState().connectRetry(1);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(useRuntimeStore.getState().status).toBe("connecting");
+      expect(useRuntimeStore.getState().gatewayWorkspaceFailure).toMatchObject({code:capacityFailure.code,correlationId:capacityFailure.correlationId});
+      expect(fetchMock.mock.calls.filter(call=>String(call[0]).endsWith("/api/workspace/status"))).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(4999);expect(identities).toBe(1);
+      await vi.advanceTimersByTimeAsync(20001);expect(await pending).toBe(true);expect(identities).toBe(6);
+      expect(useRuntimeStore.getState().gatewayWorkspaceFailure).toBeNull();
+      expect(useRuntimeStore.getState().draftWorkspaces).toEqual({draft:"/ws/unsent"});
+      expect(mocks.sendPromptSpy).not.toHaveBeenCalled();expect(mocks.abortSession).not.toHaveBeenCalled();
+    } finally {useRuntimeStore.getState().suspendPlatformBrowser();await pending;vi.useRealTimers();}
+  });
+  it.each(["deadline","signout"])("bounds capacity recovery and cancels future requests on %s",async ending=>{
+    vi.useFakeTimers({toFake:["setTimeout","clearTimeout","performance"]});
+    const fetchMock=vi.fn(async(input:RequestInfo|URL)=>String(input).endsWith("/v1/whoami")
+      ?new Response(JSON.stringify(capacityFailure),{status:503}):response(String(input)));
+    vi.stubGlobal("fetch",fetchMock);const pending=useRuntimeStore.getState().connectRetry();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(useRuntimeStore.getState().status).toBe("connecting");
+      if(ending==="signout")useRuntimeStore.getState().suspendPlatformBrowser();
+      else await vi.advanceTimersByTimeAsync(90000);
+      expect(await pending).toBe(false);
+      expect(useRuntimeStore.getState().status).toBe(ending==="signout"?"offline":"error");
+      if(ending==="deadline")expect(fetchMock.mock.calls.filter(call=>String(call[0]).endsWith("/v1/whoami"))).toHaveLength(18);
+      const calls=fetchMock.mock.calls.length;await vi.advanceTimersByTimeAsync(10000);
+      expect(fetchMock).toHaveBeenCalledTimes(calls);expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+    } finally {useRuntimeStore.getState().suspendPlatformBrowser();await pending;vi.useRealTimers();}
+  });
+  it("retains the verified capacity report when a final read reaches the recovery deadline",async()=>{
+    vi.useFakeTimers({toFake:["setTimeout","clearTimeout"]});let now=0,identities=0;
+    const clock=vi.spyOn(performance,"now").mockImplementation(()=>now);
+    vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL)=>{
+      if(String(input).endsWith("/v1/whoami")){
+        if(++identities===1)return new Response(JSON.stringify(capacityFailure),{status:503});
+        now=90001;throw new DOMException("Read deadline reached","TimeoutError");
+      }
+      return response(String(input));
+    }));
+    const pending=useRuntimeStore.getState().connectRetry(1);
+    try {
+      await vi.advanceTimersByTimeAsync(0);now=85000;await vi.advanceTimersByTimeAsync(5000);
+      expect(await pending).toBe(false);expect(useRuntimeStore.getState().status).toBe("error");
+      expect(useRuntimeStore.getState().gatewayWorkspaceReport?.state).toBe("capacity");
+      expect(useRuntimeStore.getState().gatewayWorkspaceFailure?.code).toBe(capacityFailure.code);
+    } finally {useRuntimeStore.getState().suspendPlatformBrowser();await pending;clock.mockRestore();vi.useRealTimers();}
+  });
   it("captures verified policy revision and refreshes a stale client without replay or presentation reset", async () => {
     let revision = 7;
     mocks.providers = [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }];
@@ -5382,15 +5468,27 @@ describe("Web project directory ownership", () => {
     expect(useRuntimeStore.getState().currentId).toBe("ses_saved");
     expect(leaves(useLayoutStore.getState().tree!)[0].sessionId).toBe("ses_saved");
   });
-  it("reads all known Web OpenCode project directories when refreshing conversations", async () => {
+  it.each(["opencode", "codex", "claude"] as const)("reads all known Web %s project directories when refreshing conversations", async (runtime) => {
     web(); await useRuntimeStore.getState().connectRetry();
-    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayWorkspace: "/ws/base", workspace: "/ws/a", projects: [
+    useRuntimeStore.setState({ gatewayRuntime: runtime, gatewayWorkspace: "/ws/base", workspace: "/ws/a", projects: [
       { id: "a", name: "A", path: "/ws/a", createdAt: 1, imported: false, pinned: false },
       { id: "b", name: "B", path: "/ws/b", createdAt: 1, imported: false, pinned: false },
     ] });
+    mocks.listProjects.mockResolvedValueOnce([
+      { id: "a", name: "A", path: "/ws/a", createdAt: 1, imported: false, pinned: false },
+      { id: "c", name: "C", path: "/ws/c", createdAt: 1, imported: false, pinned: false },
+    ]);
     mocks.sessionListDirectories.mockClear();
     await useRuntimeStore.getState().refreshSessions();
-    expect(mocks.sessionListDirectories).toHaveBeenCalledWith(["/ws/base", "/ws/a", "/ws/b"]);
+    expect(mocks.sessionListDirectories).toHaveBeenCalledWith(["/ws/base", "/ws/a", "/ws/b", "/ws/c"]);
+  });
+  it("keeps standalone Web conversation discovery scoped to its configured directory", async () => {
+    web(); await useRuntimeStore.getState().connectRetry();
+    useRuntimeStore.setState({ gatewayRuntime: null });
+    mocks.listProjects.mockClear(); mocks.sessionListDirectories.mockClear();
+    await useRuntimeStore.getState().refreshSessions();
+    expect(mocks.listProjects).not.toHaveBeenCalled();
+    expect(mocks.sessionListDirectories).toHaveBeenCalledWith(undefined);
   });
   it("does not bind a session creation completed after the account changed", async () => {
     web(); await useRuntimeStore.getState().connectRetry();

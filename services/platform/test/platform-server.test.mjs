@@ -15,6 +15,7 @@ import { WorkerManager } from "../src/worker-manager.mjs";
 import { TenantPolicy } from "../src/tenant-policy.mjs";
 import { WorkspaceRpc } from "../src/workspace-rpc.mjs";
 import { recoveryError } from "../src/workspace-recovery.mjs";
+import { capacityError } from "../src/workspace-capacity.mjs";
 import { WorkspaceAdmission } from "../src/workspace-admission.mjs";
 import {localRevertFiles} from '../fixtures/conversation-revert-files.mjs';
 import {createManagedModelCatalogReader} from '../src/managed-model-catalog.mjs';
@@ -188,7 +189,30 @@ test("workspace recovery denies foreign origin/account and malformed restart wit
   }
   assert.equal(calls.length, 0);
   assert.equal((await submit({ action: "retry" })).status, 200);
-  assert.deepEqual(calls[0], { userId: user.id, instanceId: `user-${user.id}`, action: "retry" });
+  assert.deepEqual(calls[0], { userId: user.id, instanceId: `user-${user.id}`, action: "retry", expectedGeneration: 1 });
+});
+test("capacity responses retain correlation and delay without exposing internal causes, including scoped event reads",async()=>{
+  const f=await makeFixture({tenantPolicy:new TenantPolicy()});const client=makeClient(f.base);
+  await login(client,"admin","admin-password");const calls=[];
+  f.manager.ensureWorker=async input=>{calls.push(input);throw capacityError("active_operations");};
+  for(const path of ["/v1/whoami","/event?workspace_generation=7"]) {
+    const response=await client.request(path,{headers:{"x-scikeel-runtime-generation":"7"}});
+    assert.equal(response.status,503);assert.equal(response.headers.get("retry-after"),"5");
+    const body=await response.json();assert.equal(body.code,"workspace_capacity_unavailable");
+    assert.equal(body.retryAfterMs,5000);assert.match(body.correlationId,/^[a-f0-9-]{36}$/);
+    assert.equal(body.reason,undefined);assert.equal(body.capacityReason,undefined);
+    assert.equal(calls.at(-1).expectedGeneration,7);
+  }
+  for(const query of ["workspace_generation=invalid","workspace_generation=1&workspace_generation=2","workspace_generation=8"]) {
+    assert.equal((await client.request("/event?"+query,{headers:{"x-scikeel-runtime-generation":"7"}})).status,400);
+  }
+});
+test("file preview tickets are checked without starting or switching any workspace",async()=>{
+  const f=await makeFixture({tenantPolicy:new TenantPolicy(),enableWorkspaceManagement:true});const client=makeClient(f.base);
+  await login(client,"admin","admin-password");let starts=0;
+  f.manager.ensureWorker=async()=>{starts++;throw new Error("preview must not initialize a workspace");};
+  const response=await client.request("/v1/fs/read?ticket="+"a".repeat(64));
+  assert.equal(response.status,404);assert.equal(starts,0);assert.equal((await response.json()).code,"preview_expired");
 });
 
 test("workspace recovery emits sanitized stale/cooldown outcomes and does not expire login", async () => {

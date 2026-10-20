@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderBlock } from "./BlockList";
 
 vi.mock("@/lib/tauri", () => ({ isTauri: false }));
-vi.mock("@/lib/webMode", () => ({ isGatewayWeb: true, gatewayToken: () => null, gatewayOrigin: () => "http://localhost" }));
+vi.mock("@/lib/webMode", () => ({ isGatewayWeb: true, isPlatformWeb: false, gatewayToken: () => null, gatewayOrigin: () => "http://localhost" }));
 
 describe("Web answer document links", () => {
   afterEach(() => vi.restoreAllMocks());

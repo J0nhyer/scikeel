@@ -4,10 +4,10 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { WorkspaceContext, WorkspaceReport } from "@ai4s/sdk";
 import { useRuntimeStore } from "@/lib/runtime";
-import { isPlatformWeb } from "@/lib/webMode";
+import { isPlatformWeb, setPlatformWorkspaceGeneration } from "@/lib/webMode";
 import { GatewaySignOut } from "@/components/sidebar/GatewaySignOut";
 
-export function WorkspaceRecoveryActions({ report }: { report: WorkspaceReport | null }) {
+export function WorkspaceRecoveryActions({ report, waiting = false }: { report: WorkspaceReport | null; waiting?: boolean }) {
   const { t } = useTranslation("session");
   const retry = useRuntimeStore(state => state.connectRetry);
   const restart = useRuntimeStore(state => state.restartGatewayWorkspace);
@@ -18,10 +18,12 @@ export function WorkspaceRecoveryActions({ report }: { report: WorkspaceReport |
   const canRestart = report?.state === "unresponsive" && report.canRestart && report.context &&
     report.activity !== "maintenance" && report.retryAfterMs === 0;
   return <section aria-label={t("live.recovery.title")} className="w-full min-w-0 border-y border-border py-4">
-    <p role="status" className="text-sm text-text">{t(`live.recovery.states.${report?.state ?? "unknown"}`)}</p>
-    {Boolean(report?.retryAfterMs) && <p className="mt-1 text-xs text-muted">{t("live.recovery.cooldown", { seconds: Math.ceil((report?.retryAfterMs ?? 0) / 1000) })}</p>}
+    <p role="status" className="text-sm text-text">{t(`live.recovery.states.${waiting ? "capacityWaiting" : report?.state ?? "unknown"}`)}</p>
+    {Boolean(report?.retryAfterMs) && report?.state !== "capacity" && <p className="mt-1 text-xs text-muted">{t("live.recovery.cooldown", { seconds: Math.ceil((report?.retryAfterMs ?? 0) / 1000) })}</p>}
     <div className="mt-3 flex flex-wrap items-center gap-2">
-      <button disabled={pending || retrying} onClick={() => {
+      <button disabled={pending || retrying || waiting} onClick={() => {
+        useRuntimeStore.setState({ gatewayContext: null });
+        setPlatformWorkspaceGeneration(null);
         setRetrying(true); void retry().finally(() => setRetrying(false));
       }} className="flex min-h-11 items-center gap-2 rounded-input border border-border px-3 text-sm disabled:opacity-50">
         <RefreshCw size={15} aria-hidden />{t("live.recovery.retry")}

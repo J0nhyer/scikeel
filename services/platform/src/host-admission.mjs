@@ -2,13 +2,15 @@ import { spawn } from "node:child_process";
 import { open, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { posix } from "node:path";
+import { capacityError } from "./workspace-capacity.mjs";
 
 const unavailable = () => Object.assign(new Error("host resource capacity unavailable"), { statusCode: 503, retryable: true });
 export async function hostPressure() {
   const [memory, pressure] = await Promise.all([readFile("/proc/meminfo", "utf8"), readFile("/proc/pressure/memory", "utf8")]);
   const availableBytes = Number(memory.match(/^MemAvailable:\s+(\d+)/m)?.[1]) * 1024;
   const fullAvg10 = Number(pressure.match(/^full avg10=([\d.]+)/m)?.[1]);
-  if (!Number.isSafeInteger(availableBytes) || !Number.isFinite(fullAvg10) || fullAvg10 > 12) throw unavailable();
+  if (!Number.isSafeInteger(availableBytes) || !Number.isFinite(fullAvg10)) throw new Error("invalid host memory observation");
+  if (fullAvg10 > 12) throw capacityError("memory_pressure", { fullAvg10, availableBytes });
   // The atomic lock, not this observation, excludes heavy builds.
   return { availableBytes, buildActive: false };
 }
@@ -23,7 +25,7 @@ export class HostAdmission {
     const file = await open(this.lockPath, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     const info = await file.stat();
     if (!info.isFile()) { await file.close(); throw unavailable(); }
-    let child; let closed = false; let startError; let completion;
+    let child; let closed = false; let startError; let completion; let exitCode;
     try {
       // Pass an already-open descriptor: flock cannot follow a replaced pathname.
       child = spawn("/usr/bin/flock", ["-n", "-F", "/proc/self/fd/3", process.execPath, "-e",
@@ -31,7 +33,7 @@ export class HostAdmission {
         env: { PATH: "/usr/bin:/bin" }, stdio: ["pipe", "pipe", "ignore", file.fd],
       });
       // Subscribe before yielding: a rejected flock can exit while the fd closes.
-      completion = new Promise((done) => child.once("close", () => { closed = true; done(); }));
+      completion = new Promise((done) => child.once("close", code => { closed = true; exitCode = code; done(); }));
       child.once("error", error => { startError = error; });
       child.stdin.on("error", () => {});
     } finally { await file.close(); }
@@ -43,10 +45,11 @@ export class HostAdmission {
       try { await completion; } finally { clearTimeout(timer); }
     })();
     try {
-      if (closed || startError) throw unavailable();
+      const rejected = () => startError ?? (exitCode === 1 ? capacityError("build_lock") : unavailable());
+      if (closed || startError) throw rejected();
       await new Promise((resolve, reject) => {
         const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); child.off("error", fail); child.off("close", fail); child.stdout.off("data", ready); };
-        const fail = () => { cleanup(); reject(unavailable()); };
+        const fail = () => { cleanup(); reject(rejected()); };
         const abort = () => { cleanup(); reject(new Error("host admission cancelled")); };
         const ready = (bytes) => { cleanup(); bytes.toString() === "ready\n" ? resolve() : reject(unavailable()); };
         const timer = setTimeout(fail, 3000);

@@ -9,6 +9,7 @@ import {
   OpenCodeClient,
   GatewayWorkspaceClient,
   GatewayWorkspaceError,
+  decodeWorkspaceFailure,
   isWorkspaceReport,
   type WorkspaceReport,
   type WorkspaceFailure,
@@ -870,6 +871,7 @@ let connectRetryDepth = 0;
 /** What the last connect() attempt failed with, masked or not — connectRetry
  *  reports it if the whole window is exhausted. */
 let lastConnectError: string | null = null;
+let lastConnectFailure: WorkspaceFailure | null = null;
 /** The status the UI is allowed to see right now. */
 function visibleStatus(status: RuntimeStatus): RuntimeStatus {
   return connectRetryDepth > 0 && status !== "ready" ? "connecting" : status;
@@ -2795,27 +2797,40 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     context: failure?.context ?? null, state: failure?.code === "workspace_capacity_unavailable" ? "capacity" : "unknown",
     activity: "unknown", canRestart: false, retryAfterMs: failure?.retryAfterMs ?? 0,
   });
+  const waitForCapacity = async (owner: NonNullable<typeof webRecovery>): Promise<boolean> => {
+    if (lastConnectFailure?.code !== "workspace_capacity_unavailable" || !lastConnectFailure.retryable || lastConnectFailure.action !== "wait") return false;
+    const delay = Math.min(Math.max(5000, lastConnectFailure.retryAfterMs), Math.max(0, owner.deadline - performance.now()));
+    await new Promise<void>(resolve => {
+      const done = () => { clearTimeout(timer); owner.controller.signal.removeEventListener("abort", done); resolve(); };
+      const timer = setTimeout(done, delay);
+      owner.controller.signal.addEventListener("abort", done, { once: true });
+      if (owner.controller.signal.aborted) done();
+    });
+    return true;
+  };
   const checkWorkspace = async (owner: typeof webRecovery, active: () => boolean) => {
-    if (!isPlatformWeb || !owner || !active()) return;
+    if (!isPlatformWeb || !owner || !active() || performance.now() >= owner.deadline) return;
     const transport = new GatewayWorkspaceClient();
-    const options = () => ({ signal: owner.controller.signal, timeoutMs: beforeDeadline(owner.deadline, 10000) });
+    const options = () => ({ signal: owner.controller.signal, timeoutMs: beforeDeadline(owner.deadline, 10000), context: get().gatewayContext });
     try {
       const report = await transport.status(options());
       if (!active()) return;
       set({ gatewayWorkspaceReport: report, gatewayWorkspaceFailure: null });
       if (report.state === "stopped" && !owner.replacementAttempted) {
         owner.replacementAttempted = true;
-        const recovered = await transport.recover({ action: "retry" }, { signal: owner.controller.signal, timeoutMs: beforeDeadline(owner.deadline, 60000) });
+        const recovered = await transport.recover({ action: "retry" }, { signal: owner.controller.signal, timeoutMs: beforeDeadline(owner.deadline, 60000), context: get().gatewayContext });
         if (active()) set({ gatewayWorkspaceReport: recovered });
       }
     } catch (error) {
-      if (!active()) return;
+      if (!active() || performance.now() >= owner.deadline) return;
       const failure = error instanceof GatewayWorkspaceError ? error.failure : null;
+      lastConnectFailure = failure;
       set({ gatewayWorkspaceFailure: failure, gatewayWorkspaceReport: failure ? reportFailure(failure) : null });
     }
   };
   const connectOnce = async () => {
     if (isPlatformWeb && platformBrowserSuspended) return;
+    lastConnectFailure = null;
     loadPlatformAccount();
     const attempt = ++connectionVersion;
     const owner = isGatewayWeb ? webRecovery : null;
@@ -2876,7 +2891,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     // connect that lands somewhere else must not reuse them (#92).
     const previousWorkspace = get().workspace;
     if (isGatewayWeb) {
-      if (isPlatformWeb) { setPlatformAssistantRevision(null); set({ gatewayPolicyRevision: null }); }
+      if (isPlatformWeb) { setPlatformAssistantRevision(null); set({ gatewayPolicyRevision: null, webReadOnly: true }); }
       // Web client: same-origin gateway; the pasted token is the OpenCodeClient
       // password, and the workspace directory comes from /v1/whoami.
       baseUrl = gatewayOrigin();
@@ -2889,10 +2904,16 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       const readContext = async <T,>(path: string, ceiling: number, headers?: Record<string, string>): Promise<T> => {
         const signal = requestSignal(ceiling);
         return withSignal((async () => {
-          const response = await fetch(`${baseUrl}${path}`, { credentials: "same-origin", headers, signal });
+          const context = isPlatformWeb ? get().gatewayContext : null;
+          const response = await fetch(`${baseUrl}${path}`, { credentials: "same-origin",
+            headers: { ...headers, ...(context ? { "x-scikeel-runtime-generation": String(context.generation) } : {}) }, signal });
           if (isPlatformWeb && ((response.status === 401 && response.headers.get("x-scikeel-auth") === "session-required") ||
             (response.redirected && new URL(response.url, baseUrl).pathname.startsWith("/login")))) owner?.controller.abort();
-          if (!response.ok) throw new Error(`Could not load ${path} (HTTP ${response.status})`);
+          if (!response.ok) {
+            const failure = isPlatformWeb ? decodeWorkspaceFailure(await response.json().catch(() => null)) : null;
+            if (failure) throw new GatewayWorkspaceError(response.status, failure);
+            throw new Error(`Could not load ${path} (HTTP ${response.status})`);
+          }
           return response.json() as Promise<T>;
         })(), signal);
       };
@@ -2908,7 +2929,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         directory = get().webWorkspace ?? who.directory ?? null;
         readOnly = who.mode === "read-only";
       } catch (error) {
-        if (isPlatformWeb) { await checkWorkspace(owner, active); failed(error instanceof Error ? error.message : String(error)); return; }
+        if (isPlatformWeb) {
+          if (error instanceof GatewayWorkspaceError && active()) {
+            lastConnectFailure = error.failure;
+            set({ gatewayWorkspaceFailure: error.failure, gatewayWorkspaceReport: reportFailure(error.failure) });
+          } else await checkWorkspace(owner, active);
+          failed(error instanceof Error ? error.message : String(error)); return;
+        }
       }
       try {
         const result = await metadata;
@@ -2967,7 +2994,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           }
         }
       } catch (error) {
-        if (isPlatformWeb) { await checkWorkspace(owner, active); failed(error instanceof Error ? error.message : String(error)); return; }
+        if (isPlatformWeb) {
+          if (error instanceof GatewayWorkspaceError && active()) {
+            lastConnectFailure = error.failure;
+            set({ gatewayWorkspaceFailure: error.failure, gatewayWorkspaceReport: reportFailure(error.failure) });
+          } else await checkWorkspace(owner, active);
+          failed(error instanceof Error ? error.message : String(error)); return;
+        }
         // Standalone legacy gateways can omit assistant metadata.
       }
       if (!active()) return;
@@ -3721,7 +3754,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // a REUSED ACP agent is already "ready", so its idempotent connect emits
       // nothing and the store would sit on the "connecting" this attempt set.
       lastConnectError = null;
-      set({ error: null, status: c.getStatus() });
+      set({ error: null, status: c.getStatus(), ...(isGatewayWeb ? { gatewayWorkspaceFailure: null, gatewayWorkspaceReport: null } : {}) });
       // Models and sessions are independent reads. Begin both immediately so
       // a login waits for their slowest request, not the sum of both stages.
       if (isGatewayWeb) void get().loadCatalog();
@@ -4124,7 +4157,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   workspace: null,
   webWorkspace: null,
   gatewayWorkspace: null,
-  webReadOnly: false,
+  webReadOnly: isPlatformWeb,
   draftWorkspaces: {},
   switching: false,
   sending: false,
@@ -4205,10 +4238,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           { signal: owner.controller.signal, timeoutMs: beforeDeadline(owner.deadline, 60000) });
         if (!active()) return false;
         set({ gatewayWorkspaceReport: report, gatewayWorkspaceFailure: null });
-        for (let attempt = 0; attempt < 4 && active(); attempt++) {
+        for (let attempt = 0; attempt < 4 && active() && performance.now() < owner.deadline; attempt++) {
           await connectOnce();
           if (!active()) return false;
           if (get().status === "ready") return true;
+          if (await waitForCapacity(owner)) { attempt--; continue; }
           if (attempt < 3) await withSignal(sleep(250), owner.controller.signal);
         }
         if (active()) set({ status: "error", error: lastConnectError });
@@ -4544,6 +4578,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         // an error in the store directly still counts (the store's `error` was
         // cleared above, so it can only be this loop's).
         lastError = lastConnectError ?? get().error ?? lastError;
+        if (owner && await waitForCapacity(owner)) { i--; continue; }
         // A runtime that EXITS is not a runtime that is slow to listen, and only
         // the Rust side can tell them apart. Three deaths in one attempt means
         // the next hundred spawns die too — a config the runtime refuses to
@@ -4724,7 +4759,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     const source = client;
     try {
       let directories: string[] | undefined;
-      if (isGatewayWeb && get().gatewayRuntime === "opencode") {
+      if (isGatewayWeb && get().gatewayRuntime) {
         const projects = await listProjects();
         if (source !== client) return;
         const state = get();
@@ -4922,6 +4957,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   },
 
   startDraftInWorkspace: async (path, key = DRAFT_KEY) => {
+    if (isPlatformWeb && get().webReadOnly && get().status !== "ready") {
+      if (!await get().connectRetry()) return false;
+    }
     if (isGatewayWeb && get().webReadOnly) {
       set({ error: "This connection is read-only." });
       return false;

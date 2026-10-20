@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useCollaboration, defaultCollaboration, prepareCollaborationSend } from "./collaboration";
-vi.mock("./webMode", () => ({ isGatewayWeb: true, gatewayOrigin: () => "" }));
+vi.mock("./webMode", () => ({ isGatewayWeb: true, isPlatformWeb: false, gatewayOrigin: () => "" }));
 afterEach(() => vi.restoreAllMocks());
 describe("conversation collaboration", () => {
   it("restores a pending decision without starting work and does not lose it after an answer failure", async () => {

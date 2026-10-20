@@ -301,7 +301,8 @@
         "unreachable": "The workspace could not be reached. Retry to check its status.",
         "unresponsive": "The workspace runtime is not responding.",
         "unknown": "Workspace status could not be verified. Retry without interrupting running work.",
-        "capacity": "Workspace capacity is temporarily unavailable. Please retry shortly."
+        "capacity": "Workspace capacity is temporarily unavailable. Please retry shortly.",
+        "capacityWaiting": "Waiting for workspace availability. Reconnecting automatically."
       }
     },
     "account": { "signOutFailed": "Could not sign out. Please retry." },

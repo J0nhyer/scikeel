@@ -517,6 +517,9 @@ export class PlatformServer {
       this.workspaceTickets = new WorkspaceTickets({resolveContext,assertAccessible:(context,path)=>this.workspaceManagement.assertAccessible(context,path),
         issueWorkerTicket:(context,target)=>this.#workspaceGateway(context,"/v1/fs/ticket?"+new URLSearchParams({root:"workspace",dir:target.directory,path:target.path})),
         streamWorkerFile:async(context,ticket,response,download)=>{
+          const lease=workerManager.retainWorker?.(context.instanceId,{readOnly:true});
+          try {
+          if((lease?.generation??workerManager.getWorker(context.instanceId)?.generation)!==context.generation)throw workspaceError("preview_expired",404);
           const access=workerManager.getWorkerAccess(context.instanceId);
           const upstream=await fetch(new URL("/v1/fs/read?"+new URLSearchParams({ticket,...(download?{download}: {})}),access.url),
             {headers:{authorization:`Bearer ${access.token}`},signal:AbortSignal.timeout(60000),redirect:"error"});
@@ -524,6 +527,7 @@ export class PlatformServer {
           const headers=filterResponseHeaders(Object.fromEntries(upstream.headers));
           if(download){const name=download.split(/[\\/]/).pop().replace(/[\r\n\x00]/g,"").slice(0,240);headers["content-disposition"]=`attachment; filename*=UTF-8''${encodeURIComponent(name)}`;}
           response.writeHead(200,headers);await pipeline(Readable.fromWeb(upstream.body),response);
+          } finally {lease?.release();}
         }});
     }
     if(this.conversationRouter&&workspaceFiles&&this.workspaceAdmission){
@@ -876,9 +880,11 @@ export class PlatformServer {
     return false;
   }
 
-  async #ensureWorker(user, { allowRecovery = true } = {}) {
+  async #ensureWorker(user, { allowRecovery = true, request } = {}) {
     const workerId = workerIdForUser(user.id);
-    await this.workerManager.ensureWorker({ instanceId: workerId, userId: user.id, allowRecovery });
+    const header = request?.headers["x-scikeel-runtime-generation"];
+    await this.workerManager.ensureWorker({ instanceId: workerId, userId: user.id, allowRecovery,
+      ...(header === undefined ? {} : { expectedGeneration: Number(header) }) });
     return {
       workerId,
       worker: this.workerManager.getWorker(workerId),
@@ -1085,9 +1091,6 @@ export class PlatformServer {
       if(url.pathname.startsWith("/v1/fs/")) {
         const account=this.tenantPolicy.account(context);
         if(request.method!=="GET")throw workspaceError("invalid_file_method",405);
-        if(url.pathname==="/v1/fs/read" && url.searchParams.has("ticket")){
-          await this.workspaceTickets.redeem(user.id,url.searchParams.get("ticket"),response,url.searchParams.get("download"));return;
-        }
         const directory=this.tenantPolicy.directory(context,url.searchParams.get("dir")??account.workspaceDir);
         const path=url.searchParams.get("path")??"";if(path)relativeInput(path);
         await this.workspaceManagement.assertAccessible(context,directory+(path?"/"+path:""));
@@ -1915,7 +1918,7 @@ export class PlatformServer {
       if(!["GET","POST"].includes(request.method)){sendJson(response,405,{error:"Method not allowed"});return;}
       if(request.method==="POST"&&request.headers["sec-fetch-site"]==="cross-site"){sendJson(response,403,{error:"Foreign origin"});return;}
       if(request.method==="POST"&&request.headers.origin&&new URL(request.headers.origin).host!==request.headers.host){sendJson(response,403,{error:"Foreign origin"});return;}
-      const {access,worker}=await this.#ensureWorker(user, { allowRecovery: request.method === "GET" });
+      const {access,worker}=await this.#ensureWorker(user, { allowRecovery: request.method === "GET", request });
       const owner=await this.#researchOwner(user,sessionId,access,worker);
       this.#requireWriteContext(request, user, worker);
       let state;
@@ -2501,6 +2504,15 @@ export class PlatformServer {
       // directly lets the login page preload without starting a user worker.
       if (path.startsWith("/assets/") && await this.#serveWeb(request, response)) return;
       if (PUBLIC_BROWSER_ICONS.has(path) && ["GET", "HEAD"].includes(request.method) && await this.#serveWeb(request, response)) return;
+      if (request.method === "GET" && path === "/event" && parsed.searchParams.has("workspace_generation")) {
+        const value = parsed.searchParams.get("workspace_generation");
+        if (parsed.searchParams.getAll("workspace_generation").length !== 1 || !/^[1-9]\d{0,15}$/.test(value) || !Number.isSafeInteger(Number(value)) ||
+            (request.headers["x-scikeel-runtime-generation"] !== undefined && request.headers["x-scikeel-runtime-generation"] !== value)) {
+          sendJson(response, 400, { error: "invalid workspace generation" }); return;
+        }
+        request.headers["x-scikeel-runtime-generation"] = value;
+        parsed.searchParams.delete("workspace_generation"); request.url = parsed.pathname + parsed.search;
+      }
 
       if (path === "/login") {
         const user = await this.#currentUser(request);
@@ -2629,18 +2641,20 @@ export class PlatformServer {
             /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(body.instanceId ?? "") && Number.isSafeInteger(body.generation) && body.generation > 0;
           if (!retry && !restart) { sendJson(response, 400, { error: "invalid recovery command" }); return; }
           if (restart && body.instanceId !== workerIdForUser(user.id)) { sendJson(response, 403, { error: "foreign workspace" }); return; }
-          sendJson(response, 200, await this.workerManager.recoverWorker({ ...body, userId: user.id, instanceId: workerIdForUser(user.id) }), { "cache-control": "no-store" });
+          const generation = request.headers["x-scikeel-runtime-generation"];
+          sendJson(response, 200, await this.workerManager.recoverWorker({ ...body, userId: user.id, instanceId: workerIdForUser(user.id),
+            ...(retry && generation !== undefined ? { expectedGeneration: Number(generation) } : {}) }), { "cache-control": "no-store" });
           return;
         }
         if(this.workspaceRoutes && path.startsWith("/api/workspace/")) {
-          const {worker}=await this.#ensureWorker(user, {allowRecovery:["GET","HEAD"].includes(request.method)});
+          const {worker}=await this.#ensureWorker(user, {allowRecovery:["GET","HEAD"].includes(request.method),request});
           this.#requireWriteContext(request,user,worker);
           if(!["GET","HEAD"].includes(request.method))await this.#assertRuntimeMutation({userId:user.id,instanceId:worker.id,generation:worker.generation});
           await this.workspaceRoutes.handle(request,response,{userId:user.id,instanceId:worker.id,generation:worker.generation});return;
         }
         if (path.startsWith("/api/environments/")) {
           if (!this.environments || !this.tenantPolicy) { sendJson(response, 404, {error: "not found"}); return; }
-          const {worker,access} = await this.#ensureWorker(user, { allowRecovery: ["GET", "HEAD"].includes(request.method) });
+          const {worker,access} = await this.#ensureWorker(user, { allowRecovery: ["GET", "HEAD"].includes(request.method), request });
           this.#requireWriteContext(request, user, worker);
           if(this.cliRuntime?.isManaged(user.id)) {
             const id=/^\/api\/environments\/([A-Za-z0-9_-]+)/.exec(path)?.[1];
@@ -2761,8 +2775,14 @@ export class PlatformServer {
       }
       if (this.tenantPolicy && await this.#serveWeb(request, response)) return;
       await this.#requireAssistantContext(request, response);
+      if(this.workspaceTickets && request.method==="GET" && path==="/v1/fs/read" && parsed.searchParams.has("ticket")){
+        const classified=classifyGatewayRoute(request.method,path);
+        for(const key of parsed.searchParams.keys())if(!classified.query.includes(key)||parsed.searchParams.getAll(key).length!==1)throw workspaceError("invalid_gateway_input",400);
+        if(parsed.searchParams.has("root")&&!["base","workspace"].includes(parsed.searchParams.get("root")))throw workspaceError("invalid_file_scope",400);
+        await this.workspaceTickets.redeem(user.id,parsed.searchParams.get("ticket"),response,parsed.searchParams.get("download"));return;
+      }
       const readOnly = ["GET", "HEAD"].includes(request.method);
-      const { access, worker } = await this.#ensureWorker(user, { allowRecovery: !this.tenantPolicy || readOnly });
+      const { access, worker } = await this.#ensureWorker(user, { allowRecovery: !this.tenantPolicy || readOnly, request });
       const expectedGeneration = request.headers["x-scikeel-runtime-generation"];
       if (this.tenantPolicy && !readOnly && String(worker.generation) !== expectedGeneration)
         throw recoveryError("stale_workspace_context", { context: { instanceId: worker.id, generation: worker.generation } });

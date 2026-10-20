@@ -293,7 +293,8 @@
         "healthy": "L’espace de travail est disponible. Réessayez la connexion.", "stopped": "L’espace de travail est arrêté. Réessayez pour le préparer.",
         "starting": "L’espace de travail démarre. Réessayez bientôt.", "recovering": "L’espace de travail est en cours de récupération. Réessayez bientôt.",
         "unreachable": "Connexion impossible. Réessayez pour vérifier l’état.", "unresponsive": "L’environnement d’exécution ne répond pas.",
-        "unknown": "L’état n’a pas pu être vérifié. Réessayez sans interrompre le travail en cours.", "capacity": "La capacité est temporairement indisponible. Réessayez bientôt."
+        "unknown": "L’état n’a pas pu être vérifié. Réessayez sans interrompre le travail en cours.", "capacity": "La capacité est temporairement indisponible. Réessayez bientôt.",
+        "capacityWaiting": "En attente de ressources pour l’espace de travail. Reconnexion automatique."
       }
     },
     "account": { "signOutFailed": "Impossible de se déconnecter. Réessayez." },

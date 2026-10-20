@@ -12,7 +12,7 @@ test("sandbox lifetime and heavy builds cannot acquire the same kernel lock", as
   const admission = new HostAdmission({ lockPath: join(root, "build.lock") });
   const first = await admission.acquire(); t.after(() => first.release());
   assert.equal(spawnSync("/usr/bin/flock", ["-n", join(root, "build.lock"), "/usr/bin/true"]).status, 1);
-  await assert.rejects(admission.acquire(), /capacity/);
+  await assert.rejects(admission.acquire(), error=>error.capacityReason==="build_lock" && error.failure.retryAfterMs===5000);
   await first.release(); await first.release();
   const second = await admission.acquire(); await second.release();
 });

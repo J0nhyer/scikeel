@@ -293,7 +293,8 @@
         "healthy": "El espacio de trabajo está disponible. Reintenta la conexión.", "stopped": "El espacio de trabajo está detenido. Reintenta para prepararlo.",
         "starting": "El espacio de trabajo se está iniciando. Reintenta en breve.", "recovering": "El espacio de trabajo se está recuperando. Reintenta en breve.",
         "unreachable": "No se pudo conectar. Reintenta para comprobar el estado.", "unresponsive": "El entorno de ejecución no responde.",
-        "unknown": "No se pudo verificar el estado. Reintenta sin interrumpir el trabajo en curso.", "capacity": "No hay capacidad disponible temporalmente. Reintenta en breve."
+        "unknown": "No se pudo verificar el estado. Reintenta sin interrumpir el trabajo en curso.", "capacity": "No hay capacidad disponible temporalmente. Reintenta en breve.",
+        "capacityWaiting": "Esperando recursos para el espacio de trabajo. Reconectando automáticamente."
       }
     },
     "account": { "signOutFailed": "No se pudo cerrar la sesión. Inténtalo de nuevo." },

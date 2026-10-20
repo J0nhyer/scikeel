@@ -113,11 +113,11 @@ export function installGatewayAuthGuard(): void {
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const parsed = new URL(url, origin);
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-    if (isPlatformWeb && parsed.origin === origin && (platformWorkspaceGeneration !== null || platformAssistantRevision !== null) && !["GET", "HEAD"].includes(method) &&
+    if (isPlatformWeb && parsed.origin === origin && (platformWorkspaceGeneration !== null || platformAssistantRevision !== null) &&
         !parsed.pathname.startsWith("/auth/") && parsed.pathname!=="/api/workspace/recover" && !parsed.pathname.startsWith("/api/admin/")) {
       const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
       if (platformWorkspaceGeneration !== null && !headers.has("x-scikeel-runtime-generation")) headers.set("x-scikeel-runtime-generation", String(platformWorkspaceGeneration));
-      if (platformAssistantRevision !== null && !headers.has("x-scikeel-assistant-revision")) headers.set("x-scikeel-assistant-revision", String(platformAssistantRevision));
+      if (!["GET", "HEAD"].includes(method) && platformAssistantRevision !== null && !headers.has("x-scikeel-assistant-revision")) headers.set("x-scikeel-assistant-revision", String(platformAssistantRevision));
       init = { ...init, headers };
     }
     const res = await original(input, init);

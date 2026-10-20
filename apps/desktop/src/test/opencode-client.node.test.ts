@@ -58,6 +58,8 @@ describe("OpenCodeClient ↔ OpenCode server", () => {
     }
     await client.listQuestions();
     expect(new Headers(requests[requests.length - 1]?.init?.headers).has("x-scikeel-assistant-revision")).toBe(false);
+    expect(new Headers(requests[requests.length - 1]?.init?.headers).get("x-scikeel-runtime-generation")).toBe("3");
+    expect(new URL(client["eventUrl"]()).searchParams.get("workspace_generation")).toBe("3");
     client.setGatewayAssistantRevision(null); await client.createSession();
     expect(new Headers(requests[requests.length - 1]?.init?.headers).has("x-scikeel-assistant-revision")).toBe(false);
     for (const invalid of [0, -1, NaN, 1.5]) expect(() => client.setGatewayAssistantRevision(invalid)).toThrow();

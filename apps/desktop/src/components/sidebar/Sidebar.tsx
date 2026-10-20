@@ -245,13 +245,19 @@ export function Sidebar({ project }: { project: Project }) {
 
   const submitNewProject = async (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || createLock.current || webReadOnly) return;
+    if (!trimmed || createLock.current || webReadOnly && !createdProject) return;
     createLock.current = true;
     setCreateBusy(true);
     setCreateError(undefined);
     try {
       if (isGatewayWeb) {
         let project = createdProject;
+        if (project && webReadOnly) {
+          const owner = useRuntimeStore.getState();
+          if (!await owner.connectRetry()) return;
+          const current = useRuntimeStore.getState();
+          if (current.gatewayUser?.id !== owner.gatewayUser?.id || current.gatewayRuntime !== owner.gatewayRuntime) return;
+        }
         const entered = await transition.requestTransition(async () => {
           project ??= await createProject(trimmed);
           if (project) setCreatedProject(project);

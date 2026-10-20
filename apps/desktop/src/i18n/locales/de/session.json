@@ -293,7 +293,8 @@
         "healthy": "Der Arbeitsbereich ist verfügbar. Verbindung erneut versuchen.", "stopped": "Der Arbeitsbereich ist gestoppt. Erneut versuchen, um ihn vorzubereiten.",
         "starting": "Der Arbeitsbereich startet. Bitte kurz warten.", "recovering": "Der Arbeitsbereich wird wiederhergestellt. Bitte kurz warten.",
         "unreachable": "Der Arbeitsbereich ist nicht erreichbar. Status erneut prüfen.", "unresponsive": "Die Laufzeit des Arbeitsbereichs antwortet nicht.",
-        "unknown": "Der Status konnte nicht bestätigt werden. Erneut versuchen, ohne laufende Arbeit zu unterbrechen.", "capacity": "Die Kapazität ist vorübergehend nicht verfügbar. Bitte später erneut versuchen."
+        "unknown": "Der Status konnte nicht bestätigt werden. Erneut versuchen, ohne laufende Arbeit zu unterbrechen.", "capacity": "Die Kapazität ist vorübergehend nicht verfügbar. Bitte später erneut versuchen.",
+        "capacityWaiting": "Warten auf Arbeitsbereichsressourcen. Die Verbindung wird automatisch wiederhergestellt."
       }
     },
     "account": { "signOutFailed": "Abmeldung fehlgeschlagen. Bitte erneut versuchen." },

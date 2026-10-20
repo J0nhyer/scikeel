@@ -1,3 +1,5 @@
+import { capacityError } from "./workspace-capacity.mjs";
+
 const failure = (message) => Object.assign(new Error(message), { statusCode: 503, retryable: true });
 function key(context) {
   if (!context || ![context.userId, context.instanceId].every((value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value)) ||
@@ -34,12 +36,12 @@ export class SandboxScheduler {
       if (this.#closed) throw failure("sandbox scheduler closed");
       if (signal?.aborted) throw failure("sandbox operation cancelled");
       if (context.generation <= (this.#generations.get(owner) ?? 0)) throw failure("stale sandbox generation");
-      if (this.#queue.length >= this.maxQueue) throw failure("sandbox queue capacity");
+      if (this.#queue.length >= this.maxQueue) throw capacityError("queue_full", { context });
     } catch (error) { return Promise.reject(error); }
     return new Promise((resolve, reject) => {
       const item = { owner, context: { ...context }, kind, signal, resolve, reject, settled: false, controller: new AbortController() };
       item.abort = () => this.#reject(item, failure("sandbox operation cancelled"));
-      item.timer = setTimeout(() => this.#reject(item, failure("sandbox queue capacity timeout")), this.queueTimeoutMs);
+      item.timer = setTimeout(() => this.#reject(item, capacityError("queue_timeout", { context })), this.queueTimeoutMs);
       signal?.addEventListener("abort", item.abort, { once: true });
       this.#queue.push(item); void this.#drain();
     });
@@ -63,8 +65,9 @@ export class SandboxScheduler {
         let resourceLease;
         try {
           const pressure = await bounded(() => this.pressure(), item.controller.signal);
-          if (!Number.isSafeInteger(pressure?.availableBytes) || pressure.availableBytes < this.reserveBytes || pressure.buildActive !== false)
-            throw failure("sandbox capacity unavailable");
+          if (!Number.isSafeInteger(pressure?.availableBytes) || typeof pressure.buildActive !== "boolean") throw new Error("invalid host pressure observation");
+          if (pressure.availableBytes < this.reserveBytes) throw capacityError("memory_reserve", { context: item.context, availableBytes: pressure.availableBytes, reserveBytes: this.reserveBytes });
+          if (pressure.buildActive) throw capacityError("build_lock", { context: item.context });
           // Production injects an atomic shared build/job admission lock, not just a pressure marker.
           resourceLease = this.admission ? await bounded(() => this.admission({ context: item.context, kind: item.kind, signal: item.controller.signal }), item.controller.signal) : undefined;
           if (item.settled || this.#closed || item.signal?.aborted) { await resourceLease?.release(); continue; }
@@ -76,7 +79,7 @@ export class SandboxScheduler {
             Promise.resolve(resourceLease?.release()).finally(() => { void this.#drain(); });
           } }));
         } catch (error) {
-          await resourceLease?.release(); this.#reject(item, error?.statusCode ? error : failure("sandbox capacity unavailable"));
+          await resourceLease?.release(); this.#reject(item, error);
         }
       }
     } finally { this.#draining = false; }
