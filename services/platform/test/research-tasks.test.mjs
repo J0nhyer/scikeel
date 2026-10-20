@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { ResearchTasks } from "../src/research-tasks.mjs";
+import {promises as filesystem} from 'node:fs';
 
 const fixtures = [];
 afterEach(async () => {
@@ -59,6 +60,37 @@ test("verified workspace interruption pauses durable matching tasks without cont
   assert.equal(task.execution, before.execution); assert.deepEqual(task.deliverables, before.deliverables);
   assert.equal(await readFile(join(f.directory, "report.md"), "utf8"), "Partial results");
   assert.equal(JSON.parse(await readFile(join(f.root, "records", "student", "ses_new.json"), "utf8")).status, "running");
+});
+
+test("managed research restart retains a durable recovery fence rather than treating paused status as cleanup",async()=>{
+ const f=await fixture(),context={userId:"student",instanceId:"user-student",generation:1};
+ await f.store.create({...f.owner,...context},brief);await f.store.prepare("student","ses_research",{});
+ let cancelled=0;
+ const restored=new ResearchTasks({rootDir:join(f.root,"records"),retainUnverifiedExecution:true,cancel:async()=>{cancelled++;},running:async()=>false});
+ const recovered=await restored.get("student","ses_research");
+ assert.equal(recovered.recoveryRequired,true);assert.equal(cancelled,0);
+ await restored.settled("student","ses_research");
+ const restarted=new ResearchTasks({rootDir:join(f.root,"records"),retainUnverifiedExecution:true});
+ await assert.rejects(restarted.prepare("student","ses_research",{}),{code:"assistant_recovery_required"});
+ await restarted.interruptGeneration({...context,generation:2});
+ assert.equal((await restarted.get("student","ses_research")).recoveryRequired,true);
+ await restarted.interruptGeneration(context);
+ assert.equal((await restarted.get("student","ses_research")).recoveryRequired,undefined);
+ await restarted.prepare("student","ses_research",{}, {...f.owner,...context,generation:2});
+ assert.equal((await restarted.get("student","ses_research")).execution,2);
+ await restored.close();await restarted.close();
+});
+test("failed managed research recovery sync cannot report a cleared execution",async()=>{
+ const f=await fixture();await f.store.create({...f.owner,instanceId:'user-student',generation:1},brief);
+ await f.store.prepare('student','ses_research',{});
+ const original=filesystem.open;
+ filesystem.open=async(...args)=>{const file=await original(...args);if(args[1]==='wx')file.sync=async()=>{throw Error('synthetic sync failure');};return file;};
+ const restored=new ResearchTasks({rootDir:join(f.root,'records'),retainUnverifiedExecution:true});
+ try {await assert.rejects(restored.get('student','ses_research'),/synthetic sync failure/);}
+ finally {filesystem.open=original;}
+ const restarted=new ResearchTasks({rootDir:join(f.root,'records'),retainUnverifiedExecution:true});
+ assert.equal((await restarted.get('student','ses_research')).recoveryRequired,true);
+ await restored.close();await restarted.close();
 });
 async function report(f, value) {
   const task = await f.store.get(f.owner.userId, f.owner.sessionId);
@@ -270,4 +302,26 @@ test("one unavailable runtime does not cancel another background task", async ()
   assert.deepEqual(f.cancelled, []);
   assert.equal((await f.store.get("student", "ses_second")).status, "running");
   f.store.cancel = async () => {};
+});
+
+test("rejected preparation retains its brief and prior report without clearing a later execution",async()=>{
+  const f=await fixture();const owner={...f.owner,instanceId:"user-student",generation:1};
+  const initial=await f.store.create(owner,brief);initial.report={status:"completed",execution:0,steps:[]};await f.store.save(initial);
+  let ticket;await f.store.prepare("student","ses_research",{},owner,{onPrepared:t=>{ticket=t;}});
+  assert.equal(ticket.execution,1);assert.deepEqual(ticket.previousReport,initial.report);
+  const rejected=await f.store.rejectAdmission(ticket);
+  assert.equal(rejected.executionActive,false);assert.equal(rejected.status,"paused");assert.equal(rejected.execution,1);
+  assert.equal(rejected.objective,brief.objective);assert.deepEqual(rejected.report,initial.report);
+  await f.store.prepare("student","ses_research",{},owner);
+  await f.store.rejectAdmission(ticket);assert.equal((await f.store.get("student","ses_research")).executionActive,true);
+  await f.store.interruptGeneration({userId:"student",instanceId:"user-student",generation:1});
+  await f.store.prepare("student","ses_research",{},{...owner,generation:2});
+  await f.store.rejectAdmission(ticket);assert.equal((await f.store.get("student","ses_research")).generation,2);
+});
+test("preparation ticket cannot overwrite an explicit Stop",async()=>{
+  const f=await fixture();const owner={...f.owner,instanceId:"user-student",generation:1};await f.store.create(owner,brief);let ticket;
+  await f.store.prepare("student","ses_research",{},owner,{onPrepared:t=>{ticket=t;}});
+  await f.store.stop(await f.store.get("student","ses_research"));
+  await f.store.rejectAdmission(ticket);const current=await f.store.get("student","ses_research");
+  assert.equal(current.executionActive,false);assert.equal(current.stopReason,"user-stopped");
 });

@@ -16,8 +16,9 @@ export function metadataFacts(event, now = Date.now()) {
                 startedAt: number(i.time?.created), endedAt: number(i.time?.completed), sourceVersion: number(i.time?.completed),
                 providerId: i.providerID, modelId: i.modelID, usage:i.tokens? { input: number(i.tokens.input), output: number(i.tokens.output), reasoning: number(i.tokens.reasoning), cacheRead: number(i.tokens.cache?.read), cacheWrite: number(i.tokens.cache?.write) }:null,
                 outcome: i.time?.completed ? i.error ? 'failed' : 'completed' : 'running' });
-        if (i.time?.completed && (i.finish === 'stop' || i.error))
-            facts.push({ kind: 'turn_end', entityId: i.id, sessionId: i.sessionID, executionId: i.parentID, outcome: i.error ? 'failed' : 'completed',code:i.error?'runtime_error':null, endedAt: i.time.completed });
+        if (i.time?.completed && (['stop','cancelled'].includes(i.finish) || i.error))
+            facts.push({ kind: 'turn_end', entityId: i.id, sessionId: i.sessionID, executionId: i.parentID,
+                outcome: i.finish==='cancelled'?'cancelled':i.error?'failed':'completed',code:i.error?'runtime_error':null, endedAt: i.time.completed });
         return facts;
     }
     if (kind === 'message.part.updated' && p.part?.type === 'tool') {

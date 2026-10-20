@@ -184,7 +184,17 @@
     "error": {
       "paste": "无法保存粘贴内容：{{message}}",
       "addFiles": "无法添加文件：{{message}}",
-      "imageNotSent": "读不到 {{names}}，这条消息发出去时没带上这张图。"
+      "imageNotSent": "读不到 {{names}}，这条消息发出去时没带上这张图。",
+      "workspaceBusy": "工作区暂时繁忙，消息尚未发送，请稍后再试。",
+      "workspaceTimeout": "工作区准备超时，请重新加载会话后再试。",
+      "workspaceUnavailable": "工作区暂时不可用，请重新加载会话后再试。",
+      "workspaceDenied": "操作被拒绝，草稿和附件已保留。",
+      "executionRunning": "研究仍在运行，请等待完成或停止后再发送消息。",
+      "deliveryUnconfirmed": "尚未确认消息是否已接收，请重新加载会话核对后再试。",
+      "sendIdChanged": "此发送标识对应另一条消息，请重新加载会话后再发送。",
+      "recoveryUnconfirmed": "尚未确认发送状态已恢复，请重新加载会话后再试。",
+      "providerRejected": "模型服务拒绝了请求，会话和附件已保留。",
+      "sendFailed": "发送失败：{{message}}"
     },
     "model": {
       "aria": "切换模型",

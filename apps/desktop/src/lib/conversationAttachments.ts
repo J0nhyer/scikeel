@@ -1,3 +1,4 @@
+import { platformWorkspaceMutationHeaders } from "./webMode";
 import type { AttachmentOwner, ConversationAttachment } from "@ai4s/shared";
 export type { AttachmentOwner, ConversationAttachment };
 export const attachmentLimits = { files: 10, fileBytes: 25 * 1024 ** 2, messageBytes: 100 * 1024 ** 2, imageBytes: 512 * 1024 };
@@ -24,6 +25,7 @@ function upload(path: string, file: Blob, signal?: AbortSignal, onProgress?: (va
     const xhr = new XMLHttpRequest(); const abort = () => xhr.abort();
     const finish = (error?: Error) => { signal?.removeEventListener("abort", abort); if (error) reject(error); };
     xhr.open(path.includes("/image?") ? "PUT" : "POST", `/api/attachments${path}`); xhr.withCredentials = true;
+    for (const [key,value] of Object.entries(platformWorkspaceMutationHeaders())) xhr.setRequestHeader(key,value);
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(Math.round(e.loaded / e.total * 100)); };
     xhr.onload = () => {
       let data: ConversationAttachment & { error?: string };

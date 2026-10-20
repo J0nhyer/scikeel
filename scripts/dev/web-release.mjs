@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { readFile, mkdir, lstat } from 'node:fs/promises';
+import { readFile, mkdir, lstat, readdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -8,6 +8,8 @@ import { inspectProduction, commonStore, inventorySource, createCandidate, valid
 import { selectVerification, imageInputPath } from './web-release-policy.mjs';
 import { recordStage, writeManifest, readManifest, storageInventory, vendorStorageInventory, canResume } from './web-release-state.mjs';
 import { buildWeb, runProcess, verifyTaskLimits } from './web-build.mjs';
+import { captureReleaseAssistantTarget, assistantTargetHash, verifyReleaseLauncher } from './web-assistant-release.mjs';
+import { prepareCompatibleRecovery } from './web-release-recovery.mjs';
 
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export function parseArguments(args, { internal = false } = {}) {
@@ -17,19 +19,20 @@ export function parseArguments(args, { internal = false } = {}) {
   for (let index = 0; index < rest.length; index++) {
     const name = rest[index];
     if (['--full', '--dry-run', '--maintenance'].includes(name)) { if (result[name.slice(2)]) throw new Error('Duplicate option'); result[name.slice(2)] = true; }
-    else if (['--source', '--release', '--id', '--image-digest'].includes(name)) {
+    else if (['--source', '--release', '--id', '--image-digest', '--assistant'].includes(name)) {
       if (!rest[index + 1] || rest[index + 1].startsWith('--') || result[name.slice(2)]) throw new Error('Missing or duplicate option value');
       result[name.slice(2)] = rest[++index];
     } else throw new Error(`Unknown release option: ${name}`);
   }
   if (['inspect', 'prepare', 'run'].includes(commandName) && !result.source) throw new Error('An explicit --source checkout is required');
   if (['deploy', 'rollback', 'resume'].includes(commandName) && !result.release) throw new Error('An explicit --release id is required');
-  const allowed = { inspect: ['source', 'full'], prepare: ['source', 'full', 'maintenance', 'image-digest', ...(internal ? ['id'] : [])], run: ['source', 'full', 'maintenance', 'image-digest'], resume: ['release', 'maintenance'], deploy: ['release'], rollback: ['release'], prune: ['dry-run'] };
+  const allowed = { inspect: ['source', 'full', 'assistant'], prepare: ['source', 'full', 'maintenance', 'image-digest', 'assistant', ...(internal ? ['id'] : [])], run: ['source', 'full', 'maintenance', 'image-digest', 'assistant'], resume: ['release', 'maintenance'], deploy: ['release'], rollback: ['release'], prune: ['dry-run'] };
   for (const key of Object.keys(result)) if (key !== 'command' && !allowed[commandName].includes(key)) throw new Error(`Unknown option for ${commandName}: --${key}`);
   if (result.maintenance && !['run', 'prepare', 'resume'].includes(commandName)) throw new Error('Maintenance is only valid for preparation or run');
   if (commandName === 'prune' && !result['dry-run']) throw new Error('Only prune --dry-run is supported');
   for (const key of ['release', 'id']) if (result[key] && !/^[A-Za-z0-9_-]{1,100}$/.test(result[key])) throw new Error('Unsafe release id');
   if (result['image-digest'] && !/^sha256:[a-f0-9]{64}$/.test(result['image-digest'])) throw new Error('Invalid image digest');
+  if (result.assistant && !['opencode', 'codex', 'claude'].includes(result.assistant)) throw new Error('Invalid release assistant');
   if (result.source) result.source = resolve(result.source);
   return result;
 }
@@ -38,6 +41,7 @@ export function requireBrowserConfiguration(environment) {
 }
 export async function prepareRelease(candidate, selection, ops) {
   await ops.validateSource(candidate);
+  if (selection.liveAssistant) await ops.stage('assistant-launcher');
   if (selection.lint) await ops.stage('lint');
   if (selection.typecheck) await ops.stage('typecheck');
   if (selection.workflowTests) await ops.stage('workflow-tests');
@@ -45,8 +49,11 @@ export async function prepareRelease(candidate, selection, ops) {
   if (selection.platformFull || selection.platformFiles.length) await ops.stage('platform-tests');
   if (selection.rustPackages?.length) await ops.stage('rust-checks');
   if (selection.imageRequired) await ops.stage('image-validation');
+  if (selection.liveAssistant) await ops.stage('assistant-target');
   if (selection.buildWeb) { await ops.stage('vendor'); await ops.stage('web-bundle'); await ops.stage('candidate-browser'); }
-  await ops.validateSource(candidate); await ops.validateArtifacts(candidate); await ops.markPrepared(candidate); return candidate;
+  await ops.validateSource(candidate); await ops.validateArtifacts(candidate);
+  if (selection.liveAssistant) await ops.stage('compatible-recovery');
+  await ops.markPrepared(candidate); return candidate;
 }
 export async function artifactFiles(directory) {
   return inventorySource(directory, { git: false });
@@ -65,27 +72,41 @@ async function baselineFor(store, production) {
     return { known: true, id: previous.id, files: previous.source.files, fingerprint: productionFingerprint(production) };
   } catch { return { known: false, files: await inventorySource(production.source, { git: !!await lstat(join(production.source, '.git')).catch(() => null) }), fingerprint: productionFingerprint(production) }; }
 }
-export async function validateInstalledImage(candidate, digest) {
+export async function validateInstalledImage(candidate, digest, { execute = command } = {}) {
   if (!digest) {
     if (candidate.selection?.imageRequired) throw new Error('Required CI-attested image digest is missing');
     return { imageDigest: null, reused: true };
   }
   if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid image digest');
   const imageRoot = `/var/lib/scikeel/images/${digest.slice(7)}`;
-  const manifest = JSON.parse(command('sudo', ['-n', 'cat', join(imageRoot, 'image-manifest.json')]));
-  const ready = JSON.parse(command('sudo', ['-n', 'cat', join(imageRoot, 'ready.json')]));
-  if (candidate.selection?.imageRequired && digest === candidate.production.imageDigest) throw new Error('Changed image inputs require a newly installed CI-attested image');
+  const manifest = JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'image-manifest.json')]));
+  const ready = JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'ready.json')]));
   if (candidate.selection?.imageRequired) {
     const inputs = candidate.source.files.filter((file) => imageInputPath(file.path)).map(({ path, sha256 }) => ({ path, sha256 })).sort((a, b) => a.path.localeCompare(b.path));
     if (!Array.isArray(manifest.sourceInputs) || JSON.stringify(manifest.sourceInputs) !== JSON.stringify(inputs)) throw new Error('CI-attested image source inputs do not match candidate');
   }
   if (await sha256(join(candidate.source.root, 'runtime/sandbox/image/uv.lock')) !== manifest.baselineLockSha256) throw new Error('Scientific dependency lock differs from installed image');
-  for (const [name, tool] of Object.entries(manifest.tools)) {
-    const installed = command('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', tool.path)]).split(/\s+/)[0];
-    if (installed !== tool.sha256) throw new Error('Installed image tool identity changed');
-  }
-  const { validateImageManifest } = await import(pathToFileURL(join(candidate.source.root, 'scripts/dev/stage-sandbox-image.mjs')));
+  const { validateImageManifest, validateNativeArchive, validateImageToolLock } = await import(pathToFileURL(join(candidate.source.root, 'scripts/dev/stage-sandbox-image.mjs')));
   validateImageManifest(manifest);
+  const installedHashes = {};
+  for (const [name, tool] of Object.entries(manifest.tools)) {
+    const installed = execute('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', tool.path)]).split(/\s+/)[0];
+    if (installed !== tool.sha256) throw new Error('Installed image tool identity changed');
+    installedHashes[tool.path] = installed;
+  }
+  if (manifest.codexRuntime) {
+    for (const path of Object.keys(manifest.codexRuntime.resources))
+      installedHashes[path] = execute('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', path)]).split(/\s+/)[0];
+    const nativeIntegration = JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'rootfs/opt/scikeel/tools/bin/native-integration.json')]));
+    validateNativeArchive(manifest, { toolHashes: installedHashes, nativeIntegration });
+    const inventory = execute('sudo', ['-n', 'python3', '-c',
+      "import pathlib,json; root=pathlib.Path(__import__('sys').argv[1]); entries=list(root.iterdir()); assert all(p.is_file() and not p.is_symlink() for p in entries); print(json.dumps(sorted(p.name for p in entries)))",
+      join(imageRoot, 'rootfs/opt/scikeel/tools/bin/codex-resources')]);
+    if (JSON.stringify(JSON.parse(inventory)) !== JSON.stringify(['bwrap'])) throw new Error('Installed native resource inventory changed');
+    if (execute('sudo', ['-n', 'sha256sum', join(imageRoot, 'tool-lock.json')]).split(/\s+/)[0] !== manifest.toolLockSha256)
+      throw new Error('Installed native tool lock source changed');
+    validateImageToolLock(manifest, JSON.parse(execute('sudo', ['-n', 'cat', join(imageRoot, 'tool-lock.json')])));
+  }
   const runtimeLockPath = join(candidate.source.root, "runtime/opencode-patches/session-title.lock.json");
   if (existsSync(runtimeLockPath)) {
     const { validateRuntimeArtifact } = await import(pathToFileURL(join(candidate.source.root, "scripts/dev/build-opencode-title-runtime.mjs")));
@@ -100,19 +121,20 @@ export async function validateInstalledImage(candidate, digest) {
   for (const [path, hash] of Object.entries(manifest.runnerFiles)) {
     const local = join(candidate.source.root, 'runtime/sandbox', path.split('/').at(-1));
     if (await sha256(local) !== hash) throw new Error('Candidate runner requires a different CI-attested image');
-    const installed = command('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', path)]).split(/\s+/)[0];
+    const installed = execute('sudo', ['-n', 'sha256sum', join(imageRoot, 'rootfs', path)]).split(/\s+/)[0];
     if (installed !== hash) throw new Error('Installed runner identity changed');
   }
   // The image carries core skills; compare their actual bytes rather than frontend HEAD.
   for (const file of candidate.source.files.filter((file) => file.path.startsWith('runtime/skills/core/') && !file.path.endsWith('.gitkeep'))) {
     const installedPath = join(imageRoot, 'rootfs/opt/scikeel/tools/resources/skills-core', file.path.slice('runtime/skills/core/'.length));
-    const installedHash = command('sudo', ['-n', 'sha256sum', installedPath]).split(/\s+/)[0];
+    const installedHash = execute('sudo', ['-n', 'sha256sum', installedPath]).split(/\s+/)[0];
     if (installedHash !== file.sha256) throw new Error('Core skill change requires a different CI-attested image');
   }
-  const installedSkills = command('sudo', ['-n', 'python3', '-c', "import pathlib,json; root=pathlib.Path(__import__('sys').argv[1]); print(json.dumps(sorted(str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name!='.gitkeep')))", join(imageRoot, 'rootfs/opt/scikeel/tools/resources/skills-core')]);
+  const installedSkills = execute('sudo', ['-n', 'python3', '-c', "import pathlib,json; root=pathlib.Path(__import__('sys').argv[1]); print(json.dumps(sorted(str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name!='.gitkeep')))", join(imageRoot, 'rootfs/opt/scikeel/tools/resources/skills-core')]);
   const candidateSkills = candidate.source.files.filter((file) => file.path.startsWith('runtime/skills/core/') && !file.path.endsWith('.gitkeep')).map((file) => file.path.slice('runtime/skills/core/'.length)).sort();
   if (JSON.stringify(candidateSkills) !== JSON.stringify(JSON.parse(installedSkills))) throw new Error('Core skill inventory differs from installed image');
-  return { imageDigest: digest, reused: digest === candidate.production.imageDigest, runnerFiles: manifest.runnerFiles };
+  return { imageDigest: digest, reused: digest === candidate.production.imageDigest, runnerFiles: manifest.runnerFiles,
+    enabledRuntimes: manifest.enabledRuntimes };
 }
 export async function browserStage(candidate, run = runProcess) {
   requireBrowserConfiguration(process.env);
@@ -130,6 +152,11 @@ export async function browserStage(candidate, run = runProcess) {
     const scenario='src/test/webAgentAnalytics.acceptance.test.mjs';
     if (!await lstat(join(desktop,scenario)).catch(()=>null)) throw new Error('Required agent analytics browser scenario is unavailable');
     tests.push(scenario);environment.OSD_AGENT_ANALYTICS_ACCEPTANCE='1';
+  }
+  if (groups.includes('assistants')) {
+    const scenario = 'src/test/webAssistantCompatibility.acceptance.test.mjs';
+    if (!await lstat(join(desktop, scenario)).catch(() => null)) throw new Error('Required assistant compatibility browser scenario is unavailable');
+    tests.push(scenario); environment.OSD_ASSISTANT_BROWSER = '1';
   }
   if (groups.includes('login') || groups.includes('session')) {
     const accountRecovery = 'src/test/webAccountRecovery.acceptance.test.mjs';
@@ -174,7 +201,7 @@ export async function validateResume(candidate, production) {
   if (production.source.startsWith(candidate.directory + '/') || production.webRoot.startsWith(candidate.directory + '/')) throw new Error('A referenced candidate cannot resume');
   if (productionFingerprint(production) !== candidate.baseline.fingerprint) throw new Error('Production baseline changed; prepare a new candidate');
 }
-const TOOL_FILES = ['web-release.mjs', 'web-release-source.mjs', 'web-release-state.mjs', 'web-release-policy.mjs', 'web-release-deploy.mjs', 'web-release-maintenance.mjs', 'web-build.mjs', 'web-vendor-cache.mjs', 'build-web-vendor.mjs', 'safe-desktop-task.mjs'];
+const TOOL_FILES = ['web-release.mjs', 'web-release-source.mjs', 'web-release-state.mjs', 'web-release-policy.mjs', 'web-release-deploy.mjs', 'web-release-maintenance.mjs', 'web-release-recovery.mjs', 'web-assistant-release.mjs', 'web-build.mjs', 'web-vendor-cache.mjs', 'build-web-vendor.mjs', 'safe-desktop-task.mjs'];
 async function validateTooling(candidate) {
   for (const name of TOOL_FILES) {
     const path = 'scripts/dev/' + name;
@@ -186,9 +213,11 @@ async function prepareCandidate(candidate, path) {
   await validateTooling(candidate);
   const root = candidate.source.root; const desktop = join(root, 'apps/desktop'); const s = candidate.selection;
   const actions = {
+    'assistant-launcher': () => verifyReleaseLauncher(),
     lint: () => runProcess(process.execPath, [join(desktop, 'node_modules/eslint/bin/eslint.js'), '.'], desktop),
     typecheck: () => runProcess(process.execPath, [join(desktop, 'node_modules/typescript/bin/tsc'), '--noEmit'], desktop),
-    'workflow-tests': () => runProcess(process.execPath, ['--test', '--test-concurrency=1', join(root, 'scripts/dev/web-release.test.mjs'), join(root, 'scripts/dev/web-vendor-cache.test.mjs')], root),
+    'workflow-tests': async () => runProcess(process.execPath, ['--test', '--test-concurrency=1',
+      ...(await readdir(join(root,'scripts/dev'))).filter(name=>name.endsWith('.test.mjs')).sort().map(name=>join(root,'scripts/dev',name))], root),
     'frontend-tests': () => runProcess(process.execPath, [join(desktop, 'node_modules/vitest/vitest.mjs'), 'run', '--no-file-parallelism', ...(s.frontendFull ? [] : s.frontendFiles)], desktop),
     'platform-tests': () => runProcess(process.execPath, ['--test', '--test-concurrency=1', ...(s.platformFull ? [] : s.platformFiles)], join(root, 'services/platform'), candidate.artifacts.image?.imageDigest ? {
       SCIKEEL_WEBFETCH_NATIVE:'1', SCIKEEL_WEBFETCH_NATIVE_BIN:join('/var/lib/scikeel/images',candidate.artifacts.image.imageDigest.replace(/^sha256:/,''),'rootfs/opt/scikeel/tools/bin/opencode'),
@@ -197,6 +226,12 @@ async function prepareCandidate(candidate, path) {
     } : {}),
     'rust-checks': () => { for (const name of s.rustPackages) runProcess('cargo', ['check', '--locked', '--jobs', '1', '--package', name], root); },
     'image-validation': () => validateInstalledImage(candidate, candidate.requestedImage ?? candidate.production.imageDigest),
+    'assistant-target': async () => {
+      const current = await captureReleaseAssistantTarget(candidate);
+      if (candidate.assistantTarget && assistantTargetHash(candidate.assistantTarget) !== assistantTargetHash(current))
+        throw new Error('Selected assistant profile changed; prepare again');
+      candidate.assistantTarget = current; return current;
+    },
     vendor: async () => {
       const { ensureVendorCache } = await import('./web-vendor-cache.mjs');
       const output = await ensureVendorCache({ root, store: join(candidate.sharedStore, 'web-vendor-cache') });
@@ -209,6 +244,10 @@ async function prepareCandidate(candidate, path) {
       candidate.artifacts.web = output; return output;
     },
     'candidate-browser': () => browserStage(candidate),
+    'compatible-recovery': async () => {
+      candidate.compatibleRecovery=await prepareCompatibleRecovery(candidate);
+      return candidate.compatibleRecovery;
+    },
   };
   // Validate reuse on every preparation, including UI-only revisions with no image changes.
   candidate.artifacts.image = await validateInstalledImage(candidate, candidate.requestedImage ?? candidate.production.imageDigest);
@@ -226,7 +265,7 @@ async function prepareCandidate(candidate, path) {
         outputValid = await artifactFiles(previous.output.directory).then((files) => fingerprintFiles(files) === previous.output.fingerprint).catch(() => false);
         if (outputValid) candidate.artifacts.web = previous.output;
       }
-      if (canResume(previous, stageInput, { outputValid })) return;
+      if (!['assistant-target', 'assistant-launcher'].includes(name) && canResume(previous, stageInput, { outputValid })) return;
       console.log(`Release stage: ${name}`);
       await recordStage(candidate, path, name, stageInput, actions[name]);
     },
@@ -252,7 +291,8 @@ export async function releaseWorker(args, { sharedStore }) {
     const baseline = await baselineFor(sharedStore, production);
     const sourceInventory = await inventorySource(options.source);
     const sourceChanges = changedPaths(baseline.files, sourceInventory);
-    const selection = selectVerification(sourceChanges, baseline, { full: options.full });
+    const selection = selectVerification(sourceChanges, baseline, { full: options.full, assistant: options.assistant,
+      imageSwitch: !!options['image-digest'] && options['image-digest'] !== production.imageDigest });
     if (commonStore(options.source) !== sharedStore) throw new Error('Source must belong to the same project Git common root');
     if (!selection.deploy && !options['image-digest']) {
       const directory = join(sharedStore, 'web-releases', options.id);
@@ -266,9 +306,10 @@ export async function releaseWorker(args, { sharedStore }) {
     try { assertSelectedSource(sourceInventory, candidate.source.files); }
     catch (error) { candidate.status = 'failed'; candidate.resumeBlocked = 'source-selection-changed'; await writeManifest(join(candidate.directory, 'manifest.json'), candidate); throw error; }
     candidate.requestedImage = options['image-digest'] ?? null;
+    candidate.requestedAssistant = options.assistant ?? null;
     if (candidate.requestedImage && candidate.requestedImage !== production.imageDigest) {
-      candidate.selection.imageRequired = candidate.selection.liveOpenCode = candidate.selection.platformFull = candidate.selection.deploy = true;
-      candidate.selection.reasons.push('Explicit image switch requires source identity and live OpenCode verification');
+      candidate.selection.imageRequired = candidate.selection.liveAssistant = candidate.selection.platformFull = candidate.selection.deploy = true;
+      candidate.selection.reasons.push('Explicit image switch requires source identity and selected-assistant verification');
     }
   }
   const path = join(candidate.directory, 'manifest.json');
@@ -282,7 +323,8 @@ async function cli(args) {
   for (const name of ['OSD_PLAYWRIGHT_PATH', 'OSD_CHROMIUM_PATH']) if (!process.env[name] && typeof settings[name] === 'string') process.env[name] = settings[name];
   if (options.command === 'inspect') {
     const production = await inspectProduction(); const source = await inventorySource(options.source); const baseline = await baselineFor(store, production);
-    const changes = changedPaths(baseline.files, source); const selection = selectVerification(changes, baseline, { full: options.full });
+    const changes = changedPaths(baseline.files, source); const selection = selectVerification(changes, baseline, { full: options.full,
+      assistant: options.assistant, imageSwitch: !!options['image-digest'] && options['image-digest'] !== production.imageDigest });
     console.log(JSON.stringify({ production, source: options.source, sourceFingerprint: fingerprintFiles(source), changedPaths: changes, baselineKnown: baseline.known, selection }, null, 2)); return;
   }
   if (options.command === 'prune') {
@@ -292,12 +334,13 @@ async function cli(args) {
       references.add(join(store, 'web-releases', id));
       const manifest = await readManifest(join(store, 'web-releases', id, 'manifest.json')).catch(() => null);
       if (manifest?.artifacts?.vendor?.directory) references.add(manifest.artifacts.vendor.directory);
+      if (manifest?.artifacts?.web?.directory) references.add(manifest.artifacts.web.directory);
     }
     console.log(JSON.stringify({ dryRun: true, vendorCaches: await vendorStorageInventory(join(store, 'web-vendor-cache'), references), releases: await storageInventory(join(store, 'web-releases'), references) }, null, 2)); return;
   }
   if (['prepare', 'run', 'resume'].includes(options.command)) {
     const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
-    const workerArgs = options.command === 'resume' ? ['resume', '--release', options.release] : ['prepare', '--source', options.source, '--id', id, ...(options.full ? ['--full'] : []), ...(options['image-digest'] ? ['--image-digest', options['image-digest']] : [])];
+    const workerArgs = options.command === 'resume' ? ['resume', '--release', options.release] : ['prepare', '--source', options.source, '--id', id, ...(options.full ? ['--full'] : []), ...(options['image-digest'] ? ['--image-digest', options['image-digest']] : []), ...(options.assistant ? ['--assistant', options.assistant] : [])];
     if (options.maintenance) {
       const { maintenancePrepare } = await import('./web-release-maintenance.mjs');
       await maintenancePrepare(workerArgs, { store, id });

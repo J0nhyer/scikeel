@@ -1,0 +1,134 @@
+diff --git a/codex-rs/hooks/src/engine/output_parser.rs b/codex-rs/hooks/src/engine/output_parser.rs
+--- a/codex-rs/hooks/src/engine/output_parser.rs
++++ b/codex-rs/hooks/src/engine/output_parser.rs
+@@ -531,2 +531,45 @@
+     #[test]
++    fn scikeel_required_guard_allow_preserves_original_input() {
++        let parsed = super::parse_pre_tool_use(
++            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#,
++        ).expect("valid explicit allow");
++        assert_eq!(parsed.invalid_reason, None);
++        assert_eq!(parsed.block_reason, None);
++        assert_eq!(parsed.updated_input, None);
++    }
++
++    #[test]
++    fn scikeel_required_guard_rejects_all_input_rewrites() {
++        for input in [json!({}), json!({"command": "changed after authorization"})] {
++            let parsed = super::parse_pre_tool_use(&json!({
++                "hookSpecificOutput": {
++                    "hookEventName": "PreToolUse", "permissionDecision": "allow",
++                    "updatedInput": input,
++                }
++            }).to_string()).expect("structured rewrite response");
++            assert!(parsed.invalid_reason.is_some(), "rewrites cannot reuse original-input authority");
++            assert_eq!(parsed.updated_input, None);
++        }
++    }
++
++    #[test]
++    fn scikeel_required_guard_mixed_legacy_deny_cannot_be_overridden() {
++        let parsed = super::parse_pre_tool_use(
++            r#"{"decision":"block","reason":"denied","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#,
++        ).expect("structured conflicting decisions");
++        assert!(parsed.invalid_reason.is_some() || parsed.block_reason.is_some());
++        assert_eq!(parsed.updated_input, None);
++    }
++
++    #[test]
++    fn scikeel_required_guard_explicit_deny_stays_blocked() {
++        let parsed = super::parse_pre_tool_use(
++            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"research decision pending"}}"#,
++        ).expect("valid explicit deny");
++        assert_eq!(parsed.invalid_reason, None);
++        assert_eq!(parsed.block_reason.as_deref(), Some("research decision pending"));
++        assert_eq!(parsed.updated_input, None);
++    }
++
++    #[test]
+     fn structured_output_rejects_invalid_shapes_and_types() {
+diff --git a/codex-rs/hooks/src/events/pre_tool_use.rs b/codex-rs/hooks/src/events/pre_tool_use.rs
+--- a/codex-rs/hooks/src/events/pre_tool_use.rs
++++ b/codex-rs/hooks/src/events/pre_tool_use.rs
+@@ -442,1 +442,40 @@
++    fn scikeel_required_guard_handler_accepts_no_rewrite_allow() {
++        let parsed = parse_completed(
++            &handler(), run_result(Some(0),
++                r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#, ""),
++            Some("turn-1".to_string()),
++        );
++        assert_eq!(parsed.completed.run.status, HookRunStatus::Completed);
++        assert!(!parsed.data.should_block);
++        assert_eq!(parsed.data.updated_input, None);
++    }
++
++    #[test]
++    fn scikeel_required_guard_handler_rejects_rewrite_and_failed_authority() {
++        for (code, stdout) in [
++            (Some(0), r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{}}}"#),
++            (Some(0), ""), (Some(0), "{}"), (Some(0), "{broken"),
++            (Some(0), "hook completed"), (Some(1), ""), (None, ""),
++        ] {
++            let parsed = parse_completed(&handler(), run_result(code, stdout, ""), Some("turn-1".to_string()));
++            assert!(parsed.data.should_block, "no explicit valid authorization: {stdout}");
++            assert!(parsed.data.block_reason.is_some());
++            assert_eq!(parsed.data.updated_input, None);
++        }
++    }
++
++    #[test]
++    fn scikeel_required_guard_handler_deny_beats_allow_in_either_order() {
++        let allow = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#;
++        let deny = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"denied"}}"#;
++        for outputs in [[allow, deny], [deny, allow]] {
++            let parsed = outputs.map(|stdout| parse_completed(
++                &handler(), run_result(Some(0), stdout, ""), Some("turn-1".to_string()),
++            ));
++            assert!(parsed.iter().any(|result| result.data.should_block));
++            assert!(parsed.iter().all(|result| result.data.updated_input.is_none()));
++        }
++    }
++
++    #[test]
+     fn permission_decision_allow_without_updated_input_fails_open() {
+diff --git a/codex-rs/hooks/src/engine/mod_tests.rs b/codex-rs/hooks/src/engine/mod_tests.rs
+--- a/codex-rs/hooks/src/engine/mod_tests.rs
++++ b/codex-rs/hooks/src/engine/mod_tests.rs
+@@ -78,1 +78,37 @@
++fn scikeel_required_guard_admits_only_one_immutable_synchronous_handler() {
++    let handler = ConfiguredHandler {
++        builtin: false, event_name: HookEventName::PreToolUse, matcher: None,
++        timeout_sec: 5, status_message: None, additional_context_limit: Default::default(),
++        source_path: AbsolutePathBuf::from_absolute_path("/etc/codex/requirements.toml").unwrap().into(),
++        source: HookSource::System, display_order: 0,
++        kind: ConfiguredHandlerKind::Command {
++            command: "/opt/scikeel/tools/bin/node /opt/scikeel/runtime/required-effect-guard.mjs --guard".to_string(),
++            env: HashMap::new(), r#async: false,
++        },
++    };
++    assert!(super::scikeel_required_guard_handlers(&[handler.clone()]));
++    assert!(!super::scikeel_required_guard_handlers(&[]));
++    assert!(!super::scikeel_required_guard_handlers(&[handler.clone(), handler.clone()]));
++    for source in [HookSource::User, HookSource::Project, HookSource::Plugin, HookSource::SessionFlags] {
++        let mut changed = handler.clone(); changed.source = source;
++        assert!(!super::scikeel_required_guard_handlers(&[changed]));
++    }
++    let mut changed = handler.clone();
++    changed.event_name = HookEventName::SessionStart;
++    assert!(!super::scikeel_required_guard_handlers(&[changed]));
++    let mut changed = handler.clone();
++    changed.source_path = cwd().into();
++    assert!(!super::scikeel_required_guard_handlers(&[changed]));
++    for (command, asynchronous, env) in [
++        ("echo allow".to_string(), false, HashMap::new()),
++        (match &handler.kind { ConfiguredHandlerKind::Command { command, .. } => command.clone(), _ => unreachable!() }, true, HashMap::new()),
++        (match &handler.kind { ConfiguredHandlerKind::Command { command, .. } => command.clone(), _ => unreachable!() }, false, HashMap::from([("NODE_OPTIONS".to_string(), "injection".to_string())])),
++    ] {
++        let mut changed = handler.clone();
++        changed.kind = ConfiguredHandlerKind::Command { command, env, r#async: asynchronous };
++        assert!(!super::scikeel_required_guard_handlers(&[changed]));
++    }
++}
++
++#[test]
+ fn permission_request_timeout_only_counts_synchronous_handlers() {

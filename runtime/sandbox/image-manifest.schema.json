@@ -183,6 +183,57 @@
       },
       "minItems": 1
     },
+    "codexRuntime": {
+      "type": "object",
+      "required": ["integration", "resources"],
+      "properties": {
+        "integration": {
+          "type": "object",
+          "required": ["schema", "policy", "upstreamVersion", "upstreamCommit", "patchSha256", "testPatchSha256", "bwrapPatchSha256", "rustVersion", "lockFormat", "upstreamLockSha256", "workspaceLockSha256", "bwrapSha256", "target", "binarySha256", "source", "version"],
+          "properties": {
+            "schema": {"const": 1},
+            "policy": {"const": "required-effect-guard-v1"},
+            "upstreamVersion": {"const": "0.157.1"},
+            "upstreamCommit": {"const": "36650394c5b38c2990ccf2a3457165ca3e9d9726"},
+            "patchSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "testPatchSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "bwrapPatchSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "rustVersion": {"const": "1.95.0"},
+            "lockFormat": {"const": "smol-toml@1.9.0"},
+            "upstreamLockSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "workspaceLockSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "bwrapSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "target": {"const": "x86_64-unknown-linux-gnu"},
+            "binarySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "source": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+            "version": {"const": "codex-cli 0.157.1"}
+          },
+          "additionalProperties": false
+        },
+        "resources": {
+          "type": "object",
+          "required": ["opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json",
+            "opt/scikeel/tools/native-tools.mjs", "opt/scikeel/runtime/required-effect-guard.mjs",
+            "opt/scikeel/tools/codex-requirements.toml", "etc/codex/requirements.toml",
+            "opt/scikeel/tools/native-network.mjs", "opt/scikeel/tools/native-network.py",
+            "opt/scikeel/tools/apply_patch", "usr/local/bin/apply_patch"],
+          "properties": {
+            "opt/scikeel/tools/bin/codex-resources/bwrap": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/bin/native-integration.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/native-tools.mjs": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/runtime/required-effect-guard.mjs": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/codex-requirements.toml": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "etc/codex/requirements.toml": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/native-network.mjs": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/native-network.py": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "opt/scikeel/tools/apply_patch": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "usr/local/bin/apply_patch": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "sessionTitleRuntime": {
       "type": "object",
       "required": [
@@ -274,6 +325,11 @@
   },
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": {"properties": {"enabledRuntimes": {"contains": {"const": "codex"}}}},
+      "then": {"required": ["codexRuntime"], "properties": {"tools": {"required": ["codex"]}}},
+      "else": {"not": {"required": ["codexRuntime"]}}
+    },
     {
       "if": {
         "properties": {

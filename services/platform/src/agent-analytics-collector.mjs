@@ -37,6 +37,10 @@ export function createAnalyticsCollector({ store, createObserver = createOpenCod
             return;
         }
         let b = messages.get(key(scope, f.executionId ?? f.messageId)) ?? children.get(key(scope, f.sessionId));
+        if(!b&&f.kind==='intervention'&&f.sessionId){
+            const active=[...bindings.values()].filter(run=>key(run.scope,'worker')===key(scope,'worker')&&run.sessionId===f.sessionId&&run.outcome==='running');
+            if(active.length===1)b=active[0];
+        }
         if (f.kind === 'message_link') {
             if (b)
                 boundedSet(messages, key(scope, f.entityId), b, 2048);
@@ -44,8 +48,11 @@ export function createAnalyticsCollector({ store, createObserver = createOpenCod
         }
         if (f.kind === 'turn_end') {
             if (b && b.runType === 'conversation' && f.sessionId === b.sessionId) {
+                if(b.outcome==='cancelled')return;
                 b.outcome = f.outcome;
                 record(scope, { kind: 'run', entityId: `${b.sessionId}:${b.executionId}`, runId: b.runId, runType: b.runType, startedAt: b.startedAt, endedAt: f.endedAt, outcome: f.outcome,code:f.code });
+                if(f.outcome==='cancelled')record(scope,{kind:'intervention',entityId:`stop:${b.sessionId}:${b.executionId}`,runId:b.runId,
+                    runType:b.runType,startedAt:f.endedAt,endedAt:f.endedAt,outcome:'answered',code:'takeover'});
             }
             return;
         }
@@ -85,7 +92,7 @@ export function createAnalyticsCollector({ store, createObserver = createOpenCod
         record(scope, { ...f, runId: b.runId, isChild: f.sessionId !== b.sessionId });
     }
     return {
-        bindRun, record,
+        bindRun, record, nativeFact: incoming,
         cancelSession(scope,sessionId,at=now()){
             for(const b of bindings.values())if(key(b.scope,'worker')===key(scope,'worker')&&b.sessionId===sessionId&&b.runType==='conversation'&&b.outcome==='running'){
                 b.outcome='cancelled';

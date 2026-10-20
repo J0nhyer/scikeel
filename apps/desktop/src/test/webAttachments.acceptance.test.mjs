@@ -44,14 +44,18 @@ test.skipIf(!process.env.OSD_ATTACHMENTS_ACCEPTANCE)("uploads, restores, downloa
   const root=await mkdtemp(join(tmpdir(),"scikeel-attachment-acceptance-"));const home=join(root,"codex");await mkdir(home);await writeFile(join(home,"config.toml"),'model = "fixture-model"\n');
   const authStore=new AuthStore({filePath:join(root,"auth.json"),bootstrapAdmin:{username:"fixture",password:"fixture-password"}});
   const workerManager=new WorkerManager({rootDir:join(root,"workers"),osdCommand:process.execPath,osdArgs:[resolve("../../services/platform/fixtures/fake-osd.mjs")]});
-  const cliRuntime=new CliRuntimeManager({rootDir:join(root,"cli"),codexHome:home,codexCommand:process.execPath,codexArgs:[resolve("../../services/platform/fixtures/attachment-cli.mjs"),"codex"]});
+  const cliRuntime=new CliRuntimeManager({rootDir:join(root,"cli"),runtime:"codex",assistantAuthority:{inventory:async()=>({activeExecutions:[],uncertainEffects:[]})},codexHome:home,claudeConfigDir:join(root,"claude"),codexCommand:process.execPath,codexArgs:[resolve("../../services/platform/fixtures/attachment-cli.mjs"),"codex"]});
   const platform=new PlatformServer({authStore,workerManager,cliRuntime,webRoot:process.env.OSD_ATTACHMENTS_WEB_ROOT || resolve("dist")});const address=await platform.listen();const origin=`http://127.0.0.1:${address.port}`,httpOrigin=`http://scikeel-attachments.test:${address.port}`;
   const browser=await chromium.launch({executablePath:process.env.OSD_CHROMIUM_PATH,args:["--no-sandbox","--disable-dev-shm-usage","--no-proxy-server","--host-resolver-rules=MAP scikeel-attachments.test 127.0.0.1"],headless:true});
   try{
     for(const width of [1280,390,320]){
       const context=await browser.newContext({viewport:{width,height:900},acceptDownloads:true});
       try{
-        const login=await context.request.post(`${origin}/auth/login`,{headers:{accept:"application/json"},data:{username:"fixture",password:"fixture-password"}});expect(login.status()).toBe(200);const {user}=await login.json();await cliRuntime.setUserRuntime(user.id,"codex");
+        const login=await context.request.post(`${origin}/auth/login`,{headers:{accept:"application/json"},data:{username:"fixture",password:"fixture-password"}});expect(login.status()).toBe(200);const {user}=await login.json();
+        const instanceId=`user-${user.id}`;
+        await workerManager.ensureWorker({instanceId,userId:user.id});
+        // The legacy HTTP fixture has no native launcher to assign its generation.
+        workerManager.workers.get(instanceId).generation=1;
         const state=await context.storageState();await context.addCookies(state.cookies.map((cookie)=>({...cookie,domain:"scikeel-attachments.test"})));
         await context.addInitScript((locale)=>localStorage.setItem("ai4s.locale",locale),width===390?"zh-Hans":"en");const page=await context.newPage();const errors=[];page.on("pageerror",(e)=>errors.push(e.message));
         await page.goto(`${httpOrigin}/live`);await page.locator("textarea").first().waitFor({state:"visible"});expect(await page.evaluate(()=>isSecureContext)).toBe(false);
@@ -78,7 +82,7 @@ test.skipIf(!process.env.OSD_ATTACHMENTS_ACCEPTANCE)("uploads, restores, downloa
         await expect.poll(async()=>page.getByRole("button",{name:width===390?"发送":"Send",exact:true}).isEnabled()).toBe(true);
         await page.screenshot({ path: resolve(`../../.deploy/verification/attachments-composer-${width}.png`), fullPage: true });
         await page.locator("textarea").first().fill("Read the attachments and calculate the CSV mean.");
-        await page.route("**/prompt_async*", async (route) => { await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Fixture prompt acceptance failed" }) }); }, { times: 2 });
+        await page.route("**/prompt_async*", async (route) => { await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Fixture prompt acceptance failed" }) }); }, { times: 1 });
         const rejected = page.waitForResponse((r) => r.request().method() === "POST" && /\/prompt_async/.test(r.url()));
         await page.getByRole("button", { name: width === 390 ? "发送" : "Send", exact: true }).click(); expect((await rejected).status()).toBe(400);
         await expect.poll(async () => page.getByRole("button", { name: width === 390 ? "发送" : "Send", exact: true }).isEnabled(), { timeout: 10000 }).toBe(true);
@@ -97,8 +101,16 @@ test.skipIf(!process.env.OSD_ATTACHMENTS_ACCEPTANCE)("uploads, restores, downloa
         await page.getByRole("button",{name:"Preview paper.pdf",exact:true}).click();await page.getByRole("dialog").locator("canvas").first().waitFor();await page.getByRole("button",{name:"Close preview"}).click();
         await page.locator("textarea").first().fill("Use the earlier CSV again without another upload.");const follow=page.waitForResponse((r)=>r.request().method()==="POST" && /\/prompt_async/.test(r.url()));await page.getByRole("button",{name:width===390?"发送":"Send",exact:true}).click();expect((await follow).status()).toBe(202);
         await expect.poll(async()=>{const state=await cliRuntime.ensureUser(user.id);return [...state.sessions.values()].filter((s)=>s.history.filter((m)=>m.info.role==="user").length>=2 && s.status==="idle").length;}).toBeGreaterThan(0);
+        // A removable pending card is visible before the upload acknowledgement.
+        await page.route("**/api/attachments/upload?**", async (route) => {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          await route.continue();
+        }, { times: 1 });
+        const uploadAcknowledged = page.waitForResponse((response) => response.request().method() === "POST" && /\/api\/attachments\/upload\?/.test(response.url()));
         await page.locator('input[type="file"]').first().setInputFiles([originals[2]]);
         await page.getByRole("button", { name: "Remove data.csv" }).waitFor();
+        expect((await uploadAcknowledged).ok()).toBe(true);
+        await expect.poll(async () => page.locator('[data-attachment-id]').count(), { timeout: 10000 }).toBe(4);
         const send = page.getByRole("button", { name: width === 390 ? "发送" : "Send", exact: true });
         for (const text of ["", "   "]) {
           await page.locator("textarea").first().fill(text);

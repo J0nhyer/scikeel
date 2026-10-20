@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { SandboxNativeJobs } from "./sandbox-native-jobs.mjs";
+import { ManagedCodexProfile } from "./cli-profile.mjs";
 import { lstat, readFile } from "node:fs/promises";
 import { ModelBroker } from "./model-broker.mjs";
-import { readManagedModelCatalog, readManagedDefaultModel, saveManagedDefaultModel } from "./managed-model-catalog.mjs";
+import { createManagedModelCatalogReader, readManagedDefaultModel, saveManagedDefaultModel } from "./managed-model-catalog.mjs";
 import { resolveOpenCodeFreeCatalog } from "./opencode-free-catalog.mjs";
 import { EgressBroker } from "./egress-broker.mjs";
 import { PackageBroker } from "./package-broker.mjs";
@@ -58,10 +59,14 @@ export function validateBrokerConfiguration(config) {
   if (!config.providers[config.defaultProvider]?.enabledModels.includes(config.defaultModel)) throw new Error("invalid managed default model");
   return config;
 }
-export function brokerProfile({ config, broker, context, model, now = Date.now() }) {
+export function brokerProfile({ config, broker, context, model, profileRevision, assistantPolicy, now = Date.now() }) {
   validateBrokerConfiguration(config);
   const name = config.defaultProvider; const provider = config.providers[name];
-  const token = broker.issue({ ...context, provider: name, models: provider.enabledModels, routes: provider.routes, expiresAt: now + 900000 });
+  const scope = assistantPolicy === undefined ? {} : assistantPolicy?.activeRuntime === "opencode" &&
+    assistantPolicy.recoveryRequired === false && Number.isSafeInteger(assistantPolicy.revision) && assistantPolicy.revision > 0
+    ? { runtime: "opencode", policyRevision: assistantPolicy.revision } : { runtime: "opencode", bridgeOnly: true };
+  const token = broker.issue({ ...context, provider: name, models: provider.enabledModels, routes: provider.routes,
+    ...scope, ...(profileRevision !== undefined ? { profileRevision } : {}), expiresAt: now + 900000 });
   const selected = provider.enabledModels.some(id => `${name}/${id}` === model) ? model : `${name}/${config.defaultModel}`;
   return { ...(config.searchProvider ? { searchProvider: config.searchProvider } : {}), model: selected, enabled_providers: [name], provider: {
     [name]: { npm: provider.authMode === "x-api-key" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible", name,
@@ -80,6 +85,51 @@ export async function readBrokerConfiguration() {
   try { return validateBrokerConfiguration(JSON.parse(await readFile(path, "utf8"))); }
   catch { throw new Error("managed broker configuration unavailable"); }
 }
+export function managedNativeProfileResolver({ configuration, serviceProfile, broker }) {
+  let revision = null, registered = false, pending = Promise.resolve();
+  const unavailable = runtime => ({ runtime, status: "unavailable", enabledByProfile: false,
+    models: [], defaultModel: null, catalogRevision: null });
+  const revoke = () => { if (registered) broker.revokeProvider("scikeel-codex"); registered = false; };
+  const read = async runtime => {
+    if (!["codex", "claude"].includes(runtime)) throw Object.assign(new Error("invalid_runtime"), { code: "invalid_runtime" });
+    if (runtime !== "codex") return unavailable(runtime);
+    if (!configuration.enabledRuntimes?.includes("codex")) { revoke(); return unavailable(runtime); }
+    try {
+      const profile = await serviceProfile.refresh("codex");
+      if (profile.status !== "ready") { revoke(); return unavailable(runtime); }
+      if (!registered || revision !== profile.identityRevision) {
+        const provider = await serviceProfile.resolveProvider(profile.identityRevision);
+        broker.replaceProviderSnapshot({ name: "scikeel-codex", expectedRevision: revision,
+          identityRevision: profile.identityRevision, provider, createOnly: revision === null });
+        revision = profile.identityRevision; registered = true;
+      }
+      return profile;
+    } catch (error) { revoke(); throw error; }
+  };
+  const serial=run=>{const next=pending.catch(()=>{}).then(run);pending=next;return next;};
+  return {
+    refresh:runtime=>serial(()=>read(runtime)),
+    issueNativeGrant(input) {
+      const captured=structuredClone(input);
+      return serial(async()=>{
+        const denied=()=>Object.assign(new Error('native_model_grant_denied'),{code:'native_model_grant_denied',statusCode:503});
+        if(!captured||Object.keys(captured).some(key=>!['context','turnIdentity','model','variant','identityRevision'].includes(key))||
+            !captured.context||captured.turnIdentity?.runtime!=='codex')throw denied();
+        const profile=await read('codex'),selected=profile.models.find(model=>model.id===captured.model);
+        if(profile.status!=='ready'||profile.identityRevision!==captured.identityRevision||!selected||
+            captured.variant!=null&&(typeof captured.variant!=='string'||!Object.hasOwn(selected.variants,captured.variant)))throw denied();
+        const context=Object.fromEntries(['userId','instanceId','generation'].map(field=>[field,captured.context[field]]));
+        const token=broker.issue({...context,runtime:'codex',policyRevision:captured.turnIdentity.policyRevision,
+          turnIdentity:captured.turnIdentity,provider:'scikeel-codex',profileRevision:profile.identityRevision,
+          models:[selected.id],routes:['/v1/responses'],expiresAt:Date.now()+900000});
+        const configuration=Object.freeze({model:selected.id,modelToken:token,modelUrl:'http://172.31.240.1:4792/v1',
+          ...(captured.variant!=null?{effort:selected.variants[captured.variant].reasoningEffort}:{})});
+        return Object.freeze({identityRevision:profile.identityRevision,configuration,
+          renew:()=>broker.renew(token,context),revoke:()=>broker.revokeAndDrain(token)});
+      });
+    },
+  };
+}
 export async function createSandboxControlPlane({ configuration, dataDir, config }) {
   config = validateBrokerConfiguration(await resolveOpenCodeFreeCatalog(validateBrokerConfiguration(config ?? await readBrokerConfiguration())));
   let environments; let plane;
@@ -91,7 +141,8 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     if (!account) throw new Error("unknown sandbox identity");
     return account.context;
   };
-  const model = new ModelBroker({ providers: config.providers, identify });
+  const model = new ModelBroker({ providers: config.providers, identify,
+    assistantPolicy: context => plane?.assistantPolicy?.(context),executionAuthority:identity=>plane?.executionAuthority?.(identity)===true });
   const egress = new EgressBroker({ identify });
   const packageGrants = new PackageGrants();
   const packages = new PackageBroker({ mirrorUrl: config.mirrorUrl, identify,
@@ -107,7 +158,8 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       if (accounts.has(address)) throw new Error("sandbox identity collision");
       accounts.set(address, { context });
       const savedModel = await readManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId });
-      const profile = brokerProfile({ config, broker: model, context, model: savedModel });
+      const profile = brokerProfile({ config, broker: model, context, model: savedModel,
+        assistantPolicy: plane?.assistantPolicy?.(context) ?? null });
       const token = profile.provider[config.defaultProvider].options.apiKey;
       const response = await fetch(`${access.runnerUrl}/profile`, { method: "POST", headers: {
         authorization: `Bearer ${access.token}`, "content-type": "application/json" },
@@ -136,19 +188,14 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   const files = new WorkspaceRpc({ workerManager: manager, tenantPolicy });
   environments = new SandboxEnvironments({ files, tenantPolicy, packageGrants, imageDigest: configuration.imageDigest,
     acquireMaintenance: (context) => manager.acquireMaintenance(context) });
-  const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy});
-  const nativeProfileResolver={refresh:async(runtime)=>{
-    const provider=config.providers[config.defaultProvider];
-    const enabled=Boolean(configuration.enabledRuntimes?.includes(runtime) && runtime==="codex" && provider.authMode==="bearer" && provider.routes.includes("/v1/responses"));
-    const revision=createHash("sha256").update(JSON.stringify({image:configuration.imageDigest,provider:config.defaultProvider,
-      endpoint:provider.baseUrl,models:provider.enabledModels})).digest("hex");
-    return {runtime,identityRevision:revision,catalogRevision:revision,sourceRevision:revision,
-      models:enabled?provider.enabledModels.map(id=>({id,name:id,variants:{},inputModalities:["text","image"]})):[],
-      defaultModel:enabled?config.defaultModel:null,status:enabled?"ready":"unavailable",enabledByProfile:enabled,files:{}};
-  }};
+  const nativeProfileResolver = managedNativeProfileResolver({ configuration, broker: model,
+    serviceProfile: new ManagedCodexProfile({ home: join(dataDir, "codex-service") }) });
+  const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy,
+    issueNativeGrant:input=>nativeProfileResolver.issueNativeGrant(input)});
+  manager.inspectNative = context => nativeJobs.inspect(context);
   plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, searchProvider: config.searchProvider, nativeJobs, nativeProfileResolver,
     analyticsRegistry:{providers:new Set(Object.keys(config.providers)),models:new Set(Object.values(config.providers).flatMap(p=>p.enabledModels)),skills:new Set(['research-workflow'])},
-    runtimeCatalog: (context, { access }) => readManagedModelCatalog({ config, context, access }),
+    runtimeCatalog: createManagedModelCatalogReader({config}),
     saveRuntimeDefaultModel: (context, model) => saveManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId, model }),
     async close() {
       try { await manager.close(); }

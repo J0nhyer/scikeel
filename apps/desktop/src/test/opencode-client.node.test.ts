@@ -26,6 +26,50 @@ async function waitFor(pred: () => boolean, timeout = 3000) {
 }
 
 describe("OpenCodeClient ↔ OpenCode server", () => {
+  it("gives gateway sends a scoped request identity and reuses the attachment turn identity without changing desktop sends", async () => {
+    const requests: RequestInit[] = [];
+    const client = new OpenCodeClient({ baseUrl: "http://gateway.test", fetchImpl: async (_input, init) => {
+      requests.push(init ?? {}); return new Response("{}", { status: 202 });
+    } });
+    await client.sendPrompt("owned", "Research");
+    expect(new Headers(requests[requests.length - 1]?.headers).has("x-scikeel-request-id")).toBe(false);
+    client.setGatewayGeneration(2); client.setGatewayAssistantRevision(3);
+    await client.sendPrompt("owned", "Research");
+    const first = new Headers(requests[requests.length - 1]?.headers).get("x-scikeel-request-id");
+    expect(first).toMatch(/^[A-Za-z0-9_-]{16,160}$/);
+    await client.sendPrompt("owned", "Continue");
+    expect(new Headers(requests[requests.length - 1]?.headers).get("x-scikeel-request-id")).not.toBe(first);
+    await client.sendPrompt("owned", "With files", undefined, undefined, undefined, undefined,
+      { turnId: "attachment-owned", attachmentIds: [] });
+    expect(new Headers(requests[requests.length - 1]?.headers).get("x-scikeel-request-id")).toBe("attachment-owned");
+  });
+  it("captures assistant revision alongside generation for mutations without adding either to standalone reads", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new OpenCodeClient({ baseUrl: "http://gateway.test", fetchImpl: async (input, init) => {
+      requests.push({ url: String(input), init }); return new Response(JSON.stringify(new URL(String(input)).pathname === "/question" ? [] : { id: "ses_test" }));
+    } });
+    await client.createSession();
+    expect(new Headers(requests[0].init?.headers).has("x-scikeel-assistant-revision")).toBe(false);
+    client.setGatewayGeneration(3); client.setGatewayAssistantRevision(5);
+    await client.createSession(); await client.answerQuestion("owned-question", [["Research answer"]]);
+    for (const request of requests.slice(1)) {
+      expect(new Headers(request.init?.headers).get("x-scikeel-runtime-generation")).toBe("3");
+      expect(new Headers(request.init?.headers).get("x-scikeel-assistant-revision")).toBe("5");
+    }
+    await client.listQuestions();
+    expect(new Headers(requests[requests.length - 1]?.init?.headers).has("x-scikeel-assistant-revision")).toBe(false);
+    client.setGatewayAssistantRevision(null); await client.createSession();
+    expect(new Headers(requests[requests.length - 1]?.init?.headers).has("x-scikeel-assistant-revision")).toBe(false);
+    for (const invalid of [0, -1, NaN, 1.5]) expect(() => client.setGatewayAssistantRevision(invalid)).toThrow();
+  });
+  it("refreshes policy metadata on a rejected stale write without replaying it or closing the client", async () => {
+    const changed = vi.fn(); const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ code: "assistant_revision_conflict" }), { status: 409 }));
+    const client = new OpenCodeClient({ baseUrl: "http://gateway.test", fetchImpl });
+    client.setGatewayAssistantRevision(5); client.setGatewayAssistantChangedHandler(changed);
+    const close = vi.spyOn(client, "close");
+    await expect(client.createSession()).rejects.toMatchObject({ status: 409, code: "assistant_revision_conflict" });
+    expect(changed).toHaveBeenCalledOnce(); expect(fetchImpl).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();
+  });
   it("hands generation mismatch to connection recovery without retargeting the old client", async () => {
     const changed = vi.fn(); const client = new OpenCodeClient({ baseUrl: "http://gateway.test",
       fetchImpl: async () => new Response("[]", { headers: { "x-scikeel-runtime-generation": "2" } }) });

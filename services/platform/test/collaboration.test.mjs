@@ -4,6 +4,7 @@ import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CollaborationStore, collaborationPolicy } from "../src/collaboration.mjs";
+import {promises as filesystem} from 'node:fs';
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "collaboration-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -38,6 +39,33 @@ test("generation interruption preserves durable decisions and does not cancel a 
   const paused = await restored.get(o);
   assert.equal(paused.phase, "paused"); assert.equal(paused.pending.id, pending.pending.id);
   assert.equal(paused.execution, pending.execution); assert.equal(paused.revision, pending.revision + 1);
+});
+
+test("managed restart keeps durable uncertainty after status reconciliation until verified generation cleanup",async t=>{
+ const f=await fixture(t),context={userId:"student",instanceId:"user-student",generation:1},o={...owner,...context};
+ await f.store.begin(o,0);
+ const restored=new CollaborationStore({rootDir:f.root,retainUnverifiedExecution:true,running:async()=>false});
+ const recovered=await restored.get(o);
+ assert.equal(recovered.phase,"paused");assert.equal(recovered.recoveryRequired,true);
+ await restored.settled(o,recovered.execution);
+ const restarted=new CollaborationStore({rootDir:f.root,retainUnverifiedExecution:true});
+ const retained=await restarted.get(o);assert.equal(retained.recoveryRequired,true);
+ await assert.rejects(restarted.begin(o,retained.revision),{code:"assistant_recovery_required"});
+ await restarted.interruptGeneration({...context,generation:2});
+ assert.equal((await restarted.get(o)).recoveryRequired,true);
+ await restarted.interruptGeneration(context);
+ const cleared=await restarted.get(o);assert.equal(cleared.recoveryRequired,undefined);
+ assert.equal((await restarted.begin({...o,generation:2},cleared.revision)).execution,2);
+});
+test("managed recovery persistence failure preserves the original unresolved execution",async t=>{
+ const f=await fixture(t),o={...owner,instanceId:'user-student',generation:1};await f.store.begin(o,0);
+ const original=filesystem.open;
+ filesystem.open=async(...args)=>{const file=await original(...args);if(args[1]==='wx')file.sync=async()=>{throw Error('synthetic sync failure');};return file;};
+ const restored=new CollaborationStore({rootDir:f.root,retainUnverifiedExecution:true});
+ try {await assert.rejects(restored.get(o),/synthetic sync failure/);}
+ finally {filesystem.open=original;}
+ const restarted=new CollaborationStore({rootDir:f.root,retainUnverifiedExecution:true});
+ assert.equal((await restarted.get(o)).recoveryRequired,true);
 });
 test("mode defaults, identity isolation and release availability", async (t) => {
   const f = await fixture(t);
@@ -359,4 +387,31 @@ test("checkpoint remains answerable without any page heartbeat", async t => {
   assert.equal((await f.store.guard(owner)).blocked,true);
   const answered=await f.store.answer(owner,{id:wait.pending.id,execution:wait.execution,revision:wait.revision,answer:"A"});
   assert.equal(answered.phase,"running");assert.deepEqual(f.stopped,[]);
+});
+
+const fencedOwner={...owner,instanceId:"user-student",generation:1};
+test("preparation rejection settles only its exact running admission",async t=>{
+  const {store}=await fixture(t);const first=await store.begin(fencedOwner,0);
+  const rejected=await store.rejectAdmission(fencedOwner,first.execution);
+  assert.equal(rejected.phase,"idle");assert.equal(rejected.execution,first.execution);
+  const next=await store.begin(fencedOwner,rejected.revision);
+  await store.rejectAdmission(fencedOwner,first.execution);
+  assert.equal((await store.get(fencedOwner)).phase,"running");assert.equal((await store.get(fencedOwner)).execution,next.execution);
+});
+test("rejected admission cannot clear a replacement generation or pending decision",async t=>{
+  const {store}=await fixture(t);const first=await store.begin(fencedOwner,0);
+  await store.interruptGeneration({userId:"student",instanceId:"user-student",generation:1});
+  const replacement={...fencedOwner,generation:2};const paused=await store.get(replacement);
+  const next=await store.begin(replacement,paused.revision);
+  await store.rejectAdmission(fencedOwner,first.execution);assert.equal((await store.get(replacement)).phase,"running");
+  const waiting=await store.checkpoint(replacement,{kind:"method",question:"Use A?",suggestedAnswer:"A"});
+  await store.rejectAdmission(replacement,next.execution);
+  assert.equal((await store.get(replacement)).phase,"waiting_input");assert.equal((await store.get(replacement)).pending.id,waiting.pending.id);
+});
+test("begin reports its owned admission before a persistence failure",async t=>{
+  const {store}=await fixture(t);await store.get(fencedOwner);const save=store.save.bind(store);let ticket;
+  store.save=async()=>{throw new Error("synthetic save failure");};
+  await assert.rejects(store.begin(fencedOwner,0,{onStarted:value=>{ticket=value;}}),/synthetic/);
+  assert.equal(ticket.execution,1);assert.equal(ticket.owner.generation,1);
+  store.save=save;assert.equal((await store.rejectAdmission(ticket.owner,ticket.execution)).phase,"idle");
 });

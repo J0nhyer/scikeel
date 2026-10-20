@@ -4,12 +4,14 @@ import { join, resolve } from "node:path";
 import { AuthStore } from "./auth-store.mjs";
 import { CliRuntimeManager } from "./cli-runtime.mjs";
 import { PlatformServer } from "./platform-server.mjs";
-import { sandboxConfiguration } from "./sandbox-manifest.mjs";
+import { sandboxConfiguration, loadSandboxImageConfiguration } from "./sandbox-manifest.mjs";
 import { createSandboxControlPlane } from "./sandbox-control-plane.mjs";
 import { WorkerManager } from "./worker-manager.mjs";
 import { createAnalyticsStore } from './agent-analytics-store.mjs';
 import { createAnalyticsCollector } from './agent-analytics-collector.mjs';
 import { createAnalyticsRoutes } from './agent-analytics-routes.mjs';
+import {configureNativeEffects} from './native-effects.mjs';
+import {createAssistantRuntimeAuthority} from './assistant-runtime-authority.mjs';
 
 function env(name, fallback = "") {
   return process.env[name] ?? fallback;
@@ -47,7 +49,7 @@ function optionalPath(name, fallback) {
 }
 
 const dataDir = resolve(env("PLATFORM_DATA_DIR", "/srv/osd/platform"));
-const sandbox = sandboxConfiguration(process.env, dataDir);
+const sandbox = await loadSandboxImageConfiguration(sandboxConfiguration(process.env, dataDir));
 const adminUsername = env("PLATFORM_ADMIN_USERNAME", "admin");
 const adminPassword = env("PLATFORM_ADMIN_PASSWORD");
 const authStore = new AuthStore({
@@ -61,6 +63,11 @@ if(boolEnv('PLATFORM_AGENT_ANALYTICS',true)){
   catch{console.error(JSON.stringify({type:'analytics.unavailable'}));}
 }
 const analyticsCollector=analyticsStore?createAnalyticsCollector({store:analyticsStore,registry:controlPlane?.analyticsRegistry??{skills:new Set(['research-workflow'])}}):null;
+if(controlPlane?.analyticsRegistry){
+  const profile=await controlPlane.nativeProfileResolver.refresh('codex');
+  controlPlane.analyticsRegistry.providers.add('codex');
+  for(const model of profile.models)controlPlane.analyticsRegistry.models.add(model.id);
+}
 const workerManager = controlPlane?.manager ?? new WorkerManager({
   rootDir: join(dataDir, "workers"),
   osdCommand: env("OSD_BIN", "osd"),
@@ -75,8 +82,8 @@ const cliRuntime = new CliRuntimeManager({
   sandboxJobs:controlPlane?.nativeJobs,
   profileResolver:controlPlane?.nativeProfileResolver,
   resourcesDir: env("OSD_RESOURCES") || null,
-  // OpenCode remains every user's default. Claude Code and Codex are optional
-  // per-user selections; no environment variable may flip the whole platform.
+  // Only a durable administrator selection may change the deployment assistant.
+  // A first installation retains OpenCode until all target gates are verified.
   runtime: "opencode",
   claudeCommand: env("PLATFORM_CLAUDE_BIN", "claude"),
   claudeArgs: optionalJsonArray("PLATFORM_CLAUDE_ARGS_JSON"),
@@ -95,6 +102,7 @@ const platform = new PlatformServer({
   analyticsCollector,
   analyticsRoutes:analyticsStore?createAnalyticsRoutes({store:analyticsStore,authStore}):null,
   cliRuntime,
+  modelBroker: controlPlane?.model,
   tenantPolicy: controlPlane?.tenantPolicy,
   networkEgress: controlPlane?.egress,
   searchProvider: controlPlane?.searchProvider,
@@ -111,10 +119,18 @@ const platform = new PlatformServer({
 });
 
 if(controlPlane) {
-  const scope=context=>({accountId:context.userId,runtime:'opencode',instanceId:context.instanceId,generation:context.generation});
+  const scope=context=>({accountId:context.userId,runtime:context.runtime??'opencode',instanceId:context.instanceId,generation:context.generation});
   controlPlane.manager.onWorkerReady=({context,access})=>analyticsCollector?.workerReady({scope:scope(context),access});
   controlPlane.manager.onWorkerRevoked=context=>analyticsCollector?.workerRevoked(scope(context));
   controlPlane.model.onAnalyticsAttempt=(context,fact)=>analyticsCollector?.recordAttempt(context?scope(context):null,fact);
+  controlPlane.nativeJobs.logger=event=>console.error(JSON.stringify(event));
+  cliRuntime.assistantAuthority = createAssistantRuntimeAuthority({configuration:sandbox,controlPlane,platform});
+  cliRuntime.onAnalyticsFact=analyticsCollector?(scope,fact)=>analyticsCollector.nativeFact(scope,fact):null;
+  controlPlane.assistantPolicy=context=>cliRuntime.assistantSnapshot(context.userId);
+  controlPlane.executionAuthority=identity=>cliRuntime.assistantSnapshot(identity.userId).recoveryRequired===false&&
+    cliRuntime.assistantPolicy?.isExecutionCurrent(identity)===true;
+  configureNativeEffects({nativeJobs:controlPlane.nativeJobs,cliRuntime,platform,workerManager,tenantPolicy:controlPlane.tenantPolicy});
+  controlPlane.model.nativeEffectHandler=(context,body,options)=>controlPlane.nativeJobs.authorizeEffect(context,body,options);
   controlPlane.model.collaborationHandler=(context,body)=>platform.runtimeCollaboration(context,body);
   controlPlane.model.networkHandler=(context,body)=>platform.runtimeNetwork(context,body);
   controlPlane.revokeNetwork=async(context)=>{

@@ -160,20 +160,28 @@ export class AttachmentStore {
   async removePending(userId, owner, fileId) {
     return this.withUser(userId, async (data, dir) => { const file = this.owned(data, owner, fileId); if (file.state === "sent") throw attachmentError("Sent attachments are retained with their conversation",409); file.deleted = true; await fs.rm(join(dir,"blobs",id(fileId)),{recursive:true,force:true}); });
   }
-  async prepareTurn(userId, sessionId, context, prompt) {
+  async prepareTurn(userId, sessionId, context, prompt, {requestDigest} = {}) {
     id(sessionId); id(context.turnId); const ids = context.attachmentIds ?? [];
     if (!Array.isArray(ids) || new Set(ids).size !== ids.length) throw attachmentError("Invalid attachment list");
+    if (requestDigest !== undefined && !/^[a-f0-9]{64}$/.test(requestDigest)) throw attachmentError("Invalid send digest");
     return this.withUser(userId, (data) => {
       this.owner(data, { sessionId }); const files = ids.map((key) => this.owned(data,{sessionId},key)); validateMessageBudget(files);
       data.sessions[sessionId] ??= { turns: {}, updatedAt: this.now() };
-      const digest = createHash("sha256").update(JSON.stringify({ prompt, ids })).digest("hex"); const previous = data.sessions[sessionId].turns[context.turnId];
-      if (previous && previous.digest !== digest && previous.status === "rejected") {
-        // A definite rejection did not accept a message. Selecting a supported
-        // model may safely replace that attempt while retaining the originals.
-        delete data.sessions[sessionId].turns[context.turnId];
-      } else if (previous) { if (previous.digest !== digest) throw attachmentError("This send ID was used for another message",409); const result = { ...previous, replayAccepted: previous.status === "accepted", uncertain: previous.status === "prepared" }; if (previous.status === "rejected") previous.status = "prepared"; return result; }
-      const turn = { turnId: context.turnId, messageID: messageId(), attachmentIds: ids, digest, status: "prepared", createdAt: this.now() };
-      data.sessions[sessionId].turns[turn.turnId] = turn; return turn;
+      const digest = createHash("sha256").update(JSON.stringify({ prompt, ids })).digest("hex");
+      const previous = data.sessions[sessionId].turns[context.turnId];
+      const matches = previous && (requestDigest
+        ? previous.requestDigestVersion === 1 && previous.requestDigest === requestDigest
+        : previous.digest === digest);
+      if (previous && previous.status !== "rejected") {
+        if (!matches) throw attachmentError("The previous send cannot be matched safely. Reload the conversation.",409,
+          previous.requestDigestVersion === 1 ? "turn_input_changed" : "turn_legacy_receipt");
+        return {...previous,replayAccepted:previous.status==="accepted",uncertain:previous.status==="prepared"};
+      }
+      // Only a definitely rejected attempt can be deliberately replaced (e.g. a supported model selection).
+      const turn = {turnId:context.turnId,messageID:previous && matches ? previous.messageID : messageId(),attachmentIds:ids,
+        digest,status:"prepared",createdAt:this.now(),...(requestDigest ? {requestDigestVersion:1,requestDigest} : {})};
+      data.sessions[sessionId].turns[turn.turnId]=turn;
+      return {...turn,preparedNew:true};
     });
   }
   async finishTurn(userId, sessionId, turnId, status) {

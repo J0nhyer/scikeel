@@ -1,7 +1,17 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { attachmentError } from "./attachments.mjs";
 export const ATTACHMENT_MARKER = "SciKeel attachment turn: ";
 export const ATTACHMENT_CONTEXT = "SciKeel conversation attachment files:\n";
+
+function canonical(value) {
+  if(Array.isArray(value))return value.map(canonical);
+  if(value && typeof value==="object")return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));
+  return value;
+}
+export function promptRequestDigest(prompt,ids) {
+  const clean={...prompt};delete clean.attachmentTurn;delete clean.collaborationRevision;
+  return createHash("sha256").update(JSON.stringify(canonical({prompt:clean,ids}))).digest("hex");
+}
 
 function attachmentContext(files) {
   if (!files.length) return "";
@@ -12,23 +22,36 @@ function attachmentContext(files) {
 }
 export class AttachmentTurns {
   constructor({store,readHistory}) {this.store=store;this.readHistory=readHistory;this.pending=new Set();}
-  async prepare(user,owner,prompt) {
+  async admit(user,owner,prompt) {
     const context=prompt.attachmentTurn ?? {turnId:randomUUID(),attachmentIds:[]};
     if(context.draftId && context.attachmentIds?.length) await this.store.claim(user.id,context.draftId,owner.sessionId,context.attachmentIds);
     const listing=await this.store.list(user.id,owner.sessionId);
     if(!prompt.attachmentTurn && !listing.turns.some((t)=>t.status==="accepted")) return null;
-    const clean={...prompt};delete clean.attachmentTurn;
+    const clean={...prompt};delete clean.attachmentTurn;delete clean.collaborationRevision;
     const key=`${user.id}/${owner.sessionId}/${context.turnId}`;
-    if(this.pending.has(key)) throw attachmentError("This message is still being accepted. Retry shortly.",409,"turn_pending");
-    const turn=await this.store.prepareTurn(user.id,owner.sessionId,context,clean);
+    if(this.pending.has(key)) throw attachmentError("This message is still being accepted. Reload the conversation to check it.",409,"turn_pending");
+    const requestDigest=promptRequestDigest(prompt,context.attachmentIds??[]);
+    const turn=await this.store.prepareTurn(user.id,owner.sessionId,context,clean,{requestDigest});
     if(turn.replayAccepted) return {replayAccepted:true};
     if(turn.uncertain) {
       const history=await this.readHistory(user,owner);
       if(history.some((m)=>(m.info?.id ?? m.id)===turn.messageID)) {await this.store.finishTurn(user.id,owner.sessionId,turn.turnId,"accepted");return {replayAccepted:true};}
-      // A transport failure must never blindly execute the same uncertain turn.
       throw attachmentError("The previous send has not been confirmed. Reload the conversation before retrying.",409,"turn_uncertain");
     }
     this.pending.add(key);
+    let finalization;
+    const finish=(accepted)=>{
+      finalization ??= Promise.resolve().then(()=>this.store.finishTurn(user.id,owner.sessionId,turn.turnId,accepted?"accepted":"rejected"))
+        .finally(()=>this.pending.delete(key));
+      return finalization;
+    };
+    return {key,turn,listing,finish,abandon:()=>this.pending.delete(key)};
+  }
+  async prepare(user,owner,prompt,admission) {
+    if(arguments.length<4)admission=await this.admit(user,owner,prompt);
+    if(!admission || admission.replayAccepted)return admission;
+    const {turn,listing,finish,abandon}=admission;
+    const clean={...prompt};delete clean.attachmentTurn;delete clean.collaborationRevision;
     try {
       const accepted = listing.turns.filter((t) => t.status === "accepted");
       let active = accepted;
@@ -53,10 +76,8 @@ export class AttachmentTurns {
       const body={...clean,messageID:turn.messageID,system:`${clean.system??""}${inventory}`,parts:[...(clean.parts??[]).filter((p)=>p.type!=="file"),...images.map(({filename,mime,url})=>({type:"file",filename,mime,url})),...contextParts,...markerParts]};
       if(Buffer.byteLength(JSON.stringify(body))>7.5*1024**2) throw attachmentError("This model input is too large. Send fewer images.",413,"model_input_too_large");
       const metadata=listing.attachments.filter((f)=>turn.attachmentIds.includes(f.id)).map((f)=>({...f,messageID:turn.messageID}));
-      let finished=false;
-      const finish=async(accepted)=>{if(finished)return;finished=true;try{await this.store.finishTurn(user.id,owner.sessionId,turn.turnId,accepted?"accepted":"rejected");}finally{this.pending.delete(key);}};
-      return {body,turn,displayText:text||"Attached files",images,files,metadata,finish,abandon:()=>this.pending.delete(key)};
-    } catch(e) {this.pending.delete(key);await this.store.finishTurn(user.id,owner.sessionId,turn.turnId,"rejected");throw e;}
+      return {body,turn,displayText:text||"Attached files",images,files,metadata,finish,abandon};
+    } catch(e) {await finish(false);throw e;}
   }
   async decorate(user,owner,history) {
     const {attachments,turns}=await this.store.list(user.id,owner.sessionId);const byId=new Map(attachments.map((f)=>[f.id,f]));

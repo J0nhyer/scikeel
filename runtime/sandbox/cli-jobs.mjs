@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { posix } from "node:path";
+import {nativeTools, validateNativeTool, verifyManagedCodexRuntime} from './native-tools.mjs';
+import {NativeNetworkRpc,networkStepRequest} from './native-network.mjs';
 
 function path(value) {
   if (typeof value !== "string" || !value.startsWith("/") || value === "/" || /[\0\\]/.test(value) ||
@@ -80,12 +82,16 @@ export function runtimeArgv({ runtime, model, sessionId }) {
 
 // One private native app-server per turn. All argv/configuration is fixed here;
 // callers cannot send a host command or choose a different transport endpoint.
+const nativeTurnEvents=new Set(["item/tool/requestUserInput","item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval","item/tool/call","item/started","item/completed","item/agentMessage/delta","item/commandExecution/outputDelta","turn/completed"]);
 export class CodexAppServer {
-  #child; #pending=new Map(); #approvals=new Map(); #questions=new Map(); #next=1; #buffer=""; #bytes=0; #closed=false; #thread; #turn; #closing;
-  constructor({spawnImpl,emit,onStopped=()=>{},timeoutMs=1200000,requestTimeoutMs=30000}) {
+  #child; #pending=new Map(); #approvals=new Map(); #questions=new Map(); #next=1; #buffer=""; #bytes=0; #closed=false; #thread; #turn; #closing; #exited;
+  #startingTurn=false; #deferredEvents=[]; #tools=new Map(); #seenCalls=new Set(); #items=new Map(); #projectDir;
+  constructor({spawnImpl,emit,onStopped=()=>{},verifyRuntime=verifyManagedCodexRuntime,timeoutMs=1200000,requestTimeoutMs=30000}) {
     if(typeof spawnImpl!=="function" || typeof emit!=="function" || typeof onStopped!=="function" || !Number.isSafeInteger(timeoutMs) || timeoutMs<1 || timeoutMs>1200000 ||
         !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs<1 || requestTimeoutMs>30000)throw new Error("invalid native turn configuration");
-    Object.assign(this,{spawnImpl,emit,onStopped,timeoutMs,requestTimeoutMs});
+    if(typeof verifyRuntime!=='function')throw Error('invalid native runtime verifier');
+    Object.assign(this,{spawnImpl,emit,onStopped,verifyRuntime,timeoutMs,requestTimeoutMs});
   }
   #write(value) {
     if(this.#closed || !this.#child?.stdin.writable)throw new Error("native runtime unavailable");
@@ -97,31 +103,38 @@ export class CodexAppServer {
     if(this.#pending.size>=32)return Promise.reject(new Error("native request capacity"));
     const id=this.#next++;
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{this.#pending.delete(id);reject(new Error("native request timeout"));void this.close();},this.requestTimeoutMs);
+      const timer=setTimeout(()=>{this.#pending.delete(id);reject(new Error("native request timeout"));void this.close().catch(()=>{});},this.requestTimeoutMs);
       this.#pending.set(id,{resolve,reject,timer});
       try {this.#write({id,method,params});}catch(error){clearTimeout(timer);this.#pending.delete(id);reject(error);}
     });
   }
-  async start({privateHome,projectDir,environment,brokers,model,text,images=[],nativeSessionId,signal}) {
+  async start({privateHome,projectDir,environment,brokers,model,text,images=[],nativeSessionId,effort,signal}) {
     if(this.#child || this.#closed || typeof model!=="string" || !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/.test(model) || typeof text!=="string" ||
         Buffer.byteLength(text)>512*1024 || !Array.isArray(images) || images.length>10 ||
         images.some(url=>typeof url!=="string" || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(url)) ||
-        (nativeSessionId!==undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(nativeSessionId)) || signal?.aborted)
+        (nativeSessionId!==undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(nativeSessionId)) ||
+        (effort!==undefined&&(typeof effort!=='string'||!/^[a-z][a-z0-9_-]{0,31}$/.test(effort)))||signal?.aborted)
       throw new Error("invalid native turn");
     const env=buildJobEnvironment({privateHome,projectDir,environment,brokers});
+    this.#projectDir=projectDir;
     if(!brokers.modelToken)throw new Error("native model capability required");
     env.CODEX_HOME=posix.join(posix.dirname(privateHome),"codex-home");
+    await this.verifyRuntime();
+    signal?.throwIfAborted();
     const args=["app-server","--listen","stdio://","-c",'model_provider="scikeel"',"-c",
       'model_providers.scikeel={name="SciKeel",base_url="http://172.31.240.1:4792/v1",env_key="OPENAI_API_KEY",wire_api="responses"}',
-      "-c",'approval_policy="on-request"',"-c",'sandbox_mode="read-only"',"-c",'web_search="disabled"'];
+      "-c",'approval_policy="on-request"',"-c",'sandbox_mode="workspace-write"',"-c",'web_search="disabled"',
+      '-c','notify=[]','-c','features.shell_snapshot=false','-c','features.shell_snapshot_v2=false',
+      '-c','features.plugins=false','-c','features.recommended_plugins=false','-c','features.default_mode_request_user_input=true'];
     this.#child=this.spawnImpl("/opt/scikeel/tools/bin/codex",args,{cwd:projectDir,env,detached:true,stdio:["pipe","pipe","pipe"]});
-    const child=this.#child;child.stdin.on("error",()=>{});child.stderr.resume();
+    const child=this.#child;this.#exited=new Promise(resolve=>child.once("close",resolve));
+    child.stdin.on("error",()=>{});child.stderr.resume();
     const decoder=new StringDecoder("utf8");
     this.redact=value=>String(value).replaceAll(brokers.modelToken,"[redacted]").replaceAll(privateHome,"[private home]");
     let queue=Promise.resolve();
     child.stdout.on("data",chunk=>{
       this.#bytes+=chunk.length;this.#buffer+=decoder.write(chunk);
-      if(this.#bytes>32*1024**2 || Buffer.byteLength(this.#buffer)>2*1024**2){void this.close();return;}
+      if(this.#bytes>32*1024**2 || Buffer.byteLength(this.#buffer)>2*1024**2){void this.close().catch(()=>{});return;}
       child.stdout.pause();
       queue=queue.then(async()=>{
         let boundary;
@@ -130,27 +143,42 @@ export class CodexAppServer {
           if(Buffer.byteLength(line)>1024**2)throw new Error("native output limit");
           if(line.trim())await this.#message(JSON.parse(line));
         }
-      }).then(()=>{if(!this.#closed)child.stdout.resume();}).catch(()=>{void this.close();});
+      }).then(()=>{if(!this.#closed)child.stdout.resume();}).catch(()=>{void this.close().catch(()=>{});});
     });
-    child.once("error",()=>{void this.close();});
-    child.once("close",()=>{void this.close();});
-    this.deadline=setTimeout(()=>{void this.close();},this.timeoutMs);
-    this.abort=()=>{void this.close();};this.signal=signal;signal?.addEventListener("abort",this.abort,{once:true});
+    child.once("error",()=>{void this.close().catch(()=>{});});
+    child.once("close",()=>{void this.close().catch(()=>{});});
+    this.deadline=setTimeout(()=>{void this.close().catch(()=>{});},this.timeoutMs);
+    this.abort=()=>{void this.close().catch(()=>{});};this.signal=signal;signal?.addEventListener("abort",this.abort,{once:true});
     if(signal?.aborted){await this.close();throw new Error("native turn cancelled");}
+    let turnSubmitted=false;
     try {
-      await this.#request("initialize",{clientInfo:{name:"scikeel",version:"1.0.0"}});
+      await this.#request("initialize",{clientInfo:{name:"scikeel",version:"1.0.0"},capabilities:{experimentalApi:true}});
       this.#write({method:"initialized"});
-      const params={model,modelProvider:"scikeel",cwd:projectDir,approvalPolicy:"on-request",sandbox:"read-only"};
-      const thread=await this.#request(nativeSessionId ? "thread/resume" : "thread/start",{...params,...(nativeSessionId?{threadId:nativeSessionId}:{})});
+      const params={model,modelProvider:"scikeel",cwd:projectDir,approvalPolicy:"on-request",sandbox:"workspace-write"};
+      const thread=await this.#request(nativeSessionId ? "thread/resume" : "thread/start",{...params,
+        ...(nativeSessionId?{threadId:nativeSessionId}:{dynamicTools:nativeTools()})});
       if(!/^[A-Za-z0-9_-]{1,128}$/.test(thread.thread?.id??"") || (nativeSessionId && thread.thread.id!==nativeSessionId))throw new Error("native resume identity changed");
       this.#thread=thread.thread.id;
+      this.#startingTurn=true;
+      // From this point a missing/rejected acknowledgement can conceal an
+      // executed turn; it must never receive a pre-effect failure receipt.
+      turnSubmitted=true;
       const turn=await this.#request("turn/start",{threadId:this.#thread,cwd:projectDir,model,approvalPolicy:"on-request",
-        sandboxPolicy:{type:"readOnly",networkAccess:false},input:[{type:"text",text},...images.map(url=>({type:"image",url}))]});
+        ...(effort!==undefined?{effort}:{}),
+        sandboxPolicy:{type:"workspaceWrite",writableRoots:[projectDir],networkAccess:false,excludeTmpdirEnvVar:true,excludeSlashTmp:true},
+        input:[{type:"text",text},...images.map(url=>({type:"image",url}))]});
       if(!/^[A-Za-z0-9_-]{1,128}$/.test(turn.turn?.id??""))throw new Error("native turn identity unavailable");
       this.#turn=turn.turn.id;
+      // A notification can share a frame batch with the turn acknowledgement.
+      // Keep its order, but grant it no identity until the actual RPC reply is validated.
+      while(this.#deferredEvents.length)await this.#event(this.#deferredEvents.shift());
+      this.#startingTurn=false;
       signal?.removeEventListener("abort",this.abort);this.signal=undefined;
       return {nativeSessionId:this.#thread,turnId:this.#turn};
-    } catch {await this.close();throw new Error("native turn unavailable");}
+    } catch {
+      await this.close();
+      throw Object.assign(new Error("native turn unavailable"),turnSubmitted?{}:{code:'native_pre_effect_failure',cleanupVerified:true});
+    }
   }
   async #message(value) {
     if(!value || typeof value!=="object" || Array.isArray(value))throw new Error("invalid native frame");
@@ -160,10 +188,31 @@ export class CodexAppServer {
       value.error ? pending.reject(new Error("native request failed")) : pending.resolve(value.result);return;
     }
     if(typeof value.method!=="string")throw new Error("invalid native event");
+    if(nativeTurnEvents.has(value.method)&&this.#startingTurn) {
+      if(this.#deferredEvents.length>=32)throw new Error("native early event capacity");
+      this.#deferredEvents.push(value);return;
+    }
+    return this.#event(value);
+  }
+  async #event(value) {
+    if(this.#closed)throw new Error("native runtime stopped");
     const params=value.params??{};
     if(params.threadId && this.#thread && params.threadId!==this.#thread)throw new Error("foreign native thread");
     if(params.turnId && this.#turn && params.turnId!==this.#turn)throw new Error("foreign native turn");
+    const scoped=nativeTurnEvents.has(value.method);
+    if(scoped&&(!this.#thread||!this.#turn||params.threadId!==this.#thread||
+        (value.method==="turn/completed"?params.turn?.id:params.turnId)!==this.#turn))throw new Error("foreign native execution");
+    if(scoped&&value.id!==undefined&&!/^[A-Za-z0-9_-]{1,128}$/.test((value.method==='item/tool/call'?params.callId:params.itemId)??""))throw new Error("invalid native item scope");
+    const scope={nativeSessionId:this.#thread,turnId:this.#turn};
     if(value.id!==undefined) {
+      if(value.method==='item/tool/call'){
+        const id=String(value.id);
+        if(!['string','number'].includes(typeof value.id)||this.#tools.size>=32||this.#seenCalls.size>=256||
+          this.#tools.has(id)||this.#seenCalls.has(params.callId)||params.namespace!=null)throw Error('Invalid native tool scope');
+        const input=validateNativeTool(params.tool,params.arguments);
+        this.#seenCalls.add(params.callId);this.#tools.set(id,{rpcId:value.id});
+        await this.emit({type:'tool-call',id,callId:params.callId,tool:params.tool,input,...scope});return;
+      }
       if(value.method==="item/tool/requestUserInput") {
         if(!["string","number"].includes(typeof value.id) || !this.#thread || params.threadId!==this.#thread || typeof params.turnId!=="string" ||
             this.#questions.size>=8 || this.#questions.has(String(value.id)) || !Array.isArray(params.questions) || !params.questions.length || params.questions.length>3)
@@ -181,7 +230,7 @@ export class CodexAppServer {
           return {header:this.redact(question.header),question:this.redact(question.question),options,custom:question.isOther===true || !options.length,multiple:false};
         });
         const id=String(value.id);this.#questions.set(id,{rpcId:value.id,ids:[...ids]});
-        await this.emit({type:"question",id,questions});return;
+        await this.emit({type:"question",id,questions,...scope,itemId:params.itemId});return;
       }
       if(!["item/commandExecution/requestApproval","item/fileChange/requestApproval"].includes(value.method) ||
           !["string","number"].includes(typeof value.id) || this.#approvals.size>=32 || this.#approvals.has(String(value.id))) {
@@ -189,13 +238,62 @@ export class CodexAppServer {
       }
       if(!this.#thread || params.threadId!==this.#thread || typeof params.turnId!=="string")throw new Error("invalid native approval scope");
       const id=String(value.id);this.#approvals.set(id,{rpcId:value.id,threadId:params.threadId,turnId:params.turnId});
-      await this.emit({type:"approval",id,kind:value.method.includes("commandExecution")?"command":"edit",command:params.command ? this.redact(params.command) : null});return;
+      await this.emit({type:"approval",id,kind:value.method.includes("commandExecution")?"command":"edit",command:params.command ? this.redact(params.command) : null,...scope,itemId:params.itemId});return;
     }
-    if(value.method==="item/agentMessage/delta" && typeof params.delta==="string")await this.emit({type:"text",text:this.redact(params.delta)});
-    else if(value.method==="item/commandExecution/outputDelta" && typeof params.delta==="string")await this.emit({type:"tool-output",text:this.redact(params.delta)});
+    if(["item/started","item/completed"].includes(value.method))await this.#item(value.method,params.item,scope);
+    else if(value.method==="item/agentMessage/delta" && typeof params.delta==="string")await this.emit({type:"text",text:this.redact(params.delta),...scope});
+    else if(value.method==="item/commandExecution/outputDelta") {
+      const item=this.#items.get(params.itemId);
+      if(!item||item.tool!=='bash'||item.state.status!=='running'||typeof params.delta!=='string')throw Error('Unbound native command output');
+      item.state.output+=this.redact(params.delta);
+      if(Buffer.byteLength(item.state.output)>256*1024)throw Error('Native command output limit');
+      await this.emit({type:'tool',callId:params.itemId,...structuredClone(item),...scope});
+    }
     else if(value.method==="turn/completed") {
-      await this.emit({type:"completed",status:params.turn?.status==="completed"?"completed":"failed"});await this.close();
+      await this.emit({type:"completed",status:params.turn?.status==="completed"?"completed":"failed",...scope});await this.close();
     }
+  }
+  async #item(method,item,scope) {
+    // Pinned protocol v2/item.rs: lifecycle notifications observe execution;
+    // neither a started item nor its output grants permission to run a tool.
+    if(!item||typeof item.type!=='string')throw Error('Invalid native item');
+    if(!['commandExecution','fileChange'].includes(item.type))return;
+    if(!/^[A-Za-z0-9_-]{1,128}$/.test(item.id??'')||!['inProgress','completed','failed','declined'].includes(item.status))throw Error('Invalid native item state');
+    const command=item.type==='commandExecution';
+    const ownedPath=value=>typeof value==='string'&&value.length<=4096&&!/[\0\\]/.test(value)&&
+      (value===this.#projectDir||value.startsWith(`${this.#projectDir}/`))&&posix.normalize(value)===value;
+    let input;
+    if(command){
+      if(typeof item.command!=='string'||!item.command||Buffer.byteLength(item.command)>512*1024||!ownedPath(item.cwd)||
+        item.aggregatedOutput!=null&&typeof item.aggregatedOutput!=='string'||
+        item.exitCode!=null&&!Number.isSafeInteger(item.exitCode)||item.durationMs!=null&&(!Number.isSafeInteger(item.durationMs)||item.durationMs<0))throw Error('Invalid native command item');
+      input={command:this.redact(item.command),cwd:item.cwd};
+    }else{
+      if(!Array.isArray(item.changes)||!item.changes.length||item.changes.length>256)throw Error('Invalid native edit item');
+      input={changes:item.changes.map(change=>{
+        if(!ownedPath(change?.path)||!['add','delete','update'].includes(change.kind?.type)||
+          Object.keys(change.kind).some(key=>!['type',...(change.kind.type==='update'?['move_path']:[])].includes(key))||
+          change.kind.move_path!=null&&!ownedPath(change.kind.move_path)||
+          typeof change.diff!=='string'||Buffer.byteLength(change.diff)>512*1024)throw Error('Invalid native file change');
+        return {path:change.path,kind:structuredClone(change.kind),diff:this.redact(change.diff)};
+      })};
+    }
+    let record=this.#items.get(item.id);
+    if(method==='item/started'){
+      if(record||this.#items.size>=256||item.status!=='inProgress')throw Error('Invalid native item start');
+      record={tool:command?'bash':'edit',state:{status:'running',input,output:'',metadata:{nativeItemType:item.type}}};
+      this.#items.set(item.id,record);
+    }else{
+      if(!record||record.state.status!=='running'||record.tool!==(command?'bash':'edit')||JSON.stringify(record.state.input)!==JSON.stringify(input))throw Error('Unbound native item completion');
+      record.state.status=item.status==='inProgress'?'running':item.status==='completed'?'completed':'error';
+      if(command){
+        if(item.aggregatedOutput!=null)record.state.output=this.redact(item.aggregatedOutput);
+        if(Buffer.byteLength(record.state.output)>256*1024)throw Error('Native command output limit');
+        Object.assign(record.state.metadata,{exitCode:item.exitCode??null,durationMs:item.durationMs??null});
+      }
+      if(record.state.status==='error')record.state.error=`Native ${item.type} ${item.status}`;
+    }
+    await this.emit({type:'tool',callId:item.id,...structuredClone(record),...scope});
   }
   approve({id,decision}) {
     if(!["accept","decline","cancel"].includes(decision))throw new Error("invalid native approval decision");
@@ -208,17 +306,34 @@ export class CodexAppServer {
     this.#questions.delete(id);
     this.#write({id:record.rpcId,result:{answers:Object.fromEntries(record.ids.map((key,index)=>[key,{answers:reject?[]:answers[index]}]))}});
   }
+  toolResult({id,success,text}) {
+    const pending=this.#tools.get(id);
+    if(!pending||typeof success!=='boolean'||typeof text!=='string'||Buffer.byteLength(text)>256*1024)throw Error('Native tool result unavailable');
+    this.#tools.delete(id);
+    this.#write({id:pending.rpcId,result:{contentItems:[{type:'inputText',text:this.redact(text)}],success}});
+  }
   close() {
     if(this.#closing)return this.#closing;
     this.#closed=true;clearTimeout(this.deadline);this.signal?.removeEventListener("abort",this.abort);
     for(const pending of this.#pending.values()){clearTimeout(pending.timer);pending.reject(new Error("native runtime stopped"));}
-    this.#pending.clear();this.#approvals.clear();this.#questions.clear();const child=this.#child;
+    this.#pending.clear();this.#approvals.clear();this.#questions.clear();this.#tools.clear();this.#items.clear();this.#deferredEvents=[];const child=this.#child;
     this.#closing=(async()=>{
-      if(!child || child.exitCode!==null || child.signalCode!==null)return;
-      const stopped=new Promise(resolve=>child.once("close",resolve));
-      try{process.kill(-child.pid,"SIGTERM");}catch{child.kill("SIGTERM");}
-      const timer=setTimeout(()=>{try{process.kill(-child.pid,"SIGKILL");}catch{child.kill("SIGKILL");}},2000);
-      await stopped;clearTimeout(timer);
+      if(!child)return;
+      const signalGroup=signal=>{
+        if(!Number.isSafeInteger(child.pid) || child.pid<2)return; // A failed spawn has no process group.
+        try{process.kill(-child.pid,signal);}catch(error){if(error.code!=="ESRCH")throw new Error("native cleanup unverified");}
+      };
+      let escalation;let deadline;
+      try {
+        // The detached group may outlive its parent; exitCode is not cleanup evidence.
+        signalGroup("SIGTERM");
+        escalation=setTimeout(()=>{try{signalGroup("SIGKILL");}catch{}},2000);
+        await Promise.race([this.#exited,new Promise((_,reject)=>{
+          deadline=setTimeout(()=>reject(new Error("native cleanup unverified")),5000);
+        })]);
+        // A resistant child with closed stdio cannot be forgotten when the parent exits.
+        signalGroup("SIGKILL");
+      } finally {clearTimeout(escalation);clearTimeout(deadline);}
     })().then(()=>{this.onStopped();});
     return this.#closing;
   }
@@ -229,42 +344,63 @@ function validAnswers(value) {
     answer.every(text=>typeof text==="string" && text.length<=2000 && !text.includes("\0")));
 }
 export function jobRequest(value) {
-  const fields={start:["operation","sessionId","project","model","text","images","nativeSessionId"],
-    events:["operation","jobId","after"],approve:["operation","jobId","id","decision"],answer:["operation","jobId","id","answers","reject"],abort:["operation","jobId"]};
+  const fields={start:["operation","sessionId","project","model","text","images","nativeSessionId","turnIdentity","identityRevision","nativeProfile"],
+    inspect:["operation"],events:["operation","jobId","after"],network:['operation','jobId','id','request'],toolResult:['operation','jobId','id','success','text'],approve:["operation","jobId","id","decision"],answer:["operation","jobId","id","answers","reject"],abort:["operation","jobId"]};
   const allowed=fields[value?.operation];
   if(!value || typeof value!=="object" || Array.isArray(value) || !allowed || Object.keys(value).some(key=>!allowed.includes(key)))
     throw new Error("invalid managed job operation");
   if(value.operation==="start") {
+    const grant=value.nativeProfile,turn=value.turnIdentity;
+    const turnFields=['userId','instanceId','generation','conversationId','execution','requestId','policyRevision','runtime'];
+    if(!grant||typeof grant!=='object'||Array.isArray(grant)||Object.keys(grant).some(key=>!['model','modelToken','modelUrl','effort'].includes(key))||
+        grant.model!==value.model||!/^[a-f0-9]{64}$/.test(grant.modelToken??'')||grant.modelUrl!=='http://172.31.240.1:4792/v1'||
+        grant.effort!==undefined&&(typeof grant.effort!=='string'||!/^[a-z][a-z0-9_-]{0,31}$/.test(grant.effort))||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(value.identityRevision??'')||!turn||typeof turn!=='object'||Array.isArray(turn)||
+        Object.keys(turn).sort().join(',')!==turnFields.sort().join(',')||turn.runtime!=='codex'||turn.conversationId!==value.sessionId||
+        !['userId','instanceId','conversationId','requestId'].every(key=>/^[A-Za-z0-9_-]{1,128}$/.test(turn[key]??''))||
+        !['generation','execution','policyRevision'].every(key=>Number.isSafeInteger(turn[key])&&turn[key]>0))
+      throw new Error('invalid native execution grant');
     if(!/^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId??"") || typeof value.project!=="string" || !value.project || value.project.length>4096 ||
-        /[\\\0]/.test(value.project) || value.project.startsWith("/") || value.project.split("/").some(part=>["",".",".."].includes(part)) ||
+        /[\\\0]/.test(value.project) || value.project.startsWith("/") || value.project!=='.'&&value.project.split("/").some(part=>["",".",".."].includes(part)) ||
         !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/.test(value.model??"") || typeof value.text!=="string" || Buffer.byteLength(value.text)>512*1024 ||
         (value.nativeSessionId!==undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(value.nativeSessionId)) ||
         (value.images!==undefined && (!Array.isArray(value.images) || value.images.length>10 || value.images.some(url=>typeof url!=="string" ||
           !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(url) || Buffer.byteLength(url)>768*1024))))throw new Error("invalid managed job input");
-  } else {
+  } else if(value.operation!=="inspect") {
     if(!/^[a-f0-9]{64}$/.test(value.jobId??""))throw new Error("invalid managed job identity");
     if(value.operation==="events" && (!Number.isSafeInteger(value.after) || value.after<0))throw new Error("invalid managed event cursor");
     if(value.operation==="answer" && (!/^[a-f0-9]{64}$/.test(value.id??"") || (value.reject!==undefined && typeof value.reject!=="boolean") ||
         (value.reject!==true && !validAnswers(value.answers))))throw new Error("invalid managed question reply");
     if(value.operation==="approve" && (!/^[a-f0-9]{64}$/.test(value.id??"") || !["accept","decline","cancel"].includes(value.decision)))
       throw new Error("invalid managed job approval");
+    if(value.operation==='toolResult'&&(!/^[a-f0-9]{64}$/.test(value.id??'')||typeof value.success!=='boolean'||
+      typeof value.text!=='string'||Buffer.byteLength(value.text)>256*1024))throw Error('Invalid managed tool result');
+    if(value.operation==='network'){
+      if(!/^[a-f0-9]{64}$/.test(value.id??''))throw Error('Invalid managed network request');
+      networkStepRequest(value.request);
+    }
   }
-  return {...value};
+  return structuredClone(value);
 }
 export class CliJobs {
-  #jobs=new Map(); #starting=false;
-  constructor({manifest,environments,imageDigest,spawnImpl=spawn,nativeFactory=options=>new CodexAppServer(options)}) {
+  #jobs=new Map(); #starting=false; #closing=false;
+  constructor({manifest,environments,imageDigest,network=new NativeNetworkRpc(),spawnImpl=spawn,verifyRuntime=verifyManagedCodexRuntime,nativeFactory=options=>new CodexAppServer(options)}) {
     if(!manifest || !environments || !/^sha256:[a-f0-9]{64}$/.test(imageDigest??"") || typeof nativeFactory!=="function")throw new Error("invalid managed jobs integration");
-    Object.assign(this,{manifest,environments,imageDigest,spawnImpl,nativeFactory});
+    Object.assign(this,{manifest,environments,imageDigest,network,spawnImpl,verifyRuntime,nativeFactory});
   }
   configure(profile) {this.profile=profile;}
-  get busy() {return this.#starting || [...this.#jobs.values()].some(job=>["running","settling"].includes(job.status));}
+  get busy() {return this.#starting || this.#closing || [...this.#jobs.values()].some(job=>["running","settling"].includes(job.status));}
   async call(value,{signal}={}) {
     const request=jobRequest(value);
     if(signal?.aborted)throw new Error("managed job request cancelled");
+    if(request.operation==="inspect")return {busy:this.busy,starting:this.#starting,
+      jobs:[...this.#jobs.values()].map(job=>({jobId:job.id,sessionId:job.sessionId,status:job.status}))};
     if(request.operation==="start")return this.#start(request,signal);
     const job=this.#jobs.get(request.jobId);if(!job)throw new Error("managed job not found");
-    if(request.operation==="abort"){await job.native.close();job.status="cancelled";return {stopped:true};}
+    if(request.operation==="abort"){
+      job.status="settling";job.approvals.clear();job.questions.clear();job.tools.clear();
+      await this.#cleanup(job);job.status="cancelled";return {stopped:true};
+    }
     if(request.operation==="answer") {
       const pending=job.questions.get(request.id);if(!pending || job.status!=="running")throw new Error("managed question unavailable");
       job.questions.delete(request.id);job.native.answer({id:pending,answers:request.answers,reject:request.reject??false});return {replied:true};
@@ -273,27 +409,70 @@ export class CliJobs {
       const pending=job.approvals.get(request.id);if(!pending || job.status!=="running")throw new Error("managed approval unavailable");
       job.approvals.delete(request.id);job.native.approve({id:pending,decision:request.decision});return {replied:true};
     }
+    if(request.operation==='toolResult'){
+      const pending=job.tools.get(request.id);if(!pending||pending.active||job.status!=='running')throw Error('Managed tool result unavailable');
+      job.native.toolResult({id:pending.rpcId,success:request.success,text:request.text});job.tools.delete(request.id);return {replied:true};
+    }
+    if(request.operation==='network')return this.#network(job,request,signal);
     if(request.after>job.sequence || (job.events.length && request.after<job.events[0].sequence-1))throw new Error("managed event cursor unavailable");
-    return {jobId:job.id,status:job.status,nativeSessionId:job.nativeSessionId,events:job.events.filter(event=>event.sequence>request.after)};
+    return {jobId:job.id,status:job.status,nativeSessionId:job.nativeSessionId,turnId:job.turnId,events:job.events.filter(event=>event.sequence>request.after)};
+  }
+  async #network(job,request,signal){
+    const pending=job.tools.get(request.id),step=request.request;
+    if(job.status!=='running'||job.networkController.signal.aborted||!pending||pending.active||pending.tool!==step.tool||
+      !['webfetch','websearch'].includes(pending.tool)||pending.steps>=6||step.grant===job.modelToken||
+      pending.deadline&&step.expiresAt>pending.deadline||
+      pending.tool==='websearch'&&step.query!==pending.input.query||
+      !pending.steps&&pending.tool==='webfetch'&&step.url!==new URL(pending.input.url).href)
+      throw Error('Native network request unavailable');
+    pending.active=true;pending.steps++;pending.deadline=step.expiresAt;
+    const bounded=signal?AbortSignal.any([signal,job.networkController.signal]):job.networkController.signal;
+    const task=Promise.resolve().then(()=>{bounded.throwIfAborted();return this.network.call(step,{signal:bounded});});
+    job.networkTasks.add(task);
+    try{const result=await task;bounded.throwIfAborted();if(job.status!=='running')throw Error('Native network stopped');return result;}
+    finally{pending.active=false;job.networkTasks.delete(task);}
+  }
+  async #cleanup(job){
+    job.networkController.abort();
+    const [native]=await Promise.allSettled([job.native.close(),Promise.allSettled([...job.networkTasks])]);
+    if(native.status==='rejected')throw native.reason;
   }
   async #start(request,signal) {
     if(this.busy)throw new Error("managed job capacity unavailable");
-    if(!this.profile)throw new Error("managed job profile unavailable");
-    const providerName=this.profile.enabled_providers[0];const provider=this.profile.provider[providerName];
-    // Codex requires a Responses-compatible broker. Anthropic-only profiles stay unavailable.
-    if(provider.npm!=="@ai-sdk/openai-compatible" || !Object.hasOwn(provider.models,request.model))throw new Error("managed native model unavailable");
+    if(request.turnIdentity.instanceId!==this.manifest.instanceId||request.turnIdentity.generation!==this.manifest.generation)
+      throw new Error('foreign native execution grant');
     this.#starting=true;
     try {
-      const info=await this.environments.call({operation:"inspect",project:request.project,imageDigest:this.imageDigest},{signal});
-      const projectDir=`${this.manifest.workspaceDir}/${request.project}`;
-      if(info.owned!==true || info.projectDir!==projectDir || !["absent","valid"].includes(info.venvState))throw new Error("managed project environment unavailable");
-      const environment=info.venvState==="valid" ? {kind:"private",python:info.venvPython} : {kind:"base",python:info.basePython};
+      const projectDir=request.project==='.'?this.manifest.workspaceDir:`${this.manifest.workspaceDir}/${request.project}`;
+      // Root-origin conversations share the existing shell hook's base-only
+      // environment; they must not adopt an unregistered root .venv.
+      let environment={kind:'base',python:'/opt/scikeel/science/bin/python'};
+      if(request.project!=='.'){
+        const info=await this.environments.call({operation:"inspect",project:request.project,imageDigest:this.imageDigest},{signal});
+        if(info.owned!==true || info.projectDir!==projectDir || !["absent","valid"].includes(info.venvState))throw new Error("managed project environment unavailable");
+        environment=info.venvState==="valid" ? {kind:"private",python:info.venvPython} : {kind:"base",python:info.basePython};
+      }
       if(this.#jobs.size>=16){const oldest=[...this.#jobs].find(([,job])=>job.status!=="running");if(oldest)this.#jobs.delete(oldest[0]);}
       if(this.#jobs.size>=16)throw new Error("managed job history capacity");
-      const job={id:randomBytes(32).toString("hex"),sessionId:request.sessionId,status:"running",events:[],sequence:0,bytes:0,approvals:new Map(),questions:new Map()};
-      job.native=this.nativeFactory({spawnImpl:this.spawnImpl,onStopped:()=>{
-        if(job.status==="running"){job.status="failed";job.approvals.clear();job.questions.clear();}
+      const job={id:randomBytes(32).toString("hex"),sessionId:request.sessionId,status:"running",events:[],sequence:0,bytes:0,approvals:new Map(),questions:new Map(),tools:new Map(),
+        modelToken:request.nativeProfile.modelToken,networkController:new AbortController(),networkTasks:new Set()};
+      job.native=this.nativeFactory({spawnImpl:this.spawnImpl,verifyRuntime:this.verifyRuntime,onStopped:()=>{
+        job.networkController.abort();
+        if(job.status==="running"){
+          job.status=job.networkTasks.size?'settling':'failed';job.approvals.clear();job.questions.clear();job.tools.clear();
+          if(job.networkTasks.size)void Promise.allSettled([...job.networkTasks]).then(()=>{if(job.status==='settling')job.status='failed';});
+        }
       },emit:async event=>{
+        if(job.status!=="running"||!event||!['approval','question','tool-call','tool','text','tool-output','completed'].includes(event.type)||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(event.nativeSessionId??"")||!/^[A-Za-z0-9_-]{1,128}$/.test(event.turnId??"")||
+            (request.nativeSessionId&&event.nativeSessionId!==request.nativeSessionId)||
+            (job.nativeSessionId&&event.nativeSessionId!==job.nativeSessionId)||(job.turnId&&event.turnId!==job.turnId))
+          throw new Error("foreign native event scope");
+        job.nativeSessionId=event.nativeSessionId;job.turnId=event.turnId;
+        if(event.type==='tool-call'){
+          if(job.tools.size>=32)throw Error('Managed tool capacity');
+          const id=randomBytes(32).toString('hex');job.tools.set(id,{rpcId:event.id,tool:event.tool,input:structuredClone(event.input),steps:0,active:false});event={...event,id};
+        }
         if(event.type==="question") {
           if(job.questions.size>=8)throw new Error("managed question capacity");
           const id=randomBytes(32).toString("hex");job.questions.set(id,event.id);event={...event,id};
@@ -305,15 +484,35 @@ export class CliJobs {
         const owned={...event,sessionID:job.sessionId,sequence:++job.sequence};
         job.bytes+=Buffer.byteLength(JSON.stringify(owned));if(job.bytes>2*1024**2)throw new Error("managed event output limit");
         job.events.push(owned);
-        if(event.type==="completed"){job.status="settling";job.approvals.clear();job.questions.clear();await job.native.close();job.status=event.status;}
+        if(event.type==="completed"){job.status="settling";job.approvals.clear();job.questions.clear();job.tools.clear();await this.#cleanup(job);job.status=event.status;}
       }});
       this.#jobs.set(job.id,job);
       try {
         const result=await job.native.start({...request,privateHome:this.manifest.home,projectDir,environment,
-          brokers:{modelToken:provider.options.apiKey,modelUrl:provider.options.baseURL},signal});
-        job.nativeSessionId=result.nativeSessionId;return {jobId:job.id,nativeSessionId:result.nativeSessionId};
-      } catch {await job.native.close();job.status="failed";job.approvals.clear();job.questions.clear();throw new Error("managed native turn unavailable");}
+          effort:request.nativeProfile.effort,brokers:{modelToken:request.nativeProfile.modelToken,modelUrl:request.nativeProfile.modelUrl},signal});
+        if(!/^[A-Za-z0-9_-]{1,128}$/.test(result?.nativeSessionId??"")||!/^[A-Za-z0-9_-]{1,128}$/.test(result.turnId??"")||
+            (request.nativeSessionId&&result.nativeSessionId!==request.nativeSessionId)||
+            (job.nativeSessionId&&result.nativeSessionId!==job.nativeSessionId)||(job.turnId&&result.turnId!==job.turnId))
+          throw new Error("foreign native acceptance scope");
+        job.nativeSessionId=result.nativeSessionId;job.turnId=result.turnId;
+        return {jobId:job.id,nativeSessionId:job.nativeSessionId,turnId:job.turnId};
+      } catch(error) {
+        job.status='settling';await this.#cleanup(job);job.status="failed";job.approvals.clear();job.questions.clear();job.tools.clear();
+        throw Object.assign(new Error("managed native turn unavailable"),
+          error?.code==='native_pre_effect_failure'&&error.cleanupVerified===true?
+            {code:'native_pre_effect_failure',cleanupVerified:true,turnIdentity:structuredClone(request.turnIdentity)}:{});
+      }
     } finally{this.#starting=false;}
   }
-  async close() {await Promise.allSettled([...this.#jobs.values()].map(job=>job.native.close()));this.#jobs.clear();}
+  async close() {
+    if(this.#starting || this.#closing)throw new Error("managed native cleanup unverified");
+    this.#closing=true;
+    try {
+      const results=await Promise.allSettled([...this.#jobs.values()].map(async job=>{
+        job.status="settling";job.approvals.clear();job.questions.clear();job.tools.clear();await this.#cleanup(job);
+      }));
+      if(results.some(result=>result.status==="rejected"))throw new Error("managed native cleanup unverified");
+      this.#jobs.clear();
+    }finally{this.#closing=false;}
+  }
 }

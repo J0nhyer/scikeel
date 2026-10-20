@@ -130,6 +130,128 @@ mod tests {
     }
 
     #[test]
+    fn checked_revert_inventory_never_omits_hidden_or_unsafe_entries() {
+        let fixture=ManagedFixture::new();
+        let policy=fixture.env.managed_files().unwrap();
+        std::fs::write(fixture.workspace.join(".hidden-result"),[0,255,10]).unwrap();
+        std::fs::write(fixture.workspace.join("result.txt"),"measured").unwrap();
+        let request=json!({"operation":"listStrict","root":"workspace","path":""});
+        let entries=dispatch(policy,request.clone()).expect("strict inventory must be available");
+        assert_eq!(entries["entries"].as_array().unwrap().len(),2);
+        assert!(entries["entries"].as_array().unwrap().iter().any(|entry|entry["name"]==".hidden-result"));
+        assert_eq!(dispatch(policy,json!({"operation":"list","root":"workspace","path":""})).unwrap()["entries"].as_array().unwrap().len(),1);
+        std::os::unix::fs::symlink("result.txt",fixture.workspace.join("alias")).unwrap();
+        assert!(dispatch(policy,request.clone()).is_err(),"links must reject rather than disappear");
+        std::fs::remove_file(fixture.workspace.join("alias")).unwrap();
+        std::fs::hard_link(fixture.workspace.join("result.txt"),fixture.workspace.join("alias")).unwrap();
+        assert!(dispatch(policy,request).is_err(),"multiply linked files cannot be snapshotted");
+    }
+
+    #[test]
+    fn checked_binary_restore_preserves_actual_bytes_and_rejects_stale_versions() {
+        let fixture=ManagedFixture::new();let policy=fixture.env.managed_files().unwrap();
+        let stage=".scikeel/workspace-management/staging/revert-operation-0/payload";
+        policy.mkdir_all("workspace",".scikeel/workspace-management/staging/revert-operation-0").unwrap();
+        std::fs::write(fixture.workspace.join(stage),[0,255,128]).unwrap();
+        let staged=policy.workspace_stat("workspace",stage).unwrap();
+        let create=json!({"operation":"restoreIfRevision","root":"workspace","path":"binary.dat","expectedRevision":null,"stagedPath":stage,"expectedSourceRevision":staged.revision,"mode":420});
+        let created=dispatch(policy,create.clone()).expect("conditional binary restoration must be available");
+        assert_eq!(created["restored"],true);assert_eq!(created["stat"]["size"],3);
+        assert_eq!(created["stat"]["identity"],staged.identity);assert_eq!(created["stat"]["mode"],420);
+        assert!(!fixture.workspace.join(stage).exists());
+        assert_eq!(std::fs::read(fixture.workspace.join("binary.dat")).unwrap(),[0,255,128]);
+        assert!(dispatch(policy,create).is_err(),"absence never overwrites an existing file");
+        std::fs::write(fixture.workspace.join(stage),[255,0]).unwrap();let next=policy.workspace_stat("workspace",stage).unwrap();
+        let changed=dispatch(policy,json!({"operation":"restoreIfRevision","root":"workspace","path":"binary.dat","expectedRevision":created["stat"]["revision"],"stagedPath":stage,"expectedSourceRevision":next.revision,"mode":448})).unwrap();
+        assert_eq!(std::fs::read(fixture.workspace.join("binary.dat")).unwrap(),[255,0]);
+        assert_eq!(changed["stat"]["mode"],448);
+        assert_eq!(dispatch(policy,json!({"operation":"restoreIfRevision","root":"workspace","path":"binary.dat","expectedRevision":created["stat"]["revision"],"stagedPath":null,"expectedSourceRevision":null,"mode":null})).unwrap_err(),"revision_conflict");
+        let removed=dispatch(policy,json!({"operation":"restoreIfRevision","root":"workspace","path":"binary.dat","expectedRevision":changed["stat"]["revision"],"stagedPath":null,"expectedSourceRevision":null,"mode":null})).unwrap();
+        assert_eq!(removed["stat"],Value::Null);assert!(!fixture.workspace.join("binary.dat").exists());
+        std::fs::write(fixture.workspace.join(stage),[]).unwrap();let next=policy.workspace_stat("workspace",stage).unwrap();
+        let empty=dispatch(policy,json!({"operation":"restoreIfRevision","root":"workspace","path":"empty.dat","expectedRevision":null,"stagedPath":stage,"expectedSourceRevision":next.revision,"mode":384})).unwrap();
+        assert_eq!(empty["stat"]["size"],0);
+    }
+
+    #[test]
+    fn checked_binary_restore_never_overwrites_manual_edits_or_linked_and_private_entries() {
+        let fixture=ManagedFixture::new();let policy=fixture.env.managed_files().unwrap();
+        std::fs::write(fixture.workspace.join("owned.dat"),[0,255]).unwrap();
+        let version=policy.workspace_stat("workspace","owned.dat").unwrap().revision;
+        let stage=".scikeel/workspace-management/staging/revert-operation-0/payload";
+        policy.mkdir_all("workspace",".scikeel/workspace-management/staging/revert-operation-0").unwrap();
+        std::fs::write(fixture.workspace.join(stage),[128]).unwrap();let staged=policy.workspace_stat("workspace",stage).unwrap();
+        let request=json!({"operation":"restoreIfRevision","root":"workspace","path":"owned.dat","expectedRevision":version,"stagedPath":stage,"expectedSourceRevision":staged.revision,"mode":384});
+        // Establish that this is a supported operation before exercising refusals.
+        assert!(dispatch(policy,{let mut valid=request.clone();valid["expectedRevision"]=Value::Null;valid["path"]=json!("new.dat");valid}).is_ok());
+        std::fs::write(fixture.workspace.join(stage),[128]).unwrap();let staged=policy.workspace_stat("workspace",stage).unwrap();
+        let mut request=request;request["expectedSourceRevision"]=json!(staged.revision);
+        std::fs::write(fixture.workspace.join("owned.dat"),[7,8,9]).unwrap();
+        assert_eq!(dispatch(policy,request.clone()).unwrap_err(),"revision_conflict");
+        assert_eq!(std::fs::read(fixture.workspace.join("owned.dat")).unwrap(),[7,8,9]);
+        std::os::unix::fs::symlink("owned.dat",fixture.workspace.join("alias")).unwrap();
+        std::fs::hard_link(fixture.workspace.join("owned.dat"),fixture.workspace.join("hardlink")).unwrap();
+        std::fs::create_dir(fixture.workspace.join("directory")).unwrap();
+        for name in [".git",".openscience"] {std::fs::create_dir(fixture.workspace.join(name)).unwrap();}
+        for path in ["alias","hardlink","directory","../peer",".git/config",".scikeel/state",".openscience/runs.jsonl"] {
+            let mut invalid=request.clone();invalid["path"]=json!(path);invalid["expectedRevision"]=Value::Null;
+            assert!(dispatch(policy,invalid).is_err(),"{path}");
+        }
+        for patch in [json!({"stagedPath":null,"expectedSourceRevision":null,"mode":null,"expectedRevision":null}),json!({"bytes":[0]}),json!({"mode":512}),json!({"mode":-1}),json!({"mode":1.5}),json!({"expectedRevision":"invalid"}),json!({"text":"extra"}),json!({"stagedPath":"owned.dat"})] {
+            let mut invalid=request.clone();for(key,value)in patch.as_object().unwrap(){invalid[key]=value.clone();}
+            assert!(dispatch(policy,invalid).is_err());
+        }
+        let mut stale=request.clone();stale["path"]=json!("missing.dat");stale["expectedRevision"]=Value::Null;
+        std::fs::write(fixture.workspace.join(stage),[7,8,9]).unwrap();
+        assert!(dispatch(policy,stale).is_err());assert!(!fixture.workspace.join("missing.dat").exists());
+    }
+
+    #[test]
+    fn checked_binary_restore_accepts_the_documented_exact_byte_limit() {
+        let fixture=ManagedFixture::new();let policy=fixture.env.managed_files().unwrap();
+        let stage=".scikeel/workspace-management/staging/revert-bounded-0/payload";
+        policy.mkdir_all("workspace",".scikeel/workspace-management/staging/revert-bounded-0").unwrap();
+        std::fs::write(fixture.workspace.join(stage),vec![255;25*1024*1024]).unwrap();let staged=policy.workspace_stat("workspace",stage).unwrap();
+        let request=json!({"operation":"restoreIfRevision","root":"workspace","path":"bounded.dat","expectedRevision":null,"stagedPath":stage,"expectedSourceRevision":staged.revision,"mode":384});
+        let restored=dispatch(policy,request).expect("the published bound must be usable");
+        assert_eq!(restored["stat"]["size"],25*1024*1024);
+        let bytes=std::fs::read(fixture.workspace.join("bounded.dat")).unwrap();
+        assert_eq!(bytes.len(),25*1024*1024);assert!(bytes.iter().all(|value|*value==255));
+        std::fs::write(fixture.workspace.join(stage),vec![255;25*1024*1024+1]).unwrap();let staged=policy.workspace_stat("workspace",stage).unwrap();
+        let oversized=json!({"operation":"restoreIfRevision","root":"workspace","path":"oversized.dat","expectedRevision":null,"stagedPath":stage,"expectedSourceRevision":staged.revision,"mode":384});
+        assert!(dispatch(policy,oversized).is_err());assert!(!fixture.workspace.join("oversized.dat").exists());
+    }
+
+    #[test]
+    fn checked_binary_restore_never_publishes_directory_or_link_staging() {
+        let fixture=ManagedFixture::new();let policy=fixture.env.managed_files().unwrap();
+        let stage=".scikeel/workspace-management/staging/revert-invalid-0/payload";
+        policy.mkdir_all("workspace",stage).unwrap();let staged=policy.workspace_stat("workspace",stage).unwrap();
+        let request=json!({"operation":"restoreIfRevision","root":"workspace","path":"not-a-file.dat","expectedRevision":null,"stagedPath":stage,"expectedSourceRevision":staged.revision,"mode":384});
+        assert!(dispatch(policy,request.clone()).is_err(),"directories are never restored as files");
+        assert!(!fixture.workspace.join("not-a-file.dat").exists());
+        std::fs::remove_dir(fixture.workspace.join(stage)).unwrap();
+        std::fs::write(fixture.workspace.join("retained.dat"),[0,255]).unwrap();
+        std::os::unix::fs::symlink(fixture.workspace.join("retained.dat"),fixture.workspace.join(stage)).unwrap();
+        assert!(dispatch(policy,request.clone()).is_err());
+        std::fs::remove_file(fixture.workspace.join(stage)).unwrap();
+        std::fs::hard_link(fixture.workspace.join("retained.dat"),fixture.workspace.join(stage)).unwrap();
+        assert!(dispatch(policy,request).is_err());
+        assert_eq!(std::fs::read(fixture.workspace.join("retained.dat")).unwrap(),[0,255]);
+    }
+
+    #[test]
+    fn checked_binary_restore_inventory_can_stat_the_workspace_root_without_allowing_root_writes() {
+        let fixture=ManagedFixture::new();let policy=fixture.env.managed_files().unwrap();
+        let root=dispatch(policy,json!({"operation":"stat","root":"workspace","path":""})).expect("root inventories need a versioned read-only identity");
+        assert_eq!(root["isDir"],true);assert!(root["mode"].as_u64().unwrap()<=0o777);
+        assert_eq!(dispatch(policy,json!({"operation":"stat","root":"workspace","path":""})).unwrap(),root);
+        assert!(dispatch(policy,json!({"operation":"restoreIfRevision","root":"workspace","path":"","expectedRevision":root["revision"],"stagedPath":null,"expectedSourceRevision":null,"mode":null})).is_err());
+        assert!(dispatch(policy,json!({"operation":"remove","root":"workspace","path":""})).is_err());
+        assert!(dispatch(policy,json!({"operation":"stat","root":"state","path":""})).is_err());
+    }
+
+    #[test]
     fn workspace_management_no_replace_move_and_conditional_save() {
         let fixture=ManagedFixture::new();
         let policy=osd_core::file_policy::ManagedFilePolicy::new("a".into(),1,vec![("workspace".into(),fixture.workspace.clone())]).unwrap();
@@ -226,7 +348,7 @@ pub fn policy(value:&Value)->Result<ManagedFilePolicy,String> {
 }
 fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
     let object=value.as_object().ok_or("invalid file operation")?;
-    if object.keys().any(|key|!["operation","root","path","text","offset","limit","bytes","expectedRevision","destinationPath","expectedSourceRevision"].contains(&key.as_str())) || value["root"]!=WORKSPACE_ROOT {
+    if object.keys().any(|key|!["operation","root","path","text","offset","limit","bytes","expectedRevision","destinationPath","expectedSourceRevision","stagedPath","mode"].contains(&key.as_str())) || value["root"]!=WORKSPACE_ROOT {
         return Err("invalid file operation".into());
     }
     let path=value["path"].as_str().ok_or("invalid file path")?;
@@ -235,6 +357,7 @@ fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
         Some("writeChunk") => &["operation","root","path","offset","bytes"],
         Some("write"|"createText") => &["operation","root","path","text"],
         Some("saveTextIfRevision") => &["operation","root","path","text","expectedRevision"],
+        Some("restoreIfRevision") => &["operation","root","path","stagedPath","expectedRevision","expectedSourceRevision","mode"],
         Some("moveNoReplace") => &["operation","root","path","destinationPath","expectedRevision"],
         Some("replaceTextFromStaging") => &["operation","root","path","destinationPath","expectedRevision","expectedSourceRevision"],
         _ => &["operation","root","path"],
@@ -246,6 +369,17 @@ fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
         Some("readText") => serde_json::to_value(policy.workspace_read_text("workspace",path).map_err(management_error)?).map_err(|_|"invalid text response")?,
         Some("createText") => serde_json::to_value(policy.workspace_create_text("workspace",path,value["text"].as_str().ok_or("invalid file content")?).map_err(management_error)?).map_err(|_|"invalid text response")?,
         Some("saveTextIfRevision") => serde_json::to_value(policy.workspace_save_text("workspace",path,value["text"].as_str().ok_or("invalid file content")?,value["expectedRevision"].as_str().ok_or("missing revision")?).map_err(management_error)?).map_err(|_|"invalid text response")?,
+        Some("restoreIfRevision") => {
+            let expected=match object.get("expectedRevision"){Some(Value::Null)=>None,Some(Value::String(value))=>Some(value.as_str()),_=>return Err("invalid restore revision".into())};
+            let staged=match object.get("stagedPath"){
+                Some(Value::Null) if object.get("expectedSourceRevision")==Some(&Value::Null)&&object.get("mode")==Some(&Value::Null)=>None,
+                Some(Value::String(path))=>Some((path.as_str(),value["expectedSourceRevision"].as_str().ok_or("invalid restore source")?,
+                    value["mode"].as_u64().filter(|value|*value<=0o777).ok_or("invalid restore mode")? as u32)),
+                _=>return Err("invalid restore content".into()),
+            };
+            let stat=policy.workspace_restore_if_revision("workspace",path,expected,staged).map_err(management_error)?;
+            json!({"restored":true,"stat":stat})
+        },
         Some("replaceTextFromStaging") => serde_json::to_value(policy.workspace_replace_text("workspace",path,value["destinationPath"].as_str().ok_or("missing destination")?,value["expectedRevision"].as_str().ok_or("missing revision")?,value["expectedSourceRevision"].as_str().ok_or("missing source revision")?).map_err(management_error)?).map_err(|_|"invalid text response")?,
         Some("moveNoReplace") => serde_json::to_value(policy.workspace_move("workspace",path,value["destinationPath"].as_str().ok_or("missing destination")?,value["expectedRevision"].as_str().ok_or("missing revision")?).map_err(management_error)?).map_err(|_|"invalid stat response")?,
         Some("readChunk") => {
@@ -273,6 +407,7 @@ fn dispatch(policy:&ManagedFilePolicy,value:Value)->Result<Value,String> {
             policy.write_atomic("workspace",path,text.as_bytes()).map_err(|_|"file write denied")?;json!({"written":true})
         },
         Some("list") if !object.contains_key("text")=>json!({"entries":policy.list("workspace",path,1000).map_err(|_|"file list denied")?}),
+        Some("listStrict") if !object.contains_key("text")=>json!({"entries":policy.list_strict("workspace",path,1000).map_err(|_|"strict file list denied")?}),
         Some("mkdir") if !object.contains_key("text")=> {policy.mkdir("workspace",path).map_err(|_|"directory creation denied")?;json!({"created":true})},
         _=>return Err("unsupported file operation".into()),
     };Ok(result)

@@ -53,7 +53,7 @@ async function artifact(directory, path) {
 
 /** One durable brief per conversation. Page leases are deliberately ephemeral. */
 export class ResearchTasks {
-  constructor({ rootDir, cancel = async () => {}, running = null, now = Date.now, logger = () => {}, workspace = null, onAnalyticsFact = null } = {}) {
+  constructor({ rootDir, cancel = async () => {}, running = null, now = Date.now, logger = () => {}, workspace = null, retainUnverifiedExecution = false, onAnalyticsFact = null } = {}) {
     this.rootDir = resolve(rootDir);
     this.workspace = workspace;
     this.cancel = cancel;
@@ -61,6 +61,7 @@ export class ResearchTasks {
     this.logger = logger;
     this.now = now;
     this.onAnalyticsFact = onAnalyticsFact;
+    this.retainUnverifiedExecution=retainUnverifiedExecution;
     this.records = new Map();
     this.leases = new Map();
     this.queues = new Map();
@@ -97,8 +98,16 @@ export class ResearchTasks {
     await fs.mkdir(folder, { recursive: true, mode: 0o700 });
     const file = join(folder, `${id(task.sessionId)}.json`);
     const temp = `${file}.${randomUUID()}.tmp`;
-    await fs.writeFile(temp, JSON.stringify(task), { mode: 0o600 });
-    await fs.rename(temp, file);
+    try {
+      if(this.retainUnverifiedExecution) {
+        const descriptor=await fs.open(temp,'wx',0o600);
+        try {await descriptor.writeFile(JSON.stringify(task));await descriptor.sync();}finally{await descriptor.close();}
+      }else await fs.writeFile(temp, JSON.stringify(task), { mode: 0o600 });
+      await fs.rename(temp, file);
+      if(this.retainUnverifiedExecution) {
+        const parent=await fs.open(folder,'r');try{await parent.sync();}finally{await parent.close();}
+      }
+    }finally{await fs.rm(temp,{force:true});}
     this.records.set(this.key(task.userId, task.sessionId), task);
     if (task.execution > 0 && this.onAnalyticsFact) {
       const outcome=['completed','failed','cancelled','paused','waiting_input','running'].includes(task.status)?task.status:'paused';
@@ -124,7 +133,8 @@ export class ResearchTasks {
     if (task.userId !== userId || task.sessionId !== sessionId || task.version !== 1) throw error("invalid saved research task", 500);
     this.records.set(key, task);
     if (task.executionActive || task.status === "running") {
-      await this.cancel({...task,cancelReason:"server_restarted"});
+      if(this.retainUnverifiedExecution)task.recoveryRequired=true;
+      else await this.cancel({...task,cancelReason:"server_restarted"});
       task.executionActive = false;
       task.status = "paused";
       task.stopReason = "server-restarted";
@@ -145,7 +155,8 @@ export class ResearchTasks {
         const task = this.records.get(this.key(context.userId, sessionId)) ?? JSON.parse(await fs.readFile(join(folder, file), "utf8"));
         if (task.version !== 1 || task.userId !== context.userId || task.sessionId !== sessionId) throw error("invalid saved research task", 500);
         if (task.instanceId !== context.instanceId || task.generation !== context.generation ||
-            !task.executionActive && !["running", "waiting_input"].includes(task.status)) return;
+            !task.recoveryRequired && !task.executionActive && !["running", "waiting_input"].includes(task.status)) return;
+        delete task.recoveryRequired;
         task.executionActive = false; task.status = "paused"; task.stopReason = "workspace-restarted";
         task.revision++; task.updatedAt = this.now();
         await this.save(task);
@@ -299,25 +310,32 @@ export class ResearchTasks {
       return this.save(task);
     });
   }
-  async prepare(userId, sessionId, body, owner) {
+  async prepare(userId, sessionId, body, owner, {onPrepared,nativeHandover} = {}) {
     return this.locked(userId, sessionId, async () => {
       const task = await this.load(userId, sessionId);
       if (!task) return null;
+      if(task.recoveryRequired)throw Object.assign(error("Previous execution cleanup is unverified",503),{code:"assistant_recovery_required"});
       if (task.executionActive) {
         if (this.running && !await this.running(task)) task.executionActive = false;
-        else throw error("research task is already running", 409);
+        else throw Object.assign(error("research task is already running", 409),{code:"research_execution_running"});
       }
       await this.refreshUnlocked(task);
       if (this.pending(task).length) throw error("confirm the pending research decision before continuing", 409);
+      if(nativeHandover&&(nativeHandover.runtime!=='codex'||owner?.runtime!=='codex'||nativeHandover.userId!==userId||
+        nativeHandover.conversationId!==sessionId||nativeHandover.instanceId!==owner.instanceId||nativeHandover.generation!==owner.generation||
+        task.userId!==userId||task.directory!==owner.directory))throw error('Native task handover does not match the admitted execution',409);
       for (let index = 0; index < task.inputVersions.length; index++) {
         if (!task.inputVersions[index].exists) task.inputVersions[index] = await this.artifact(task, task.inputVersions[index].path);
       }
+      const previousReport=structuredClone(task.report);
       task.execution++;
+      if(nativeHandover)task.runtime=owner.runtime;
       if (owner && Number.isSafeInteger(owner.generation)) { task.instanceId = owner.instanceId; task.generation = owner.generation; }
       task.executionActive = true;
       task.status = "running";
       task.report = null;
       delete task.stopReason;
+      onPrepared?.({userId,sessionId,instanceId:task.instanceId,generation:task.generation,execution:task.execution,previousReport});
       await this.save(task);
       const policy = {
         guided: "Explain the next meaningful step and its purpose. Execute only that step, then record a decision asking the student whether to proceed. Ask about substantive method choices before implementing them.",
@@ -328,6 +346,25 @@ export class ResearchTasks {
       const context = `SciKeel research task (version 1). Use the research-workflow Skill and relevant scientific Skills.\n${JSON.stringify(promptTask)}\nMode policy: ${policy}\nExisting runtime tool permissions still apply; this mode grants no new permissions. Preserve original inputs. Never fabricate data or citations.\nWrite progress atomically to ${task.reportPath} inside this session workspace, using:\n${JSON.stringify({ version: 1, execution: task.execution, status: "running", steps: [{ title: "Actual research step", status: "pending" }], decisions: [], artifacts: [], checks: [], limitations: "" })}\nAllowed report status: running, waiting_input, completed, failed. Decisions: {id,question}; only user confirmations in the task record are confirmed decisions. Artifacts: relative file paths, including every requested deliverable. Checks: {title,status: passed|failed|pending,evidence: relative path to actual check output}. A completed report needs existing outputs and passed checks with evidence. Record missing inputs and limitations explicitly. Write waiting_input before stopping for a research decision; do not execute beyond that decision. Explain the result to the student, never claim publication readiness.\nUser request:\n`;
       const original = Array.isArray(body.parts) ? body.parts : [];
       return { ...body, system: [typeof body.system === "string" ? body.system : "", context].filter(Boolean).join("\n\n"), parts: original };
+    });
+  }
+  assertAdmission(ticket) {
+    return this.locked(ticket.userId,ticket.sessionId,async()=>{
+      const task=await this.load(ticket.userId,ticket.sessionId);
+      if(!task || task.recoveryRequired || task.instanceId!==ticket.instanceId || task.generation!==ticket.generation ||
+          task.execution!==ticket.execution || !task.executionActive || task.status!=="running" || this.pending(task).length)
+        throw Object.assign(error("Research execution changed before sending",409),{code:"research_execution_changed"});
+    });
+  }
+  rejectAdmission(ticket) {
+    return this.locked(ticket.userId,ticket.sessionId,async()=>{
+      const task=await this.load(ticket.userId,ticket.sessionId);
+      if(!task || task.instanceId!==ticket.instanceId || task.generation!==ticket.generation ||
+          task.execution!==ticket.execution || !task.executionActive || task.status!=="running" || this.pending(task).length)
+        return task ? structuredClone(task) : null;
+      task.executionActive=false;task.status="paused";task.stopReason="prompt-rejected";
+      task.report=ticket.previousReport;
+      return this.save(task);
     });
   }
   async settled(userId, sessionId) {

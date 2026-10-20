@@ -120,3 +120,38 @@ it("fences platform mutations without sending workspace identity to other origin
     expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).has("x-scikeel-runtime-generation")).toBe(false);
   }
 });
+
+it("XHR generation metadata is present only for the current platform workspace",async()=>{
+  let {mode}=await setup(true,200);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({});
+  mode.setPlatformWorkspaceGeneration(7);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({"x-scikeel-runtime-generation":"7"});
+  mode.setPlatformWorkspaceGeneration(null);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({});
+  ({mode}=await setup(false,200));mode.setPlatformWorkspaceGeneration(7);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({});
+});
+
+it("captures the assistant revision for fetch and XHR while preserving old execution headers and recovery", async () => {
+  const { mode, fetch } = await setup(true, 200);
+  mode.setPlatformWorkspaceGeneration(7); mode.setPlatformAssistantRevision(9);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({ "x-scikeel-runtime-generation": "7", "x-scikeel-assistant-revision": "9" });
+  await window.fetch("/question/owned/reply", { method: "POST" });
+  expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).get("x-scikeel-assistant-revision")).toBe("9");
+  await window.fetch("/session/owned/abort", { method: "POST", headers: { "x-scikeel-runtime-generation": "6", "x-scikeel-assistant-revision": "8" } });
+  expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).get("x-scikeel-assistant-revision")).toBe("8");
+  for (const path of ["/api/admin/runtime", "/api/workspace/recover", "/auth/logout", "https://provider.invalid/responses"]) {
+    await window.fetch(path, { method: "POST" });
+    expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).has("x-scikeel-assistant-revision")).toBe(false);
+  }
+  mode.setPlatformAssistantRevision(null); mode.setPlatformWorkspaceGeneration(null);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({});
+});
+
+it("never forwards a platform assistant revision from a standalone gateway", async () => {
+  const { mode, fetch } = await setup(false, 200); mode.setPlatformAssistantRevision(9);
+  await window.fetch("/session", { method: "POST" });
+  expect(new Headers(fetch.mock.calls[fetch.mock.calls.length - 1]?.[1]?.headers).has("x-scikeel-assistant-revision")).toBe(false);
+  expect(mode.platformWorkspaceMutationHeaders()).toEqual({});
+  for (const invalid of [0, -1, NaN, 1.5]) expect(() => mode.setPlatformAssistantRevision(invalid)).toThrow();
+});

@@ -2,9 +2,9 @@ import { createConnection } from "node:net";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 
-export const LAUNCHER_OPERATIONS = Object.freeze(["register", "start", "stop", "inspect"]);
+export const LAUNCHER_OPERATIONS = Object.freeze(["register", "start", "stop", "inspect", "inventory"]);
 const schemas = { register: ["instanceId", "userId"], start: ["instanceId", "generation", "imageDigest"],
-  stop: ["instanceId", "generation", "reason"], inspect: ["instanceId"] };
+  stop: ["instanceId", "generation", "reason"], inspect: ["instanceId"], inventory: [] };
 const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
 const generation = (value) => Number.isSafeInteger(value) && value > 0;
 const MAX_FRAME = 65536;
@@ -29,13 +29,25 @@ export function launcherRequest(op, args, requestId) {
   if (typeof requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) throw new Error("invalid launcher request ID");
   const keys = schemas[op];
   if (!args || typeof args !== "object" || Array.isArray(args) ||
-      Object.keys(args).sort().join(",") !== [...keys].sort().join(",") || !identifier(args.instanceId) ||
+      Object.keys(args).sort().join(",") !== [...keys].sort().join(",") || (op!=="inventory" && !identifier(args.instanceId)) ||
       (op === "register" && !identifier(args.userId)) ||
       (["start", "stop"].includes(op) && !generation(args.generation)) ||
       (op === "start" && !/^sha256:[a-f0-9]{64}$/.test(args.imageDigest)) ||
       (op === "stop" && (typeof args.reason !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(args.reason))))
     throw new Error("invalid launcher arguments");
   return { schema: 1, requestId, op, args: { ...args } };
+}
+function validateInventory(result) {
+  if(!result || typeof result!=="object" || Object.keys(result).join(",")!=="accounts" ||
+      !Array.isArray(result.accounts) || result.accounts.length>253)throw new Error("invalid launcher inventory");
+  const instances=new Set(),users=new Set();
+  for(const account of result.accounts) {
+    if(!account || Object.keys(account).sort().join(",")!=="generation,instanceId,status,userId" ||
+        !identifier(account.instanceId) || !identifier(account.userId) || !generation(account.generation) ||
+        !["registered","starting","ready","stopped","unavailable"].includes(account.status) ||
+        instances.has(account.instanceId) || users.has(account.userId))throw new Error("invalid launcher inventory");
+    instances.add(account.instanceId);users.add(account.userId);
+  }
 }
 function endpoint(value, port) {
   if (typeof value !== "string") throw new Error("invalid launcher endpoint");
@@ -98,6 +110,10 @@ export class SandboxClient {
             throw clientError("launcher rejected operation", "launcher_rejected", reason);
           }
           const result = frame.result;
+          if(op==="inventory") {
+            if(frame.error!==undefined)throw new Error("invalid launcher success response");
+            validateInventory(result);settled=true;cleanup();resolve(result);return;
+          }
           if (!result || typeof result !== "object" || Array.isArray(result) ||
               Object.keys(result).some((key) => !replyFields[op].includes(key)) || result.instanceId !== args.instanceId || !generation(result.generation) ||
               (args.generation !== undefined && result.generation !== args.generation)) throw new Error("stale or foreign launcher response");
@@ -119,4 +135,5 @@ export class SandboxClient {
   start(args) { return this.call("start", args); }
   stop(args) { return this.call("stop", args); }
   inspect(args, options) { return this.call("inspect", args, options); }
+  inventory(options) { return this.call("inventory", {}, options); }
 }

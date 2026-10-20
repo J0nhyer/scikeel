@@ -1,6 +1,13 @@
 import { spawn, execFileSync } from "node:child_process";
 import { readFile, writeFile, readdir, unlink, symlink, stat } from "node:fs/promises";
-import scienceEnvironment from "/opt/scikeel/tools/science-environment.mjs";
+
+if (process.argv[2] === "--native-capabilities") {
+  const { runNativeProtocolProbe } = await import("/fixture/repo/services/platform/fixtures/native-protocol.mjs");
+  await runNativeProtocolProbe();
+  process.exit(0);
+}
+
+const { default: scienceEnvironment } = await import("/opt/scikeel/tools/science-environment.mjs");
 
 // CI-only acceptance driver; never copied into an installed scientific image.
 const token = "a".repeat(64);
@@ -156,7 +163,22 @@ try {
   const hooks=await scienceEnvironment({directory:projectDir},{imageDigest});const output={env:{}};
   await hooks["shell.env"]({cwd:projectDir},output);
   if(!output.env.PATH.startsWith("/opt/scikeel/science/bin:"))throw new Error("shared science shell environment missing");
+  // Use the installed runner, immutable requirements and production adapter.
+  // No provider is reachable in this network=none container; only synthetic
+  // credentials are used and a real native acceptance must precede cleanup.
+  const nativeStart=await request('/jobs',{operation:'start',sessionId:'ci-native-startup',project:'.',model:'gpt-6.1-sol',
+    text:'Offline startup contract. Do not execute tools.',identityRevision:'ci-native-profile',
+    turnIdentity:{...identity,userId:'ci-user',conversationId:'ci-native-startup',execution:1,requestId:'ci-native-startup',policyRevision:1,runtime:'codex'},
+    nativeProfile:{model:'gpt-6.1-sol',modelToken:'b'.repeat(64),modelUrl:'http://172.31.240.1:4792/v1'}});
+  if(!nativeStart.ok)throw new Error(`installed native startup rejected (${nativeStart.status})`);
+  const native=await nativeStart.json();
+  if(!/^[a-f0-9]{64}$/.test(native.jobId??'')||!native.nativeSessionId||!native.turnId)throw new Error('installed native acceptance missing');
+  const nativeStop=await request('/jobs',{operation:'abort',jobId:native.jobId});
+  if(!nativeStop.ok||(await nativeStop.json()).stopped!==true)throw new Error('installed native cleanup unverified');
+  const nativeInventory=await request('/jobs',{operation:'inspect'});
+  if(!nativeInventory.ok||(await nativeInventory.json()).busy!==false)throw new Error('installed native startup left an active job');
   console.log(JSON.stringify({ assignedAddress:address,scienceShellEnvironment:true,productionRunner: true, realGateway: true, realFileHelper: true,
+    installedNativeAcceptance:true,installedNativeCleanup:true,
     workspaceInventory: true, artifactPreview: true, skillResources: true, sharedSkillLocations: true, sharedWriteDenied, privateSkillCopies: false, localSkillHelper: true, offlineRipgrep: true, projectInventory: true, runInventory: true,
     authentication: true, generationBinding: true, workspaceEscapeDenied: true, profileRestart: true, conditionalSave: true, privateSnapshotExcluded: true, noFollowManagement: true }));
 } finally {

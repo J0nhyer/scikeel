@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,10 +8,16 @@ import { afterEach, test } from "node:test";
 
 import { AuthStore } from "../src/auth-store.mjs";
 import { CliRuntimeManager } from "../src/cli-runtime.mjs";
+import { ConversationState } from "../src/conversation-state.mjs";
+import { CliProfileResolver } from "../src/cli-profile.mjs";
 import { PlatformServer } from "../src/platform-server.mjs";
 import { WorkerManager } from "../src/worker-manager.mjs";
 import { TenantPolicy } from "../src/tenant-policy.mjs";
+import { WorkspaceRpc } from "../src/workspace-rpc.mjs";
 import { recoveryError } from "../src/workspace-recovery.mjs";
+import { WorkspaceAdmission } from "../src/workspace-admission.mjs";
+import {localRevertFiles} from '../fixtures/conversation-revert-files.mjs';
+import {createManagedModelCatalogReader} from '../src/managed-model-catalog.mjs';
 
 const fakeOsd = fileURLToPath(new URL("../fixtures/fake-osd.mjs", import.meta.url));
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
@@ -47,10 +54,13 @@ function cookieHeader(jar) {
 
 function makeClient(base) {
   const jar = new Map();
+  let policyRevision = "1";
   return {
     jar,
     async request(path, options = {}) {
       const headers = { ...(options.headers ?? {}) };
+      if (options.method && !["GET", "HEAD"].includes(options.method) && !Object.hasOwn(headers, "origin")) headers.origin = base;
+      if (options.method && !["GET", "HEAD"].includes(options.method) && !Object.hasOwn(headers, "x-scikeel-assistant-revision")) headers["x-scikeel-assistant-revision"] = policyRevision;
       if (options.method && !["GET", "HEAD"].includes(options.method) && !Object.hasOwn(headers, "x-scikeel-runtime-generation")) headers["x-scikeel-runtime-generation"] = "1";
       const cookies = cookieHeader(jar);
       if (cookies) headers.cookie = cookies;
@@ -60,12 +70,13 @@ function makeClient(base) {
         headers,
       });
       addCookies(jar, response);
+      policyRevision = response.headers.get("x-scikeel-assistant-revision") ?? policyRevision;
       return response;
     },
   };
 }
 
-async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null } = {}) {
+async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null, enableWorkspaceManagement = false, logger = () => {} } = {}) {
   const root = providedRoot ?? (await mkdtemp(join(tmpdir(), "osd-platform-server-")));
   const authStore = new AuthStore({
     filePath: join(root, "platform", "auth.json"),
@@ -78,7 +89,7 @@ async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRo
     startupTimeoutMs: 5_000,
     stopTimeoutMs: 1_000,
   });
-  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles });
+  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles, enableWorkspaceManagement, logger });
   const address = await server.listen();
   const fixture = { root, authStore, manager, server, cliRuntime, base: `http://${address.host}:${address.port}` };
   fixtures.push(fixture);
@@ -229,7 +240,7 @@ test("research tasks validate ownership, preserve page-independent execution, an
   await writeFile(join(home, "auth.json"), '{"auth":true}');
   await writeFile(join(home, "config.toml"), 'model = "gpt-fast"\nmodel_catalog_json = "models.json"\n');
   await writeFile(join(home, "models.json"), JSON.stringify({ models: ["gpt-fast"] }));
-  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: home, codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
+  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), runtime: "codex", codexHome: home, codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
   const f = await makeFixture({ root, cliRuntime });
   const admin = makeClient(f.base);
   const account = await login(admin, "admin", "admin-password");
@@ -419,7 +430,7 @@ test("logs out through a browser form and revokes the platform session", async (
   assert.equal(me.status, 401);
 });
 
-test("keeps OpenCode per user while exposing administrator-managed Claude and Codex CLIs", async () => {
+test("keeps one administrator-selected assistant while isolating users, model preferences and native histories", async () => {
   const root = await mkdtemp(join(tmpdir(), "osd-platform-cli-"));
   const webRoot = join(root, "web");
   const adminClaude = join(root, "admin-claude");
@@ -434,6 +445,16 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   await writeFile(join(webRoot, "index.html"), "<!doctype html><html><head></head><body>web</body></html>");
   await writeFile(join(webRoot, "assets", "app.js"), "console.log('web');\n");
 
+  const profileResolver = new CliProfileResolver({ claudeConfigDir: adminClaude, codexHome: adminCodex,
+    fetchImpl: async () => { throw Error("Deterministic adapter fixtures must not contact a provider"); } });
+  const refresh = profileResolver.refresh.bind(profileResolver);
+  // Only the synthetic CLI is available; this is not live Claude evidence.
+  profileResolver.refresh = async (...args) => {
+    const profile = await refresh(...args);
+    return args[0] === "claude" && profile.enabledByProfile ? { ...profile, status: "ready" } : profile;
+  };
+  const assistantAuthority = { prepare: async () => {}, revoke: async () => {},
+    inventory: async () => ({ activeExecutions: [], uncertainEffects: [] }) };
   const cliRuntime = new CliRuntimeManager({
     rootDir: join(root, "cli-runtime"),
     runtime: "opencode",
@@ -443,6 +464,8 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     codexArgs: [fakeCli, "codex"],
     claudeConfigDir: adminClaude,
     codexHome: adminCodex,
+    profileResolver,
+    assistantAuthority,
     turnTimeoutMs: 5_000,
   });
   const fixture = await makeFixture({ cliRuntime, webRoot, root });
@@ -486,8 +509,8 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     headers: { accept: "application/json", "content-type": "application/json" },
     body: JSON.stringify({ runtime: "codex", enabled: true }),
   });
-  assert.equal(configuredCodex.status, 200);
-  assert.equal((await json(configuredCodex)).assistantEnabled.codex, true);
+  assert.equal(configuredCodex.status, 409);
+  assert.equal((await json(configuredCodex)).code, "assistant_selection_migrated");
 
   const invalidCatalog = await admin.request("/api/admin/runtime", {
     method: "POST",
@@ -502,7 +525,7 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   const unchangedCatalog = await admin.request("/api/admin/runtime", {
     headers: { accept: "application/json" },
   });
-  assert.equal((await json(unchangedCatalog)).assistantEnabled.codex, true);
+  assert.equal((await json(unchangedCatalog)).assistantEnabled.codex, false);
 
   const studentAdminAttempt = await student.request("/api/admin/runtime", {
     method: "POST",
@@ -523,18 +546,19 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   assert.equal(studentSwitchAttempt.status, 403);
   assert.equal((await json(await admin.request("/api/admin/runtime", {
     headers: { accept: "application/json" },
-  }))).assistantEnabled.codex, true);
+  }))).assistantEnabled.codex, false);
 
-  const selectClaude = await admin.request("/api/runtime", {
+  const selectClaude = await admin.request("/api/admin/runtime", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ runtime: "claude" }),
+    body: JSON.stringify({ runtime: "claude", expectedRevision: 1, operationId: "fixture-claude" }),
   });
   assert.equal(selectClaude.status, 200);
-  assert.equal((await json(selectClaude)).runtime, "claude");
+  assert.equal((await json(selectClaude)).activeRuntime, "claude");
   const unchangedStudentRuntime = await student.request("/api/runtime", { headers: { accept: "application/json" } });
-  assert.equal((await json(unchangedStudentRuntime)).runtime, "opencode");
+  assert.equal((await json(unchangedStudentRuntime)).runtime, "claude");
   const studentOpenCode = await student.request("/echo", { headers: { accept: "application/json" } });
+  // This legacy fixture's diagnostic bridge is not an inference fallback.
   assert.equal(studentOpenCode.status, 200);
 
   const eventResponse = await admin.request(`/event?directory=${encodeURIComponent(workspace)}`);
@@ -570,15 +594,21 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   assert.match(streamed, /session\.idle/);
   await eventReader.cancel();
 
-  const switchRuntime = await admin.request("/api/runtime", {
+  const switchRuntime = await admin.request("/api/admin/runtime", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ runtime: "codex", model: "gpt-deep" }),
+    body: JSON.stringify({ runtime: "codex", expectedRevision: 2, operationId: "fixture-codex" }),
   });
   assert.equal(switchRuntime.status, 200);
-  assert.equal((await json(switchRuntime)).model, "gpt-deep");
+  assert.equal((await json(switchRuntime)).activeRuntime, "codex");
+  const chooseModel = await admin.request("/api/runtime", {
+    method: "POST", headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ runtime: "codex", model: "gpt-deep" }),
+  });
+  assert.equal(chooseModel.status, 200);
+  assert.equal((await json(chooseModel)).model, "gpt-deep");
   const stillUnchangedStudentRuntime = await student.request("/api/runtime", { headers: { accept: "application/json" } });
-  assert.equal((await json(stillUnchangedStudentRuntime)).runtime, "opencode");
+  assert.equal((await json(stillUnchangedStudentRuntime)).runtime, "codex");
   const adminManagedConfig = await admin.request("/global/config", {
     headers: { accept: "application/json" },
   });
@@ -702,6 +732,7 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     claudeCommand: process.execPath, claudeArgs: [fakeCli, "claude"],
     codexCommand: process.execPath, codexArgs: [fakeCli, "codex"],
     claudeConfigDir: adminClaude, codexHome: adminCodex, turnTimeoutMs: 5_000,
+    profileResolver, assistantAuthority,
   });
   try {
     await restored.init();
@@ -709,10 +740,10 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     assert.equal(restored.modelForUser(studentLogin.user.id, "codex"), "gpt-deep");
   } finally { await restored.close(); }
 
-  const switchBack = await admin.request("/api/runtime", {
+  const switchBack = await admin.request("/api/admin/runtime", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ runtime: "claude" }),
+    body: JSON.stringify({ runtime: "claude", expectedRevision: 3, operationId: "fixture-back" }),
   });
   assert.equal(switchBack.status, 200);
   const restoredClaudeSessions = await admin.request("/experimental/session", {
@@ -851,7 +882,7 @@ test("conversation attachments persist on real managed messages and reject anoth
   const home = join(root, "codex-home"); await mkdir(home);
   await writeFile(join(home, "auth.json"), '{"auth":true}');
   await writeFile(join(home, "config.toml"), 'model = "fixture-model"\n');
-  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: home,
+  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), runtime: "codex", codexHome: home,
     codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
   const f = await makeFixture({ root, cliRuntime }); const client = makeClient(f.base);
   const account = await login(client, "admin", "admin-password"); await client.request("/"); await cliRuntime.setUserRuntime(account.user.id, "codex");
@@ -1314,6 +1345,567 @@ test('automatic search requires the selected backend and an owned running query'
 });
 
 
+test('managed history reads use owned public routing before assistant-specific dispatch',async()=>{
+  const policy=new TenantPolicy(),f=await makeFixture({tenantPolicy:policy}),client=makeClient(f.base);
+  const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+  const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+  policy.registerAccount({userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir});
+  f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+  let reads=0,indexes=0;
+  f.server.conversationRouter={
+    index:async()=>{indexes++;},
+    list:async owner=>{assert.equal(owner.userId,user.id);return[{id:'retained',title:'Retained',directory:worker.workspaceDir}];},
+    read:async(owner,id)=>{assert.equal(owner.generation,1);return{id,title:'Retained',directory:worker.workspaceDir};},
+    messages:async(_owner,id,options)=>{assert.equal(options.synchronize,true);assert.equal(indexes,0);reads++;return[{info:{id:'retained-message',sessionID:id,role:'assistant'},parts:[]}];},
+  };
+  const listed=await client.request('/experimental/session?limit=200');assert.equal(listed.status,200);
+  assert.equal((await listed.json())[0].id,'retained');
+  const history=await client.request('/session/retained/message');assert.equal(history.status,200);
+  assert.equal((await history.json())[0].info.id,'retained-message');assert.equal(reads,1);
+  assert.equal((await client.request('/experimental/session?directory=%2Fetc')).status,403);
+  assert.equal((await client.request('/experimental/session?limit=1&limit=2')).status,400);
+});
+
+test('native HTTP prompt obtains a canonical policy lease before research and attachment preparation',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'scikeel-http-admission-'));
+ let starts=0;
+ const cliRuntime=new CliRuntimeManager({rootDir:join(root,'native'),sandboxJobs:{run:async()=>{starts++;throw Error('Unexpected inference');}},
+  profileResolver:{refresh:async runtime=>({runtime,enabledByProfile:runtime==='codex',models:runtime==='codex'?[{id:'approved',variants:{}}]:[],
+   defaultModel:runtime==='codex'?'approved':null,identityRevision:'service-profile',catalogRevision:'catalog',status:'ready',files:{}})},
+  assistantAuthority:{prepare:async()=>{},revoke:async()=>{},inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}});
+ await cliRuntime.init();await cliRuntime.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'select-http-fixture'});
+ const policy=new TenantPolicy(),f=await makeFixture({root,tenantPolicy:policy,cliRuntime}),client=makeClient(f.base);
+ const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+ const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+ f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+ const owner={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir};
+ policy.registerAccount(owner);
+ const session=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir,title:'Owned'});
+ await f.server.conversations.create(owner,{conversationId:session.id,title:'Owned',parentId:null,lifecycle:'active'});
+ f.server.conversationRouter.listOpenCode=async()=>[];
+ let phase,scope;
+ f.server.researchTasks.get=async()=>{
+  const saved=await f.server.conversations.open(owner,session.id),receipt=saved.turns['http-owned'];
+  phase=receipt?.state;scope=receipt?.identity;
+  return null;
+ };
+ f.server.attachmentTurns.prepare=async()=>{throw Object.assign(Error('Synthetic preparation rejection'),{status:400});};
+ const response=await client.request(`/session/${session.id}/prompt_async`,{method:'POST',
+  headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2','x-scikeel-request-id':'http-owned'},
+  body:JSON.stringify({parts:[{type:'text',text:'Research'}],model:{providerID:'codex',modelID:'approved'}})});
+ assert.equal(response.status,400);assert.equal(phase,'prepared');assert.equal(scope.userId,user.id);
+ assert.equal(scope.generation,1);assert.equal(scope.runtime,'codex');assert.equal(starts,0);
+});
+
+test('native collaboration resolves owned child ancestry without querying the OpenCode worker',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'scikeel-native-collaboration-'));
+ const cliRuntime=new CliRuntimeManager({rootDir:join(root,'native'),sandboxJobs:{run:async()=>{throw Error('Unexpected inference');}},
+  profileResolver:{refresh:async runtime=>({runtime,enabledByProfile:runtime==='codex',models:runtime==='codex'?[{id:'approved',variants:{}}]:[],
+   defaultModel:runtime==='codex'?'approved':null,identityRevision:'service-profile',catalogRevision:'catalog',status:'ready',files:{}})},
+  assistantAuthority:{prepare:async()=>{},revoke:async()=>{},inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}});
+ await cliRuntime.init();await cliRuntime.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'native-collaboration'});
+ const policy=new TenantPolicy(),f=await makeFixture({root,tenantPolicy:policy,cliRuntime}),client=makeClient(f.base);
+ const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+ const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+ f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+ const context={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir};policy.registerAccount(context);
+ const parent=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir});
+ const child=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir});child.parentId=parent.id;
+ const nativeFetch=globalThis.fetch,access=f.manager.getWorkerAccess(instanceId);let workerReads=0;
+ globalThis.fetch=async(input,init)=>{if(new URL(String(input)).origin===new URL(access.url).origin){workerReads++;throw Error('Native collaboration reached OpenCode');}return nativeFetch(input,init);};
+ t.after(()=>{globalThis.fetch=nativeFetch;});
+ const result=await f.server.runtimeCollaboration(context,{action:'state',sessionId:child.id});
+ assert.equal(result.state.sessionId,parent.id);assert.equal(result.state.runtime,'codex');assert.equal(workerReads,0);
+ const owner={...context,sessionId:parent.id,directory:worker.workspaceDir,runtime:'codex'};
+ parent.permission=[{permission:'bash',pattern:'*',action:'deny'}];
+ const started=await f.server.collaboration.begin(owner,result.state.revision);
+ assert.equal(started.phase,'running');assert.ok(parent.permission.some(rule=>rule.permission==='bash'&&rule.action==='deny'));
+ const effective=await cliRuntime.researchRequest({userId:user.id,directory:worker.workspaceDir,path:`/session/${parent.id}`});
+ assert.ok(effective.permission.some(rule=>rule.permission==='*'&&rule.action==='allow'));
+ await assert.rejects(f.server.runtimeCollaboration({...context,generation:2},{action:'state',sessionId:child.id}));
+ await assert.rejects(f.server.runtimeCollaboration(context,{action:'state',sessionId:'foreign-session'}));assert.equal(workerReads,0);
+ const unregistered=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir});
+ unregistered.parentId=unregistered.id;
+ await assert.rejects(f.server.runtimeCollaboration(context,{action:'state',sessionId:unregistered.id}));
+ assert.throws(()=>policy.session(context,unregistered.id));
+ const foreign=await cliRuntime.createSession({userId:'foreign-user',workspaceDir:worker.workspaceDir});
+ unregistered.parentId=foreign.id;
+ await assert.rejects(f.server.runtimeCollaboration(context,{action:'state',sessionId:unregistered.id}));
+ assert.throws(()=>policy.session(context,unregistered.id));assert.equal(workerReads,0);
+});
+
+async function nativeHttpFixture(t,run,options={}){
+ const root=await mkdtemp(join(tmpdir(),'scikeel-native-http-research-'));
+ const cliRuntime=new CliRuntimeManager({rootDir:join(root,'native'),sandboxJobs:{run},
+  profileResolver:{refresh:async runtime=>({runtime,enabledByProfile:runtime==='codex',models:runtime==='codex'?[{id:'approved',variants:{}}]:[],
+   defaultModel:runtime==='codex'?'approved':null,identityRevision:'service-profile',catalogRevision:'catalog',status:'ready',files:{}})},
+  assistantAuthority:{prepare:async()=>{},revoke:async()=>{},inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}});
+ await cliRuntime.init();await cliRuntime.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'native-http-research'});
+ const policy=new TenantPolicy(),f=await makeFixture({root,tenantPolicy:policy,cliRuntime,...options}),client=makeClient(f.base);
+ const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+ const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+ f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+ const owner={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir,runtime:'codex'};
+ policy.registerAccount(owner);
+ const create=async parentId=>{
+  const session=await cliRuntime.createSession({userId:user.id,workspaceDir:worker.workspaceDir});
+  if(parentId)session.parentId=parentId;
+  await cliRuntime.persistUser(await cliRuntime.ensureUser(user.id));
+  await f.server.conversations.create(owner,{conversationId:session.id,title:'Owned',parentId:parentId??null,lifecycle:'active'});
+  return session;
+ };
+ const session=await create();f.server.conversationRouter.listOpenCode=async()=>[];
+ const send=(requestId,body={},target=session)=>client.request(`/session/${target.id}/prompt_async`,{method:'POST',
+  headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2','x-scikeel-request-id':requestId},
+  body:JSON.stringify({parts:[{type:'text',text:'Research'}],model:{providerID:'codex',modelID:'approved'},...body})});
+ return {...f,client,user,owner,session,create,send,researchOwner:{...owner,sessionId:session.id}};
+}
+async function until(check,attempts=100){
+ for(let n=0;n<attempts;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
+ assert.fail('Timed out waiting for native turn settlement');
+}
+test('canonical native rename survives owned read, history refresh and platform reconstruction',async t=>{
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Metadata must not dispatch inference');});
+ const title='Checked canonical research title';
+ const changed=await f.client.request(`/session/${f.session.id}`,{method:'PATCH',headers:{'content-type':'application/json',
+  'x-scikeel-assistant-revision':'2'},body:JSON.stringify({title})});
+ assert.equal(changed.status,200,await changed.text());
+ const read=await f.client.request(`/session/${f.session.id}`);assert.equal(read.status,200);
+ assert.equal((await read.json()).title,title);
+ assert.equal((await f.server.conversations.open(f.owner,f.session.id)).title,title);
+ await f.server.conversationRouter.messages(f.owner,f.session.id,{synchronize:true});
+ assert.equal((await f.server.conversationRouter.read(f.owner,f.session.id)).title,title);
+ const restarted=new ConversationState({rootDir:f.server.conversations.rootDir,authorize:async()=>true});
+ assert.equal((await restarted.open(f.owner,f.session.id)).title,title);
+});
+test('native HTTP history remains readable when a real turn completes between indexing and rendering',async t=>{
+ let finish,accepted=false;const completed=new Promise(resolve=>{finish=resolve;});
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'streaming-native-thread',turnId:'streaming-turn'});accepted=true;
+  await completed;await args.emit({type:'text',text:'Completed during the history read'});
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'streaming-native-thread'};
+ });
+ t.after(()=>finish());
+ const sent=await f.send('streaming-history-read');assert.equal(sent.status,202,await sent.text());await until(()=>accepted);
+ const original=f.cliRuntime.readHistoricalMessages.bind(f.cliRuntime);let reads=0;
+ f.cliRuntime.readHistoricalMessages=async owner=>{
+  const snapshot=await original(owner);
+  if(reads++===0){finish();await until(()=>f.cliRuntime.activeTurns.size===0);}
+  return snapshot;
+ };
+ const response=await f.client.request(`/session/${f.session.id}/message`);
+ assert.equal(response.status,200,await response.clone().text());const history=await response.json();
+ assert.deepEqual(history.map(message=>message.info.role),['user','assistant']);
+ assert.equal(history[1].parts[0].text,'Completed during the history read');
+ assert(history.every(message=>message.info.sessionID===f.session.id));
+});
+test('canonical Codex conversation continues through the actual OpenCode HTTP worker and returns to a fresh Codex binding',async t=>{
+ const starts=[];let f;const files=localRevertFiles({workspaceDir:()=>f.owner.workspaceDir});
+ f=await nativeHttpFixture(t,async args=>{
+  starts.push(args);const nativeSessionId=args.nativeSessionId??`codex-handover-${starts.length}`;
+  await args.onAccepted({nativeSessionId,turnId:`turn-${starts.length}`});
+  await args.emit({type:'text',text:'Intervening Codex scientific result'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ },{enableWorkspaceManagement:true,workspaceFiles:files});
+ f.session.permission=[{permission:'edit',pattern:'protected.csv',action:'deny'}];
+ assert.equal((await f.send('first-native')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const access=f.manager.getWorkerAccess(f.owner.instanceId),headers={authorization:`Basic ${Buffer.from(`opencode:${access.token}`).toString('base64')}`};
+ f.server.conversationRouter.listOpenCode=async()=>{const response=await fetch(`${access.url}/experimental/session`,{headers});return response.json();};
+ f.server.runtimeCatalog=createManagedModelCatalogReader({config:{defaultProvider:'broker',providers:{broker:{enabledModels:['allowed']}}},
+  fetchImpl:async url=>({ok:true,json:async()=>new URL(url).pathname==='/global/config'?{model:'broker/allowed'}:{providers:[{id:'broker',models:{allowed:{variants:{}}}}]}})});
+ await f.cliRuntime.selectAssistant({runtime:'opencode',expectedRevision:2,operationId:'reverse-handover'});
+ const request=()=>f.client.request(`/session/${f.session.id}/prompt_async`,{method:'POST',headers:{'content-type':'application/json',
+  'x-scikeel-assistant-revision':'3','x-scikeel-request-id':'reverse-request'},body:JSON.stringify({parts:[{type:'text',text:'Continue the result'}],model:{providerID:'broker',modelID:'allowed'}})});
+ const response=await request();assert.equal(response.status,202,await response.text());
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['reverse-request']?.state==='settled',300);
+ const value=await f.server.conversations.open(f.owner,f.session.id),binding=value.bindings.find(binding=>binding.id===value.currentBindingId);
+ assert.equal(binding.runtime,'opencode');assert.notEqual(binding.nativeSessionId,f.session.id);
+ const raw=await (await fetch(`${access.url}/session/${binding.nativeSessionId}/message`,{headers})).json();
+ assert.equal(raw.length,2);assert.match(raw[0].fixtureSystem,/Intervening Codex scientific result/);
+ assert(raw[0].fixturePermission.some(rule=>rule.action==='deny'&&rule.pattern==='protected.csv'));
+ const history=await (await f.client.request(`/session/${f.session.id}/message`)).json();assert.equal(history.length,4);
+ const messageID=history[2].info.id;
+ for(const operation of ['revert','unrevert']){
+  const restored=await f.client.request(`/session/${f.session.id}/${operation}`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'3'},
+   body:JSON.stringify(operation==='revert'?{messageID}:{})});assert.equal(restored.status,200,await restored.text());
+  assert.equal((await (await f.client.request(`/session/${f.session.id}/message`)).json()).length,operation==='revert'?2:4);
+ }
+ assert.equal((await request()).status,202);assert.equal((await (await fetch(`${access.url}/session/${binding.nativeSessionId}/message`,{headers})).json()).length,2,'Receipt retry cannot redispatch');
+ const privateWrite=await f.client.request(`/session/${binding.nativeSessionId}/prompt_async`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({parts:[]})});
+ assert.equal(privateWrite.status,404);
+ await f.cliRuntime.selectAssistant({runtime:'codex',expectedRevision:3,operationId:'native-again'});
+ const back=await f.client.request(`/session/${f.session.id}/prompt_async`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'4','x-scikeel-request-id':'native-return'},
+  body:JSON.stringify({parts:[{type:'text',text:'Continue after OpenCode'}],model:{providerID:'codex',modelID:'approved'}})});
+ assert.equal(back.status,202,await back.text());await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal(starts[1].nativeSessionId,undefined);assert.match(starts[1].text,/OpenCode continued with actual fixture history/);
+ assert.equal((await (await f.client.request(`/session/${f.session.id}/message`)).json()).length,6);
+});
+test('canonical OpenCode delivery without exact persisted acceptance remains unknown and cannot retry or switch',async t=>{
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'native-before-unknown',turnId:'turn-before-unknown'});await args.emit({type:'text',text:'Saved context'});
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'native-before-unknown'};
+ });
+ assert.equal((await f.send('known-native')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const access=f.manager.getWorkerAccess(f.owner.instanceId),headers={authorization:`Basic ${Buffer.from(`opencode:${access.token}`).toString('base64')}`};
+ f.server.conversationRouter.listOpenCode=async()=>{const response=await fetch(`${access.url}/experimental/session`,{headers});return response.json();};
+ f.server.runtimeCatalog=createManagedModelCatalogReader({config:{defaultProvider:'broker',providers:{broker:{enabledModels:['allowed']}}},
+  fetchImpl:async url=>({ok:true,json:async()=>new URL(url).pathname==='/global/config'?{model:'broker/allowed'}:{providers:[{id:'broker',models:{allowed:{}}}]}})});
+ await f.cliRuntime.selectAssistant({runtime:'opencode',expectedRevision:2,operationId:'unknown-reverse'});
+ const rawRequest=f.server.openCodeConversations.request;
+ f.server.openCodeConversations.request=async(...args)=>args[1].endsWith('/message')?[]:rawRequest(...args);
+ const send=()=>f.client.request(`/session/${f.session.id}/prompt_async`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'3','x-scikeel-request-id':'unknown-reverse-send'},
+  body:JSON.stringify({parts:[{type:'text',text:'Do not replay'}],model:{providerID:'broker',modelID:'allowed'}})});
+ assert.equal((await send()).status,502);
+ const value=await f.server.conversations.open(f.owner,f.session.id);assert.equal(value.turns['unknown-reverse-send'].state,'unknown');
+ const id=value.bindings.at(-1).nativeSessionId;
+ assert.equal((await send()).status,202);assert.equal((await (await fetch(`${access.url}/session/${id}/message`,{headers})).json()).length,2);
+ await assert.rejects(f.cliRuntime.selectAssistant({runtime:'codex',expectedRevision:3,operationId:'unsafe-switch'}),{code:'assistant_recovery_required'});
+});
+test('native checked revert routes the owned canonical user message instead of a private origin ID',async t=>{
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'revert-http-native',turnId:'revert-http-turn'});await args.emit({type:'text',text:'File created'});
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'revert-http-native'};
+ });
+ assert.equal((await f.send('before-revert')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const history=await (await f.client.request(`/session/${f.session.id}/message`)).json(),target=history.find(message=>message.info.role==='user');
+ assert(target);assert.notEqual(target.info.id,f.session.history[0].info.id);const calls=[];
+ f.server.conversationRevert={projection:async()=>({version:0,revert:null,hiddenMessageIds:[]}),execute:async(owner,input)=>{
+  assert.equal(owner.directory,f.owner.directory);assert.equal(owner.userId,f.user.id);assert.equal(owner.generation,1);
+  assert.equal(input.messageID,target.info.id);assert.equal(input.expectedRevision,(await f.server.conversations.open(f.owner,f.session.id)).revision);
+  calls.push(input);return {state:'committed',revert:{messageID:target.info.id}};
+ }};
+ const response=await f.client.request(`/session/${f.session.id}/revert`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messageID:target.info.id})});
+ assert.equal(response.status,200,await response.text());assert.equal(calls.length,1);
+ const wrong=await f.client.request(`/session/${f.session.id}/revert`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messageID:f.session.history[0].info.id})});
+ assert.equal(wrong.status,404);assert.equal(calls.length,1,'Private origin IDs are not accepted as public revert targets');
+});
+test('native HTTP integrates durable checked file restore, canonical visibility and fresh-thread edit-message resend',async t=>{
+ let f;const calls=[],files=localRevertFiles({workspaceDir:()=>f.owner.workspaceDir});
+ f=await nativeHttpFixture(t,async args=>{
+  calls.push(args);const nativeSessionId=args.nativeSessionId??`actual-thread-${calls.length}`;
+  await args.onAccepted({nativeSessionId,turnId:`actual-turn-${calls.length}`});
+  if(calls.length===1)await writeFile(join(f.owner.workspaceDir,'output.bin'),Buffer.from([0,255,128]));
+  await args.emit({type:'text',text:calls.length===1?'Revoked future answer':'New explicit answer'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ },{enableWorkspaceManagement:true,workspaceFiles:files});
+ await writeFile(join(f.owner.workspaceDir,'input.csv'),'preserved');
+ assert.equal((await f.send('real-file-turn')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const original=await (await f.client.request(`/session/${f.session.id}/message`)).json(),messageID=original.find(message=>message.info.role==='user')?.info.id;
+ assert(messageID);assert.deepEqual(await readFile(join(f.owner.workspaceDir,'output.bin')),Buffer.from([0,255,128]));
+ const change=async(method,id)=>{
+  const result=await f.client.request(`/session/${f.session.id}/${method}`,{method:'POST',headers:{'content-type':'application/json','x-request-id':id},
+   body:JSON.stringify(method==='revert'?{messageID}:{})});assert.equal(result.status,200,await result.text());
+ };
+ await change('revert','actual-revert');
+ await assert.rejects(readFile(join(f.owner.workspaceDir,'output.bin')),{code:'ENOENT'});assert.equal(await readFile(join(f.owner.workspaceDir,'input.csv'),'utf8'),'preserved');
+ assert.deepEqual(await (await f.client.request(`/session/${f.session.id}/message`)).json(),[]);
+ assert.equal((await (await f.client.request(`/session/${f.session.id}`)).json()).revert.messageID,messageID);
+ await change('unrevert','actual-unrevert');assert.deepEqual(await readFile(join(f.owner.workspaceDir,'output.bin')),Buffer.from([0,255,128]));
+ assert.deepEqual(await (await f.client.request(`/session/${f.session.id}/message`)).json(),original);
+ await change('revert','actual-revert-again');
+ assert.equal((await f.send('edited-resend')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal(calls[1].nativeSessionId,undefined);assert(!calls[1].text.includes('Revoked future answer'));
+ assert.equal((await (await f.client.request(`/session/${f.session.id}`)).json()).revert,null);
+ const edited=await (await f.client.request(`/session/${f.session.id}/message`)).json();assert.equal(edited.length,2);assert.equal(original.length,2);
+ assert.notEqual(edited[0].info.id,messageID);assert(!JSON.stringify(edited).includes('Revoked future answer'));
+});
+for(const [partial,wrongFence] of [[false,false],[true,false],[false,true]])test(`native HTTP ${partial?'partial':wrongFence?'foreign-fenced':'fully applied'} lost-ack revert reconciles after platform reconstruction without replaying effects`,async t=>{
+ let f,restores=0,loseAck=true;const files=localRevertFiles({workspaceDir:()=>f.owner.workspaceDir,afterRestore:async()=>{
+  restores++;if(loseAck){loseAck=false;throw Error('restore acknowledgement lost');}
+ }});
+ f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'lost-ack-thread',turnId:'lost-ack-turn'});
+  await writeFile(join(f.owner.workspaceDir,'a-result'),'actual effect');if(partial)await writeFile(join(f.owner.workspaceDir,'b-result'),'second actual effect');
+  await args.emit({type:'text',text:'Effect completed'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'lost-ack-thread'};
+ },{enableWorkspaceManagement:true,workspaceFiles:files});
+ assert.equal((await f.send('effect-before-lost-ack')).status,202);await until(()=>f.cliRuntime.activeTurns.size===0);
+ const original=await (await f.client.request(`/session/${f.session.id}/message`)).json(),messageID=original.find(message=>message.info.role==='user').info.id;
+ const request={method:'POST',headers:{'content-type':'application/json','x-request-id':'lost-ack-revert','x-scikeel-assistant-revision':'2'},body:JSON.stringify({messageID})};
+ assert.equal((await f.client.request(`/session/${f.session.id}/revert`,request)).status,503);assert.equal(restores,1);
+ assert(await f.server.workspaceManagement.state.runtimeMutation(f.owner));
+ if(wrongFence)await f.server.workspaceManagement.state.update(f.user.id,data=>{data.runtimeMutation.requestId='unrelated-runtime-effect';});
+ const policy=f.server.tenantPolicy;await f.server.close();
+ f.server=new PlatformServer({authStore:f.authStore,workerManager:f.manager,cliRuntime:f.cliRuntime,tenantPolicy:policy,workspaceFiles:files,enableWorkspaceManagement:true});
+ fixtures.find(fixture=>fixture.root===f.root).server=f.server;
+ const address=await f.server.listen();f.server.conversationRouter.listOpenCode=async()=>[];
+ const client=makeClient(`http://${address.host}:${address.port}`);await login(client,'admin','admin-password');
+ const retry=await client.request(`/session/${f.session.id}/revert`,request);
+ assert.equal(retry.status,partial||wrongFence?503:200,await retry.text());assert.equal(restores,1,'Read-only reconciliation never replays any restore');
+ const history=await (await client.request(`/session/${f.session.id}/message`)).json();
+ if(partial||wrongFence){assert(await f.server.workspaceManagement.state.runtimeMutation(f.owner));assert.deepEqual(history,original);if(partial)assert.equal(await readFile(join(f.owner.workspaceDir,'b-result'),'utf8'),'second actual effect');}
+ else {assert.equal(await f.server.workspaceManagement.state.runtimeMutation(f.owner),null);assert.deepEqual(history,[]);}
+});
+for(const userOnly of [false,true])test(`native HTTP lazily adopts owned ${userOnly?'user-only':'completed'} OpenCode history without changing public identity`,async t=>{
+ const calls=[];const f=await nativeHttpFixture(t,async args=>{
+  calls.push(args);const nativeSessionId=args.nativeSessionId??'adopted-native-thread';
+  await args.onAccepted({nativeSessionId,turnId:`adopted-turn-${calls.length}`});
+  await args.emit({type:'text',text:'Native continuation'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ });
+ const events=[];f.cliRuntime.emitVisible=(_user,event)=>events.push(event);
+ const deny={permission:'bash',pattern:'restricted-command',action:'deny'};
+ const legacy={id:'ses_owned_legacy_opencode',title:'Existing research',directory:f.owner.directory,time:{created:1,updated:2},
+  permission:[{permission:'*',pattern:'*',action:'allow'},deny]};
+ const history=[{info:{id:'old-user',role:'user',sessionID:legacy.id,time:{created:1,completed:1}},parts:[{id:'old-user-part',type:'text',text:'Remember the measured result',sessionID:legacy.id,messageID:'old-user'}]},
+  {info:{id:'old-assistant',role:'assistant',sessionID:legacy.id,time:{created:2,completed:2}},parts:[{id:'old-assistant-part',type:'text',text:'Verified old result: 42',sessionID:legacy.id,messageID:'old-assistant'}]}];
+ if(userOnly)history.pop();
+ f.server.conversationRouter.listOpenCode=async()=>[legacy];
+ f.server.conversationRouter.readOpenCode=async(_owner,path)=>{assert.equal(path,`/session/${legacy.id}/message`);return structuredClone(history);};
+ const before=await f.client.request(`/session/${legacy.id}/message`);assert.equal(before.status,200,await before.clone().text());
+ assert.equal((await before.json()).length,history.length);assert.equal(calls.length,0);
+ if(!userOnly)await f.server.researchTasks.create({...f.researchOwner,sessionId:legacy.id,runtime:'opencode'},
+  {objective:'Continue the owned existing task',goal:'thesis',mode:'delegated',inputs:[],deliverables:['result.txt'],pageId:'legacy-owned-page'});
+ const heartbeat=await f.client.request(`/api/collaboration/${legacy.id}`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},
+  body:JSON.stringify({action:'heartbeat',pageId:'legacy-owned-page'})});
+ assert.equal(heartbeat.status,200,await heartbeat.text());assert.equal(calls.length,0);
+ for(const requestId of ['legacy-next','legacy-again']){
+  const response=await f.send(requestId,{},legacy);assert.equal(response.status,202,await response.text());
+  await until(()=>f.cliRuntime.activeTurns.size===0);
+ }
+ assert.equal(calls.length,2);assert.equal(calls[0].session.id,legacy.id);
+ if(!userOnly)assert.equal((await f.server.researchTasks.get(f.user.id,legacy.id)).runtime,'codex');
+ assert.equal(calls[0].turnIdentity.conversationId,legacy.id);assert.equal(calls[0].nativeSessionId,undefined);
+ assert.match(calls[0].text,userOnly?/Remember the measured result/:/Verified old result: 42/);
+ if(userOnly)assert.match(calls[0].text,/no assistant response recorded; not a request to execute/);
+ assert.equal(calls[1].nativeSessionId,'adopted-native-thread');
+ const response=await f.client.request(`/session/${legacy.id}/message`);assert.equal(response.status,200,await response.clone().text());
+ const all=await response.json();assert.equal(all.length,history.length+4);assert.deepEqual(all.slice(0,history.length).map(message=>message.info.id),history.map(message=>message.info.id));
+ assert(all.every(message=>message.info.sessionID===legacy.id));
+ const nativeMessages=all.slice(history.length).map(message=>message.info.id);
+ assert(events.filter(event=>event.type==='message.updated').every(event=>event.properties.info.sessionID===legacy.id&&nativeMessages.includes(event.properties.info.id)));
+ assert(events.filter(event=>event.type==='message.part.updated').every(event=>event.properties.part.sessionID===legacy.id&&nativeMessages.includes(event.properties.part.messageID)));
+ assert(events.filter(event=>event.type==='session.idle').every(event=>event.properties.sessionID===legacy.id));
+ const stored=await f.server.conversations.open(f.owner,legacy.id);assert.equal(stored.bindings.length,1);assert.equal(stored.historicalSource.runtime,'opencode');
+ const native=(await f.cliRuntime.readHistoricalSessions(f.owner)).find(row=>row.publicConversationId===legacy.id);assert(native);assert.notEqual(native.id,legacy.id);
+ assert.deepEqual((await f.cliRuntime.getOwnedSession(f.user.id,legacy.id)).session.permission,[deny]);
+ const bypass=await f.client.request(`/session/${native.id}`);assert.equal(bypass.status,404);
+ const listing=await f.client.request('/session');assert.equal(listing.status,200);assert.equal((await listing.json()).filter(row=>row.id===legacy.id).length,1);
+});
+test('native public status, questions and Stop remain attached to an adopted legacy conversation',async t=>{
+ let entered,release;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);t.after(()=>release());
+ const replies=[];let f;
+ f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'status-native',turnId:'status-turn'});
+  await args.emit({type:'question',id:'b'.repeat(64),questions:[{header:'Method',question:'Which method?',options:[{label:'Continue'}]}]});entered();
+  await Promise.race([gate,new Promise(resolve=>args.signal.addEventListener('abort',resolve,{once:true}))]);
+  assert.equal(args.signal.aborted,true);await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'status-native'};
+ });
+ f.cliRuntime.sandboxJobs.answer=async args=>replies.push(args);
+ const legacy={id:'legacy-status-owned',title:'Legacy status',directory:f.owner.directory};
+ f.server.conversationRouter.listOpenCode=async()=>[legacy];f.server.conversationRouter.readOpenCode=async()=>[];
+ assert.equal((await f.client.request(`/session/${legacy.id}`)).status,200);
+ assert.equal((await f.send('legacy-running',{},legacy)).status,202);await ready;
+ const status=await f.client.request('/session/status');assert.equal(status.status,200,await status.clone().text());
+ assert.deepEqual(await status.json(),{[legacy.id]:{type:'busy'}});
+ const questions=await (await f.client.request('/question')).json();assert.equal(questions[0].sessionID,legacy.id);
+ const answer=await f.client.request(`/question/${'b'.repeat(64)}/reply`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},body:JSON.stringify({answers:[['Continue']]})});
+ assert.equal(answer.status,200,await answer.text());assert.equal(replies[0].sessionId,legacy.id);
+ const stopped=await f.client.request(`/session/${legacy.id}/abort`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},body:'{}'});
+ assert.equal(stopped.status,200,await stopped.text());await until(()=>f.cliRuntime.activeTurns.size===0);
+ const settled=await f.server.conversations.open(f.owner,legacy.id);assert.equal(settled.turns['legacy-running'].cleanupVerified,true);
+ assert.deepEqual(await (await f.client.request('/session/status')).json(),{});
+ assert.deepEqual(await (await f.client.request('/question')).json(),[]);
+});
+test('pausing an adopted canonical root cancels its native child without losing inherited denies',async t=>{
+ let entered,release,signal;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);t.after(()=>release());
+ const f=await nativeHttpFixture(t,async args=>{
+  signal=args.signal;await args.onAccepted({nativeSessionId:'child-native',turnId:'child-native-turn'});entered();
+  await Promise.race([gate,new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}))]);
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'child-native'};
+ });
+ const deny={permission:'edit',pattern:'protected.csv',action:'deny'};
+ const root={id:'legacy-root-owned',title:'Owned root',directory:f.owner.directory,permission:[deny]},child={...root,id:'legacy-child-owned',title:'Owned child',parentID:root.id,permission:[]};
+ f.server.conversationRouter.listOpenCode=async()=>[root,child];f.server.conversationRouter.readOpenCode=async()=>[];
+ const oldChild=await f.client.request(`/session/${child.id}`);assert.equal(oldChild.status,200,await oldChild.text());
+ assert.equal((await f.send('child-continuation',{},child)).status,202);await ready;
+ const rootSession=(await f.cliRuntime.getOwnedSession(f.user.id,root.id)).session;
+ assert.deepEqual(rootSession.permission,[deny]);
+ const children=await f.cliRuntime.researchRequest({userId:f.user.id,directory:f.owner.directory,path:`/session/${root.id}/children`});assert.equal(children[0].id,child.id);
+ const paused=await f.client.request(`/api/collaboration/${root.id}`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},body:JSON.stringify({action:'pause'})});
+ assert.equal(paused.status,200,await paused.text());assert.equal(signal.aborted,true);
+ await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal((await f.server.conversations.open(f.owner,child.id)).turns['child-continuation'].cleanupVerified,true);
+});
+test('native HTTP profile handover reads canonical messages, confirmed decisions and owned accepted attachment bytes',async t=>{
+ const calls=[];const f=await nativeHttpFixture(t,async args=>{
+  calls.push(args);const nativeSessionId=args.nativeSessionId??`http-native-${calls.length}`;
+  await args.onAccepted({nativeSessionId,turnId:`http-turn-${calls.length}`});
+  await args.emit({type:'text',text:'Completed canonical research evidence'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ });
+ const paths=[];f.server.attachments.materializeCopies=async({files})=>Promise.all(files.map(async file=>{
+  const path=join(f.owner.workspaceDir,`${file.id}.csv`);const bytes=await readFile(file.sourcePath);
+  assert.equal(bytes.toString(),'value\n2\n');await writeFile(path,bytes);paths.push(path);
+  const {sourcePath:_,...metadata}=file;return {...metadata,path,workDir:f.owner.workspaceDir};
+ }));
+ const draft=await f.server.attachments.createDraft(f.user.id),file=await f.server.attachments.upload(f.user.id,{draftId:draft.id},'values.csv',Readable.from(['value\n2\n']));
+ const first=await f.send('initial-context',{attachmentTurn:{draftId:draft.id,turnId:'initial-context',attachmentIds:[file.id]}});
+ assert.equal(first.status,202,await first.text());await until(()=>f.cliRuntime.activeTurns.size===0);
+ const task=await f.server.researchTasks.create(f.researchOwner,{objective:'Reproduce a verified result',goal:'thesis',mode:'collaborative',inputs:[],deliverables:['result.txt'],pageId:'owned-page'});
+ await writeFile(join(f.owner.directory,task.reportPath),JSON.stringify({version:1,execution:task.execution,status:'waiting_input',
+  decisions:[{id:'task-method',question:'Which input transformation?'}],steps:[],artifacts:[],checks:[]}));
+ await f.server.researchTasks.action(f.user.id,f.session.id,{action:'decide',id:'task-method',answer:'Confirmed task-specific transformation'});
+ let state=await f.server.collaboration.get(f.researchOwner);
+ state=await f.server.collaboration.begin(f.researchOwner,state.revision);
+ state=await f.server.collaboration.checkpoint(f.researchOwner,{execution:state.execution,kind:'method',question:'Which method?',suggestedAnswer:'Method A'});
+ state=await f.server.collaboration.answer(f.researchOwner,{id:state.pending.id,execution:state.execution,revision:state.revision,answer:'Confirmed durable method B'});
+ await f.server.collaboration.settled(f.researchOwner,state.execution);
+ const refresh=f.cliRuntime.profileResolver.refresh;
+ f.cliRuntime.profileResolver.refresh=async runtime=>({...await refresh(runtime),identityRevision:'updated-service-profile'});
+ const second=await f.send('profile-handover');assert.equal(second.status,202,await second.text());await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal(calls.length,2);assert.equal(calls[1].nativeSessionId,undefined);
+ assert.match(calls[1].text,/Completed canonical research evidence/);assert.match(calls[1].text,/Confirmed durable method B/);
+ assert.match(calls[1].text,/"source":"collaboration"/);assert.match(calls[1].text,/"source":"research-task"/);
+ assert.match(calls[1].text,/Confirmed task-specific transformation/);
+ assert.match(calls[1].text,/values.csv/);assert(calls[1].text.includes(file.sha256));assert(!calls[1].text.includes(file.sourcePath??'/attachments/users/'));
+ assert.equal((await readFile(paths.at(-1))).toString(),'value\n2\n');
+ const response=await f.client.request(`/session/${f.session.id}/message`);assert.equal(response.status,200);
+ const history=await response.json();assert.equal(history.length,4);assert.equal(new Set(history.map(message=>message.info.id)).size,4);
+ const rows=await f.cliRuntime.readHistoricalSessions(f.owner);assert.deepEqual(rows[0].bindingHistory,[{nativeSessionId:'http-native-1',identityRevision:'service-profile'}]);
+});
+test('native HTTP research starts before preparation and remains held until verified cleanup',async t=>{
+ let finish,entered;const gate=new Promise(resolve=>finish=resolve),ready=new Promise(resolve=>entered=resolve);t.after(()=>finish());
+ let text;const f=await nativeHttpFixture(t,async args=>{
+  text=args.text;await args.onAccepted({nativeSessionId:'native-owned',turnId:'native-turn'});entered();
+  await gate;await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'native-owned'};
+ });
+ let prepared=false;const prepare=f.server.attachmentTurns.prepare.bind(f.server.attachmentTurns);
+ f.server.attachmentTurns.prepare=async(...args)=>{
+  const state=await f.server.collaboration.get(f.researchOwner);assert.equal(state.phase,'running');prepared=true;return prepare(...args);
+ };
+ const response=await f.send('http-research',{collaborationRevision:0,agent:'plan'});assert.equal(response.status,202);await ready;
+ assert.equal(prepared,true);assert.match(text,/SciKeel collaboration mode: autonomous/);assert.match(text,/Confirmed research decisions/);
+ const running=await f.server.collaboration.get(f.researchOwner);assert.equal(running.execution,1);
+ f.server.collaboration.now=()=>Date.now()+10000;await f.server.collaboration.tick();
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+ assert.equal((await f.server.conversations.open(f.owner,f.session.id)).turns['http-research'].state,'accepted');
+ assert.equal((await f.send('http-research',{collaborationRevision:0,agent:'plan'})).status,202);
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).execution,1);
+ finish();await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal((await f.server.conversations.open(f.owner,f.session.id)).turns['http-research'].state,'settled');
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'idle');assert.equal(f.server.promptAdmissions.size,0);
+});
+test('native HTTP rejects stale revisions and pending decisions without dispatch or clearing research state',async t=>{
+ let starts=0;const f=await nativeHttpFixture(t,async()=>{starts++;throw Error('Unexpected dispatch');});
+ await f.server.collaboration.setMode(f.researchOwner,'guided',0);
+ assert.equal((await f.send('stale-research',{collaborationRevision:0})).status,409);
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['stale-research'].state==='settled');
+ await until(()=>!f.cliRuntime.turnReservations.has(f.session.id));
+ const started=await f.server.collaboration.begin(f.researchOwner,1);
+ const waiting=await f.server.collaboration.checkpoint(f.researchOwner,{kind:'step',question:'Proceed?',suggestedAnswer:'Yes',execution:started.execution});
+ assert.equal((await f.send('pending-research',{collaborationRevision:waiting.revision})).status,409);
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['pending-research'].state==='settled');
+ assert.deepEqual(await f.server.collaboration.get(f.researchOwner),waiting);assert.equal(starts,0);
+});
+test('native HTTP preparation rejection releases only the execution it began',async t=>{
+ let starts=0;const f=await nativeHttpFixture(t,async()=>{starts++;throw Error('Unexpected dispatch');});
+ f.server.attachmentTurns.prepare=async()=>{throw Object.assign(Error('Preparation rejected'),{status:400});};
+ assert.equal((await f.send('rejected-research')).status,400);
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['rejected-research'].state==='settled');
+ await until(()=>!f.cliRuntime.turnReservations.has(f.session.id));
+ const rejected=await f.server.collaboration.get(f.researchOwner);
+ assert.equal(rejected.phase,'idle');assert.equal(rejected.execution,1);assert.equal(f.server.promptAdmissions.size,0);
+ const current=await f.server.collaboration.get(f.researchOwner);await f.server.collaboration.begin(f.researchOwner,current.revision);
+ const child=await f.create(f.session.id);
+ assert.equal((await f.send('rejected-child',{},child)).status,400);
+ await until(async()=>(await f.server.conversations.open(f.owner,child.id)).turns['rejected-child'].state==='settled');
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');assert.equal(starts,0);
+});
+test('native HTTP child completion preserves inherited execution and unverified cleanup stays fenced',async t=>{
+ for(const verified of [true,false]){
+  let finish;const gate=new Promise(resolve=>finish=resolve);t.after(()=>finish());
+  const f=await nativeHttpFixture(t,async args=>{
+   await args.onAccepted({nativeSessionId:'native-child',turnId:'native-turn'});await gate;
+   await args.onCleanup({cleanupVerified:verified});return {nativeSessionId:'native-child'};
+  });
+  await f.server.collaboration.begin(f.researchOwner,0);const child=await f.create(f.session.id);
+  assert.equal((await f.send('child-research',{},child)).status,202);finish();
+  await until(async()=>['settled','unknown'].includes((await f.server.conversations.open(f.owner,child.id)).turns['child-research'].state));
+  await until(()=>f.cliRuntime.activeTurns.size===0);
+  assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+  const receipt=(await f.server.conversations.open(f.owner,child.id)).turns['child-research'];
+  assert.equal(receipt.state,verified?'settled':'unknown');assert.equal(f.server.promptAdmissions.size,verified?0:1);
+  if(!verified){
+   f.server.collaboration.now=()=>Date.now()+10000;await f.server.collaboration.tick();
+   assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+  }
+ }
+});
+test('native HTTP unverified root cleanup survives monitoring and prevents unsafe retry',async t=>{
+ let finish;const gate=new Promise(resolve=>finish=resolve);t.after(()=>finish());
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'native-root',turnId:'native-turn'});await gate;
+  await args.onCleanup({cleanupVerified:false});return {nativeSessionId:'native-root'};
+ });
+ assert.equal((await f.send('uncertain-root')).status,202);finish();await until(()=>f.cliRuntime.activeTurns.size===0);
+ assert.equal((await f.server.conversations.open(f.owner,f.session.id)).turns['uncertain-root'].state,'unknown');
+ f.server.collaboration.now=()=>Date.now()+10000;await f.server.collaboration.tick();
+ assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+ assert.equal((await f.send('unsafe-retry')).status,503);assert.equal(f.server.promptAdmissions.size,1);
+});
+test('native HTTP root completion cannot settle an active descendant research execution',async t=>{
+ let finishRoot,finishChild,entered;const ready=new Promise(resolve=>entered=resolve);
+ const rootGate=new Promise(resolve=>finishRoot=resolve),childGate=new Promise(resolve=>finishChild=resolve);
+ t.after(()=>{finishRoot();finishChild();});
+ const f=await nativeHttpFixture(t,async args=>{
+  const nativeSessionId=args.session.parentId?'native-child':'native-root';
+  await args.onAccepted({nativeSessionId,turnId:'native-turn'});
+  if(!args.session.parentId)entered();
+  await (args.session.parentId?childGate:rootGate);await args.onCleanup({cleanupVerified:true});return {nativeSessionId};
+ });
+ try{
+  assert.equal((await f.send('root-research')).status,202);await ready;const child=await f.create(f.session.id);
+  const response=await f.send('active-child',{},child);assert.equal(response.status,202,await response.text());finishRoot();
+  await until(()=>f.session.status==='idle'&&!f.cliRuntime.turnReservations.has(f.session.id));
+  assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'running');
+  finishChild();await until(()=>f.cliRuntime.activeTurns.size===0);
+  assert.equal(f.server.promptAdmissions.size,0,'Verified descendant cleanup releases its held admission');
+  assert.equal((await f.server.conversations.open(f.owner,child.id)).turns['active-child'].state,'settled');
+  f.server.collaboration.now=()=>Date.now()+10000;await f.server.collaboration.tick();
+  assert.equal((await f.server.collaboration.get(f.researchOwner)).phase,'idle');assert.equal(f.server.promptAdmissions.size,0);
+ }finally{finishRoot();finishChild();}
+});
+test('native HTTP Stop during attachment preparation prevents late dispatch and preserves pending decisions',async t=>{
+ let resume,entered;const gate=new Promise(resolve=>resume=resolve),ready=new Promise(resolve=>entered=resolve);t.after(()=>resume());
+ let starts=0;const f=await nativeHttpFixture(t,async()=>{starts++;throw Error('Stopped send must not dispatch');});
+ const prepare=f.server.attachmentTurns.prepare.bind(f.server.attachmentTurns);
+ f.server.attachmentTurns.prepare=async(...args)=>{entered();await gate;return prepare(...args);};
+ const pending=f.send('preparation-stop');await ready;
+ const running=await f.server.collaboration.get(f.researchOwner);
+ const waiting=await f.server.collaboration.checkpoint(f.researchOwner,{kind:'method',question:'Use this method?',suggestedAnswer:'Confirm',execution:running.execution});
+ const stopped=await f.client.request(`/session/${f.session.id}/abort`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+ assert.equal(stopped.status,200);resume();assert.equal((await pending).status,409);
+ await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['preparation-stop'].state==='settled');
+ assert.deepEqual(await f.server.collaboration.get(f.researchOwner),waiting);assert.equal(starts,0);
+});
+
+test('managed runtime mutation policy admission precedes the workspace queue and Admin selection bypasses its own tenant queue',async()=>{
+ const policy=new TenantPolicy(),f=await makeFixture({tenantPolicy:policy}),client=makeClient(f.base);
+ const {user}=await login(client,'admin','admin-password'),instanceId=`user-${user.id}`;
+ const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+ policy.registerAccount({userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir});
+ f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),generation:1}))(f.manager.getWorker);
+ f.server.workspaceAdmission=new WorkspaceAdmission({resolveExecution:async()=>false});
+ let queued=0;const start=f.server.workspaceAdmission.start.bind(f.server.workspaceAdmission);
+ f.server.workspaceAdmission.start=(...args)=>{queued++;return start(...args);};
+ let captures=0;
+ f.server.cliRuntime={isManaged:()=>false,assertAssistantRevision:async()=>({revision:1}),
+  admitWorkspace:async()=>{captures++;throw Object.assign(Error('Stale policy'),{code:'assistant_revision_conflict',statusCode:409});},
+  selectAssistant:async()=>({activeRuntime:'codex',revision:2,operationId:'selection_fixture'})};
+ const stale=await client.request('/session/owned',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({title:'Changed'})});
+ assert.equal(stale.status,409);assert.equal((await stale.json()).code,'assistant_revision_conflict');assert.equal(captures,1);assert.equal(queued,0);
+ const admin=await client.request('/api/admin/runtime',{method:'POST',headers:{'content-type':'application/json'},
+  body:JSON.stringify({runtime:'codex',expectedRevision:1,operationId:'selection_fixture'})});
+ assert.equal(admin.status,200);assert.equal(queued,0);assert.equal(captures,1);
+});
+
+test('managed running tools resolve through native transport, never OpenCode worker history',async()=>{
+ const server=Object.create(PlatformServer.prototype),context={userId:'owner',instanceId:'user-owner',generation:1};
+ let calls=0;server.workerManager={getWorker:()=>({userId:'owner',generation:1,status:'running'})};
+ server.tenantPolicy={session:()=>{throw Error('Must not read OpenCode tool authority');}};
+ server.cliRuntime={isManaged:()=>true,sandboxJobs:{runningToolPart:(owner,sessionId,callId)=>{calls++;
+  assert.deepEqual(owner,context);assert.equal(sessionId,'owned');assert.equal(callId,'call-owned');
+  return {type:'tool',tool:'research_delivery',callID:callId,state:{status:'running',input:{action:'verify',deliverables:['output.csv']}}};}}};
+ assert.equal((await server.runningToolPart(context,'owned','call-owned')).tool,'research_delivery');assert.equal(calls,1);
+ await assert.rejects(server.runningToolPart({...context,generation:2},'owned','call-owned'));assert.equal(calls,1);
+});
+
 test('automatic search authorization cannot redirect to a different backend', async () => {
   const server = Object.create(PlatformServer.prototype);
   server.searchProvider = 'parallel'; server.permissionDecisions = new Map();
@@ -1434,4 +2026,163 @@ test("Web permission recovery authorizes task children without an open browser a
   assert.equal(response.status,200,await response.clone().text());assert.deepEqual(await response.json(),[]);
   assert.equal(replied,2);assert.equal(patched,1);
   await f.server.collaboration.settled(owner);
+});
+
+async function managedPromptFixture(t,{workspaceFiles=null,enableWorkspaceManagement=false}={}) {
+  const policy=new TenantPolicy(), records=[];
+  const f=await makeFixture({tenantPolicy:policy,logger:entry=>records.push(entry),workspaceFiles,enableWorkspaceManagement});
+  clearInterval(f.server.researchTimer);
+  const monitor=f.server.collaboration.running;
+  f.server.collaboration.running=async()=>true;f.server.researchTasks.running=async()=>true;
+  f.server.collaboration.cancel=async()=>{};f.server.researchTasks.cancel=async()=>{};
+  const client=makeClient(f.base);const {user}=await login(client,"admin","admin-password");const instanceId=`user-${user.id}`;
+  const worker=await f.manager.ensureWorker({instanceId,userId:user.id});
+  f.manager.getWorker=((original)=>id=>({...original.call(f.manager,id),userId:user.id,generation:1,status:"running"}))(f.manager.getWorker);
+  const context={userId:user.id,instanceId,generation:1,workspaceDir:worker.workspaceDir};policy.registerAccount(context);
+  policy.registerSession(context,{id:"owned",directory:worker.workspaceDir+"/project"});
+  await mkdir(worker.workspaceDir+"/project",{recursive:true});
+  await f.server.runtimeCollaboration(context,{action:"capability",sessionId:"capability"});
+  const post=(path,body)=>client.request(path,{method:"POST",headers:{"content-type":"application/json",origin:f.base},body:JSON.stringify(body)});
+  await post("/api/collaboration/owned",{action:"heartbeat",pageId:"page"});
+  const state=async()=>(await json(await client.request("/api/collaboration/owned"))).state;
+  const access=f.manager.getWorkerAccess(instanceId),nativeFetch=globalThis.fetch;
+  let forwarded=0,behavior=null;const history=[];
+  globalThis.fetch=async(input,init)=>{
+    const url=new URL(String(input));
+    if(url.origin===new URL(access.url).origin){
+      if(["/command","/skill","/permission","/question"].includes(url.pathname))return new Response("[]");
+      if(["/session","/experimental/session"].includes(url.pathname))return new Response(JSON.stringify([{id:"owned",directory:worker.workspaceDir+"/project"}]));
+      if(url.pathname==="/session/status")return new Response("{}");
+      if(url.pathname==="/session/owned/children")return new Response("[]");
+      if(url.pathname==="/session/child")return new Response(JSON.stringify({id:"child",parentID:"owned",directory:worker.workspaceDir+"/project"}));
+      if(["/session/owned/message","/session/child/message"].includes(url.pathname)&&(!init?.method || init.method==="GET"))return new Response(JSON.stringify(history));
+      if(["/session/owned/prompt_async","/session/child/prompt_async","/session/owned/command"].includes(url.pathname)&&init?.method==="POST"){
+        forwarded++;const body=JSON.parse(init.body);if(behavior)return behavior(body,url);
+        history.push({info:{id:body.messageID,role:"user"},parts:body.parts});return new Response("{}",{status:202});
+      }
+    }
+    return nativeFetch(input,init);
+  };
+  t.after(()=>{globalThis.fetch=nativeFetch;});
+  return {...f,policy,client,user,context,post,state,history,records,monitor,forwarded:()=>forwarded,setBehavior:value=>{behavior=value;}};
+}
+function textPrompt(turnId,revision){return {parts:[{type:"text",text:"Reply once"}],attachmentTurn:{turnId,attachmentIds:[]},collaborationRevision:revision};}
+test('OpenCode prompt keeps its worker path when native admission and runner are present',async t=>{
+  const f=await managedPromptFixture(t);let nativeCalls=0;
+  const forbidden=()=>{nativeCalls++;throw Error('OpenCode entered native execution');};
+  f.server.cliRuntime={isManaged:()=>false,sandboxJobs:{run:forbidden},admitHttpPrompt:forbidden,handle:forbidden,
+    assertAssistantRevision:async()=>({revision:1}),admitWorkspace:async(_input,run)=>({completion:run()})};
+  const response=await f.post('/session/owned/prompt_async',textPrompt('turn_oc_isolated',(await f.state()).revision));
+  assert.equal(response.status,202,await response.text());assert.equal(f.forwarded(),1);assert.equal(nativeCalls,0);
+});
+test("managed preparation rejection releases both locks before immediate explicit retry",async t=>{
+  const f=await managedPromptFixture(t);const owner=await f.state();
+  await f.server.researchTasks.create(owner,{objective:"Reply",goal:"thesis",mode:"delegated",inputs:[],deliverables:["report.md"],pageId:"page"});
+  const materialize=f.server.attachments.materializeCopies;
+  f.server.attachments.materializeCopies=async()=>{throw Object.assign(new Error("Workspace access denied."),{statusCode:403,code:"workspace_rpc_denied"});};
+  const failed=await f.post("/session/owned/prompt_async",textPrompt("turn_rejected",owner.revision));
+  assert.equal(failed.status,403);assert.equal((await failed.json()).code,"workspace_rpc_denied");
+  assert.equal((await f.state()).phase,"idle");assert.equal((await f.server.researchTasks.get(f.user.id,"owned")).executionActive,false);
+  assert.equal((await f.server.attachments.list(f.user.id,"owned")).turns[0].status,"rejected");assert.equal(f.forwarded(),0);
+  f.server.attachments.materializeCopies=materialize;
+  const retry=await f.post("/session/owned/prompt_async",textPrompt("turn_rejected",(await f.state()).revision));
+  assert.equal(retry.status,202,await retry.text());assert.equal(f.forwarded(),1);assert.equal((await f.state()).phase,"running");
+});
+test("accepted managed replay precedes begin and does not increment or dispatch",async t=>{
+  const f=await managedPromptFixture(t);const prompt=textPrompt("turn_accepted",(await f.state()).revision);
+  assert.equal((await f.post("/session/owned/prompt_async",prompt)).status,202);
+  const first=await f.state();const replay=await f.post("/session/owned/prompt_async",{...prompt,collaborationRevision:first.revision});
+  assert.equal(replay.status,202,await replay.text());assert.equal((await f.state()).execution,first.execution);assert.equal(f.forwarded(),1);
+  const active=await f.post("/session/owned/prompt_async",textPrompt("turn_different",first.revision));
+  assert.equal(active.status,409);assert.equal((await active.json()).code,"research_execution_running");assert.equal(f.forwarded(),1);
+});
+for(const mode of ["response_lost","non_success","invalid_ack"])test(`managed ${mode} keeps an uncertain receipt without a second dispatch`,async t=>{
+  const f=await managedPromptFixture(t);const prompt=textPrompt("turn_uncertain",(await f.state()).revision);
+  f.setBehavior(async body=>{
+    if(mode==="non_success")return new Response(JSON.stringify({error:"upstream-private-secret"}),{status:403});
+    if(mode==="invalid_ack")return new Response("not-json",{status:202});
+    f.history.push({info:{id:body.messageID,role:"user"},parts:body.parts});throw new Error("synthetic response lost");
+  });
+  const failed=await f.post("/session/owned/prompt_async",prompt);
+  assert.equal(failed.status,502);const failure=await failed.json();assert.equal(failure.code,"prompt_delivery_unknown");assert.ok(!JSON.stringify(failure).includes("secret"));
+  assert.equal((await f.state()).phase,"running");assert.equal((await f.server.attachments.list(f.user.id,"owned")).turns[0].status,"prepared");
+  const replay=await f.post("/session/owned/prompt_async",{...prompt,collaborationRevision:(await f.state()).revision});
+  assert.equal(replay.status,mode==="response_lost"?202:409);assert.equal(f.forwarded(),1);
+});
+test("failed descendant preparation does not settle its inherited parent",async t=>{
+  const f=await managedPromptFixture(t);const owner=await f.state();await f.server.collaboration.begin(owner,owner.revision);
+  f.policy.registerSession(f.context,{id:"child",parentID:"owned",directory:owner.directory});
+  f.server.attachments.materializeCopies=async()=>{throw Object.assign(new Error("synthetic pre-dispatch"),{statusCode:429,code:"workspace_rpc_busy"});};
+  const response=await f.post("/session/child/prompt_async",textPrompt("turn_child",(await f.state()).revision));
+  assert.equal(response.status,429);assert.equal((await f.state()).phase,"running");assert.equal(f.forwarded(),0);
+});
+
+test("transient workspace validation closes SSE for recovery rather than silently dropping idle",async t=>{
+  const f=await managedPromptFixture(t),access=f.manager.getWorkerAccess(f.context.instanceId),nativeFetch=globalThis.fetch;
+  globalThis.fetch=async(input,init)=>{
+    const url=new URL(String(input));
+    if(url.origin===new URL(access.url).origin && url.pathname==="/event")return new Response(
+      `data: ${JSON.stringify({type:"session.status",properties:{sessionID:"owned",status:{type:"idle"}}})}\n\n`,
+      {headers:{"content-type":"text/event-stream"}});
+    return nativeFetch(input,init);
+  };
+  t.after(()=>{globalThis.fetch=nativeFetch;});
+  f.server.workspaceManagement={assertAccessible:async()=>{throw Object.assign(new Error("Workspace is busy."),{statusCode:429,code:"workspace_rpc_busy"});}};
+  await assert.rejects(async()=>{const response=await f.client.request("/event");await response.text();});
+});
+
+test("monitor cannot settle slow preparation and Stop prevents its late dispatch",async t=>{
+  const f=await managedPromptFixture(t);f.server.collaboration.running=f.monitor;
+  let enter,release;const entered=new Promise(resolve=>{enter=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  f.server.attachments.materializeCopies=async()=>{enter();await gate;return [];};
+  const request=f.post("/session/owned/prompt_async",textPrompt("turn_slow",(await f.state()).revision));
+  try {
+    await entered;const owner=await f.state();f.server.collaboration.records.get(f.server.collaboration.key(owner)).startedAt=Date.now()-7000;
+    await f.server.collaboration.tick();assert.equal((await f.state()).phase,"running");
+    await f.server.collaboration.pause(owner,owner.execution);release();
+    const response=await request;assert.equal(response.status,409,await response.text());
+    assert.equal(f.forwarded(),0);assert.equal((await f.state()).phase,"paused");
+  } finally {release();await request;}
+});
+test("unknown delivery stays fenced until its message ID can be reconciled or explicitly stopped",async t=>{
+  const f=await managedPromptFixture(t);f.server.collaboration.running=f.monitor;
+  f.setBehavior(async()=>{throw new Error("synthetic response lost");});
+  assert.equal((await f.post("/session/owned/prompt_async",textPrompt("turn_absent",(await f.state()).revision))).status,502);
+  const owner=await f.state();f.server.collaboration.records.get(f.server.collaboration.key(owner)).startedAt=Date.now()-7000;
+  await f.server.collaboration.tick();assert.equal((await f.state()).phase,"running");
+  const receipt=(await f.server.attachments.list(f.user.id,"owned")).turns[0];f.history.push({info:{id:receipt.messageID,role:"user"}});
+  await f.server.collaboration.tick();assert.equal((await f.state()).phase,"idle");
+});
+
+test("recent no-follow integration serializes project/background reads and an empty send",async t=>{
+  let rpc,active=0,peak=0;const operations=[],writes=new Map();
+  const f=await managedPromptFixture(t,{enableWorkspaceManagement:true,workspaceFiles:{call:(...args)=>rpc ? rpc.call(...args) : Promise.resolve({kind:"directory"})}});
+  const access=f.manager.getWorkerAccess.bind(f.manager);
+  f.manager.getWorkerAccess=id=>({...access(id),runnerUrl:"http://172.31.240.2:4791"});
+  f.manager.retainWorker=()=>({generation:1,release(){}});
+  rpc=new WorkspaceRpc({workerManager:f.manager,tenantPolicy:f.policy,fetchImpl:async(_url,{body})=>{
+    const request=JSON.parse(body);active++;peak=Math.max(peak,active);operations.push(request);
+    await new Promise(resolve=>setImmediate(resolve));
+    if(active>1){active--;return new Response(JSON.stringify({error:"runner_busy"}),{status:429});}
+    if(request.operation==="writeChunk")writes.set(request.path,Buffer.concat([writes.get(request.path)??Buffer.alloc(0),Buffer.from(request.bytes)]));
+    active--;return new Response(JSON.stringify({kind:"directory"}));
+  }});
+  const directory=(await f.state()).directory;
+  const paths=["/command","/skill","/permission"].map(path=>`${path}?directory=${encodeURIComponent(directory)}`);
+  const reads=paths.map(path=>f.client.request(path));
+  const send=f.post("/session/owned/prompt_async",textPrompt("turn_with_reads",(await f.state()).revision));
+  const responses=await Promise.all([...reads,send]);assert.deepEqual(responses.map(r=>r.status),[200,200,200,202]);
+  await Promise.all(responses.map(r=>r.text()));assert.equal(peak,1);assert.equal(f.forwarded(),1);
+  assert.ok(operations.length>=3);assert.ok(operations.every(operation=>operation.operation==="stat"));
+  const before=operations.length;await f.server.workspaceManagement.assertAccessible(f.context,f.context.workspaceDir);
+  assert.equal(operations.length,before);
+  const first=await f.state();await f.server.collaboration.settled(first,first.execution);
+  const draft=await f.server.attachments.createDraft(f.user.id),bytes=Buffer.from("value\n2\n");
+  const file=await f.server.attachments.upload(f.user.id,{draftId:draft.id},"values.csv",Readable.from([bytes]));
+  const second=textPrompt("turn_real_attachment",(await f.state()).revision);
+  second.attachmentTurn={turnId:"turn_real_attachment",draftId:draft.id,attachmentIds:[file.id]};
+  const attachmentResponses=await Promise.all([...paths.map(path=>f.client.request(path)),f.post("/session/owned/prompt_async",second)]);
+  assert.deepEqual(attachmentResponses.map(r=>r.status),[200,200,200,202]);await Promise.all(attachmentResponses.map(r=>r.text()));
+  assert.equal(peak,1);assert.equal(f.forwarded(),2);assert.ok([...writes.values()][0].equals(bytes));
+  assert.equal((await f.server.attachments.list(f.user.id,"owned")).attachments[0].sha256,file.sha256);
 });

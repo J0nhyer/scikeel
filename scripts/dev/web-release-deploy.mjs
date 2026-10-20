@@ -9,10 +9,64 @@ import { inspectProduction, validateCandidate, command, sha256, commonStore, fin
 import { writeManifest, readManifest } from './web-release-state.mjs';
 import { artifactFiles, productionFingerprint, validateInstalledImage } from './web-release.mjs';
 import { verifyTaskLocks } from './web-build.mjs';
+import { assertAssistantTargetCurrent, runSelectedAssistantLive, readAssistantSelection, restoreAssistantSelection, managedDataDirectory, verifyReleaseLauncher } from './web-assistant-release.mjs';
+import { loadCompatibleRecovery, compatibleRecoveryPrevious, markCompatibleRecoveryRestored } from './web-release-recovery.mjs';
 
 const toolRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dropIn = '/etc/systemd/system/osd-platform.service.d/zz-scikeel-web-release.conf';
 const marker = '# SciKeel managed Web release';
+async function storageDocument(path, field) {
+  const info = await lstat(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (!info) return 0;
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error('Invalid assistant storage');
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const metadata = await file.stat();
+    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 8 * 1024 ** 2 || metadata.ino !== info.ino || metadata.dev !== info.dev)
+      throw new Error('Invalid assistant storage');
+    const value = JSON.parse(await file.readFile('utf8'));
+    if (!value || Array.isArray(value) || !Number.isSafeInteger(value[field]) || value[field] < 1)
+      throw new Error('Invalid assistant storage');
+    return value[field];
+  } finally { await file.close(); }
+}
+async function storageDirectory(path) {
+  const info = await lstat(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error('Invalid assistant storage directory');
+  return !!info;
+}
+async function readableSchemas(sourceRoot, module, name) {
+  const source = await readFile(join(sourceRoot, 'services/platform/src', module), 'utf8')
+    .catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+  const literal = new RegExp(`export const ${name}\\s*=\\s*(?:Object\\.freeze\\()?\\s*(\\[[0-9,\\s]+\\])\\s*\\)?;`).exec(source)?.[1];
+  if (!literal) return [];
+  const versions = JSON.parse(literal);
+  return versions.every(value => Number.isSafeInteger(value) && value > 0) ? versions : [];
+}
+export async function assistantRollbackPolicy(sourceRoot, dataDir) {
+  try {
+    let runtimeVersion = 0;
+    const conversationSchemas = new Set();
+    if (await storageDirectory(join(dataDir, 'cli-runtime')))
+      runtimeVersion = await storageDocument(join(dataDir, 'cli-runtime/runtime.json'), 'version');
+    const conversations = join(dataDir, 'conversation-state');
+    if (await storageDirectory(conversations)) {
+      const entries = await readdir(conversations, { withFileTypes: true });
+      if (entries.length > 10000) throw new Error('Assistant storage inventory limit');
+      for (const entry of entries) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink())
+          throw new Error('Invalid conversation owner directory');
+        const schema = await storageDocument(join(conversations, entry.name, 'conversations.json'), 'schema');
+        if (schema) conversationSchemas.add(schema);
+      }
+    }
+    const runtimeReaders = await readableSchemas(sourceRoot, 'cli-runtime.mjs', 'READABLE_RUNTIME_STORAGE_VERSIONS');
+    const conversationReaders = await readableSchemas(sourceRoot, 'conversation-state.mjs', 'READABLE_CONVERSATION_SCHEMAS');
+    return { compatible: (!runtimeVersion || runtimeReaders.includes(runtimeVersion)) &&
+      [...conversationSchemas].every(schema => conversationReaders.includes(schema)), runtimeVersion, conversationSchemas: [...conversationSchemas].sort(),
+      runtimeReaders, conversationReaders };
+  } catch { return { compatible: false, reason: 'assistant_state_unverified' }; }
+}
 export async function lifecycleRollbackPolicy(sourceRoot,dataDir) {
   const stateDirectory=join(dataDir,'workspace-management');
   const info=await lstat(stateDirectory).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
@@ -37,7 +91,7 @@ export async function lifecycleRollbackPolicy(sourceRoot,dataDir) {
   return {compatible:supportedSchema>=requiredSchema,requiredSchema,supportedSchema};
 }
 export function replaceEnvironmentValue(text, key, value) {
-  if (!['PLATFORM_WEB_ROOT', 'PLATFORM_SANDBOX_IMAGE_DIGEST'].includes(key) || /[\r\n\0%\s'"\\]/.test(value)) throw new Error('Unsafe managed configuration value');
+  if (!['PLATFORM_WEB_ROOT', 'PLATFORM_SANDBOX_IMAGE_DIGEST', 'PLATFORM_DATA_DIR'].includes(key) || /[\r\n\0%\s'"\\]/.test(value)) throw new Error('Unsafe managed configuration value');
   const lines = text.split('\n'); const matches = lines.filter((line) => line.startsWith(key + '='));
   if (matches.length > 1) throw new Error('Managed configuration key is ambiguous');
   if (matches.length) return lines.map((line) => line.startsWith(key + '=') ? `${key}=${value}` : line).join('\n');
@@ -53,7 +107,7 @@ export async function publishRelease(candidate, ops) {
   } catch (cause) {
     try { await ops.restorePrevious(previous); await ops.restartPlatform(); await ops.verifyPrevious(previous); }
     catch (recovery) { throw new AggregateError([cause, recovery], 'Publication and recovery failed'); }
-    throw new Error('Publication failed; previous deployment restored', { cause });
+    throw new Error(previous.recoveryReader ? 'Publication failed; compatible recovery reader restored' : 'Publication failed; previous deployment restored', { cause });
   }
 }
 async function privateRead(path) { return command('sudo', ['-n', 'cat', path], { trim: false }); }
@@ -175,12 +229,19 @@ async function deploymentOperations(candidate, store) {
   const ops = {
     validatePrepared: async () => {
       if (candidate.status !== 'prepared' || !candidate.selection?.deploy) throw new Error('Release is not prepared for publication');
+      if (candidate.selection.liveOpenCode || candidate.selection.liveAssistant && candidate.selection.liveGateVersion !== 2)
+        throw new Error('Legacy assistant acceptance cannot authorize this release; prepare again');
       if (resolve(candidate.directory) !== join(store, 'web-releases', candidate.id) || resolve(candidate.source.root) !== join(candidate.directory, 'source')) throw new Error('Unsafe candidate directory');
       if (candidate.production.managedEnv !== '/etc/scikeel/platform-sandbox.env') throw new Error('Unsafe managed environment path');
       if (candidate.artifacts.web && resolve(candidate.artifacts.web.directory) !== join(candidate.directory, 'web')) throw new Error('Unsafe Web artifact root');
       await validateCandidate(candidate);
       if (candidate.artifacts.web && JSON.stringify(await artifactFiles(candidate.artifacts.web.directory)) !== JSON.stringify(candidate.artifacts.web.files)) throw new Error('Candidate artifacts changed');
       await validateInstalledImage(candidate, candidate.artifacts.image.imageDigest);
+      if (candidate.selection.liveAssistant) {
+        await verifyReleaseLauncher();
+        await assertAssistantTargetCurrent(candidate);
+        await loadCompatibleRecovery(candidate);
+      }
     },
     compareBaseline: async () => {
       if (productionFingerprint(await inspectProduction()) !== candidate.baseline.fingerprint) throw new Error('Production baseline changed; prepare again');
@@ -203,18 +264,26 @@ async function deploymentOperations(candidate, store) {
       }
       previous = { production, sourceBackup, files: await artifactFiles(production.webRoot), oldDropIn,
         pointer: await readFile(join(store, 'web-releases/current.json'), 'utf8').then(JSON.parse).catch(() => null) };
+      if (candidate.selection.liveAssistant) {
+        const client=await sessionClient(production);
+        try {previous.assistantBefore=await readAssistantSelection(client);}
+        finally {await client.close();}
+        previous=compatibleRecoveryPrevious(previous,await loadCompatibleRecovery(candidate));
+      }
       await writeFile(join(recoveryDir, 'environment.before'), environment, { mode: 0o600 });
       await writeFile(join(recoveryDir, 'drop-in.before'), oldDropIn ?? '', { mode: 0o600 });
       return previous;
     },
     saveRecovery: async (value) => {
       // Contents remain private; public recovery state carries identities only.
-      candidate.rollback = { production: value.production, files: value.files, previousId: value.pointer?.id ?? null, hadDropIn: value.oldDropIn !== null };
+      candidate.rollback = { production: value.production, originalProduction:value.originalProduction??null,
+        recoveryReader:value.recoveryReader??null, files: value.files, previousId: value.pointer?.id ?? null, hadDropIn: value.oldDropIn !== null };
       candidate.status = 'publishing'; await writeManifest(path, candidate);
       await writeFile(join(recoveryDir, 'previous.json'), JSON.stringify(value), { mode: 0o600 });
     },
     switchConfiguration: async () => {
       let environment = await privateRead(candidate.production.managedEnv);
+      environment = replaceEnvironmentValue(environment, 'PLATFORM_DATA_DIR', managedDataDirectory(candidate.production));
       environment = replaceEnvironmentValue(environment, 'PLATFORM_WEB_ROOT', candidate.artifacts.web?.directory ?? candidate.production.webRoot);
       if (candidate.artifacts.image.imageDigest) environment = replaceEnvironmentValue(environment, 'PLATFORM_SANDBOX_IMAGE_DIGEST', candidate.artifacts.image.imageDigest);
       if (candidate.selection.deployPlatform) {
@@ -229,14 +298,21 @@ async function deploymentOperations(candidate, store) {
     verifyProduction: async () => {
       const actual = await inspectProduction();
       const expectedSource = candidate.selection.deployPlatform ? candidate.source.root : candidate.production.source;
-      if (actual.source !== expectedSource || actual.webRoot !== (candidate.artifacts.web?.directory ?? candidate.production.webRoot) || actual.imageDigest !== candidate.artifacts.image.imageDigest) throw new Error('Running deployment identity differs');
+      if (actual.source !== expectedSource || actual.dataDir !== candidate.production.dataDir || actual.webRoot !== (candidate.artifacts.web?.directory ?? candidate.production.webRoot) || actual.imageDigest !== candidate.artifacts.image.imageDigest) throw new Error('Running deployment identity differs');
       const webDirectory = candidate.artifacts.web?.directory ?? candidate.production.webRoot;
       const webFiles = candidate.artifacts.web?.files ?? await artifactFiles(webDirectory);
       await verifyDelivery(actual, webDirectory, webFiles);
       candidate.deployment = { production: actual, verifiedAt: new Date().toISOString() };
     },
     requiredLiveAcceptance: async () => {
-      if (candidate.selection.liveOpenCode) candidate.deployment.liveOpenCode = await liveOpenCode(candidate.deployment.production);
+      if (candidate.selection.liveAssistant)
+        candidate.deployment.liveAssistant = await runSelectedAssistantLive(candidate, candidate.deployment.production, { connect: sessionClient,
+          recordSelection:async receipt=>{candidate.deployment.assistantSelection=receipt;await writeManifest(path,candidate);},
+          recordFailure:async failure=>{
+            console.error(JSON.stringify({type:'assistant.acceptance.failed',...failure}));
+            candidate.deployment.liveAssistantFailure=failure;
+            await writeManifest(path,candidate);
+          } });
     },
     markPublished: async () => {
       candidate.status = 'publishing'; await writeManifest(path, candidate);
@@ -252,15 +328,22 @@ async function deploymentOperations(candidate, store) {
       // Freeze lifecycle metadata before deciding whether an old backend may serve it.
       command('sudo',['-n','systemctl','stop','osd-platform.service']);
       let environment = await privateRead(value.production.managedEnv);
-      const dataDir=environmentValue(environment,'PLATFORM_DATA_DIR')??'/srv/osd/platform';
-      if(!dataDir.startsWith('/') || resolve(dataDir)!==dataDir)throw new Error('Unsafe workspace lifecycle state path');
+      const dataDir=managedDataDirectory(value.production);
       const policy=await lifecycleRollbackPolicy(value.sourceBackup?.root??value.production.source,dataDir).catch(()=>({compatible:false,reason:'workspace_state_unverified'}));
       if(!policy.compatible){
         candidate.status='rollback-maintenance';candidate.rollback.lifecyclePolicy=policy;
         await writeManifest(path,candidate);
         throw Object.assign(new Error('Rollback held in maintenance: previous source cannot enforce workspace lifecycle state'),{code:'WORKSPACE_ROLLBACK_MAINTENANCE'});
       }
+      const assistantPolicy = await assistantRollbackPolicy(value.sourceBackup?.root ?? value.production.source, dataDir);
+      candidate.rollback.assistantPolicy = assistantPolicy;
+      if (!assistantPolicy.compatible) {
+        candidate.status = 'rollback-maintenance'; await writeManifest(path, candidate);
+        throw Object.assign(new Error('Rollback held in maintenance: previous source cannot read assistant and conversation state'),
+          { code: 'ASSISTANT_ROLLBACK_MAINTENANCE' });
+      }
       environment = replaceEnvironmentValue(environment, 'PLATFORM_WEB_ROOT', value.production.webRoot);
+      environment = replaceEnvironmentValue(environment, 'PLATFORM_DATA_DIR', managedDataDirectory(value.production));
       if (value.production.imageDigest) environment = replaceEnvironmentValue(environment, 'PLATFORM_SANDBOX_IMAGE_DIGEST', value.production.imageDigest);
       else environment = environment.split('\n').filter((line) => !line.startsWith('PLATFORM_SANDBOX_IMAGE_DIGEST=')).join('\n');
       await installPrivate(environment, value.production.managedEnv, recoveryDir, 'environment.restore');
@@ -281,6 +364,23 @@ async function deploymentOperations(candidate, store) {
         if (actual.source !== value.sourceBackup.root || actual.webRoot !== value.production.webRoot || actual.imageDigest !== value.production.imageDigest || actual.platformFingerprint !== value.production.platformFingerprint || actual.webFingerprint !== value.production.webFingerprint) throw new Error('Restored fixed source identity differs');
       } else if (productionFingerprint(actual) !== productionFingerprint(value.production)) throw new Error('Restored process identity differs');
       await verifyDelivery(actual, value.production.webRoot, value.files);
+      if (value.assistantBefore) {
+        try {
+          const client=await sessionClient(actual);
+          try {candidate.rollback.assistantSelection=await restoreAssistantSelection(client,value.assistantBefore,
+            {expected:candidate.deployment?.assistantSelection});}
+          finally {await client.close();}
+        } catch (error) {
+          command('sudo',['-n','systemctl','stop','osd-platform.service']);
+          candidate.status='rollback-maintenance';await writeManifest(path,candidate);
+          throw new Error('Recovery held in maintenance: prior assistant selection could not be committed',{cause:error});
+        }
+      }
+      if (value.recoveryReader) {
+        await markCompatibleRecoveryRestored(value,actual);
+        await writeManifest(join(store,'web-releases/current.json'),value.pointer);
+        await writeFile(join(recoveryDir,'previous.json'),JSON.stringify(value),{mode:0o600});
+      }
       candidate.rollback.restoredProduction = actual;
       candidate.status = 'rolled-back'; await writeManifest(path, candidate);
     },
@@ -288,9 +388,9 @@ async function deploymentOperations(candidate, store) {
   return ops;
 }
 export function validateRecoveryConfiguration(configuration, candidate, previous) {
-  const allowedSources = [candidate.selection.deployPlatform ? candidate.source.root : candidate.production.source, previous.production.source, previous.sourceBackup?.root].filter(Boolean);
-  const allowedWebRoots = [candidate.artifacts.web?.directory ?? candidate.production.webRoot, previous.production.webRoot];
-  const allowedImages = [candidate.artifacts.image.imageDigest, previous.production.imageDigest];
+  const allowedSources = [candidate.selection.deployPlatform ? candidate.source.root : candidate.production.source, previous.production.source, previous.sourceBackup?.root,previous.originalProduction?.source].filter(Boolean);
+  const allowedWebRoots = [candidate.artifacts.web?.directory ?? candidate.production.webRoot, previous.production.webRoot,previous.originalProduction?.webRoot].filter(Boolean);
+  const allowedImages = [candidate.artifacts.image.imageDigest, previous.production.imageDigest,...(previous.originalProduction?[previous.originalProduction.imageDigest]:[])];
   if (!allowedSources.includes(configuration.source) || !allowedWebRoots.includes(configuration.webRoot) || !allowedImages.includes(configuration.imageDigest)) throw new Error('Recovery configuration belongs to a different deployment');
 }
 function environmentValue(text, key) {
@@ -334,8 +434,10 @@ export async function deploymentCommand(operation, id, { store, locked = false }
     const candidatePlatform = candidate.source.files.filter((file) => file.path.startsWith('services/platform/src/')).map((file) => ({ ...file, path: file.path.slice('services/platform/src/'.length) }));
     const matchesCandidate = actual && actual.source === expectedSource && actual.webRoot === expectedWebRoot && actual.imageDigest === candidate.artifacts.image.imageDigest && actual.platformFingerprint === (candidate.selection.deployPlatform ? fingerprintFiles(candidatePlatform) : candidate.production.platformFingerprint) && actual.webFingerprint === (candidate.artifacts.web?.fingerprint ?? candidate.production.webFingerprint);
     const matchesRecovery = actual && previous.sourceBackup && actual.source === previous.sourceBackup.root && actual.webRoot === previous.production.webRoot && actual.imageDigest === previous.production.imageDigest && actual.platformFingerprint === previous.production.platformFingerprint && actual.webFingerprint === previous.production.webFingerprint;
-    if (actual && !matchesCandidate && !matchesRecovery && productionFingerprint(actual) !== productionFingerprint(previous.production)) throw new Error('Recovery target does not match the running deployment');
-    if (pointer?.id !== id && (!['publishing', 'published', 'recovering','rollback-maintenance'].includes(candidate.status) || (pointer && pointer.id !== previous.pointer?.id))) throw new Error('Rollback must reference the current publication or incomplete transaction');
+    const matchesOriginal=actual&&previous.originalProduction&&productionFingerprint(actual)===productionFingerprint(previous.originalProduction);
+    if (actual && !matchesCandidate && !matchesRecovery && !matchesOriginal && productionFingerprint(actual) !== productionFingerprint(previous.production)) throw new Error('Recovery target does not match the running deployment');
+    if (pointer?.id !== id && (!['publishing', 'published', 'recovering','rollback-maintenance'].includes(candidate.status) ||
+      (pointer && ![previous.pointer?.id,previous.originalPointer?.id].includes(pointer.id)))) throw new Error('Rollback must reference the current publication or incomplete transaction');
     await ops.restorePrevious(previous); await ops.restartPlatform(); await ops.verifyPrevious(previous);
   }
   console.log(JSON.stringify({ release: id, status: candidate.status, deployment: candidate.deployment?.production, rollback: candidate.rollback?.production }));

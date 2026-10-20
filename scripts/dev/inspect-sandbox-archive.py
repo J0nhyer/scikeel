@@ -9,9 +9,15 @@ import tarfile
 def inspect(path):
     entries = []
     tool_hashes = {}
+    native_integration = None
     measured_paths = {"usr/local/bin/python3.12", "usr/local/bin/uv", "usr/bin/git", "usr/bin/rg",
                       "opt/scikeel/tools/bin/osd", "opt/scikeel/tools/bin/opencode",
                       "opt/scikeel/tools/bin/node", "opt/scikeel/tools/bin/codex", "opt/scikeel/tools/bin/claude",
+                      "opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json",
+                      "opt/scikeel/tools/native-tools.mjs", "opt/scikeel/runtime/required-effect-guard.mjs",
+                      "opt/scikeel/tools/codex-requirements.toml", "etc/codex/requirements.toml",
+                      "opt/scikeel/tools/native-network.mjs", "opt/scikeel/tools/native-network.py",
+                      "opt/scikeel/tools/apply_patch", "usr/local/bin/apply_patch",
                       "opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py", "opt/scikeel/tools/science-environment.mjs", "opt/scikeel/tools/collaboration.mjs", "opt/scikeel/tools/tool-outcome.mjs"}
     known = set()
     total = 0
@@ -43,10 +49,17 @@ def inspect(path):
                 entry["link"] = link
             if kind == "file" and name in measured_paths:
                 digest = hashlib.sha256()
+                metadata = bytearray() if name == "opt/scikeel/tools/bin/native-integration.json" else None
                 with archive.extractfile(member) as file:
                     for block in iter(lambda: file.read(1024 * 1024), b""):
                         digest.update(block)
+                        if metadata is not None:
+                            metadata.extend(block)
+                            if len(metadata) > 65536:
+                                raise ValueError("native integration metadata exceeds limit")
                 tool_hashes[name] = digest.hexdigest()
+                if metadata is not None:
+                    native_integration = json.loads(metadata)
             known.add(name)
             entries.append(entry)
             total += member.size
@@ -60,7 +73,8 @@ def inspect(path):
             if parent in links:
                 raise ValueError("archive entry beneath a link")
             parent = posixpath.dirname(parent)
-    return {"entries": entries, "fileCount": len(entries), "uncompressedBytes": total, "toolHashes": tool_hashes}
+    return {"entries": entries, "fileCount": len(entries), "uncompressedBytes": total, "toolHashes": tool_hashes,
+            **({"nativeIntegration": native_integration} if native_integration is not None else {})}
 
 
 if __name__ == "__main__":

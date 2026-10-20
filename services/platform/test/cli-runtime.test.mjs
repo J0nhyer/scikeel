@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile, chmod, symlink, link } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,8 @@ import { Readable } from "node:stream";
 import { afterEach, test } from "node:test";
 
 import { CliRuntimeManager, handoverText } from "../src/cli-runtime.mjs";
+import { CliProfileResolver } from "../src/cli-profile.mjs";
+import { ConversationState } from "../src/conversation-state.mjs";
 
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
 const roots = [];
@@ -29,6 +31,14 @@ async function makeManager(runtime) {
   await writeFile(join(adminCodex, "config.toml"), "model = \"admin-model\"\n");
   await writeFile(join(adminCodex, "codex-models.json"), JSON.stringify({ models: ["admin-model", "gpt-fast", "gpt-deep"] }));
   await writeFile(join(adminCodex, "config.toml"), 'model = "admin-model"\nmodel_catalog_json = "codex-models.json"\n');
+  const profileResolver = new CliProfileResolver({ claudeConfigDir: adminClaude, codexHome: adminCodex,
+    fetchImpl: async () => { throw Error("Deterministic CLI tests must never contact a provider"); } });
+  const refresh = profileResolver.refresh.bind(profileResolver);
+  // The synthetic CLI is always available; this is not live Claude readiness evidence.
+  profileResolver.refresh = async (...args) => {
+    const profile = await refresh(...args);
+    return args[0] === "claude" && profile.enabledByProfile ? { ...profile, status: "ready" } : profile;
+  };
   const options = {
       rootDir: join(root, "runtime"),
       runtime,
@@ -38,13 +48,22 @@ async function makeManager(runtime) {
       codexArgs: [fakeCli, "codex"],
       claudeConfigDir: adminClaude,
       codexHome: adminCodex,
+      profileResolver,
       turnTimeoutMs: 5_000,
+      assistantAuthority: { prepare: async () => {}, revoke: async () => {},
+        inventory: async () => ({ activeExecutions: [], uncertainEffects: [] }) },
   };
   return {
     root,
     options,
     manager: new CliRuntimeManager(options),
   };
+}
+
+async function selectRuntime(manager, runtime) {
+  const { revision, activeRuntime } = manager.adminDescribe();
+  if (activeRuntime === runtime) return;
+  return manager.selectAssistant({ runtime, expectedRevision: revision, operationId: `fixture_selection_${revision}` });
 }
 
 async function waitForIdle(manager, userId, sessionId) {
@@ -86,8 +105,9 @@ test("aborting research stops both the CLI and its workspace child process", asy
   await manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: `SciKeel research task (version 1).\n${JSON.stringify(task)}` });
   let pid;
   for (let n = 0; n < 50; n++) {
-    try { pid = Number(await readFile(join(workspace, "child.pid"), "utf8")); break; }
-    catch { await new Promise((done) => setTimeout(done, 20)); }
+    try { pid = Number(await readFile(join(workspace, "child.pid"), "utf8")); if(Number.isSafeInteger(pid)&&pid>1)break; }
+    catch { /* The fixture may still be creating its child readiness file. */ }
+    await new Promise((done) => setTimeout(done, 20));
   }
   assert.ok(pid);
   process.kill(pid, 0);
@@ -154,31 +174,32 @@ for (const runtime of ["claude", "codex"]) {
       assert.match(await readFile(join(pinned.configDir, "skills", "publication-figures", "SKILL.md"), "utf8"), /Publication Figures/);
     } finally { await manager.close(); }
   });
-  test(`${runtime} access switches persist, preserve accepted turns and history, and reject subsequent calls`, async () => {
+  test(`${runtime} exclusive selection waits for accepted turns and persists history across a global switch`, async () => {
     const { root, manager, options } = await makeManager(runtime);
     const workspace = join(root, "workspace");
     await mkdir(workspace);
     await manager.init();
     const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
     const turn = await manager.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "accepted research task" });
-    await manager.setAssistantEnabled(runtime, false);
-    assert.equal(manager.describe("usr_a").available.find((item) => item.runtime === runtime).enabled, false);
+    await assert.rejects(selectRuntime(manager, "opencode"), { code: "assistant_busy" });
     await manager.runReservedPrompt(turn);
     const finished = await waitForIdle(manager, "usr_a", session.id);
     assert.equal(finished.history.length, 2);
     assert.equal(finished.history.at(-1).info.error, undefined);
-    await assert.rejects(manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "blocked" }), { code: "runtime_unconfigured" });
-    await assert.rejects(manager.setUserRuntime("usr_b", runtime), { code: "runtime_unconfigured" });
+    await selectRuntime(manager, "opencode");
+    assert.equal(manager.describe("usr_a").available.find((item) => item.runtime === runtime).enabled, false);
+    await assert.rejects(manager.setUserRuntime("usr_b", runtime), { code: "assistant_selection_admin_only" });
     assert.equal(finished.history.length, 2);
+    await manager.close();
     const restarted = new CliRuntimeManager(options);
     await restarted.init();
     assert.equal(restarted.adminDescribe().assistantEnabled[runtime], false);
+    assert.equal(restarted.runtimeForUser("usr_b"), "opencode");
+    await selectRuntime(restarted, runtime);
+    await restarted.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "continue" });
+    const continued = await waitForIdle(restarted, "usr_a", session.id);
+    assert.equal(continued.history.length, 4);
     await restarted.close();
-    await manager.setAssistantEnabled(runtime, true);
-    await manager.sendPrompt({ userId: "usr_a", sessionId: session.id, text: "continue" });
-    await waitForIdle(manager, "usr_a", session.id);
-    assert.equal(finished.history.length, 4);
-    await manager.close();
   });
 }
 
@@ -457,7 +478,7 @@ test("runs Codex and never shares one user's session list with another user", as
   assert.equal((await readFile(join(root, "runtime", "users", "usr_a", "codex-home", "profiles", finished.identityRevision, manager.profiles.get("codex").sourceRevision, "codex-models.json"), "utf8")), await readFile(join(root, "admin-codex", "codex-models.json"), "utf8"));
 });
 
-test("migrates the old global switch to OpenCode and persists per-user choices", async () => {
+test("migrates the old switch to OpenCode and persists one administrator selection for all users", async () => {
   const { root, options, manager } = await makeManager("codex");
   await mkdir(join(root, "runtime"), { recursive: true });
   await writeFile(
@@ -468,19 +489,21 @@ test("migrates the old global switch to OpenCode and persists per-user choices",
   await manager.init();
   assert.equal(manager.describe("usr_a").runtime, "opencode");
   assert.equal(manager.describe("usr_b").runtime, "opencode");
-  assert.equal((await manager.setUserRuntime("usr_a", "codex")).runtime, "codex");
-  assert.equal(manager.describe("usr_b").runtime, "opencode");
+  await assert.rejects(manager.setUserRuntime("usr_a", "codex"), { code: "assistant_selection_admin_only" });
+  await selectRuntime(manager, "codex");
+  assert.equal(manager.describe("usr_a").runtime, "codex");
+  assert.equal(manager.describe("usr_b").runtime, "codex");
   await manager.close();
 
   const persisted = JSON.parse(await readFile(join(root, "runtime", "runtime.json"), "utf8"));
-  assert.equal(persisted.version, 4);
-  assert.equal(persisted.defaultRuntime, "opencode");
-  assert.equal(persisted.userRuntimes.usr_a, "codex");
+  assert.equal(persisted.version, 5);
+  assert.equal(persisted.defaultRuntime, "codex");
+  assert.deepEqual(persisted.userRuntimes, {});
 
   const reopened = new CliRuntimeManager(options);
   await reopened.init();
   assert.equal(reopened.describe("usr_a").runtime, "codex");
-  assert.equal(reopened.describe("usr_b").runtime, "opencode");
+  assert.equal(reopened.describe("usr_b").runtime, "codex");
   await reopened.close();
 });
 
@@ -498,10 +521,10 @@ test("migrates version 2 runtime choices and seeds managed model catalogs", asyn
 
   await manager.init();
 
-  assert.equal(manager.describe("usr_a").runtime, "codex");
-  assert.deepEqual(manager.adminDescribe().assistantEnabled, { claude: true, codex: true });
+  assert.equal(manager.describe("usr_a").runtime, "opencode");
+  assert.deepEqual(manager.adminDescribe().assistantEnabled, { claude: false, codex: false });
   const saved = JSON.parse(await readFile(join(root, "runtime", "runtime.json"), "utf8"));
-  assert.equal(saved.version, 4);
+  assert.equal(saved.version, 5);
   assert.equal(saved.userRuntimes.usr_a, "codex");
 });
 
@@ -510,9 +533,12 @@ test("remembers one enabled managed model per user and runtime", async () => {
   await manager.init();
   await writeFile(join(root, "admin-claude", "settings.json"), JSON.stringify({ model: "sonnet", env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "sonnet", ANTHROPIC_DEFAULT_OPUS_MODEL: "opus" } }));
   await manager.refreshProfiles();
-  await manager.setUserRuntime("usr_a", "codex", "gpt-deep");
+  await selectRuntime(manager, "codex");
+  await manager.setUserModel("usr_a", "codex", "gpt-deep");
+  await assert.rejects(manager.setUserModel("usr_a", "claude", "opus"), { code: "assistant_selection_admin_only" });
+  await selectRuntime(manager, "claude");
   await manager.setUserModel("usr_a", "claude", "opus");
-
+  await selectRuntime(manager, "codex");
   assert.equal(manager.describe("usr_a").model, "gpt-deep");
   assert.equal(manager.modelForUser("usr_a", "claude"), "opus");
 });
@@ -522,7 +548,8 @@ test("falls back to the new default when an administrator removes a selected mod
   await manager.init();
   await writeFile(join(root, "admin-codex", "config.toml"), 'model = "gpt-fast"\nmodel_catalog_json = "codex-models.json"\n');
   await manager.refreshProfiles();
-  await manager.setUserRuntime("usr_a", "codex", "gpt-deep");
+  await selectRuntime(manager, "codex");
+  await manager.setUserModel("usr_a", "codex", "gpt-deep");
 
   await writeFile(join(root, "admin-codex", "codex-models.json"), JSON.stringify({ models: ["gpt-fast"] }));
   await manager.refreshProfiles();
@@ -561,8 +588,9 @@ test("migrates version 3 assistant flags while preserving account selections", a
   await writeFile(join(root, "runtime", "runtime.json"), JSON.stringify({ version: 3, defaultRuntime: "opencode", userRuntimes: { usr_a: "codex" }, userModels: { usr_a: { codex: "gpt-deep" } }, managedRuntimes: { codex: { models: ["gpt-deep"], defaultModel: "gpt-deep" }, claude: { models: [], defaultModel: null } } }));
   await manager.init();
   const saved = JSON.parse(await readFile(join(root, "runtime", "runtime.json"), "utf8"));
-  assert.equal(saved.version, 4);
-  assert.deepEqual(saved.assistantEnabled, { claude: false, codex: true });
+  assert.equal(saved.version, 5);
+  assert.deepEqual(saved.assistantEnabled, { claude: false, codex: false });
+  assert.equal(saved.userRuntimes.usr_a, "codex");
   assert.equal(manager.modelForUser("usr_a", "codex"), "gpt-deep");
 });
 
@@ -640,4 +668,212 @@ test('native runtime lifecycle hides trashed projects and denies owned direct ac
  assert.equal((await manager.ensureUser('usr_a')).sessions.has(session.id),true);
  trashed=false;assert.equal((await manager.getOwnedSession('usr_a',session.id)).session.id,session.id);
  await manager.close();
+});
+
+async function historyFixture(manager, root, sessions, {legacy=false}={}) {
+  const workspace=join(root,'workspace');await mkdir(workspace,{recursive:true});
+  const folder=join(manager.rootDir,legacy?'users':'metadata','usr_a');await mkdir(folder,{recursive:true,mode:0o700});
+  const path=join(folder,'sessions.json');
+  const records=sessions.map((session,index)=>({id:`ses_cli_${String(index).padStart(16,'0')}`,userId:'usr_a',runtime:'codex',
+    directory:workspace,title:'Retained conversation',createdAt:1,updatedAt:2,metadata:{},nativeSessionId:'same-native-id',history:[],...session}));
+  await writeFile(path,JSON.stringify({version:1,sessions:records}),{mode:0o600});
+  return {workspace,path,records};
+}
+test('managed historical reads retain both inactive assistants and partial payloads without loading or executing them',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const partial={info:{id:'message-partial',role:'assistant',sessionID:'ses_cli_0000000000000000',time:{created:1}},parts:[{type:'text',text:'Partial research'}]};
+  const {workspace,records,path}=await historyFixture(manager,root,[{history:[partial]},{runtime:'claude'}]);
+  manager.workspaceAccess=async(userId,directory)=>{assert.equal(userId,'usr_a');assert.equal(directory,workspace);};
+  manager.profileResolver.refresh=async()=>assert.fail('Historical reads cannot resolve an inference profile');
+  manager.spawnImpl=()=>assert.fail('Historical reads cannot start a host CLI');
+  const original=await readFile(path,'utf8');
+  const listed=await manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace});
+  assert.deepEqual(listed.map(value=>value.id),records.map(value=>value.id));
+  const page=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,limit:1});
+  assert.deepEqual(page.messages,[partial]);assert.equal(page.nextCursor,null);assert.equal(page.session.runtime,'codex');
+  assert.equal(manager.userStates.size,0);assert.equal(await readFile(path,'utf8'),original);
+  await assert.rejects(manager.readHistoricalMessages({userId:'usr_b',workspaceDir:workspace,sessionId:records[0].id}),{code:'unknown_session'});
+});
+test('historical user-part normalization repairs only the known legacy generated ID without rewriting source bytes',async()=>{
+ const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+ const message={info:{id:'actual-message',sessionID:'ses_cli_0000000000000000',role:'user',time:{completed:1}},
+  parts:[{id:'old-part',messageID:'msg_cli_user_12345678-1234-1234-1234-123456789abc',sessionID:'ses_cli_0000000000000000',type:'text',text:'Preserved original prompt'}]};
+ const {workspace,path,records}=await historyFixture(manager,root,[{history:[message]}]);
+ const bytes=await readFile(path,'utf8');
+ const result=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id});
+ assert.equal(result.messages[0].parts[0].messageID,message.info.id);assert.equal(result.messages[0].parts[0].id,'old-part');
+ assert.equal(await readFile(path,'utf8'),bytes);assert.equal(manager.userStates.size,0);
+});
+test('historical pagination binds its cursor to the exact source and never treats unfinished turns as completed',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const messages=Array.from({length:3},(_,index)=>({info:{id:`message-${index}`,role:index?'assistant':'user',time:{created:1}},parts:[{type:'text',text:`text-${index}`}]}));
+  const {workspace,records,path}=await historyFixture(manager,root,[{history:messages}]);
+  const first=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,limit:1});
+  const second=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,limit:2,cursor:first.nextCursor});
+  assert.deepEqual(second.messages,messages.slice(1));assert.equal(second.nextCursor,null);
+  assert.equal(second.messages[0].info.time.completed,undefined);
+  await assert.rejects(manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,cursor:'invented'}),{code:'historical_cursor_changed'});
+  records[0].history.push({...messages[0],info:{...messages[0].info,id:'message-4'}});
+  await writeFile(path,JSON.stringify({version:1,sessions:records}));
+  await assert.rejects(manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id,cursor:first.nextCursor}),{code:'historical_cursor_changed'});
+});
+test('legacy native metadata remains readable without a managed metadata directory and duplicate public origins fail closed',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const {workspace}=await historyFixture(manager,root,[{}],{legacy:true});
+  assert.equal((await manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace})).length,1);
+  await assert.rejects(readFile(join(manager.rootDir,'metadata','usr_a','sessions.json')),{code:'ENOENT'});
+  await historyFixture(manager,root,[{title:'Conflicting imported origin'}]);
+  await assert.rejects(manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace}),{code:'historical_source_conflict'});
+});
+test('historical sources validate owners, parent ancestry and workspace even for inactive runtimes',async()=>{
+  for(const change of [{userId:'usr_b'},{directory:'/foreign/workspace'},{parentId:'ses_cli_0000000000000000'}]) {
+    const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+    const {workspace,path}=await historyFixture(manager,root,[change]);const original=await readFile(path,'utf8');
+    await assert.rejects(manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace}),{code:'historical_source_unavailable'});
+    assert.equal(await readFile(path,'utf8'),original);
+  }
+});
+test('historical reads preserve trash state and deny direct archived workspace access without deleting data',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const {workspace,path,records}=await historyFixture(manager,root,[{}]);const original=await readFile(path,'utf8');
+  manager.workspaceAccess=async()=>{throw Object.assign(Error('Project trashed'),{code:'project_trashed',status:409});};
+  const listed=await manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace});assert.equal(listed[0].lifecycle,'trashed');
+  await assert.rejects(manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id}),{code:'project_trashed'});
+  assert.equal(await readFile(path,'utf8'),original);
+});
+test('unknown schema and linked or public native history files fail closed and preserve the source',async()=>{
+  for(const kind of ['schema','malformed','symlink','hardlink','public']) {
+    const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+    const {workspace,path}=await historyFixture(manager,root,[{}]);
+    if(kind==='schema')await writeFile(path,JSON.stringify({version:99,sessions:[]}));
+    if(kind==='malformed')await writeFile(path,'{"version":1,');
+    if(kind==='symlink'){const target=join(root,'source.json');await writeFile(target,await readFile(path),{mode:0o600});await rm(path);await symlink(target,path);}
+    if(kind==='hardlink')await link(path,join(root,'hardlinked.json'));
+    if(kind==='public')await chmod(path,0o644);
+    const original=await readFile(path,'utf8');
+    await assert.rejects(manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace}),{code:'historical_source_unavailable'});
+    assert.equal(await readFile(path,'utf8'),original);
+  }
+});
+test('owned fork history retains the original ancestor message and attachment references',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const parent='ses_cli_0000000000000000',child='ses_cli_0000000000000001';
+  const message={info:{id:'message-from-parent',role:'user',sessionID:parent,time:{created:1,completed:1}},
+    parts:[{type:'file',url:'attachment://owned-reference',filename:'results.csv'}],attachments:{source:'owned-attachment'}};
+  const {workspace}=await historyFixture(manager,root,[{history:[message]},{parentId:parent,history:[message]}]);
+  const page=await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:child});
+  assert.equal(page.session.parentID,parent);assert.deepEqual(page.messages,[message]);
+});
+async function conversationFixture() {
+  const {root,manager,options}=await makeManager('opencode');await manager.init();
+  const workspace=join(root,'workspace');await mkdir(workspace);
+  const owner={userId:'usr_a',instanceId:'user-usr_a',generation:1,workspaceDir:workspace,directory:workspace};
+  const conversations=new ConversationState({rootDir:join(root,'conversation-state'),authorize:async value=>{
+    if(value.userId!==owner.userId || value.instanceId!==owner.instanceId || value.generation!==owner.generation || value.workspaceDir!==workspace)
+      throw Object.assign(Error('Stale context'),{code:'stale_workspace_context'});
+  }});
+  const value=await conversations.create(owner,{conversationId:'public-session',title:'Research',parentId:null,lifecycle:'active'});
+  const input={conversations,owner,conversationId:value.id,expectedRevision:value.revision,
+    request:{requestId:'send-1',payloadHash:'a'.repeat(64),policyRevision:1,runtime:'opencode',generation:1,model:'approved',identityRevision:'profile-1'}};
+  return {root,manager,options,conversations,owner,input};
+}
+test('global admission persists its policy lease before the canonical execution reservation and fences a concurrent switch',async()=>{
+  const {manager,conversations,owner,input}=await conversationFixture();
+  const prepare=conversations.prepareTurn.bind(conversations);let entered,release;
+  const ready=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  conversations.prepareTurn=async(...args)=>{
+    const data=JSON.parse(await readFile(manager.configPath,'utf8'));
+    assert.equal(Object.values(data.assistantPolicy.executions)[0].identity.execution,1);
+    entered();await gate;return prepare(...args);
+  };
+  const pending=manager.admitConversation(input);await ready;
+  const switching=manager.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'switch-during-send'});
+  release();const admitted=await pending;
+  await assert.rejects(switching,{code:'assistant_busy'});
+  assert.equal(admitted.identity.execution,1);assert.equal(admitted.identity.generation,1);
+  assert.equal((await conversations.open(owner,input.conversationId)).execution,1);
+  await admitted.settle({cleanupVerified:true});
+  assert.equal((await conversations.open(owner,input.conversationId)).turns['send-1'].state,'settled');
+  assert.equal((await manager.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'switch-after-cleanup'})).revision,2);
+  await manager.close();
+});
+test('delivery loss retains both durable fences and duplicate request recovery never submits a new execution',async()=>{
+  const {manager,conversations,owner,input}=await conversationFixture();
+  const admitted=await manager.admitConversation(input);await admitted.submitted();
+  await admitted.settle({cleanupVerified:false});
+  const replay=await manager.admitConversation(input);
+  assert.equal(replay.replay,true);assert.equal(replay.receipt.state,'unknown');assert.equal(replay.identity.execution,1);
+  assert.equal(typeof replay.submitted,'undefined');
+  await assert.rejects(manager.admitConversation({...input,expectedRevision:4,request:{...input.request,requestId:'send-again'}}),{code:'assistant_recovery_required'});
+  await assert.rejects(manager.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'blocked-switch'}),{code:'assistant_recovery_required'});
+  const saved=JSON.parse(await readFile(manager.configPath,'utf8'));assert.equal(Object.values(saved.assistantPolicy.executions)[0].status,'unknown');
+  assert.equal((await conversations.open(owner,input.conversationId)).turns['send-1'].state,'unknown');
+  await manager.close();
+});
+test('malformed, stale and conflicting requests cannot create policy leases or consume conversation executions',async()=>{
+  for(const patch of [{runtime:'codex'},{generation:2},{policyRevision:2},{model:'bad\nmodel'},{payloadHash:'invalid'},{extra:'untrusted'}]) {
+    const {manager,conversations,owner,input}=await conversationFixture();
+    await assert.rejects(manager.admitConversation({...input,request:{...input.request,...patch}}));
+    assert.equal((await conversations.open(owner,input.conversationId)).execution,0);
+    assert.deepEqual(JSON.parse(await readFile(manager.configPath,'utf8')).assistantPolicy.executions,{});
+    await manager.close();
+  }
+});
+test('a settled replay preserves the execution counter and changed payload cannot reuse its receipt',async()=>{
+  const {manager,conversations,owner,input}=await conversationFixture();
+  const admitted=await manager.admitConversation(input);await admitted.settle({cleanupVerified:true});
+  const replay=await manager.admitConversation(input);assert.equal(replay.replay,true);assert.equal(replay.receipt.state,'settled');
+  await assert.rejects(manager.admitConversation({...input,request:{...input.request,payloadHash:'b'.repeat(64)}}),{code:'conversation_request_conflict'});
+  const current=await conversations.open(owner,input.conversationId);
+  const second=await manager.admitConversation({...input,expectedRevision:current.revision,request:{...input.request,requestId:'send-2'}});
+  assert.equal(second.identity.execution,2);await second.settle({cleanupVerified:true});await manager.close();
+});
+test('a canonical persistence failure after global reservation retains uncertainty through restart',async()=>{
+  const {manager,options,conversations,input}=await conversationFixture();
+  conversations.beforeCommit=async()=>{throw Error('Persistence acknowledgement lost');};
+  await assert.rejects(manager.admitConversation(input),/Persistence acknowledgement lost/);
+  assert.equal(Object.values(JSON.parse(await readFile(manager.configPath,'utf8')).assistantPolicy.executions)[0].status,'unknown');
+  await manager.close();
+  const restarted=new CliRuntimeManager(options);await restarted.init();
+  assert.equal(restarted.assistantSnapshot('usr_a').recoveryRequired,true);
+  await assert.rejects(restarted.selectAssistant({runtime:'codex',expectedRevision:1,operationId:'restart-must-not-clear'}),{code:'assistant_recovery_required'});
+  await restarted.close();
+});
+test('native acceptance cannot be inferred from HTTP submission and cleanup transition serialization rejects late old states',async()=>{
+  const {manager,conversations,owner,input}=await conversationFixture();
+  const admitted=await manager.admitConversation(input);await admitted.submitted();
+  await assert.rejects(admitted.accepted({runtime:'opencode',nativeSessionId:'unverified-native',turnId:'turn-1'}),{code:'invalid_conversation_transition'});
+  assert.equal((await conversations.open(owner,input.conversationId)).turns['send-1'].state,'submitted');
+  await admitted.settle({cleanupVerified:true});await admitted.settle({cleanupVerified:true});
+  await assert.rejects(admitted.submitted(),{code:'invalid_conversation_transition'});
+  assert.deepEqual(JSON.parse(await readFile(manager.configPath,'utf8')).assistantPolicy.executions,{});await manager.close();
+});
+
+test('native research reads and permission patches use owned native state and preserve explicit denies',async()=>{
+  const {root,manager,options}=await makeManager('codex');await manager.init();await selectRuntime(manager,'codex');
+  const directory=join(root,'workspace');await mkdir(directory);
+  const session=await manager.createSession({userId:'research-user',workspaceDir:directory});
+  const child=await manager.createSession({userId:'research-user',workspaceDir:directory});
+  child.parentId=session.id;session.nativeSessionId='private-native-id';session.permission=[{permission:'bash',pattern:'*',action:'deny'}];
+  session.history=[{info:{id:'message-owned',role:'user'},parts:[{type:'text',text:'Owned history'}]}];
+  const call=(path,method='GET',body)=>manager.researchRequest({userId:'research-user',directory,path,method,body});
+  const view=await call(`/session/${session.id}`);assert.equal(view.id,session.id);assert.equal(view.nativeSessionId,undefined);
+  const messages=await call(`/session/${session.id}/message`);messages[0].parts[0].text='Mutated';assert.equal(session.history[0].parts[0].text,'Owned history');
+  assert.equal((await call(`/session/${session.id}/children`))[0].id,child.id);
+  const patched=await call(`/session/${session.id}`,'PATCH',{permission:[{permission:'*',pattern:'*',action:'allow'}]});
+  assert.deepEqual(patched.permission,[{permission:'*',pattern:'*',action:'allow'},{permission:'bash',pattern:'*',action:'deny'}]);
+  const policy=[{permission:'*',pattern:'*',action:'allow'},{permission:'external_directory',pattern:'*',action:'deny'},
+    {permission:'external_directory',pattern:'/opt/scikeel/tools/resources/skills-core/*',action:'allow'}];
+  await call(`/session/${session.id}`,'PATCH',{permission:policy});
+  const repeated=await call(`/session/${session.id}`,'PATCH',{permission:policy});
+  assert.equal(repeated.permission.filter(rule=>rule.permission==='external_directory').at(-1).action,'allow');
+  assert.deepEqual(session.permission,[{permission:'bash',pattern:'*',action:'deny'}]);
+  await assert.rejects(call(`/session/${session.id}`,'PATCH',{permission:[{permission:'bash',pattern:'*',action:'invalid'}]}));
+  await assert.rejects(call(`/session/${session.id}`,'PATCH',{directory:'/tmp'}));
+  await assert.rejects(manager.researchRequest({userId:'another-user',directory,path:`/session/${session.id}`}));
+  await assert.rejects(manager.researchRequest({userId:'research-user',directory:join(directory,'other'),path:`/session/${session.id}`}));
+  await assert.rejects(call(`/session/${session.id}/prompt_async`,'POST',{}));
+  await manager.close();const restarted=new CliRuntimeManager(options);await restarted.init();
+  assert.deepEqual((await restarted.researchRequest({userId:'research-user',directory,path:`/session/${session.id}`})).permission,repeated.permission);
+  await restarted.close();
 });

@@ -31,13 +31,20 @@ impl Host {
         if written.is_err() {let _=fs::remove_file(&temporary);}written
     }
     fn operation(&mut self,operation:Operation)->Result<Value> {
-        if self.config.synthetic && !operation.instance_id().starts_with("sandbox-test-") {
+        if self.config.synthetic && operation.instance_id().is_some_and(|id| !id.starts_with("sandbox-test-")) {
             return Err("synthetic_identity_required");
         }
         if self.config.synthetic && matches!(&operation, Operation::Register { user_id, .. } if !user_id.starts_with("sandbox-test-")) {
             return Err("synthetic_identity_required");
         }
         match operation {
+            Operation::Inventory {}=>{
+                self.registry.validate()?;
+                let accounts:Vec<_>=self.registry.accounts.values().map(|account|json!({
+                    "instanceId":account.instance_id,"userId":account.user_id,
+                    "generation":account.generation,"status":account.status})).collect();
+                Ok(json!({"accounts":accounts}))
+            }
             Operation::Register {instance_id,user_id}=>{
                 let account=self.registry.register(&instance_id,&user_id)?;self.save()?;
                 crate::quota::provision(&self.config,&account)?;
@@ -151,6 +158,26 @@ pub fn run()->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn registry_inventory_keeps_removed_owners_and_does_not_persist_or_return_credentials() {
+        let config:Config=serde_json::from_value(json!({"schema":1,"platformUid":1000,"platformGid":1000,
+            "socketPath":"/run/scikeel/host.sock","stateDir":"/inventory-must-not-write",
+            "roots":{"instances":"/inventory-instances","native":"/inventory-native","images":"/inventory-images"},
+            "runsc":"/inventory-runsc","runscSha256":"a".repeat(64),"quotaDevice":"/dev/loop1",
+            "quotaBytes":2147483648u64,"quotaInodes":100000,"quotaBackingFile":"/inventory-quota","quotaCapacity":4294967296u64})).unwrap();
+        let mut registry=Registry::default();
+        registry.register("historical-instance","removed-owner").unwrap();
+        registry.register("user-current","current").unwrap();
+        let before=serde_json::to_value(&registry).unwrap();
+        let mut host=Host {config,registry};
+        let frame=(json!({"schema":1,"requestId":"inventory","op":"inventory","args":{}}).to_string()+"\n").into_bytes();
+        let request=protocol::parse(&frame,1000,1000).expect("authenticated inventory request");
+        let result=host.operation(request.operation).unwrap();
+        assert_eq!(result,json!({"accounts":[
+            {"instanceId":"historical-instance","userId":"removed-owner","generation":1,"status":"registered"},
+            {"instanceId":"user-current","userId":"current","generation":1,"status":"registered"}]}));
+        assert_eq!(serde_json::to_value(&host.registry).unwrap(),before);
+    }
     #[test]
     fn unix_socket_peer_identity_is_kernel_reported() {
         let (a,_)=UnixStream::pair().unwrap();

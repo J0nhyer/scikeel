@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 export const hashId = (...parts) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 export const runId = (s, session, execution) => hashId(s.accountId, s.runtime, s.instanceId, s.generation, session, execution);
-const tools = new Set(['read', 'write', 'edit', 'bash', 'glob', 'grep', 'webfetch', 'websearch', 'task', 'skill', 'question', 'todowrite', 'todoread', 'apply_patch']);
+const tools = new Set(['read', 'write', 'edit', 'bash', 'glob', 'grep', 'webfetch', 'websearch', 'task', 'skill', 'question', 'todowrite', 'todoread', 'apply_patch', 'research_checkpoint', 'research_delivery']);
 const outcomes = new Set(['running', 'waiting_input', 'paused', 'completed', 'failed', 'cancelled', 'unknown', 'pending', 'approved', 'rejected', 'answered']);
 const runOutcomes=new Set(['running','waiting_input','paused','completed','failed','cancelled','unknown']);
 const supportsOutcome=(kind,outcome)=>outcomes.has(outcome)&&(kind!=='run'||runOutcomes.has(outcome));

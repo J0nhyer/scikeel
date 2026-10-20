@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -30,6 +30,8 @@ test("actual task subagents execute workspace commands without manual permission
   const workspace = join(root, "workspace");
   const cfg = join(root, "config");
   await mkdir(workspace);
+  const initialized = spawnSync("git", ["init", "--quiet", workspace], { encoding: "utf8" });
+  assert.equal(initialized.status, 0, "Initialize the native test workspace as an independent project");
   await mkdir(join(cfg, "opencode"), { recursive: true });
   await writeFile(join(root, ".npmrc"), "registry=http://127.0.0.1:1\nfetch-retries=0\nfetch-timeout=1000\n");
   await writeFile(join(workspace, ".gitignore"), "");
@@ -87,6 +89,8 @@ test("actual task subagents execute workspace commands without manual permission
     return response.status === 204 ? null : response.json();
   };
   await until(() => request("/session"), () => diagnostics);
+  assert.equal((await request("/path")).worktree, workspace,
+    "The native test workspace must have its own project root");
   const start = async () => {
     const session = await request("/session", {});
     await request(`/session/${session.id}`, { permission: collaborationPermissions("autonomous") }, "PATCH");

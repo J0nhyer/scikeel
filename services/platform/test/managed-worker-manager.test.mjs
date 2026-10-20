@@ -54,6 +54,68 @@ test('passive analytics registration follows verified lifecycle without extra st
   assert.equal(calls.filter(([op])=>op==='start').length,1);assert.equal(observed.filter(e=>e.kind==='ready').length,1);
   await manager.stopWorker('user-a');assert.equal(observed.at(-1).kind,'revoked');
 });
+
+function inventoryFixture(t) {
+ const f=fixture();t.after(()=>f.manager.close());
+ f.manager.client.inventory=async()=>({accounts:[...f.records.values()].map(record=>({
+   instanceId:record.instanceId,userId:record.userId??record.instanceId.slice(5),generation:record.generation,status:record.status}))});
+ f.manager.inspectNative=async()=>({busy:false,starting:false,jobs:[]});
+ return f;
+}
+test("assistant inventory includes cold and removed launcher owners without creating or reconfiguring workers",async t=>{
+ const f=inventoryFixture(t);let configured=0;f.manager.configureWorker=async()=>{configured++;};
+ f.records.set("historical-instance",{instanceId:"historical-instance",userId:"removed-owner",generation:4,status:"ready"});
+ f.records.set("user-cold",{instanceId:"user-cold",userId:"cold",generation:3,status:"stopped"});
+ assert.equal(typeof f.manager.assistantInventory,"function");
+ const inventory=await f.manager.assistantInventory();
+ assert.deepEqual(inventory.activeExecutions,[]);
+ assert.deepEqual(inventory.uncertainEffects,[{source:"worker",userId:"removed-owner",instanceId:"historical-instance",generation:4}]);
+ assert.equal(f.calls.length,0);assert.equal(configured,0);assert.deepEqual(f.manager.listWorkers(),[]);
+});
+test("assistant inventory requires current native and OpenCode observations, not loaded idle defaults",async t=>{
+ const f=inventoryFixture(t);
+ await f.manager.ensureWorker({instanceId:"user-a",userId:"a"});
+ const clean=await f.manager.assistantInventory();assert.deepEqual(clean,{activeExecutions:[],uncertainEffects:[]});
+ f.manager.inspectNative=async()=>({busy:true,starting:true,jobs:[]});
+ assert.equal((await f.manager.assistantInventory()).activeExecutions[0].userId,"a");
+ f.manager.inspectNative=async()=>({busy:false,starting:false,jobs:[]});
+ const lease=f.manager.retainWorker("user-a");
+ assert.equal((await f.manager.assistantInventory()).activeExecutions.length,1);lease.release();
+ f.manager.fetchImpl=async()=>({ok:true,json:async()=>({owned:{type:"busy"}})});
+ assert.equal((await f.manager.assistantInventory()).activeExecutions.length,1);
+ f.manager.fetchImpl=async()=>({ok:true,json:async()=>({})});
+ f.manager.inspectNative=async()=>{throw Error("synthetic unavailable runner");};
+ assert.equal((await f.manager.assistantInventory()).uncertainEffects.length,1);
+ assert.equal(f.calls.filter(([op])=>op==="start").length,1);
+});
+test("assistant inventory fails closed on unavailable registry, unowned generations and malformed native snapshots",async t=>{
+ const f=inventoryFixture(t);await f.manager.ensureWorker({instanceId:"user-a",userId:"a"});
+ for(const snapshot of [{busy:false,starting:false,jobs:[{jobId:"a".repeat(64),sessionId:"owned",status:"running"}]},
+   {busy:false,starting:false,jobs:[],secret:"synthetic"},{busy:false,starting:true,jobs:[]},
+   {busy:false,starting:false,jobs:[{jobId:"a".repeat(64),sessionId:"owned",status:"unrecognized"}]}]){
+   f.manager.inspectNative=async()=>snapshot;
+   assert.equal((await f.manager.assistantInventory()).uncertainEffects.length,1);
+ }
+ f.manager.inspectNative=async()=>({busy:false,starting:false,jobs:[]});
+ f.records.get("user-a").generation++;
+ assert.equal((await f.manager.assistantInventory()).uncertainEffects.length,1);
+ f.records.get("user-a").generation--;
+ f.manager.client.inventory=async()=>{throw Error("synthetic unavailable launcher");};
+ await assert.rejects(f.manager.assistantInventory(),{code:"assistant_inventory_unavailable",statusCode:503});
+});
+test("assistant inventory bounds native status bytes and rejects a generation replaced during observation",async t=>{
+ const f=inventoryFixture(t);await f.manager.ensureWorker({instanceId:"user-a",userId:"a"});
+ f.manager.fetchImpl=async()=>new Response(new ReadableStream({start(controller){
+   controller.enqueue(Buffer.from(JSON.stringify({private:{type:"idle",label:"x".repeat(1024*1024+1)}})));
+   controller.close();
+ }}));
+ const oversized=await f.manager.assistantInventory();
+ assert.equal(oversized.uncertainEffects.length,1);
+ f.manager.fetchImpl=async()=>({ok:true,json:async()=>({})});
+ f.manager.inspectNative=async()=>{f.records.get("user-a").generation++;return {busy:false,starting:false,jobs:[]};};
+ assert.equal((await f.manager.assistantInventory()).uncertainEffects.length,1);
+ f.records.get("user-a").generation--;
+});
 test("managed workers use launcher endpoints, generations and private internal credentials", async (t) => {
   const { manager, calls, policy } = fixture(); t.after(() => manager.close());
   const worker = await manager.ensureWorker({ instanceId: "user-a", userId: "a" });

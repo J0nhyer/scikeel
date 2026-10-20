@@ -39,3 +39,26 @@ test("foreign session, original symlinks and changed source bytes cannot create 
   await writeFile(f.file.sourcePath,Buffer.alloc(f.file.size));
   await assert.rejects(f.copies.materialize({userId:"a",sessionId:"session-a",files:[f.file]}));assert.equal(f.writes.size,0);
 });
+
+test("owned empty attachment copies do not touch the runner",async t=>{
+  const f=await fixture(t);
+  assert.deepEqual(await f.copies.materialize({userId:"a",sessionId:"session-a",files:[]}),[]);
+  assert.equal(f.calls.length,0);
+  await assert.rejects(f.copies.materialize({userId:"b",sessionId:"session-a",files:[]}));
+  await assert.rejects(f.copies.materialize({userId:"a",sessionId:"foreign",files:[]}));
+  assert.equal(f.calls.length,0);
+});
+
+for (const [code,status] of [["workspace_rpc_busy",429],["workspace_rpc_timeout",504],["workspace_rpc_unavailable",503],["runtime_context_changed",409]]) {
+  test(`working copy preserves ${code} during chunk transfer`,async t=>{
+    const f=await fixture(t);const call=f.copies.files.call;
+    const failure=Object.assign(new Error("safe runner failure"),{statusCode:status,code});
+    f.copies.files.call=async(context,request,options)=>{
+      if(request.operation==="writeChunk")throw failure;
+      return call(context,request,options);
+    };
+    await assert.rejects(f.copies.materialize({userId:"a",sessionId:"session-a",files:[f.file]}),error=>error===failure);
+    assert.equal(f.writes.size,0);
+    assert.ok(f.calls.some(request=>request.operation==="remove"));
+  });
+}

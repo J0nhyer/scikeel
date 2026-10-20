@@ -31,7 +31,7 @@ const memoryHigh = 1850 * mib;
 const memoryMax = 2200 * mib;
 const swapMax = 256 * mib;
 
-if (!["web-files-live", "web-projects-live", "web-recovery-live", "platform-title-live", "opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
+if (!["codex-guard-build", "web-files-live", "web-projects-live", "web-recovery-live", "platform-title-live", "opencode-title-acceptance", "opencode-title-check", "opencode-title-prepare", "opencode-title-test", "opencode-title-build", "build", "test", "typecheck", "lint", "probe", "platform-test", "release-test", "web-build", "release",
   "platform-deps-lock", "platform-deps-install", "core-test", "core-check", "core-build", "sandbox-probe", "sandbox-image-stage", "sandbox-storage-prepare", "sandbox-host-prepare", "sandbox-network-test", "sandbox-mirror-lock", "sandbox-mirror-prepare", "sandbox-mirror-probe", "sandbox-mirror-install", "sandbox-migrate"].includes(mode)) {
   console.error("Unknown guarded task mode");
   process.exit(2);
@@ -141,11 +141,18 @@ if (liveRecovery) {
   process.env.npm_config_jobs = "1";
   run("pnpm", mode === "platform-deps-lock" ? ["install", "--lockfile-only", "--ignore-scripts"] : ["install", "--frozen-lockfile"], root);
 } else if (mode === "release-test") {
-  run(process.execPath, ["--test", "--test-concurrency=1", ...args], root);
+  const files = args.length ? args : (await readdir(join(root, "scripts/dev")))
+    .filter(name => name.endsWith(".test.mjs")).sort().map(name => `scripts/dev/${name}`);
+  if (!files.length) throw new Error("Release test files are unavailable");
+  run(process.execPath, ["--test", "--test-concurrency=1", ...files], root);
 } else if (mode === "probe") {
   console.log(smallLinuxHost ? "Resource limits active" : "Host does not need cloud resource limits");
 } else if (mode === "platform-test") {
   run(process.execPath, ["--test", "--test-concurrency=1", ...args], join(root, "services/platform"));
+} else if (mode === "codex-guard-build") {
+  if (args.length) throw new Error("Native guard builds use fixed CI inputs");
+  run(process.execPath, [join(root, "scripts/dev/build-codex-guard-runtime.mjs")], root);
+  process.exit(0);
 } else if (mode.startsWith("opencode-title-")) {
   run(process.execPath, [join(root, "scripts/dev/build-opencode-title-runtime.mjs"), mode.slice("opencode-title-".length), ...args], root);
   process.exit(0);

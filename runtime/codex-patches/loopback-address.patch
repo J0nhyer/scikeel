@@ -1,0 +1,9 @@
+diff --git a/codex-rs/vendor/bubblewrap/network.c b/codex-rs/vendor/bubblewrap/network.c
+--- a/codex-rs/vendor/bubblewrap/network.c
++++ b/codex-rs/vendor/bubblewrap/network.c
+@@ -162,4 +162,4 @@ loopback_setup (void)
+   header = rtnl_setup_request (buffer, RTM_NEWADDR,
+-                               NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK,
++                               NLM_F_CREATE | NLM_F_REPLACE | NLM_F_ACK,
+                                sizeof (struct ifaddrmsg));
+   addmsg = NLMSG_DATA (header);

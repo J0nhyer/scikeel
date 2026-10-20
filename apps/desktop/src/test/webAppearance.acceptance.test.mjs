@@ -14,13 +14,13 @@ test.skipIf(!process.env.OSD_APPEARANCE_ACCEPTANCE)("workbench appearances persi
   const { CliRuntimeManager } = await module("cli-runtime");
   const { PlatformServer } = await module("platform-server");
   const root = await mkdtemp(join(tmpdir(), "scikeel-appearance-"));
-  let platform, browser;
+  let platform, browser, workerManager, runtime;
   try {
     const codexHome = join(root, "codex"); await mkdir(codexHome);
     await writeFile(join(codexHome, "config.toml"), 'model = "fixture-model"\n');
     const authStore = new AuthStore({ filePath: join(root, "auth.json"), bootstrapAdmin: { username: "fixture", password: "fixture-password" } });
-    const workerManager = new WorkerManager({ rootDir: join(root, "workers"), osdCommand: process.execPath, osdArgs: [resolve("../../services/platform/fixtures/fake-osd.mjs")] });
-    const runtime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome, claudeConfigDir: join(root, "claude"), codexCommand: process.execPath, codexArgs: [resolve("../../services/platform/fixtures/fake-cli.mjs"), "codex"] });
+    workerManager = new WorkerManager({ rootDir: join(root, "workers"), osdCommand: process.execPath, osdArgs: [resolve("../../services/platform/fixtures/fake-osd.mjs")] });
+    runtime = new CliRuntimeManager({ rootDir: join(root, "cli"), runtime: "codex", assistantAuthority: { inventory: async () => ({ activeExecutions: [], uncertainEffects: [] }) }, codexHome, claudeConfigDir: join(root, "claude"), codexCommand: process.execPath, codexArgs: [resolve("../../services/platform/fixtures/fake-cli.mjs"), "codex"] });
     platform = new PlatformServer({ authStore, workerManager, cliRuntime: runtime, webRoot: process.env.OSD_WEB_CANDIDATE });
     const address = await platform.listen(); const origin = `http://${address.host}:${address.port}`;
     browser = await chromium.launch({ executablePath: process.env.OSD_CHROMIUM_PATH, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
@@ -49,7 +49,7 @@ test.skipIf(!process.env.OSD_APPEARANCE_ACCEPTANCE)("workbench appearances persi
         }
         const login = await context.request.post(origin + "/auth/login", { headers: { accept: "application/json" }, data: { username: "fixture", password: "fixture-password" } });
         expect(login.status()).toBe(200);
-        const { user } = await login.json(); await runtime.setUserRuntime(user.id, "codex");
+        const { user } = await login.json();
         const instanceId = `user-${user.id}`;
         await workerManager.ensureWorker({ instanceId, userId: user.id });
         // The isolated legacy fake has no launcher; its simulated owned generation is fixed.
@@ -151,5 +151,7 @@ test.skipIf(!process.env.OSD_APPEARANCE_ACCEPTANCE)("workbench appearances persi
         expect(errors).toEqual([]);
       } finally { await context.close(); }
     }
-  } finally { await browser?.close(); await platform?.close(); await rm(root, { recursive: true, force: true }); }
+  } finally { await browser?.close(); await platform?.close();
+    await runtime?.close(); await workerManager?.close();
+    await rm(root, { recursive: true, force: true }); }
 }, 180000);

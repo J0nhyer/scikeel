@@ -16,6 +16,8 @@ export function ResearchDecisionCard({
 }) {
   const { t } = useTranslation("session");
   const [answer, setAnswer] = useState("");
+  const suggestion = decision.suggestedAnswer.trim();
+  const submittedAnswer = answer.trim() || suggestion;
   const label = t(decision.kind === "step" ? "collaboration.stepConfirmation" : "collaboration.confirmation");
   return (
     <section
@@ -29,9 +31,11 @@ export function ResearchDecisionCard({
       <p className="my-2 whitespace-pre-wrap text-sm text-text">
         {decision.question}
       </p>
-      <p className="mb-2 whitespace-pre-wrap text-sm text-muted">
-        {t("collaboration.suggestion")}: {decision.suggestedAnswer}
-      </p>
+      {suggestion && (
+        <p className="mb-2 whitespace-pre-wrap text-sm text-muted">
+          {t("collaboration.suggestion")}: {suggestion}
+        </p>
+      )}
       </div>
       {paused && (
         <p className="mb-2 text-xs text-muted">{t("collaboration.paused")}</p>
@@ -46,13 +50,13 @@ export function ResearchDecisionCard({
       />
       <div className="flex flex-wrap gap-2">
         <button
-          disabled={busy}
-          onClick={() =>
-            void onAnswer(answer.trim() || decision.suggestedAnswer)
-          }
+          disabled={busy || !submittedAnswer}
+          onClick={() => {
+            if (!busy && submittedAnswer) void onAnswer(submittedAnswer);
+          }}
           className="rounded-input bg-accent px-3 py-2 text-sm text-accent-fg disabled:opacity-50"
         >
-          {answer.trim()
+          {answer.trim() || !suggestion
             ? t("collaboration.submit")
             : t("collaboration.continue")}
         </button>

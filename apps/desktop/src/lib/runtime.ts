@@ -1,3 +1,4 @@
+import { gatewayPromptFailureKey } from "./gatewayPromptFailure";
 import { interactionDraftIdentity, loadInteractionDraft, saveInteractionDraft, savedQuestionDrafts, questionReceipt, interactionFailure, transitionInteraction, type InteractionEntry } from "./interactionState";
 import { normalizeToolResult, makeToolOutcome } from "@ai4s/sdk/tool-outcome";
 import { prepareCollaborationSend, type CollaborationMode } from "./collaboration";
@@ -73,7 +74,7 @@ import {
   type ProxyMode,
   type ToolStatus,
 } from "./tauri";
-import { isGatewayWeb, isPlatformWeb, gatewayToken, gatewayOrigin, setPlatformSessionExpiryHandler, setPlatformWorkspaceGeneration } from "./webMode";
+import { isGatewayWeb, isPlatformWeb, gatewayToken, gatewayOrigin, setPlatformSessionExpiryHandler, setPlatformWorkspaceGeneration, setPlatformAssistantRevision } from "./webMode";
 import { createGatewayAccountLifecycle } from "./gatewayAccount";
 import { createResearchTask, type ResearchBrief } from "./research";
 import { activeAcpAgent } from "./acpAgents";
@@ -293,9 +294,10 @@ interface RuntimeState {
   status: RuntimeStatus;
   serverUrl: string;
   runtimeKind: RuntimeKind;
-  /** Multi-user Web platform runtime selected by this account. Null on the
-   *  desktop and on older gateways that do not expose runtime selection. */
+  /** Deployment assistant committed by the administrator. Null on the desktop
+   *  and older gateways that do not expose platform assistant metadata. */
   gatewayRuntime: GatewayRuntimeId | null;
+  gatewayPolicyRevision: number | null;
   gatewayRuntimes: GatewayRuntimeOption[];
   gatewayUser: GatewayUser | null;
   gatewayIdentityState: 'unknown'|'ready'|'unavailable';
@@ -967,6 +969,19 @@ function clientForSession(get: StoreGet, sid: string): AgentRuntime | null {
   return client;
 }
 
+function fencePlatformClient(source: OpenCodeClient, state: RuntimeState) {
+  if (!isPlatformWeb) return;
+  source.setGatewayGeneration?.(state.gatewayContext?.generation ?? null);
+  source.setGatewayAssistantRevision?.(state.gatewayPolicyRevision);
+  const account = state.gatewayUser?.id, context = state.gatewayContext;
+  source.setGatewayAssistantChangedHandler?.(() => {
+    const current = useRuntimeStore.getState();
+    if (current.gatewayUser?.id !== account || current.gatewayContext?.instanceId !== context?.instanceId ||
+        current.gatewayContext?.generation !== context?.generation) return;
+    void current.refreshGatewayRuntimes();
+  });
+}
+
 async function sessionRunning(get: StoreGet, sid: string): Promise<boolean | null> {
   const runtime = clientForSession(get, sid);
   const root = rootSessionOf(get().sessionParents, sid);
@@ -1218,6 +1233,10 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
     await sleep(600);
     return await fn();
   }
+}
+/** A Web prompt may be accepted before its acknowledgement is lost. Never replay it implicitly. */
+async function sendPromptOnceOnWeb<T>(fn: () => Promise<T>): Promise<T> {
+  return isGatewayWeb ? fn() : withRetry(fn);
 }
 /** Dedup Sets below hold completed callIds/requestIds that never recur, but a
  *  long, tool-heavy session keeps adding to them forever (issue #34: unbounded
@@ -2166,7 +2185,10 @@ async function performTurn(
     void logDebug("turn OK");
     return sid;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const failureKey = isGatewayWeb ? gatewayPromptFailureKey(err) : null;
+    const msg = failureKey ? i18n.t(failureKey) : err instanceof Error ? err.message : String(err);
+    // Discover accepted work with reads only. The retained draft/turn ID owns any explicit retry.
+    if (isGatewayWeb) void get().refreshSessions();
     void logDebug(`turn FAILED: ${msg}`);
     // The failure belongs next to the message that caused it.
     const key = lockKey;
@@ -2179,7 +2201,7 @@ async function performTurn(
           [key]: {
             ...cur,
             loaded: true,
-            blocks: [...cur.blocks, { kind: "status-line", text: `Send failed: ${msg}`, tone: "error", presentation: { kind: "failure", eventId: `send:${cur.blocks.length}` } }],
+            blocks: [...cur.blocks, { kind: "status-line", text: i18n.t("session:composer.error.sendFailed", {message: msg}), tone: "error", presentation: { kind: "failure", eventId: `send:${cur.blocks.length}` } }],
           },
         },
       };
@@ -2842,6 +2864,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     let gatewayRuntimeKind: RuntimeKind = "opencode";
     let gatewayRuntimeName: string | null = null;
     let gatewayRuntime: GatewayRuntimeId | null = null;
+    let gatewayPolicyRevision: number | null = null;
     let gatewayRuntimes: GatewayRuntimeOption[] = [];
     const gatewayUserRole: GatewayUserRole | null = null;
     const gatewayUser: GatewayUser | null = null;
@@ -2850,6 +2873,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     // connect that lands somewhere else must not reuse them (#92).
     const previousWorkspace = get().workspace;
     if (isGatewayWeb) {
+      if (isPlatformWeb) { setPlatformAssistantRevision(null); set({ gatewayPolicyRevision: null }); }
       // Web client: same-origin gateway; the pasted token is the OpenCodeClient
       // password, and the workspace directory comes from /v1/whoami.
       baseUrl = gatewayOrigin();
@@ -2869,7 +2893,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           return response.json() as Promise<T>;
         })(), signal);
       };
-      const metadata = readContext<{ runtime?: GatewayRuntimeId; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[]; context?: {instanceId:string;generation:number} | null }>("/api/runtime", 15000).then(value => ({ value, error: null }), error => ({ value: null, error }));
+      const metadata = readContext<{ runtime?: GatewayRuntimeId; policyRevision?: number; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[]; context?: {instanceId:string;generation:number} | null }>("/api/runtime", 15000).then(value => ({ value, error: null }), error => ({ value: null, error }));
       if (!isPlatformWeb) account = readContext<{ user?: GatewayUser }>("/api/me", 15000).catch(() => null);
       try {
         const who = await readContext("/v1/whoami", 60000, password ? { Authorization: `Bearer ${password}` } : undefined) as { directory?: string; mode?: string };
@@ -2889,10 +2913,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         if (result.error) throw result.error;
         const managed = result.value;
         if (isPlatformWeb && (!["opencode", "claude", "codex"].includes(managed?.runtime ?? "") ||
-          managed?.kind !== (managed?.runtime === "opencode" ? "opencode" : "server") || !Array.isArray(managed?.available))) {
+          managed?.kind !== (managed?.runtime === "opencode" ? "opencode" : "server") || !Array.isArray(managed?.available) ||
+          !Number.isSafeInteger(managed?.policyRevision) || (managed?.policyRevision ?? 0) < 1)) {
           throw new Error("Assistant identity is unavailable");
         }
         if (managed) {
+          if (isPlatformWeb) {
+            gatewayPolicyRevision = managed.policyRevision!;
+            setPlatformAssistantRevision(gatewayPolicyRevision); set({ gatewayPolicyRevision });
+          }
           if (isPlatformWeb && !(managed.context && isWorkspaceReport({ context: managed.context, state: "healthy", activity: "unknown", canRestart: false, retryAfterMs: 0 }))) {
             const report = await new GatewayWorkspaceClient().status({ signal: requestSignal(10000), timeoutMs: beforeDeadline(deadline, 10000) }).catch(() => null);
             if (!active()) return;
@@ -3020,7 +3049,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         password: password ?? undefined,
         sessionTitlePresentation: isGatewayWeb,
       });
-      if (isPlatformWeb) oc.setGatewayGeneration?.(get().gatewayContext?.generation ?? null);
+      fencePlatformClient(oc, get());
       if (isPlatformWeb) oc.setGatewayContextChangedHandler?.(() => {
         if (!active() || oc !== client || platformBrowserSuspended) return;
         if (webRecovery) { lastConnectError = "Workspace context has changed"; return; }
@@ -3036,6 +3065,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         runtimeKind: gatewayRuntimeKind,
         acpAgentName: gatewayRuntimeKind === "server" ? gatewayRuntimeName : null,
         gatewayRuntime,
+        gatewayPolicyRevision,
         gatewayRuntimes,
         ...(!isPlatformWeb ? { gatewayUserRole, gatewayUser } : {}),
       });
@@ -3549,6 +3579,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
                       directory: sourceDirectory,
                       password: streamPassword,
                     });
+                    fencePlatformClient(temporaryClient, get());
                     await temporaryClient.connect();
                     presentationClient = temporaryClient;
                   }
@@ -3748,6 +3779,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   // which is what a first paint before any connection is actually driving.
   runtimeKind: "opencode",
   gatewayRuntime: null,
+  gatewayPolicyRevision: null,
   gatewayRuntimes: [],
   gatewayUser: null,
   gatewayIdentityState: 'unknown',
@@ -3757,30 +3789,79 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     const version = ++gatewayCatalogVersion;
     ++modelCatalogVersion;
     const selected = get().gatewayRuntime;
+    const account = get().gatewayUser?.id;
+    const observedContext = get().gatewayContext;
+    const observedClient = opencodeClient;
+    const observedRevision = get().gatewayPolicyRevision;
     set({ gatewayCatalogState: "loading" });
     try {
       const signal = AbortSignal.timeout(15000);
-      const data = await withSignal((async () => {
+      const readMetadata = async () => {
         const response = await fetch(`${gatewayOrigin()}/api/runtime`, { credentials: "same-origin", signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json() as Promise<{ available?: GatewayRuntimeOption[]; runtime?: GatewayRuntimeId }>;
-      })(), signal);
-      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
+        return response.json() as Promise<{ available?: GatewayRuntimeOption[]; runtime?: GatewayRuntimeId; policyRevision?: number;
+          kind?: RuntimeKind; label?: string; context?: { instanceId: string; generation: number } | null }>;
+      };
+      let data = await withSignal(readMetadata(), signal);
+      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected || get().gatewayUser?.id !== account) return;
+      if (isPlatformWeb && data.runtime !== selected) {
+        const nextRuntime = data.runtime;
+        if (!nextRuntime || !["opencode", "codex", "claude"].includes(nextRuntime) || !observedClient)
+          throw new Error("Assistant catalog is unavailable");
+        if (!data.context) {
+          const warm = await fetch(`${gatewayOrigin()}/v1/whoami`, { credentials: "same-origin", signal });
+          if (!warm.ok) throw new Error("Workspace identity is unavailable");
+          data = await withSignal(readMetadata(), signal);
+        }
+        const context = data.context;
+        if (data.runtime !== nextRuntime || data.kind !== (nextRuntime === "opencode" ? "opencode" : "server") ||
+            !Number.isSafeInteger(data.policyRevision) || data.policyRevision! <= (observedRevision ?? 0) || !Array.isArray(data.available) ||
+            !context || !isWorkspaceReport({ context, state: "healthy", activity: "unknown", canRestart: false, retryAfterMs: 0 }))
+          throw new Error("Assistant identity is unavailable");
+        // The gateway protocol stays the same across assistants. Refresh its
+        // authority and catalog without disposing the client's owned drafts.
+        const [providers, configured] = await Promise.all([
+          listProvidersWithAvailability(observedClient, undefined, { signal, timeoutMs: 15000 }),
+          observedClient.getDefaultModel({ signal, timeoutMs: 15000 }),
+        ]);
+        const verified = await withSignal(readMetadata(), signal);
+        if (verified.runtime !== nextRuntime || verified.policyRevision !== data.policyRevision ||
+            verified.context?.instanceId !== context.instanceId || verified.context.generation !== context.generation)
+          throw new Error("Assistant identity changed while loading its catalog");
+        if (version !== gatewayCatalogVersion || opencodeClient !== observedClient || get().gatewayRuntime !== selected ||
+            get().gatewayUser?.id !== account || get().gatewayContext !== observedContext) return;
+        setPlatformAssistantRevision(data.policyRevision!); setPlatformWorkspaceGeneration(context.generation);
+        set(state => ({ gatewayRuntime: nextRuntime, runtimeKind: data.kind!, acpAgentName: nextRuntime === "opencode" ? null : data.label ?? nextRuntime,
+          gatewayPolicyRevision: data.policyRevision!, gatewayContext: context, providers,
+          ...reconcileGatewayModels({ ...state, gatewayRuntime: nextRuntime, providers, defaultModel: configured }, data.available!),
+          interactions: Object.fromEntries(Object.entries(state.interactions).map(([id, entry]) =>
+            [id, transitionInteraction(entry, "expired", "runtime_context_changed")])),
+        }));
+        for (const source of new Set([observedClient, ...streamClients.values()])) fencePlatformClient(source, get());
+        void get().reconcileRunning();
+        return;
+      }
       if (data.runtime !== selected || !Array.isArray(data.available)) throw new Error("Assistant catalog is unavailable");
+      if (isPlatformWeb && (!Number.isSafeInteger(data.policyRevision) || data.policyRevision! < 1)) throw new Error("Assistant revision is unavailable");
+      const source = opencodeClient;
       let providers = get().providers;
       let configured = get().defaultModel;
       if (selected === "opencode") {
-        const source = opencodeClient;
         if (!source) throw new Error("Assistant is disconnected");
         [providers, configured] = await Promise.all([listProvidersWithAvailability(source, (providers) => {
-          if (version === gatewayCatalogVersion && source === opencodeClient && get().gatewayRuntime === selected) set({ providers });
+          if (version === gatewayCatalogVersion && source === opencodeClient && get().gatewayRuntime === selected && get().gatewayUser?.id === account) set({ providers });
         }, { signal, timeoutMs: 15000 }), source.getDefaultModel({ signal, timeoutMs: 15000 })]);
         if (source !== opencodeClient) return;
       }
-      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
+      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected || get().gatewayUser?.id !== account) return;
+      if (isPlatformWeb) {
+        setPlatformAssistantRevision(data.policyRevision!);
+        source?.setGatewayAssistantRevision?.(data.policyRevision!);
+        set({ gatewayPolicyRevision: data.policyRevision! });
+      }
       set((state) => ({ providers, ...reconcileGatewayModels({ ...state, providers, defaultModel: configured }, data.available!) }));
     } catch {
-      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected) return;
+      if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected || get().gatewayUser?.id !== account) return;
       // Do not offer stale choices after an offline or failed refresh.
       set((state) => ({
         gatewayCatalogState: "unavailable",
@@ -3795,6 +3876,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   gatewayRuntimeSwitching: false,
   selectGatewayRuntime: async (runtime) => {
     if (!isGatewayWeb) return;
+    if (isPlatformWeb) {
+      set({ error: i18n.t("settings:managedAgents.adminOnly") });
+      return;
+    }
     const state = get();
     if (state.gatewayRuntime === runtime || state.gatewayRuntimeSwitching) return;
     const option = state.gatewayRuntimes.find((candidate) => candidate.runtime === runtime);
@@ -4586,9 +4671,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
 
   clearPlatformPresentation: () => {
     if (!isPlatformWeb) return;
+    setPlatformAssistantRevision(null); setPlatformWorkspaceGeneration(null);
     useToastStore.getState().reset();
     clearWorkspaceTextDrafts();
-    set({ gatewayUser: null, gatewayUserRole: null, gatewayIdentityState:'unknown', gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
+    set({ gatewayUser: null, gatewayUserRole: null, gatewayIdentityState:'unknown', gatewayPolicyRevision: null, gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
       workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [],
       sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
       runningSessions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},
@@ -5129,7 +5215,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // Attachment bytes are read INSIDE the send, not before performTurn: the
       // echo and the spinner must appear on click, not after a multi-MB read.
       (sid) =>
-        withRetry(async () => {
+        sendPromptOnceOnWeb(async () => {
           const { parts, dropped } = isGatewayWeb ? { parts: [], dropped: [] } : await imageAttachmentParts(attachments ?? []);
           // A picture that could not be read is NOT sent, and the prompt still
           // names the file — so without this the model answers about a figure
@@ -5563,13 +5649,17 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         : isGatewayWeb && get().gatewayRuntime === "codex" ? ".agents/skills" : ".opencode/skills";
       const prompt = i18n.t(isGatewayWeb ? "pages:skills.install.agentPromptWorkspace" : "pages:skills.install.agentPrompt", { input: text, skillsDirectory });
       const model = modelForSession(get(), id).model;
+      const installTurn = isGatewayWeb ? {turnId: attachmentRequestKey(), attachmentIds: []} : undefined;
       // Deliberately not awaited: the caller opens the new pane immediately and
       // watches the turn there (performTurn reports failures into the thread).
       void performTurn(
         set,
         get,
         echo,
-        (sid) => withRetry(() => client!.sendPrompt(sid, prompt, undefined, model)),
+        (sid) => sendPromptOnceOnWeb(async () => {
+          const revision = isGatewayWeb ? await prepareCollaborationSend(sid) : undefined;
+          await client!.sendPrompt(sid, prompt, undefined, model, undefined, undefined, installTurn, revision);
+        }),
         // Same reason as the composer's send: an ACP `session/prompt` answers
         // when the turn is OVER, so its lock has to be taken before the call.
         get().runtimeKind === "acp" || get().runtimeKind === "server",
@@ -5611,6 +5701,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         password: streamPassword,
         sessionTitlePresentation: isGatewayWeb,
       });
+      fencePlatformClient(c, get());
       if (sharedEventHandler) c.onEvent(sharedEventHandler);
       streamClients.set(dir, c);
       // Best-effort: a background stream that can't open just leaves that pane

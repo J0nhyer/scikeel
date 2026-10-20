@@ -159,8 +159,12 @@
     "allow": "允许使用 {{runtime}}",
     "saving": "正在保存…",
     "saved": "已保存 {{runtime}}。",
-    "failed": "无法保存 {{runtime}}，请重试。",
-    "loadFailed": "无法加载 Agent 使用设置。",
+    "failed": "无法保存助手选择，请重试。",
+    "loadFailed": "无法加载助手选择。",
+    "pending": "尚未确认切换结果，请先检查状态。",
+    "adminOnly": "部署使用的助手由管理员在模型菜单中选择。",
+    "busy": "请等待正在执行的工作结束后再切换助手。",
+    "unavailable": "此助手暂不可用。",
     "retry": "重试"
   },
   "managedModels": {

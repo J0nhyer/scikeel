@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "policy": "required-effect-guard-v1",
+  "upstreamVersion": "0.157.1",
+  "upstreamCommit": "36650394c5b38c2990ccf2a3457165ca3e9d9726",
+  "patchSha256": "1357ec3090b6a165d77f54740d1763eba784b9df65bf325a83569db4839a0214",
+  "testPatchSha256": "b819e5fa763a2d6e1d94275cc8b70ed9da1e8a4df77f445eb64f829dcb4cc32c",
+  "rustVersion": "1.95.0",
+  "lockFormat": "smol-toml@1.9.0",
+  "upstreamLockSha256": "72efa81ed947d07ed4fbb3e10b094715ff00626126d758aaed56733c97887e5f",
+  "workspaceLockSha256": "10ab1433e7299b299253fb23a40562042076911c2e3997205b97a08e59fe54b6",
+  "bwrapPatchSha256": "3d1913bf5f245216c3d31abcf735215e49ff4de33b6f6b7abd01d291a47ed580",
+  "bwrapSha256": "50e4484a5952622bb43663053c03c87c254e1a609de6f23885679fb2ea21650a"
+}

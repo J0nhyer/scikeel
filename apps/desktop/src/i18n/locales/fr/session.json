@@ -184,7 +184,17 @@
     "error": {
       "paste": "Impossible d'enregistrer le collage : {{message}}",
       "addFiles": "Impossible d'ajouter les fichiers : {{message}}",
-      "imageNotSent": "Impossible de lire {{names}} — le message est parti sans l'image."
+      "imageNotSent": "Impossible de lire {{names}} — le message est parti sans l'image.",
+      "workspaceBusy": "L’espace de travail est occupé. Votre message n’a pas été envoyé. Réessayez bientôt.",
+      "workspaceTimeout": "La préparation de l’espace de travail a expiré. Rechargez la conversation avant de réessayer.",
+      "workspaceUnavailable": "L’espace de travail est indisponible. Rechargez la conversation avant de réessayer.",
+      "workspaceDenied": "Cette opération a été refusée. Votre brouillon et vos pièces jointes sont conservés.",
+      "executionRunning": "La recherche est déjà en cours. Attendez sa fin ou arrêtez-la avant d’envoyer un autre message.",
+      "deliveryUnconfirmed": "La réception du message n’est pas confirmée. Rechargez la conversation pour la vérifier avant de réessayer.",
+      "sendIdChanged": "Cet identifiant d’envoi appartient à un autre message. Rechargez la conversation avant d’envoyer à nouveau.",
+      "recoveryUnconfirmed": "Le rétablissement de l’état d’envoi n’est pas confirmé. Rechargez la conversation avant de réessayer.",
+      "providerRejected": "Le fournisseur du modèle a refusé la requête. Votre conversation et vos pièces jointes sont conservées.",
+      "sendFailed": "Échec de l’envoi : {{message}}"
     },
     "model": {
       "aria": "Changer de modèle",

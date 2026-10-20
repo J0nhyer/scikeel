@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   /** Authenticated platform Web client, toggled only by gateway-specific tests. */
   isGatewayWeb: false,
   isPlatformWeb: false,
+  assistantRevisions: [] as Array<number | null>,
+  assistantChanged: null as (() => void) | null,
   /** The host's active workspace folder, as `active-workspace.txt` holds it.
    *  `setWorkspace`/`newDatedWorkspace` move it and `workspacePath` reads it
    *  back, because that is the contract the Rust side keeps: creating a dated
@@ -65,6 +67,7 @@ const mocks = vi.hoisted(() => ({
   sendPromptFullSpy: vi.fn(),
   prepareCollaborationSend: vi.fn(),
   collaborationRevisionSpy: vi.fn(),
+  attachmentContextSpy: vi.fn(),
   runCommand: vi.fn(),
   replyPermission: vi.fn(),
   answerQuestion: vi.fn(),
@@ -175,6 +178,7 @@ vi.mock("./webMode", () => ({
   gatewayOrigin: () => "http://gateway.test",
   setPlatformSessionExpiryHandler: vi.fn(),
   setPlatformWorkspaceGeneration: vi.fn(),
+  setPlatformAssistantRevision: vi.fn(),
 }));
 vi.mock("./collaboration",()=>({prepareCollaborationSend:mocks.prepareCollaborationSend}));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
@@ -186,6 +190,8 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@ai4s/sdk")>();
   class OpenCodeClient {
     setGatewayContextChangedHandler(handler: () => void) { mocks.contextChanged = handler; }
+    setGatewayAssistantRevision(revision: number | null) { mocks.assistantRevisions.push(revision); }
+    setGatewayAssistantChangedHandler(handler: () => void) { mocks.assistantChanged = handler; }
     private statusCb: (s: string) => void = () => {};
     /** The real client keeps its status (BaseAgentRuntime); the store reads it
      *  after connecting rather than waiting for a transition. */
@@ -304,6 +310,7 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
       _attachments?: unknown,
       collaborationRevision?: number,
     ) {
+      mocks.attachmentContextSpy(_attachments);
       mocks.sendPromptSpy(sid, text, agent);
       mocks.sendPromptFullSpy(sid, text, agent, model, variant);
       mocks.collaborationRevisionSpy(collaborationRevision);
@@ -408,10 +415,12 @@ import { leaves, makeLeaf, useLayoutStore } from "./layout";
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.sendPromptSpy.mockReset();
   mocks.prepareCollaborationSend.mockReset().mockResolvedValue(0);
   mocks.isTauri = true;
   mocks.isGatewayWeb = false;
   mocks.isPlatformWeb = false;
+  mocks.assistantRevisions.length = 0; mocks.assistantChanged = null;
   mocks.activeWorkspace = "/ws/base";
   mocks.failConnects = 0;
   mocks.failSessionLists = 0;
@@ -582,9 +591,125 @@ describe("platform connection context", () => {
   function response(path: string): Response {
     const data = path.endsWith("/v1/whoami") ? { directory: "/ws/base", mode: "full" }
       : path.endsWith("/api/me") ? { user: { id: "usr_fixture", username: "fixture", role: "user" } }
-      : { runtime: "opencode", kind: "opencode", context: { instanceId: "user-usr_fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true }] };
+      : { runtime: "opencode", policyRevision: 1, kind: "opencode", context: { instanceId: "user-usr_fixture", generation: 1 },
+        available: [{ runtime: "opencode", kind: "opencode", managed: false, label: "OpenCode", enabled: true, models: [], defaultModel: null, selectedModel: null }] };
     return new Response(JSON.stringify(data));
   }
+  it("captures verified policy revision and refreshes a stale client without replay or presentation reset", async () => {
+    let revision = 7;
+    mocks.providers = [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/runtime")) return new Response(JSON.stringify({ ...await response(path).json(), policyRevision: revision }));
+      return response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    expect(useRuntimeStore.getState().gatewayPolicyRevision).toBe(7); expect(mocks.assistantRevisions).toContain(7);
+    useRuntimeStore.setState({ draftWorkspaces: { draft: "/ws/unsent" }, runningSessions: { ses_live: true } });
+    const before = useRuntimeStore.getState(); const sendCount = mocks.sendPromptSpy.mock.calls.length;
+    revision = 8; expect(mocks.assistantChanged).toBeTypeOf("function"); mocks.assistantChanged!();
+    await vi.waitFor(() => expect(useRuntimeStore.getState().gatewayPolicyRevision).toBe(8));
+    const after = useRuntimeStore.getState();
+    expect(after.gatewayCatalogState).toBe("ready");
+    expect(after.draftWorkspaces).toBe(before.draftWorkspaces); expect(after.threads).toBe(before.threads);
+    expect(after.questions).toBe(before.questions); expect(after.runningSessions).toBe(before.runningSessions);
+    expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(sendCount); expect(mocks.abortSession).not.toHaveBeenCalled();
+    useRuntimeStore.getState().clearPlatformPresentation(); expect(useRuntimeStore.getState().gatewayPolicyRevision).toBeNull();
+  });
+  it.each([undefined, 0, -1, 1.5, "2"])("rejects missing or invalid committed policy revision %s before a usable connection", async revision => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      return path.endsWith("/api/runtime") ? new Response(JSON.stringify({ ...await response(path).json(), policyRevision: revision })) : response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+    expect(useRuntimeStore.getState().gatewayPolicyRevision).toBeNull();
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled(); expect(mocks.assistantRevisions).toEqual([]);
+  });
+  it("adopts an Admin-committed assistant catalog without tearing down the conversation or replaying work", async () => {
+    let changed = false;
+    const context = { instanceId: "user-usr_fixture", generation: 1 };
+    const codex = { runtime: "codex", kind: "server", managed: true, label: "Codex", enabled: true,
+      models: ["gpt-6.1-sol"], defaultModel: "gpt-6.1-sol", selectedModel: "gpt-6.1-sol", status: "ready" };
+    mocks.providers = [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }];
+    mocks.currentModel = "fixture/model";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      return changed && path.endsWith("/api/runtime") ? new Response(JSON.stringify({
+        runtime: "codex", kind: "server", label: "Codex", policyRevision: 8, context, available: [codex],
+      })) : response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    useRuntimeStore.setState({ draftWorkspaces: { draft: "/ws/unsent" }, sessionModels: { ses_legacy: "fixture/model" },
+      interactions: { old_question: { requestId: "old_question", sessionId: "ses_legacy", kind: "question", status: "pending",
+        draft: { custom: { 0: "Keep this answer" }, selected: {} } } } });
+    const before = useRuntimeStore.getState(), clients = mocks.clientOpts.length, sent = mocks.sendPromptSpy.mock.calls.length;
+    changed = true; mocks.currentModel = "codex/gpt-6.1-sol";
+    mocks.providers = [{ id: "codex", name: "Codex", models: [{ id: "gpt-6.1-sol", name: "gpt-6.1-sol" }] }];
+    await useRuntimeStore.getState().refreshGatewayRuntimes();
+    const after = useRuntimeStore.getState();
+    expect(after.gatewayRuntime).toBe("codex"); expect(after.runtimeKind).toBe("server");
+    expect(after.gatewayPolicyRevision).toBe(8); expect(after.gatewayCatalogState).toBe("ready");
+    expect(after.defaultModel).toBe("codex/gpt-6.1-sol"); expect(after.providers).toEqual(mocks.providers);
+    expect(after.threads).toBe(before.threads); expect(after.questions).toBe(before.questions);
+    expect(after.draftWorkspaces).toBe(before.draftWorkspaces); expect(after.sessions).toBe(before.sessions);
+    expect(after.interactions.old_question.status).toBe("expired");
+    expect(after.interactions.old_question.draft).toBe(before.interactions.old_question.draft);
+    expect(after.sessionModels.ses_legacy).toBe("fixture/model");
+    expect(mocks.clientOpts).toHaveLength(clients); expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(sent);
+    expect(mocks.abortSession).not.toHaveBeenCalled(); expect(mocks.answerQuestion).not.toHaveBeenCalled();
+  });
+  it("does not adopt a changed assistant when its fresh workspace identity cannot be verified", async () => {
+    let changed = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      return changed && path.endsWith("/api/runtime") ? new Response(JSON.stringify({runtime: "codex", kind: "server",
+        policyRevision: 8, context: null, available: [{runtime: "codex", enabled: true, models: ["gpt-6.1-sol"]}]})) : response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    changed = true; await useRuntimeStore.getState().refreshGatewayRuntimes();
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("opencode");
+    expect(useRuntimeStore.getState().gatewayPolicyRevision).toBe(1);
+    expect(useRuntimeStore.getState().gatewayCatalogState).toBe("unavailable");
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled(); expect(mocks.abortSession).not.toHaveBeenCalled();
+  });
+  it("rejects a changed assistant at an unchanged committed policy revision", async () => {
+    let changed = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      return changed && path.endsWith("/api/runtime") ? new Response(JSON.stringify({runtime: "codex", kind: "server",
+        policyRevision: 1, context: {instanceId: "user-usr_fixture", generation: 1},
+        available: [{runtime: "codex", enabled: true, models: ["gpt-6.1-sol"], defaultModel: "gpt-6.1-sol"}]})) : response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    changed = true; await useRuntimeStore.getState().refreshGatewayRuntimes();
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("opencode");
+    expect(useRuntimeStore.getState().gatewayPolicyRevision).toBe(1);
+    expect(useRuntimeStore.getState().gatewayCatalogState).toBe("unavailable");
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+  });
+  it("rejects an assistant identity that changes while its model catalog is loading", async () => {
+    let changed = false, revision = 8, read = false, release!: () => void;
+    const gate = new Promise<void>(resolve => {release = resolve;});
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if(changed && path.endsWith("/api/runtime")){
+        read = true;
+        return new Response(JSON.stringify({runtime: revision === 8 ? "codex" : "opencode",kind: revision === 8 ? "server" : "opencode",
+          policyRevision: revision,context: {instanceId: "user-usr_fixture",generation: 1},
+          available: [{runtime: "codex",enabled: true,models: ["gpt-6.1-sol"],defaultModel: "gpt-6.1-sol"}]}));
+      }
+      return response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    mocks.providerReadGate = gate;changed = true;
+    const refresh = useRuntimeStore.getState().refreshGatewayRuntimes();
+    try {await vi.waitFor(()=>expect(read).toBe(true));revision = 9;}
+    finally {release();await refresh;}
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("opencode");
+    expect(useRuntimeStore.getState().gatewayPolicyRevision).toBe(1);
+    expect(useRuntimeStore.getState().gatewayCatalogState).toBe("unavailable");
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();expect(mocks.abortSession).not.toHaveBeenCalled();
+  });
   it("reconstructs a verified stopped workspace once and retains drafts without replaying a prompt", async () => {
     let available = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -637,7 +762,7 @@ describe("platform connection context", () => {
   it("a context change invokes the existing reconnect owner without resending a turn", async () => {
     let generation = 1;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/api/runtime")
-      ? new Response(JSON.stringify({ runtime: "opencode", kind: "opencode", context: { instanceId: "user-usr_fixture", generation }, available: [] }))
+      ? new Response(JSON.stringify({ runtime: "opencode", policyRevision: 1, kind: "opencode", context: { instanceId: "user-usr_fixture", generation }, available: [] }))
       : response(String(input))));
     expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
     expect(mocks.contextChanged).toBeTypeOf("function");
@@ -1397,6 +1522,22 @@ describe("gateway runtime selection", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(useRuntimeStore.getState().error).toMatch(/no administrator-enabled models/i);
+  });
+});
+
+describe("deployment-wide assistant selection", () => {
+  it.each(["user", "admin"] as const)("rejects the old per-account action for %s without requests or conversation resets", async role => {
+    mocks.isGatewayWeb = mocks.isPlatformWeb = true; mocks.isTauri = false;
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayUserRole: role,
+      gatewayUser: { id: "owned", username: "owned", role }, currentId: "ses_a" });
+    const before = useRuntimeStore.getState();
+    await before.selectGatewayRuntime("codex");
+    const after = useRuntimeStore.getState();
+    expect(fetchMock).not.toHaveBeenCalled(); expect(after.gatewayRuntime).toBe("opencode");
+    expect(after.currentId).toBe("ses_a"); expect(after.sessions).toBe(before.sessions); expect(after.threads).toBe(before.threads);
+    expect(after.questions).toBe(before.questions); expect(after.permissions).toBe(before.permissions);
+    expect(after.runningSessions).toBe(before.runningSessions); expect(after.error).toMatch(/administrator/i);
   });
 });
 
@@ -5278,5 +5419,35 @@ describe("Web project directory ownership", () => {
       expect(useRuntimeStore.getState().currentId).toBe("ses_saved");
       expect(useRuntimeStore.getState().projects.some(p => p.id === "p_a")).toBe(true);
     } finally { useRuntimeStore.setState({ refreshProjects: original }); }
+  });
+});
+
+describe("Web prompt sends once",()=>{
+  it.each([
+    [403,"workspace_rpc_denied"],[429,"workspace_rpc_busy"],[409,"research_execution_running"],
+    [502,"prompt_delivery_unknown"],[504,"workspace_rpc_timeout"],
+  ])("never automatically repeats %s/%s and retains the draft",async(status,code)=>{
+    mocks.isGatewayWeb=true;mocks.isTauri=false;
+    useRuntimeStore.setState({gatewayRuntime:"opencode",gatewayCatalogState:"ready",defaultModel:"fixture/model",
+      providers:[{id:"fixture",name:"Fixture",models:[{id:"model",name:"Model"}]}]});
+    const {ApiError}=await import("@ai4s/sdk");
+    mocks.sendPromptSpy.mockImplementation(()=>{throw new ApiError("synthetic",status,{code,source:"gateway"});});
+    const result=await useRuntimeStore.getState().sendPrompt("Keep my text","ses_a",undefined,undefined,undefined,{turnId:"turn_once",attachmentIds:[]});
+    expect(result).toBeNull();expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(1);
+    expect(useRuntimeStore.getState().sendingSessions).toEqual({});
+  });
+  it("does not repeat an uncertain Skill-install prompt and supplies a stable receipt",async()=>{
+    mocks.isGatewayWeb=true;mocks.isTauri=false;useRuntimeStore.setState({gatewayRuntime:"opencode"});
+    mocks.sendPromptSpy.mockImplementation(()=>{throw new TypeError("synthetic transport loss");});
+    await useRuntimeStore.getState().installSkill("Install a statistics skill");
+    await vi.waitFor(()=>expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(1));
+    await new Promise(resolve=>setTimeout(resolve,700));
+    expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(1);
+    expect(mocks.attachmentContextSpy).toHaveBeenCalledWith(expect.objectContaining({turnId:expect.any(String),attachmentIds:[]}));
+  });
+  it("preserves one bounded desktop retry",async()=>{
+    mocks.sendPromptSpy.mockImplementationOnce(()=>{throw new TypeError("synthetic restart handshake");});
+    await useRuntimeStore.getState().sendPrompt("Desktop hello","ses_a");
+    expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(2);
   });
 });

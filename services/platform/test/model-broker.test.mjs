@@ -28,10 +28,64 @@ test("inference capabilities bind account, generation, provider, model, route an
   assert.throws(() => authorizeModelRequest({ ...args, now: 2000 }));
   assert.throws(() => authorizeModelRequest({ ...args, policy: { ...policy, revoked: true } }));
   assert.throws(() => authorizeModelRequest({ ...args, policy: { ...policy, enabledModels: [] } }));
+  for (const patch of [{ bridgeOnly: true }, { inferenceRevoked: true }])
+    assert.throws(() => authorizeModelRequest({ ...args, capability: { ...capability, ...patch } }), { code: "model_request_denied" });
+});
+
+test("revoking a private provider removes its grants and safe recovery cannot revive them", async t => {
+  const broker = new ModelBroker({ providers: {}, identify: () => context, logger: () => {} });
+  t.after(() => broker.close());
+  const provider = { baseUrl: "http://127.0.0.1:1/v1", credential: "synthetic-revocation-key",
+    authMode: "bearer", enabledModels: ["approved"], routes: ["/v1/responses"] };
+  broker.replaceProviderSnapshot({ name: "managed", expectedRevision: null, identityRevision: "profile-one", provider });
+  const capability = { ...context, provider: "managed", profileRevision: "profile-one", models: ["approved"],
+    routes: ["/v1/responses"], expiresAt: Date.now() + 60000 };
+  const token = broker.issue(capability);
+  assert.equal(typeof broker.revokeProvider, "function", "Private provider revocation must revoke issued authority");
+  broker.revokeProvider("managed");
+  assert.throws(() => broker.issue(capability), { code: "model_grant_denied" });
+  assert.throws(() => broker.renew(token, context), { code: "model_grant_denied" });
+  assert.throws(() => broker.replaceProviderSnapshot({ name: "managed", expectedRevision: "profile-one", identityRevision: "profile-one",
+    provider: { ...provider, credential: "cannot-change-under-old-identity" } }), { code: "model_profile_revision_conflict" });
+  broker.replaceProviderSnapshot({ name: "managed", expectedRevision: "profile-one", identityRevision: "profile-one", provider });
+  assert.throws(() => broker.renew(token, context), { code: "model_grant_denied" });
+  assert.match(broker.issue(capability), /^[a-f0-9]{64}$/);
+});
+
+test("a revisioned provider snapshot cannot authorize a missing or stale profile grant", async t => {
+  const broker = new ModelBroker({ providers: {}, identify: () => context, now: () => 1000 });
+  t.after(() => broker.close());
+  const provider = { baseUrl: "http://127.0.0.1:1/v1", credential: "synthetic-snapshot-key",
+    enabledModels: ["gpt-6.1-sol"], routes: ["/v1/responses"], authMode: "bearer" };
+  assert.equal(typeof broker.replaceProviderSnapshot, "function");
+  const receipt = broker.replaceProviderSnapshot({ name: "codex", expectedRevision: null, identityRevision: "profile-1", provider });
+  assert.deepEqual(receipt, { identityRevision: "profile-1" });
+  assert(!JSON.stringify(receipt).includes("synthetic-snapshot-key"));
+  const grant = { ...context, provider: "codex", models: ["gpt-6.1-sol"], routes: ["/v1/responses"], expiresAt: 2000 };
+  for (const profileRevision of [undefined, "foreign-profile"])
+    assert.throws(() => broker.issue({ ...grant, profileRevision }), { code: "model_grant_denied" });
+  const token = broker.issue({ ...grant, profileRevision: "profile-1" });
+  assert.throws(() => broker.replaceProviderSnapshot({ name: "codex", expectedRevision: "foreign", identityRevision: "profile-2", provider }),
+    { code: "model_profile_revision_conflict" });
+  assert.equal(broker.renew(token, context), 901000, "A rejected update must preserve the existing grant");
+  assert.throws(() => broker.replaceProviderSnapshot({ name: "codex", expectedRevision: "profile-1", identityRevision: "profile-1",
+    provider: { ...provider, credential: "changed-under-old-identity" } }), { code: "model_profile_revision_conflict" });
+  broker.replaceProviderSnapshot({ name: "codex", expectedRevision: "profile-1", identityRevision: "profile-2", provider });
+  assert.throws(() => broker.renew(token, context), { code: "model_grant_denied" });
+  assert.throws(() => broker.issue({ ...grant, profileRevision: "profile-1" }), { code: "model_grant_denied" });
+  assert.equal(typeof broker.issue({ ...grant, profileRevision: "profile-2" }), "string");
+});
+
+test("model request authorization independently rejects an obsolete profile identity", () => {
+  const args = { capability: { ...capability, profileRevision: "profile-1" },
+    policy: { ...policy, identityRevision: "profile-2" }, now: 1000,
+    request: { ...context, provider: "fixture", method: "POST", path: "/v1/responses", model: "approved" } };
+  assert.throws(() => authorizeModelRequest(args), { code: "model_request_denied" });
+  assert.equal(authorizeModelRequest({ ...args, policy: { ...args.policy, identityRevision: "profile-1" } }), true);
 });
 
 async function fixture(t, handler, options = {}) {
-  const { basePath = "", authMode = "bearer", providerId = "fixture", enabledModels = ["approved"], ...limits } = options;
+  const { basePath = "", authMode = "bearer", providerId = "fixture", enabledModels = ["approved"], grantScope = {}, ...limits } = options;
   const upstream = createServer(handler);
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   t.after(() => { upstream.closeAllConnections(); return new Promise((resolve) => upstream.close(resolve)); });
@@ -41,7 +95,7 @@ async function fixture(t, handler, options = {}) {
   } }, ...limits });
   t.after(() => broker.close());
   await broker.listen({ host: "127.0.0.1", port: 0 });
-  const token = broker.issue({ ...context, provider: providerId, models: enabledModels, routes: ["/v1/responses", "/v1/chat/completions", "/v1/messages"], expiresAt: Date.now() + 60000 });
+  const token = broker.issue({ ...context, provider: providerId, models: enabledModels, routes: ["/v1/responses", "/v1/chat/completions", "/v1/messages"], expiresAt: Date.now() + 60000, ...grantScope });
   const fetch = (body = { model: "approved", input: "synthetic", max_output_tokens: 16 }, { grant = token, path = "/v1/responses", apiKeyHeader = false, headers: extraHeaders = {} } = {}) => new Promise((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port: broker.server.address().port, method: "POST", path, agent: false,
       headers: { ...(apiKeyHeader ? { "x-api-key": grant } : { authorization: `Bearer ${grant}` }), "content-type": "application/json", cookie: "private", "x-forwarded-for": "peer", ...extraHeaders } }, (res) => {
@@ -50,7 +104,7 @@ async function fixture(t, handler, options = {}) {
     });
     req.setTimeout(2000, () => req.destroy(new Error("fixture timeout"))); req.on("error", reject); req.end(JSON.stringify(body));
   });
-  return { broker, token, fetch };
+  return { broker, token, fetch, upstream };
 }
 test('analytics observes trusted terminal attempts without affecting SSE or retaining request content',async(t)=>{
   const seen=[];
@@ -62,6 +116,183 @@ test('analytics observes trusted terminal attempts without affecting SSE or reta
   await fetch(undefined,{grant:'invalid'});
   assert.equal(seen.at(-1).owner,null);assert.equal(seen.at(-1).fact.outcome,'failed');
   assert.ok(!JSON.stringify(seen).includes('PRIVATE_'));assert.ok(!JSON.stringify(seen).includes('secret-canary'));
+});
+
+test("native inference additionally requires a current exact canonical turn before issue, renewal and upstream contact",async t=>{
+  const turnIdentity={...context,conversationId:"owned_conversation",execution:1,requestId:"owned_request",policyRevision:1,runtime:"codex"};
+  let current=true,contacts=0;const seen=[];
+  const f=await fixture(t,(_req,res)=>{contacts++;res.writeHead(200,{"content-type":"application/json"});res.end('{}');},{
+    assistantPolicy:()=>({activeRuntime:"codex",revision:1,recoveryRequired:false}),
+    executionAuthority:identity=>{seen.push(structuredClone(identity));return current&&Object.keys(turnIdentity).every(field=>identity[field]===turnIdentity[field]);},
+    grantScope:{runtime:"codex",policyRevision:1,turnIdentity},
+  });
+  assert.equal((await f.fetch()).status,200);assert.equal(contacts,1);assert(seen.length>=2);
+  const grant={...context,provider:"fixture",models:["approved"],routes:["/v1/responses"],expiresAt:Date.now()+60000,runtime:"codex",policyRevision:1};
+  for(const value of [undefined,{...turnIdentity,extra:true},{...turnIdentity,generation:2},{...turnIdentity,policyRevision:2}])
+    assert.throws(()=>f.broker.issue({...grant,turnIdentity:value}),{code:"model_grant_denied"});
+  current=false;
+  assert.equal((await f.fetch()).status,403);assert.equal(contacts,1);
+  assert.throws(()=>f.broker.renew(f.token,context),{code:"model_grant_denied"});
+  assert.throws(()=>f.broker.issue({...grant,turnIdentity}),{code:"model_grant_denied"});
+});
+test('native effect bridge receives only the server-bound execution grant, never an OpenCode or bridge-only capability',async t=>{
+ const turnIdentity={...context,conversationId:'owned_conversation',execution:1,requestId:'owned_request',policyRevision:1,runtime:'codex'};
+ let current=true,calls=0,upstream=0;
+ const f=await fixture(t,(_req,res)=>{upstream++;res.end('{}');},{executionAuthority:()=>current,grantScope:{runtime:'codex',policyRevision:1,turnIdentity}});
+ f.broker.nativeEffectHandler=async(owner,body,{signal})=>{calls++;assert.deepEqual(owner.turnIdentity,turnIdentity);
+  assert.equal(owner.runtime,'codex');assert.equal(signal.aborted,false);return {allowed:true,digest:'a'.repeat(64)};};
+ const body={session_id:'native-owned',turn_id:'turn-owned',tool_use_id:'call-owned',cwd:'/tenant/workspace/project',hook_event_name:'PreToolUse',tool_name:'Bash',
+  tool_input:{nativeTool:'exec_command',nativeInput:{cmd:'true'},canonicalInput:{command:'true'}}};
+ const result=await f.fetch(body,{path:'/native/effect'});assert.equal(result.status,200);assert.equal(calls,1);assert.equal(upstream,0);
+ const legacy=f.broker.issue({...context,provider:'fixture',models:['approved'],routes:['/v1/responses'],expiresAt:Date.now()+60000,runtime:'opencode'});
+ assert.equal((await f.fetch(body,{grant:legacy,path:'/native/effect'})).status,403);assert.equal(calls,1);
+ const bridgeOnly=f.broker.issue({...context,provider:'fixture',models:['approved'],routes:['/v1/responses'],expiresAt:Date.now()+60000,runtime:'codex',bridgeOnly:true});
+ assert.equal((await f.fetch(body,{grant:bridgeOnly,path:'/native/effect'})).status,403);assert.equal(calls,1);
+ f.broker.collaborationHandler=f.broker.networkHandler=async()=>{throw Error('Native token bypassed tool transport');};
+ assert.equal((await f.fetch({action:'checkpoint',sessionId:'owned',kind:'method',question:'Bypass'}, {path:'/collaboration'})).status,403);
+ assert.equal((await f.fetch({version:1,action:'authorize',sessionId:'owned',execution:1,callId:'unguarded',tool:'webfetch',origins:['https://example.test']},{path:'/network'})).status,403);
+ current=false;assert.equal((await f.fetch(body,{path:'/native/effect'})).status,403);assert.equal(calls,1);
+});
+
+test("managed inference grants bind the deployment assistant revision before any upstream contact", async t => {
+  let current = { activeRuntime: "opencode", revision: 1, recoveryRequired: false }, contacts = 0;
+  const f = await fixture(t, (_req, res) => { contacts++; res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); },
+    { assistantPolicy: () => current, executionAuthority:()=>true,grantScope: { runtime: "opencode", policyRevision: 1 } });
+  const grant = { ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 };
+  for (const scope of [{}, { runtime: "codex", policyRevision: 1 }, { runtime: "opencode", policyRevision: 2 },
+    { runtime: "opencode", policyRevision: "1" }])
+    assert.throws(() => f.broker.issue({ ...grant, ...scope }), { code: "model_grant_denied" });
+  assert.equal((await f.fetch()).status, 200);
+  current = { activeRuntime: "codex", revision: 2, recoveryRequired: false };
+  assert.equal((await f.fetch()).status, 403);
+  assert.equal(contacts, 1);
+  const nativeScope={runtime:"codex",policyRevision:2,turnIdentity:{...context,conversationId:"owned_conversation",execution:1,
+    requestId:"owned_request",policyRevision:2,runtime:"codex"}};
+  const next = f.broker.issue({ ...grant, ...nativeScope });
+  assert.equal((await f.fetch(undefined, { grant: next })).status, 200);
+  for (const value of [null, { ...current, recoveryRequired: true }, Promise.resolve(current)]) {
+    current = value;
+    assert.equal((await f.fetch(undefined, { grant: next })).status, 403);
+    assert.throws(() => f.broker.issue({ ...grant, runtime: "codex", policyRevision: 2 }), { code: "model_grant_denied" });
+  }
+  assert.equal(contacts, 2);
+});
+
+test("revoking assistant inference drains the actual stream without destroying its read-only bridge", async t => {
+  let current = { activeRuntime: "opencode", revision: 1, recoveryRequired: false }, contacts = 0, closed;
+  const upstreamClosed = new Promise(resolve => { closed = resolve; });
+  const f = await fixture(t, (_req, res) => {
+    contacts++; res.once("close", closed); res.writeHead(200, { "content-type": "text/event-stream" }); res.write(": running\n\n");
+  }, { assistantPolicy: () => current, grantScope: { runtime: "opencode", policyRevision: 1 } });
+  f.broker.collaborationHandler = async () => ({ state: "read-only" });
+  const response = await globalThis.fetch(`http://127.0.0.1:${f.broker.server.address().port}/v1/responses`, {
+    method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: "approved", stream: true, max_output_tokens: 1 }), signal: AbortSignal.timeout(5000) });
+  const reader = response.body.getReader();
+  await reader.read();
+  assert.equal(typeof f.broker.revokeAssistant, "function", "Cutover must cancel old direct model calls, not merely reroute the UI");
+  await f.broker.revokeAssistant({ runtime: "opencode", policyRevision: 1 });
+  assert.throws(() => f.broker.issue({ ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"],
+    runtime: "opencode", policyRevision: 1, expiresAt: Date.now() + 60000 }), { code: "model_grant_denied" });
+  let timer;
+  try { await Promise.race([upstreamClosed, new Promise((_, reject) => { timer = setTimeout(() => reject(Error("Old inference is still running")), 1000); })]); }
+  finally { clearTimeout(timer); await reader.cancel().catch(() => {}); }
+  f.broker.renew(f.token, context);
+  assert.equal((await f.fetch()).status, 403, "Renewal cannot restore revoked inference");
+  assert.equal((await f.fetch({ action: "state", sessionId: "owned" }, { path: "/collaboration" })).status, 200);
+  assert.equal((await f.fetch({ action: "checkpoint", sessionId: "owned", kind: "plan", question: "Old proposal" }, { path: "/collaboration" })).status, 403);
+  current = { activeRuntime: "opencode", revision: 3, recoveryRequired: false };
+  assert.equal((await f.fetch()).status, 403, "Switch-back cannot revive a previous revision");
+  assert.equal(contacts, 1);
+});
+
+test("explicit bridge-only grants cannot infer or create new runtime effects even when renewed", async t => {
+  let contacts = 0, writes = 0;
+  const current = { activeRuntime: "codex", revision: 2, recoveryRequired: false };
+  const f = await fixture(t, (_req, res) => { contacts++; res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); },
+    { assistantPolicy: () => current, grantScope: { runtime: "opencode", bridgeOnly: true } });
+  f.broker.collaborationHandler = async (_context, body) => { if (["checkpoint", "delivery"].includes(body.action)) writes++; return { ready: true }; };
+  f.broker.networkHandler = async () => { writes++; return { authorized: true }; };
+  f.broker.renew(f.token, context);
+  assert.equal((await f.fetch()).status, 403);
+  for (const action of ["state", "guard", "capability"])
+    assert.equal((await f.fetch({ action, sessionId: "owned" }, { path: "/collaboration" })).status, 200);
+  for (const action of ["checkpoint", "delivery"])
+    assert.equal((await f.fetch({ action, sessionId: "owned", execution: 1 }, { path: "/collaboration" })).status, 403);
+  assert.equal((await f.fetch({ version: 1, action: "authorize", sessionId: "owned", callId: "call_one", execution: 1,
+    tool: "webfetch", origins: ["https://example.test"] }, { path: "/network" })).status, 403);
+  assert.equal(contacts, 0); assert.equal(writes, 0);
+});
+
+test("revoking one native job grant waits for its real handler while preserving another grant",async t=>{
+  let release,entered;const gate=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
+  const f=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.end('{}');},{timeoutMs:50});
+  assert.equal(typeof f.broker.revokeAndDrain,'function');
+  const other=f.broker.issue({...context,provider:'fixture',models:['approved'],routes:['/v1/responses'],expiresAt:Date.now()+60000});
+  f.broker.collaborationHandler=async()=>{entered();await gate;return {completed:true};};
+  const posting=f.fetch({action:'delivery',sessionId:'owned',execution:1},{path:'/collaboration'});await started;
+  let drained=false;const draining=f.broker.revokeAndDrain(f.token).then(()=>drained=true);
+  try {
+    assert.notEqual((await posting).status,200);await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(drained,false);assert.equal(f.broker.inferenceInventory().length,1);
+    assert.equal((await f.fetch(undefined,{grant:other})).status,200);
+  }finally{release();await draining;}
+  assert.equal(f.broker.inferenceInventory().length,0);
+});
+
+test("an HTTP handler timeout is not evidence that its already-started runtime effect has drained", async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(t, (_req, res) => res.end("{}"), {
+    assistantPolicy: () => ({ activeRuntime: "opencode", revision: 1, recoveryRequired: false }),
+    grantScope: { runtime: "opencode", policyRevision: 1 }, timeoutMs: 40,
+  });
+  f.broker.collaborationHandler = async () => { entered(); await gate; return { complete: true }; };
+  const posting = f.fetch({ action: "delivery", sessionId: "owned", execution: 1 }, { path: "/collaboration" });
+  await started;
+  assert.equal((await posting).status, 504);
+  assert.equal(f.broker.inferenceInventory().length, 1);
+  let drained = false;
+  const revoking = f.broker.revokeAssistant({ runtime: "opencode", policyRevision: 1 }).then(() => { drained = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false);
+  release(); await revoking;
+  assert.equal(f.broker.inferenceInventory().length, 0);
+});
+
+test("provider replacement cancels the old real stream and old tokens cannot contact either snapshot", async t => {
+  const credentials = [];
+  let upstreamClosed;
+  const closed = new Promise(resolve => { upstreamClosed = resolve; });
+  const { broker, upstream, fetch: requestBroker } = await fixture(t, (req, res) => {
+    credentials.push(req.headers.authorization);
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write('data: {"fixture":"started"}\n\n');
+    if (credentials.length === 1) res.once("close", upstreamClosed);
+    else res.end("data: [DONE]\n\n");
+  });
+  assert.equal(typeof broker.replaceProviderSnapshot, "function");
+  const provider = { baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`, credential: "profile-one-key",
+    enabledModels: ["approved"], routes: ["/v1/responses"], authMode: "bearer" };
+  broker.replaceProviderSnapshot({ name: "fixture", expectedRevision: null, identityRevision: "profile-1", provider });
+  const grant = { ...context, provider: "fixture", models: ["approved"], routes: ["/v1/responses"], expiresAt: Date.now() + 60000 };
+  const old = broker.issue({ ...grant, profileRevision: "profile-1" });
+  const response = await globalThis.fetch(`http://127.0.0.1:${broker.server.address().port}/v1/responses`, {
+    method: "POST", headers: { authorization: `Bearer ${old}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: "approved", input: "synthetic", stream: true, max_output_tokens: 1 }), signal: AbortSignal.timeout(3000) });
+  const reader = response.body.getReader();
+  await reader.read();
+  broker.replaceProviderSnapshot({ name: "fixture", expectedRevision: "profile-1", identityRevision: "profile-2",
+    provider: { ...provider, credential: "profile-two-key" } });
+  let timer;
+  try { await Promise.race([closed, new Promise((_, reject) => { timer = setTimeout(() => reject(Error("Old provider stream was not cancelled")), 1000); })]); }
+  finally { clearTimeout(timer); await reader.cancel().catch(() => {}); }
+  assert.equal((await requestBroker(undefined, { grant: old })).status, 403);
+  assert.equal(credentials.length, 1);
+  const next = broker.issue({ ...grant, profileRevision: "profile-2" });
+  assert.equal((await requestBroker({ model: "approved", stream: true, max_output_tokens: 1 }, { grant: next })).status, 200);
+  assert.deepEqual(credentials, ["Bearer profile-one-key", "Bearer profile-two-key"]);
 });
 test("a fixed upstream receives only the platform credential and preserves model SSE", async (t) => {
   const { fetch } = await fixture(t, (req, res) => {
@@ -605,4 +836,23 @@ test('authorized renewal extends an active grant expiry without changing the tot
   const renewal = setTimeout(() => f.broker.renew(shortGrant, context), 30); t.after(() => clearTimeout(renewal));
   assert.equal((await active).status, 200);
   assert.throws(() => f.broker.renew(shortGrant, {...context, generation: 2}), /denied/);
+});
+
+for(const status of [403,429,500,302])test(`upstream ${status} logs only bounded rejection status`,async t=>{
+  const records=[];const {fetch}=await fixture(t,(_request,response)=>{
+    response.writeHead(status,{location:"http://private.invalid"});response.end("administrator-secret-canary:synthetic-private-body");
+  },{logger:entry=>records.push(entry)});
+  const result=await fetch();assert.equal(result.status,502);
+  const operation=records.find(entry=>entry.type==="model.operation");
+  assert.equal(operation.outcome,"model_upstream_rejected");assert.equal(operation.upstreamStatus,status);
+  assert.ok(!JSON.stringify(records).includes("administrator-secret-canary"));assert.ok(!JSON.stringify(records).includes("synthetic-private-body"));
+  assert.ok(!result.body.includes("synthetic-private-body"));
+});
+test("successful streaming records upstream 200 and preauthorization has no invented provider status",async t=>{
+  const records=[];let contacted=0;const {fetch}=await fixture(t,(_request,response)=>{
+    contacted++;response.writeHead(200,{"content-type":"text/event-stream"});response.end("data: [DONE]\n\n");
+  },{logger:entry=>records.push(entry)});
+  assert.equal((await fetch({model:"other",max_output_tokens:1})).status,403);assert.equal(contacted,0);
+  assert.equal((await fetch({model:"approved",max_output_tokens:1,stream:true})).status,200);
+  assert.equal(records.find(entry=>entry.type==="model.operation").upstreamStatus,200);
 });

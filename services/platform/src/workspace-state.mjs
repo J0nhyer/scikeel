@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
-import {mkdir,open,rename,unlink} from 'node:fs/promises';
+import {mkdir,open,rename,unlink,lstat,readdir} from 'node:fs/promises';
+import {constants} from 'node:fs';
 import {join} from 'node:path';
 
 export const WORKSPACE_LIFECYCLE_SCHEMA = 1;
@@ -17,11 +18,71 @@ function canonical(value) {
   return value;
 }
 export function workspaceHash(value) {return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');}
+function record(value) {return !!value && typeof value==='object' && !Array.isArray(value);}
+function sameRevision(a,b) {return ['dev','ino','size','mtimeNs','ctimeNs'].every(key=>a[key]===b[key]);}
+function privateMetadata(stat,directory=false) {
+  return (directory?stat.isDirectory():stat.isFile() && stat.nlink===1n) &&
+    (stat.mode&0o077n)===0n && (typeof process.getuid!=='function' || stat.uid===BigInt(process.getuid()));
+}
 
 /** Private metadata only. Tenant payload bytes never pass through this store. */
 export class WorkspaceState {
   #queues=new Map();
   constructor({dataDir,beforeCommit=async()=>{},maxOperations=10000,maxStateBytes=8*1024**2}) {Object.assign(this,{dataDir,beforeCommit,maxOperations,maxStateBytes});}
+  async pendingRuntimeEffects() {
+    // Read cold accounts directly: loaders may reconcile their UI status and are not cleanup evidence.
+    let root;
+    try {root=await lstat(this.dataDir,{bigint:true});}
+    catch(error) {if(error.code==='ENOENT')return [];throw workspaceError('assistant_inventory_unavailable',503);}
+    try {
+      if(!privateMetadata(root,true))throw Error('unsafe metadata root');
+      const names=(await readdir(this.dataDir)).sort();
+      if(names.length>10000)throw Error('inventory capacity');
+      const pending=[];
+      const append=entry=>{if(pending.length>=10000)throw Error('inventory capacity');pending.push(entry);};
+      for(const name of names) {
+        if(!name.endsWith('.json'))throw Error('incomplete metadata');
+        const userId=identifier(name.slice(0,-5)),path=join(this.dataDir,name);
+        const file=await open(path,constants.O_RDONLY|(constants.O_NOFOLLOW??0));let value;
+        try {
+          const before=await file.stat({bigint:true});
+          if(!privateMetadata(before) || before.size>BigInt(this.maxStateBytes))throw Error('unsafe metadata');
+          const buffer=Buffer.alloc(Math.min(Number(before.size)+1,this.maxStateBytes+1));
+          let length=0;
+          while(length<buffer.length) {
+            const {bytesRead}=await file.read(buffer,length,buffer.length-length,null);
+            if(!bytesRead)break;length+=bytesRead;
+          }
+          const bytes=buffer.subarray(0,length).toString('utf8');
+          if(Buffer.byteLength(bytes)>this.maxStateBytes || !sameRevision(before,await file.stat({bigint:true})) ||
+              !sameRevision(before,await lstat(path,{bigint:true})))throw Error('metadata changed');
+          value=JSON.parse(bytes);
+        }finally {await file.close();}
+        if(!record(value) || value.schema!==1 || !record(value.projects) || !record(value.operations))throw Error('invalid metadata');
+        if(Object.hasOwn(value,'runtimeMutation')) {
+          const mutation=value.runtimeMutation;
+          if(!record(mutation) || !Number.isSafeInteger(mutation.generation) || mutation.generation<1)throw Error('invalid mutation');
+          append({userId,source:'workspace',kind:'runtime',instanceId:identifier(mutation.instanceId),
+            generation:mutation.generation,requestId:identifier(mutation.requestId)});
+        }
+        for(const operationId of Object.keys(value.operations).sort()) {
+          identifier(operationId);
+          const receipt=value.operations[operationId]?.receipt;
+          if(!record(receipt) || receipt.operationId!==operationId || !['pending','committed','failed'].includes(receipt.state))throw Error('invalid receipt');
+          if(receipt.state==='pending')append({userId,source:'workspace',kind:'operation',operationId});
+        }
+        if(value.uploads!==undefined && !record(value.uploads))throw Error('invalid uploads');
+        for(const uploadId of Object.keys(value.uploads??{}).sort()) {
+          identifier(uploadId);
+          const upload=value.uploads[uploadId];
+          if(!record(upload) || !['active','committing','cancelling','committed','cancelled'].includes(upload.state))throw Error('invalid upload');
+          if(['committing','cancelling'].includes(upload.state))append({userId,source:'workspace',kind:'upload',uploadId});
+        }
+      }
+      if(!sameRevision(root,await lstat(this.dataDir,{bigint:true})))throw Error('metadata root changed');
+      return pending;
+    }catch {throw workspaceError('assistant_inventory_unavailable',503);}
+  }
   async open(userId) {
     const path=join(this.dataDir,`${identifier(userId)}.json`);
     try {

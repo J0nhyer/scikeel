@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import re
 
 # Installed beside this script, owned by root and inaccessible to tenants.
 spec = importlib.util.spec_from_file_location("archive_inspector", pathlib.Path(__file__).with_name("inspect-sandbox-archive.py"))
@@ -101,6 +102,67 @@ def digest(path):
         return hash.hexdigest()
 
 
+def validate_native(manifest, listing, tool_lock):
+    if "codex" not in manifest.get("enabledRuntimes", []):
+        if manifest.get("codexRuntime"):
+            raise ValueError("unexpected native integration")
+        return
+    native = manifest.get("codexRuntime", {})
+    integration = native.get("integration", {})
+    resources = native.get("resources", {})
+    managed_sources = {
+        "opt/scikeel/tools/native-tools.mjs": "runtime/sandbox/native-tools.mjs",
+        "opt/scikeel/runtime/required-effect-guard.mjs": "runtime/sandbox/required-effect-guard.mjs",
+        "opt/scikeel/tools/codex-requirements.toml": "runtime/sandbox/codex-requirements.toml",
+        "etc/codex/requirements.toml": "runtime/sandbox/codex-requirements.toml",
+        "opt/scikeel/tools/native-network.mjs": "runtime/sandbox/native-network.mjs",
+        "opt/scikeel/tools/native-network.py": "runtime/sandbox/native-network.py",
+        "opt/scikeel/tools/apply_patch": "runtime/sandbox/apply_patch",
+        "usr/local/bin/apply_patch": "runtime/sandbox/apply_patch",
+    }
+    expected = {"opt/scikeel/tools/bin/codex-resources/bwrap", "opt/scikeel/tools/bin/native-integration.json"} | set(managed_sources)
+    tool = manifest.get("tools", {}).get("codex", {})
+    fixed = {"schema": 1, "policy": "required-effect-guard-v1", "upstreamVersion": "0.157.1",
+             "upstreamCommit": "36650394c5b38c2990ccf2a3457165ca3e9d9726", "rustVersion": "1.95.0",
+             "target": "x86_64-unknown-linux-gnu", "lockFormat": "smol-toml@1.9.0", "version": "codex-cli 0.157.1"}
+    hashes = {"patchSha256", "testPatchSha256", "bwrapPatchSha256", "upstreamLockSha256", "workspaceLockSha256", "bwrapSha256", "binarySha256"}
+    if (set(native) != {"integration", "resources"} or set(integration) != set(fixed) | hashes | {"source"}
+            or any(integration.get(key) != value for key, value in fixed.items())
+            or any(not re.fullmatch(r"[a-f0-9]{64}", str(integration.get(key, ""))) for key in hashes)
+            or integration.get("source") != manifest.get("provenance", {}).get("commit")
+            or tool.get("path") != "opt/scikeel/tools/bin/codex" or tool.get("version") != "0.157.1"
+            or tool.get("sha256") != integration.get("binarySha256") or set(resources) != expected
+            or resources.get("opt/scikeel/tools/bin/codex-resources/bwrap") != integration.get("bwrapSha256")
+            or listing.get("nativeIntegration") != integration
+            or listing.get("toolHashes", {}).get(tool.get("path")) != tool.get("sha256")
+            or any(entry["path"].startswith("opt/scikeel/tools/bin/codex-resources/") and entry["path"] not in expected
+                   for entry in listing.get("entries", []))
+            or any(listing.get("toolHashes", {}).get(path) != sha for path, sha in resources.items())):
+        raise ValueError("immutable native integration resource mismatch")
+    sources = manifest.get("sourceInputs", [])
+    if not isinstance(sources, list) or len(sources) > 10000:
+        raise ValueError("invalid native source inputs")
+    source_map = {}
+    for source in sources:
+        if (not isinstance(source, dict) or set(source) != {"path", "sha256"}
+                or not isinstance(source.get("path"), str) or source["path"] in source_map
+                or not re.fullmatch(r"[a-f0-9]{64}", str(source.get("sha256", "")))):
+            raise ValueError("invalid native source inputs")
+        source_map[source["path"]] = source["sha256"]
+    if (source_map.get("runtime/codex-patches/required-effect-guard.patch") != integration["patchSha256"]
+            or source_map.get("runtime/codex-patches/required-effect-guard-tests.patch") != integration["testPatchSha256"]
+            or source_map.get("runtime/codex-patches/loopback-address.patch") != integration["bwrapPatchSha256"]
+            or "runtime/codex-patches/required-effect-guard.lock.json" not in source_map
+            or "scripts/dev/build-codex-guard-runtime.mjs" not in source_map
+            or "scripts/dev/probe-production-runner.mjs" not in source_map
+            or "services/platform/fixtures/native-protocol.mjs" not in source_map
+            or any(resources[path] != source_map.get(source) for path, source in managed_sources.items())
+            or tool_lock.get("schema") != 1 or tool_lock.get("codexRuntime") != native
+            or tool_lock.get("sourceInputs") != sources or tool_lock.get("tools", {}).get("codex") != tool
+            or tool_lock.get("baselineLockSha256") != manifest.get("baselineLockSha256")):
+        raise ValueError("immutable native tool lock source mismatch")
+
+
 def install(artifact_root):
     if os.geteuid() != 0:
         raise ValueError("root installation required")
@@ -151,6 +213,7 @@ def install(artifact_root):
         for name, expected in manifest.get('runnerFiles', {}).items():
             if listing['toolHashes'].get(name) != expected:
                 raise ValueError('immutable installed runner mismatch')
+        validate_native(manifest, listing, json.loads((artifacts / "tool-lock.json").read_bytes()))
         if manifest["variant"] == "production" and any(e["path"] == "opt/scikeel/tools/probe-entry.mjs" for e in listing["entries"]):
             raise ValueError("test entrypoint in production image")
         for name in ["image-manifest.json", "uv.lock", "tool-lock.json", "attestation.jsonl"]:

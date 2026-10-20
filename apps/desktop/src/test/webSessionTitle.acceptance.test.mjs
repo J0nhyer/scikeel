@@ -48,7 +48,7 @@ test.skipIf(!process.env.OSD_TITLE_BROWSER)("committed Web titles refresh, remai
       '/api/workspace/operations': {items:[],resolved:[],nextCursor:null},
       "/v1/whoami": { directory: "/tenant/workspace", mode: "full" },
       "/api/me": { user: { id: "usr_fixture", username: "fixture", role: "user" } },
-      "/api/runtime": { runtime: "opencode", kind: "opencode", context: { instanceId: "user-fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true }] },
+      "/api/runtime": { runtime: "opencode", policyRevision: 1, kind: "opencode", context: { instanceId: "user-fixture", generation: 1 }, available: [{ runtime: "opencode", kind: "opencode", enabled: true }] },
       "/config/providers": { providers: [{ id: "fixture", name: "Fixture", models: { model: { id: "model", name: "Fixture model" } } }], connected: ["fixture"], default: { fixture: "model" } },
       "/provider": { all: [], connected: ["fixture"] }, "/config": { model: "fixture/model" }, "/global/config": { model: "fixture/model" },
       "/experimental/session": sessions, "/session": sessions, "/session/status": working ? { ses_a: { type: "busy" } } : {},

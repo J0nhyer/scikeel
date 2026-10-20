@@ -47,18 +47,40 @@ async function endWithError(res, frame) {
   });
 }
 const failure = (code, status = 403) => Object.assign(new Error(code), { code, status });
+function fixedProvider(name, provider, identityRevision = null) {
+  let url;
+  try { url = new URL(provider?.baseUrl); } catch { throw new Error("invalid fixed model provider"); }
+  if (!validName(name) || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash ||
+      !Array.isArray(provider.enabledModels) || !provider.enabledModels.length || !provider.enabledModels.every(validModel) ||
+      !Array.isArray(provider.routes) || !provider.routes.length || !provider.routes.every(route => ROUTES.has(route)) ||
+      typeof provider.credential !== "string" || !provider.credential || /[\r\n\0]/.test(provider.credential) ||
+      ![undefined, "bearer", "x-api-key"].includes(provider.authMode)) throw new Error("invalid fixed model provider");
+  return { url, credential: provider.credential, authMode: provider.authMode ?? "bearer", identityRevision,
+    enabledModels: [...provider.enabledModels], routes: [...provider.routes], revoked: false };
+}
 function identity(context) {
   if (!context || !validName(context.userId) || !validName(context.instanceId) ||
       !Number.isSafeInteger(context.generation) || context.generation < 1) throw failure("model_identity_denied");
   return `${context.userId}:${context.instanceId}:${context.generation}`;
 }
+const turnFields=['userId','instanceId','generation','conversationId','execution','requestId','policyRevision','runtime'];
+function turnScope(capability) {
+  const turn=capability.turnIdentity;
+  return turn&&typeof turn==='object'&&!Array.isArray(turn)&&Object.keys(turn).length===turnFields.length&&
+    turnFields.every(field=>Object.hasOwn(turn,field))&&['userId','instanceId','conversationId','requestId'].every(field=>validName(turn[field]))&&
+    ['generation','execution','policyRevision'].every(field=>Number.isSafeInteger(turn[field])&&turn[field]>0)&&
+    ['opencode','codex','claude'].includes(turn.runtime)&&['userId','instanceId','generation','policyRevision','runtime']
+      .every(field=>turn[field]===capability[field]);
+}
 export function authorizeModelRequest({ capability, request, policy, now }) {
   if (!capability || !request || !policy || !Number.isSafeInteger(now) ||
+      capability.bridgeOnly === true || capability.inferenceRevoked === true ||
       identity(capability) !== identity(request) || capability.provider !== request.provider ||
       !validName(capability.provider) || !Number.isSafeInteger(capability.expiresAt) || now >= capability.expiresAt ||
       policy.revoked !== false || request.method !== "POST" || !ROUTES.has(request.path) ||
       !capability.routes?.includes(request.path) || !validModel(request.model) ||
       !capability.models?.includes(request.model) || !policy.enabledModels?.includes(request.model) ||
+      (policy.identityRevision != null && capability.profileRevision !== policy.identityRevision) ||
       Object.hasOwn(request, "upstream")) throw failure("model_request_denied");
   return true;
 }
@@ -82,10 +104,15 @@ function wait(operation, signal) {
 }
 export class ModelBroker {
   #providers = new Map(); #grants = new Map(); #operations = new Set(); #expiredRequests = new Map();
+  #assistantPolicy; #executionAuthority; #revokedAssistantRevisions = new Map();
   constructor({ providers, identify, now = Date.now, timeoutMs, firstByteTimeoutMs, idleTimeoutMs, totalTimeoutMs,
     maxBodyBytes = 2 * 1024 ** 2, maxResponseBytes = 16 * 1024 ** 2, maxConnections = 4,
-    maxOutputTokens = 32768, maxGrants = 1024, logger = event => console.log(JSON.stringify(event)) } = {}) {
-    if (!providers || typeof identify !== "function" || typeof now !== "function" || typeof logger !== "function") throw new Error("invalid model broker configuration");
+    maxOutputTokens = 32768, maxGrants = 1024, assistantPolicy = null, executionAuthority = null, logger = event => console.log(JSON.stringify(event)) } = {}) {
+    if (!providers || typeof identify !== "function" || typeof now !== "function" || typeof logger !== "function" ||
+        assistantPolicy !== null && typeof assistantPolicy !== "function"||executionAuthority!==null&&typeof executionAuthority!=='function')
+      throw new Error("invalid model broker configuration");
+    this.#assistantPolicy = assistantPolicy;
+    this.#executionAuthority=executionAuthority;
     const legacyTimeout = timeoutMs;
     firstByteTimeoutMs ??= legacyTimeout ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
     idleTimeoutMs ??= legacyTimeout ?? DEFAULT_IDLE_TIMEOUT_MS;
@@ -97,15 +124,8 @@ export class ModelBroker {
         maxBodyBytes > 16 * 1024 ** 2 || maxResponseBytes > 64 * 1024 ** 2 || maxConnections > 32 || maxGrants > 10000)
       throw new Error("model broker limits exceed host budget");
     for (const [name, provider] of Object.entries(providers)) {
-      const url = new URL(provider.baseUrl);
-      if (!validName(name) || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash ||
-          !Array.isArray(provider.enabledModels) || !provider.enabledModels.length || !provider.enabledModels.every(validModel) ||
-          !Array.isArray(provider.routes) || !provider.routes.length || !provider.routes.every((route) => ROUTES.has(route)) ||
-          typeof provider.credential !== "string" || !provider.credential || /[\r\n\0]/.test(provider.credential) ||
-          ![undefined, "bearer", "x-api-key"].includes(provider.authMode)) throw new Error("invalid fixed model provider");
       // Fixed administrator-owned routing. No tenant input reaches URL construction.
-      this.#providers.set(name, { url, credential: provider.credential, authMode: provider.authMode ?? "bearer",
-        enabledModels: [...provider.enabledModels], routes: [...provider.routes], revoked: false });
+      this.#providers.set(name, fixedProvider(name, provider));
     }
     Object.assign(this, { identify, now, firstByteTimeoutMs, idleTimeoutMs, totalTimeoutMs, maxBodyBytes, maxResponseBytes, maxConnections,
       maxOutputTokens, maxGrants, logger });
@@ -115,10 +135,79 @@ export class ModelBroker {
     this.server.on("connect", (_req, socket) => socket.destroy());
     this.server.on("upgrade", (_req, socket) => socket.destroy());
   }
+  #inferenceAllowed(capability) {
+    if (capability.bridgeOnly === true || capability.inferenceRevoked === true) return false;
+    if(!this.#executionAllowed(capability))return false;
+    if (!this.#assistantPolicy) return true;
+    try {
+      const current = this.#assistantPolicy({ userId: capability.userId, instanceId: capability.instanceId,
+        generation: capability.generation, runtime: capability.runtime, policyRevision: capability.policyRevision });
+      return current?.recoveryRequired === false && ["opencode", "codex", "claude"].includes(capability.runtime) &&
+        Number.isSafeInteger(capability.policyRevision) && capability.policyRevision > 0 &&
+        capability.policyRevision > (this.#revokedAssistantRevisions.get(capability.runtime) ?? 0) &&
+        current.activeRuntime === capability.runtime && current.revision === capability.policyRevision;
+    } catch { return false; }
+  }
+  #executionAllowed(capability) {
+    if(capability.runtime!=='codex'&&capability.turnIdentity===undefined)return true;
+    if(!turnScope(capability)||!this.#executionAuthority)return false;
+    try{return this.#executionAuthority(structuredClone(capability.turnIdentity))===true;}catch{return false;}
+  }
+  #requireInference(grantKey, operation) {
+    const current = this.#grants.get(grantKey);
+    if (!current || !this.#inferenceAllowed(current)) throw failure("model_request_denied");
+    operation.inference = true;
+  }
+  async revokeAssistant({ runtime, policyRevision }) {
+    if (!["opencode", "codex", "claude"].includes(runtime) || !Number.isSafeInteger(policyRevision) || policyRevision < 1)
+      throw failure("model_grant_denied");
+    this.#revokedAssistantRevisions.set(runtime, Math.max(policyRevision, this.#revokedAssistantRevisions.get(runtime) ?? 0));
+    const revoked = new Set();
+    for (const [key, grant] of this.#grants) if (grant.runtime === runtime && grant.policyRevision <= policyRevision) {
+      this.#grants.set(key, Object.freeze({ ...grant, inferenceRevoked: true })); revoked.add(key);
+    }
+    const draining = [...this.#operations].filter(operation => operation.inference && revoked.has(operation.grantKey));
+    await this.#drain(draining);
+  }
+  async #drain(draining) {
+    for (const operation of draining) operation.controller.abort(failure("model_grant_revoked"));
+    let timer;
+    try {
+      await Promise.race([Promise.all(draining.map(operation => operation.done)), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(failure("model_revocation_unverified", 503)), 5000);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+  inferenceInventory() {
+    return [...this.#operations].filter(operation => operation.inference).map(operation => ({ ...operation.context }));
+  }
+  replaceProviderSnapshot({ name, expectedRevision, identityRevision, provider, createOnly = false }) {
+    const current = this.#providers.get(name);
+    if (!validName(identityRevision) || expectedRevision !== (current?.identityRevision ?? null) || createOnly && current)
+      throw failure("model_profile_revision_conflict", 409);
+    const next = fixedProvider(name, provider, identityRevision);
+    if (identityRevision === current?.identityRevision && (!current.revoked ||
+        JSON.stringify({ ...current, revoked: false }) !== JSON.stringify(next)))
+      throw failure("model_profile_revision_conflict", 409);
+    this.revokeProvider(name);
+    this.#providers.set(name, next);
+    return { identityRevision };
+  }
+  revokeProvider(name) {
+    const current = this.#providers.get(name);
+    if (current) current.revoked = true;
+    const revoked = new Set();
+    for (const [key, grant] of this.#grants) if (grant.provider === name) { this.#grants.delete(key); revoked.add(key); }
+    for (const operation of this.#operations) if (revoked.has(operation.grantKey))
+      operation.controller.abort(failure("model_grant_revoked"));
+  }
   issue(capability) {
     identity(capability);
+    if (capability.bridgeOnly !== undefined && typeof capability.bridgeOnly !== "boolean" ||
+        capability.bridgeOnly !== true && !this.#inferenceAllowed(capability)) throw failure("model_grant_denied");
     const policy = this.#providers.get(capability.provider);
-    if (!policy || policy.revoked || !Number.isSafeInteger(capability.expiresAt) || capability.expiresAt <= this.now() ||
+    if (!policy || policy.revoked || (policy.identityRevision != null && capability.profileRevision !== policy.identityRevision) ||
+        !Number.isSafeInteger(capability.expiresAt) || capability.expiresAt <= this.now() ||
         capability.expiresAt > this.now() + 900000 || !Array.isArray(capability.models) || !capability.models.length ||
         !capability.models.every((model) => policy.enabledModels.includes(model)) || !Array.isArray(capability.routes) ||
         !capability.routes.length || !capability.routes.every((route) => policy.routes.includes(route))) throw failure("model_grant_denied");
@@ -127,6 +216,11 @@ export class ModelBroker {
     const token = randomBytes(32).toString("hex");
     this.#grants.set(hash(token), Object.freeze({ userId: capability.userId, instanceId: capability.instanceId,
       generation: capability.generation, provider: capability.provider, expiresAt: capability.expiresAt,
+      ...(capability.runtime !== undefined ? { runtime: capability.runtime } : {}),
+      ...(capability.policyRevision !== undefined ? { policyRevision: capability.policyRevision } : {}),
+      ...(capability.bridgeOnly === true ? { bridgeOnly: true } : {}),
+      ...(capability.turnIdentity!==undefined?{turnIdentity:Object.freeze(structuredClone(capability.turnIdentity))}:{}),
+      ...(policy.identityRevision != null ? { profileRevision: policy.identityRevision } : {}),
       models: Object.freeze([...capability.models]), routes: Object.freeze([...capability.routes]) }));
     return token;
   }
@@ -135,13 +229,19 @@ export class ModelBroker {
     const key = hash(token); this.#grants.delete(key);
     for (const operation of this.#operations) if (operation.grantKey === key) operation.controller.abort(failure("model_grant_revoked"));
   }
+  async revokeAndDrain(token) {
+    if(typeof token!=='string'||!/^[a-f0-9]{64}$/.test(token))throw failure('model_grant_denied');
+    const key=hash(token),draining=[...this.#operations].filter(operation=>operation.grantKey===key);
+    this.revoke(token);await this.#drain(draining);
+  }
   renew(token, context) {
     identity(context);
     if (typeof token !== "string") throw failure("model_grant_denied");
     const key = hash(token); const grant = this.#grants.get(key);
     const policy = grant && this.#providers.get(grant.provider);
     if (!grant || identity(grant) !== identity(context) || grant.expiresAt <= this.now() || !policy || policy.revoked ||
-        grant.models.some((model) => !policy.enabledModels.includes(model))) throw failure("model_grant_denied");
+        (policy.identityRevision != null && grant.profileRevision !== policy.identityRevision) ||
+        grant.models.some((model) => !policy.enabledModels.includes(model))||!this.#executionAllowed(grant)) throw failure("model_grant_denied");
     const expiresAt = this.now() + 900000;
     this.#grants.set(key, Object.freeze({ ...grant, expiresAt }));
     for (const operation of this.#operations) if (operation.grantKey === key) operation.armExpiry?.(expiresAt);
@@ -178,10 +278,12 @@ export class ModelBroker {
   async #handle(req, res) {
     const startedAt = performance.now(); const correlationId = randomBytes(16).toString("hex");
     const operationStartedAt=this.now(); let analyticsTrustedContext=null;
-    const controller = new AbortController(); const operation = { controller };
+    let finished;
+    const controller = new AbortController(); const operation = { controller, done: new Promise(resolve => { finished = resolve; }) };
     let collaborationCorrelation; let networkCorrelation; let context;
     let modelRequest = false; let streaming = false; let eventBoundary = true; let trailing = Buffer.alloc(0);
     let responseBytes = 0; let forwardedBytes = 0; let firstDataAt; let lastDataAt;
+    let upstreamStatus = null;
     let outcome = "success"; let terminalErrorDelivered = false; let downstreamBlocked = false;
     let firstByteTimer = null; let idleTimer = null; let totalTimer = null; let requestFingerprint;
     const lifecycleTimer = setTimeout(() => controller.abort(failure("model_timeout", 504)), Math.min(this.firstByteTimeoutMs, 120000));
@@ -209,7 +311,7 @@ export class ModelBroker {
     req.once("aborted", aborted); res.once("close", aborted); this.#operations.add(operation);
     try {
       if (this.#operations.size > this.maxConnections) throw failure("model_capacity", 429);
-      if (req.method !== "POST" || !(ROUTES.has(req.url) || req.url === "/collaboration" && this.collaborationHandler || req.url === "/network" && this.networkHandler) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
+      if (req.method !== "POST" || !(ROUTES.has(req.url) || req.url === "/native/effect" && this.nativeEffectHandler || req.url === "/collaboration" && this.collaborationHandler || req.url === "/network" && this.networkHandler) || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers["content-type"] ?? "") ||
           req.headers["content-encoding"] || req.headers.expect) throw failure("model_request_denied");
       const bearer = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
       const apiKey = /^[a-f0-9]{64}$/.test(req.headers["x-api-key"] ?? "") ? req.headers["x-api-key"] : undefined;
@@ -222,6 +324,9 @@ export class ModelBroker {
       context = await wait(() => this.identify(req), controller.signal);
       if (identity(context) !== identity(capability) || capability.expiresAt <= this.now()) throw failure("model_grant_denied");
       analyticsTrustedContext=context;
+      operation.context = { ...context, runtime: capability.runtime, policyRevision: capability.policyRevision,
+        ...(capability.turnIdentity?{turnIdentity:structuredClone(capability.turnIdentity)}:{}) };
+      if(capability.runtime==='codex')analyticsTrustedContext=operation.context;
       operation.armExpiry = expiresAt => {
         clearTimeout(operation.expiration);
         operation.expiration = setTimeout(() => controller.abort(failure("model_grant_expired")), Math.max(1, expiresAt - this.now()));
@@ -236,6 +341,22 @@ export class ModelBroker {
       let body;
       try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw failure("model_invalid_json", 400); }
       if (!body || typeof body !== "object" || Array.isArray(body)) throw failure("model_request_denied");
+      // Native effects require the input-bound tool transport, never legacy bridge writes.
+      if(capability.runtime==='codex'&&(req.url==='/network'||req.url==='/collaboration'&&!['state','guard'].includes(body.action)))
+        throw failure('model_request_denied');
+      if(req.url==='/native/effect'){
+        if(bytes>512*1024||capability.runtime!=='codex'||!turnScope(capability))throw failure('model_request_denied');
+        this.#requireInference(grantKey,operation);
+        const work=Promise.resolve().then(()=>{
+          controller.signal.throwIfAborted();this.#requireInference(grantKey,operation);
+          return this.nativeEffectHandler(structuredClone(operation.context),body,{signal:controller.signal});
+        });
+        operation.effect=work;
+        const result=await wait(()=>work,controller.signal);
+        controller.signal.throwIfAborted();this.#requireInference(grantKey,operation);
+        res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});
+        res.end(JSON.stringify(result));return;
+      }
       if (req.url === "/network") {
         if (bytes > 8192 || body.version !== 1 || !["authorize", "complete", "cancel"].includes(body.action) ||
             Object.keys(body).some(key => !["version", "action", "sessionId", "callId", "execution", "tool", "origins", "operationId", "outcome"].includes(key))) throw failure("model_request_denied");
@@ -244,7 +365,14 @@ export class ModelBroker {
             !["webfetch", "websearch"].includes(body.tool) || !Array.isArray(body.origins) || body.origins.length !== 1 || typeof body.origins[0] !== "string" || body.origins[0].length > 2048)) throw failure("model_request_denied");
         if ((body.action !== "authorize" || body.operationId !== undefined) && !validName(body.operationId)) throw failure("model_request_denied");
         networkCorrelation = body.callId ?? `network_${randomBytes(16).toString("hex")}`;
-        const result = await wait(() => this.networkHandler(context, body), controller.signal);
+        if (body.action === "authorize") this.#requireInference(grantKey, operation);
+        const work = Promise.resolve().then(() => {
+          controller.signal.throwIfAborted();
+          if (operation.inference) this.#requireInference(grantKey, operation);
+          return this.networkHandler(context, body);
+        });
+        if (operation.inference) operation.effect = work;
+        const result = await wait(() => work, controller.signal);
         res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
         res.end(JSON.stringify(result)); return;
       }
@@ -253,11 +381,19 @@ export class ModelBroker {
             !validName(body.sessionId) || (body.callId !== undefined && !isToolCallId(body.callId)) || Object.keys(body).some(key => !["action", "sessionId", "kind", "question", "suggestedAnswer", "execution", "operation", "inputs", "deliverables", "callId"].includes(key)))
           throw failure("model_request_denied");
         collaborationCorrelation = body.callId ?? `collab_${randomBytes(16).toString("hex")}`;
-        const result = await wait(() => this.collaborationHandler(context, body), controller.signal);
+        if (["checkpoint", "delivery"].includes(body.action)) this.#requireInference(grantKey, operation);
+        const work = Promise.resolve().then(() => {
+          controller.signal.throwIfAborted();
+          if (operation.inference) this.#requireInference(grantKey, operation);
+          return this.collaborationHandler(context, body);
+        });
+        if (operation.inference) operation.effect = work;
+        const result = await wait(() => work, controller.signal);
         res.writeHead(200, {"content-type":"application/json", "cache-control":"no-store"});
         res.end(JSON.stringify(result)); return;
       }
       const provider = this.#providers.get(capability.provider);
+      this.#requireInference(grantKey, operation);
       authorizeModelRequest({ capability, policy: provider, now: this.now(), request: {
         ...context, provider: capability.provider, method: req.method, path: req.url, model: body.model,
         ...(Object.hasOwn(body, "upstream") ? { upstream: body.upstream } : {}) } });
@@ -308,6 +444,7 @@ export class ModelBroker {
       const upstream = await new Promise((resolve, reject) => {
         upstreamRequest.once("response", resolve); upstreamRequest.once("error", reject); upstreamRequest.end(payload);
       });
+      upstreamStatus=Number.isInteger(upstream.statusCode) && upstream.statusCode>=100 && upstream.statusCode<=599 ? upstream.statusCode : null;
       if (upstream.statusCode !== 200) { upstream.destroy(); throw failure("model_upstream_rejected", 502); }
       const contentType = upstream.headers["content-type"] ?? "";
       if (!(body.stream ? /^text\/event-stream(?:;|$)/i : /^application\/json(?:;|$)/i).test(contentType)) {
@@ -374,13 +511,15 @@ export class ModelBroker {
       } else sendFailure(res, error);
     } finally {
       clearTimeout(lifecycleTimer); clearModelTimers(); clearTimeout(operation.expiration);
+      // A cancelled HTTP wait is not evidence that its effectful handler stopped.
+      if (operation.effect) await operation.effect.catch(() => {});
       req.off("aborted", aborted); res.off("close", aborted); this.#operations.delete(operation);
       controller.signal.removeEventListener("abort", stopRead);
       if (!controller.signal.aborted) controller.abort(failure("model_request_finished"));
       if (modelRequest) {
         const endedAt = performance.now();
         try { this.logger({ type: "model.operation", correlationId, userId: context?.userId, instanceId: context?.instanceId,
-          generation: context?.generation, route: req.url, provider: operation.provider, model: operation.model, outcome,
+          generation: context?.generation, route: req.url, provider: operation.provider, model: operation.model, outcome, upstreamStatus,
           elapsedMs: Math.round(endedAt - startedAt), firstByteMs: firstDataAt === undefined ? null : Math.round(firstDataAt - startedAt),
           idleMs: lastDataAt === undefined ? null : Math.round(endedAt - lastDataAt), responseBytes, forwardedBytes,
           firstByteTimeoutMs: this.firstByteTimeoutMs, idleTimeoutMs: this.idleTimeoutMs, totalTimeoutMs: this.totalTimeoutMs,
@@ -392,6 +531,7 @@ export class ModelBroker {
           outcome:outcome==='success'?'completed':'failed',code:outcome==='success'?null:outcome,
           firstByteMs:firstDataAt===undefined?null:Math.round(firstDataAt-startedAt)}); } catch { /* Never delay model streaming. */ }
       }
+      finished();
     }
   }
 }

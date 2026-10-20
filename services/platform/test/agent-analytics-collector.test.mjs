@@ -3,6 +3,42 @@ import assert from 'node:assert/strict';
 import { createAnalyticsCollector } from '../src/agent-analytics-collector.mjs';
 import { metadataFacts,createOpenCodeMetadataObserver } from '../../../packages/sdk/src/agent-analytics-observer.mjs';
 
+test('native metadata links model, tools and questions to one owned run without starting an observer',async()=>{
+    const facts=[],collector=createAnalyticsCollector({store:{offer:f=>facts.push(f)},
+      createObserver:()=>assert.fail('Native facts require no worker observer'),
+      registry:{providers:new Set(['codex']),models:new Set(['approved'])}});
+    const scope={accountId:'owner',runtime:'codex',instanceId:'user-owner',generation:3};
+    const emit=event=>metadataFacts(event,200).forEach(fact=>collector.nativeFact(scope,fact));
+    emit({type:'message.updated',properties:{info:{id:'user',sessionID:'native',role:'user',time:{created:100}}}});
+    emit({type:'message.updated',properties:{info:{id:'assistant',sessionID:'native',role:'assistant',parentID:'user',
+      providerID:'codex',modelID:'approved',time:{created:100}}}});
+    emit({type:'question.asked',properties:{id:'question',sessionID:'native',questions:['PRIVATE_QUESTION']}});
+    emit({type:'question.replied',properties:{requestID:'question',sessionID:'native'}});
+    emit({type:'message.part.updated',properties:{part:{type:'tool',sessionID:'native',messageID:'assistant',callID:'tool',tool:'bash',
+      state:{status:'completed',time:{start:110,end:120},input:{command:'PRIVATE_COMMAND'},output:'PRIVATE_OUTPUT'}}}});
+    emit({type:'message.updated',properties:{info:{id:'assistant',sessionID:'native',role:'assistant',parentID:'user',
+      providerID:'codex',modelID:'approved',finish:'stop',time:{created:100,completed:250}}}});
+    const run=facts.find(f=>f.kind==='run');
+    assert.equal(facts.filter(f=>f.kind==='run'&&f.outcome==='completed').length,1);
+    for(const f of facts.filter(f=>['tool','usage','intervention'].includes(f.kind)))assert.equal(f.runId,run.runId);
+    assert.equal(facts.find(f=>f.kind==='usage').usage,null);
+    assert.equal(facts.findLast(f=>f.kind==='intervention').outcome,'answered');
+    assert.ok(!JSON.stringify(facts).includes('PRIVATE_'));
+    await collector.close();
+});
+
+test('native cancellation remains cancelled and records a single acknowledged intervention',async()=>{
+    const facts=[],collector=createAnalyticsCollector({store:{offer:f=>facts.push(f)}});
+    const scope={accountId:'owner',runtime:'codex',instanceId:'user-owner',generation:3};
+    collector.nativeFact(scope,{kind:'accepted_turn',entityId:'user',sessionId:'native',executionId:'user',startedAt:100});
+    for(const fact of metadataFacts({type:'message.updated',properties:{info:{id:'assistant',sessionID:'native',role:'assistant',parentID:'user',
+      finish:'cancelled',time:{created:100,completed:200}}}},200))collector.nativeFact(scope,fact);
+    assert.equal(facts.filter(f=>f.kind==='run'&&f.outcome==='cancelled').length,1);
+    assert.equal(facts.filter(f=>f.kind==='run'&&f.outcome==='completed').length,0);
+    assert.equal(facts.filter(f=>f.kind==='intervention'&&f.code==='takeover').length,1);
+    await collector.close();
+});
+
 test('the passive SSE adapter handles chunk boundaries and discards oversized private frames',{timeout:3000},async(t)=>{
     const facts=[],gaps=[];
     const accepted={type:'message.updated',properties:{info:{id:'turn',sessionID:'s',role:'user',time:{created:1},parts:['PRIVATE_PROMPT']}}};

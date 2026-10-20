@@ -13,11 +13,12 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
   const session = { id: 'ses_notifications', title: 'Notification fixture', directory: '/tenant/workspace', time: { created: 1, updated: 1 } };
   const history = [{ info: { id: 'msg_input', role: 'user', sessionID: session.id }, parts: [{ type: 'text', text: 'Verify the delivery fixture.' }] }, { info: { id: 'msg_result', role: 'assistant', sessionID: session.id }, parts: [{ type: 'text', text: 'Original assistant result remains available.' }] }];
   let delivery = { status: 'pending', attempts: 0, report: null }, revision = 1;
-  let allowed = { claude: false, codex: false }, failSave = false, pending = null;
+  let activeRuntime = 'opencode', policyRevision = 1, failSave = false, pending = null;
+  const operations = new Map();
   const streams = new Set();
   const server = createServer(async (req, res) => {
     try {
-      const path = new URL(req.url, 'http://fixture').pathname;
+      const url = new URL(req.url, 'http://fixture'), path = url.pathname;
       const json = (data, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
       if (path.startsWith('/assets/')) {
         const file = resolve(stage, `.${path}`); if (!file.startsWith(`${stage}/assets/`)) { json({}, 403); return; }
@@ -28,21 +29,29 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
       if (path === '/api/admin/runtime') {
         if (req.method === 'POST') {
           let raw = ''; for await (const chunk of req) raw += chunk;
-          if (failSave) { json({ error: 'Fixture save failed' }, 500); return; }
-          const body = JSON.parse(raw); allowed = { ...allowed, [body.runtime]: body.enabled };
+          if (failSave) { json({ error: 'Fixture save rejected' }, 400); return; }
+          const body = JSON.parse(raw);
+          if (!['opencode', 'codex'].includes(body.runtime) || body.expectedRevision !== policyRevision || typeof body.operationId !== 'string') { json({ error: 'Invalid selection' }, 409); return; }
+          activeRuntime = body.runtime; policyRevision++;
+          const result = { activeRuntime, revision: policyRevision, operationId: body.operationId };
+          operations.set(body.operationId, result); json(result); return;
         }
-        json({ assistantEnabled: allowed }); return;
+        const operationId = url.searchParams.get('operationId');
+        json({ activeRuntime, revision: policyRevision, recoveryRequired: false,
+          available: [{ runtime: 'opencode', status: 'ready', models: ['model'], defaultModel: 'model' }, { runtime: 'claude', status: 'unavailable', models: [] }, { runtime: 'codex', status: 'ready', models: ['model'], defaultModel: 'model' }],
+          operation: operationId ? { operationId, state: operations.has(operationId) ? 'committed' : 'unknown', ...(operations.has(operationId) ? { result: operations.get(operationId) } : {}) } : null }); return;
       }
       if (path === `/session/${session.id}/message`) { json(history); return; }
       if (path.startsWith('/api/collaboration/')) {
         json({ available: true, state: { version: 1, mode: 'autonomous', phase: pending ? 'waiting_input' : 'idle', revision, execution: 1, decisions: [], pending, delivery } }); return;
       }
+      const provider = activeRuntime === 'codex' ? 'codex' : 'fixture';
       const data = {
         '/api/workspace/operations': {items:[],resolved:[],nextCursor:null},
         '/v1/whoami': { directory: '/tenant/workspace', mode: 'full' }, '/api/me': { user: { id: 'user_fixture', username: 'fixture', role: 'admin' } },
-        '/api/runtime': { runtime: 'opencode', kind: 'opencode', context: { instanceId: 'user-fixture', generation: 1 }, available: [{ runtime: 'opencode', kind: 'opencode', enabled: true }] },
-        '/config/providers': { providers: [{ id: 'fixture', name: 'Fixture', models: { model: { id: 'model', name: 'Fixture model' } } }], connected: ['fixture'], default: { fixture: 'model' } },
-        '/provider': { all: [], connected: ['fixture'] }, '/config': { model: 'fixture/model' }, '/global/config': { model: 'fixture/model' },
+        '/api/runtime': { runtime: activeRuntime, policyRevision, kind: activeRuntime === 'codex' ? 'cli' : 'opencode', context: { instanceId: 'user-fixture', generation: 1 }, available: [{ runtime: 'opencode', kind: 'opencode', enabled: activeRuntime === 'opencode' }, { runtime: 'codex', kind: 'cli', enabled: activeRuntime === 'codex', status: 'ready', models: [{ id: 'model' }], defaultModel: 'model' }] },
+        '/config/providers': { providers: [{ id: provider, name: 'Fixture', models: { model: { id: 'model', name: 'Fixture model' } } }], connected: [provider], default: { [provider]: 'model' } },
+        '/provider': { all: [], connected: [provider] }, '/config': { model: `${provider}/model` }, '/global/config': { model: `${provider}/model` },
         '/experimental/session': [session], '/session': [session], [`/session/${session.id}`]: session,
         '/session/status': {}, '/skill': [], '/agent': [{ name: 'build', mode: 'primary' }], '/command': [], '/permission': [], '/question': [], '/v1/projects': [], '/v1/fs/list': [],
       };
@@ -55,6 +64,7 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
   try {
     for (const width of [1280, 360]) {
       delivery = { status: 'pending', attempts: 0, report: null }; revision++; pending = null; failSave = false;
+      activeRuntime = 'opencode'; policyRevision = 1; operations.clear();
       const context = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: 'reduce' });
       try {
         await context.addInitScript(() => localStorage.setItem('ai4s.locale', 'en'));
@@ -96,9 +106,14 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
         expect(await page.getByRole('button', { name: 'Retry notification-fixture.csv', exact: true }).isEnabled()).toBe(true);
         await page.getByRole('button', { name: 'Remove notification-fixture.csv', exact: true }).click();
         await page.goto(`${origin}/settings/models`);
-        const toggle = page.getByRole('switch', { name: 'Allow Codex', exact: true }); await toggle.waitFor();
+        const codex = page.getByRole('radio', { name: 'Codex', exact: true }); await codex.waitFor();
         const content = page.locator('main'); const before = await content.boundingBox();
-        for (let n = 0; n < 4; n++) { await expect.poll(() => toggle.isEnabled()).toBe(true); await toggle.click(); }
+        for (let n = 0; n < 4; n++) {
+          const option = page.getByRole('radio', { name: n % 2 === 0 ? 'Codex' : 'OpenCode', exact: true });
+          await expect.poll(() => option.isEnabled()).toBe(true); await option.click();
+          await expect.poll(() => option.isChecked()).toBe(true);
+          await expect.poll(() => option.isEnabled()).toBe(true);
+        }
         await expect.poll(() => notifications.getByRole('button', { name: 'Close notification' }).count()).toBe(3);
         expect(await content.boundingBox()).toEqual(before);
         await notifications.getByRole('button', { name: 'Close notification' }).first().click();
@@ -107,10 +122,13 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
         await notifications.getByRole('button', { name: 'Close notification' }).last().focus();
         await page.clock.fastForward(30_100);
         await expect.poll(() => notifications.getByRole('button', { name: 'Close notification' }).count()).toBe(0);
-        failSave = true; await toggle.click();
-        await notifications.getByText('Could not save Codex. Try again.', { exact: true }).waitFor();
-        await toggle.focus(); await page.mouse.move(0, 0); await page.clock.fastForward(10_100);
+        failSave = true; await codex.click();
+        const failure = page.getByRole('alert').getByText('Could not save the assistant selection. Try again.', { exact: true });
+        await failure.waitFor();
+        await codex.focus(); await page.mouse.move(0, 0); await page.clock.fastForward(10_100);
         await expect.poll(() => notifications.getByRole('button', { name: 'Close notification' }).count()).toBe(0);
+        expect(await failure.isVisible()).toBe(true);
+        expect(await page.getByRole('radio', { name: 'OpenCode', exact: true }).isChecked()).toBe(true);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
         expect(errors).toEqual([]);
         if (process.env.OSD_NOTIFICATION_EVIDENCE_DIR) {
