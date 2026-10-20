@@ -679,6 +679,16 @@ async function historyFixture(manager, root, sessions, {legacy=false}={}) {
   await writeFile(path,JSON.stringify({version:1,sessions:records}),{mode:0o600});
   return {workspace,path,records};
 }
+test('deployed legacy workspace history remains readable through the current managed workspace without rewriting source',async()=>{
+  const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
+  const legacy=join(root,'workers','instances','user-usr_a','workspace','project');
+  const {workspace,path,records}=await historyFixture(manager,root,[{directory:legacy}],{legacy:true});
+  const original=await readFile(path,'utf8');
+  const listed=await manager.readHistoricalSessions({userId:'usr_a',workspaceDir:workspace});
+  assert.equal(listed.length,1);assert.equal(listed[0].directory,join(workspace,'project'));
+  assert.equal((await manager.readHistoricalMessages({userId:'usr_a',workspaceDir:workspace,sessionId:records[0].id})).session.directory,join(workspace,'project'));
+  assert.equal(await readFile(path,'utf8'),original);
+});
 test('managed historical reads retain both inactive assistants and partial payloads without loading or executing them',async()=>{
   const {root,manager}=await makeManager('opencode');manager.sandboxJobs={};
   const partial={info:{id:'message-partial',role:'assistant',sessionID:'ses_cli_0000000000000000',time:{created:1}},parts:[{type:'text',text:'Partial research'}]};

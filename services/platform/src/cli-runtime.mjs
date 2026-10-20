@@ -863,11 +863,16 @@ export class CliRuntimeManager {
     assertUserId(userId);
     if (typeof workspaceDir !== "string" || !isAbsolute(workspaceDir) || resolve(workspaceDir) !== workspaceDir) throw historyFailure();
     const sessions = new Map(), revisions = [];
+    const legacyWorkspace = join(dirname(this.rootDir), "workers", "instances", `user-${userId}`, "workspace");
     for (const branch of this.sandboxJobs ? ["metadata", "users"] : ["users"]) {
       const source = await readPrivateHistory(this.rootDir, branch, userId);
       revisions.push([branch, source?.revision ?? null]);
       if (!source) continue;
       for (const session of source.sessions) {
+        if (this.sandboxJobs && branch === "users" && typeof session?.directory === "string" &&
+            resolve(session.directory) === session.directory && isWithin(legacyWorkspace, session.directory)) {
+          session.directory = join(workspaceDir, relative(legacyWorkspace, session.directory));
+        }
         if (!session || session.userId !== userId || !SESSION_ID.test(session.id) || !MANAGED_RUNTIMES.has(session.runtime) ||
             typeof session.directory !== "string" || resolve(session.directory) !== session.directory || !isWithin(workspaceDir, session.directory) ||
             typeof session.title !== "string" || session.title.length > 512 || !Array.isArray(session.history) || session.history.length > 12000 ||
