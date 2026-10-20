@@ -222,15 +222,18 @@ export class SandboxNativeJobs {
           }
           if(event.type==='tool'){
             const record=reservation.guards.get(event.callId),state=event.state;
-            if(!this.#effects||!record?.decision||record.decision.allowed!==true||record.action.tool!==event.tool||
+            // Codex can execute an authorized exec_command as an intercepted patch.
+            const matchingTool=record?.action.tool===event.tool||record?.action.nativeTool==='exec_command'&&
+              record.action.kind==='command'&&event.tool==='edit';
+            if(!this.#effects||!record?.decision||record.decision.allowed!==true||!matchingTool||
               !['command','edit'].includes(record.action.kind)||!state||!['running','completed','error'].includes(state.status)||
               !state.input||typeof state.input!=='object'||typeof state.output!=='string'||
               state.metadata?.nativeItemType!==(event.tool==='bash'?'commandExecution':'fileChange')||
-              record.observation&&(record.observation.status!=='running'||JSON.stringify(record.observation.input)!==JSON.stringify(state.input))||
+              record.observation&&(record.observation.status!=='running'||record.observation.tool!==event.tool||JSON.stringify(record.observation.input)!==JSON.stringify(state.input))||
               !record.observation&&state.status!=='running')throw Error('Unbound native effect observation');
             // This observes the already guarded native effect; it never calls a
             // platform tool, answers an approval, or grants new authority.
-            record.observation={input:structuredClone(state.input),status:state.status};
+            record.observation={input:structuredClone(state.input),status:state.status,tool:event.tool};
             await emit({...event,callID:event.callId});continue;
           }
           if(["approval","question"].includes(event.type))this.tenantPolicy.registerRequest(context,{id:event.id,sessionID:session.id});

@@ -161,6 +161,36 @@ test('native command observations require the actual guarded call and never disp
   assert.equal(calls.some(call=>call.operation==='toolResult'),false);
  }
 });
+test('guarded exec_command patch interception binds file observations to the original authorized call',async()=>{
+ for(const failure of [null,'unguarded','foreign-call','changed-input','missing-start','wrong-metadata']){
+  const policy=new TenantPolicy({accounts:[context]}),events=[],calls=[];let batch=0,transport;
+  const identity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
+  const command='apply_patch *** Begin Patch',hook={session_id:'native-owned',turn_id:'turn-owned',tool_use_id:'patch-command',cwd:session.directory,
+   hook_event_name:'PreToolUse',tool_name:'Bash',tool_input:{nativeTool:'exec_command',nativeInput:{cmd:command},canonicalInput:{command}}};
+  const input={changes:[{path:session.directory+'/report.json',kind:{type:'add'},diff:'PRIVATE_CONTENT'}]};
+  transport=new ManagedNativeJobs({tenantPolicy:policy,delayMs:1,
+   issueNativeGrant:async()=>({identityRevision:'owned-profile',configuration:{model:'approved'},renew:()=>{},revoke:async()=>{}}),
+   workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release(){}})},files:{job:async(_owner,request)=>{
+    calls.push(request);if(request.operation==='start')return {jobId:'b'.repeat(64),...acceptance};
+    if(request.operation==='abort')return {stopped:true};
+    if(batch++===0){
+     if(failure!=='unguarded')await transport.authorizeEffect({...context,turnIdentity:identity},hook);
+     const event=(status,sequence)=>({type:'tool',callId:failure==='foreign-call'?'foreign-patch':'patch-command',tool:'edit',
+      state:{status,input:failure==='changed-input'&&status==='completed'?{changes:[]}:input,output:'',metadata:{nativeItemType:failure==='wrong-metadata'?'commandExecution':'fileChange'}},
+      sessionID:'owned',sequence,...acceptance});
+     return {jobId:request.jobId,status:'running',...acceptance,events:failure==='missing-start'?[event('completed',1)]:[event('running',1),event('completed',2)]};
+    }
+    return {jobId:request.jobId,status:'completed',...acceptance,events:[]};
+   }}});
+  transport.configureEffects({prepare:async()=>({researchExecution:1}),permissions:{authorize:async(_identity,action)=>{
+   assert.equal(action.tool,'bash');assert.equal(action.kind,'command');assert.deepEqual(action.inputs,{cmd:command});return {allowed:true};
+  },assertCurrent:async()=>true},callTool:async()=>assert.fail('Observation cannot dispatch effects')});
+  const run=transport.run({userId:'a',session,model:'approved',text:'Research',turnIdentity:identity,identityRevision:'owned-profile',emit:async event=>events.push(event)});
+  if(failure)await assert.rejects(run,/Unbound native effect observation/);else await run;
+  assert.equal(events.length,failure==='changed-input'?1:failure?0:2,failure);
+  assert.equal(calls.some(call=>call.operation==='toolResult'),false);
+ }
+});
 test('native network dispatch binds accepted identity, guard decision and the private active tool reply ID',async()=>{
  const policy=new TenantPolicy({accounts:[context]}),controller=new AbortController(),steps=[];
  const identity={userId:'a',instanceId:'user-a',generation:1,conversationId:'owned',execution:1,requestId:'request-owned',policyRevision:1,runtime:'codex'};
