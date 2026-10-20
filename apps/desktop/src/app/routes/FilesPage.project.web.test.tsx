@@ -31,9 +31,16 @@ it('resolves session file actions by session ID instead of a stale focused direc
 it('keeps management controls and their open dialogs mounted while a listing refreshes',async()=>{
  render(<MemoryRouter initialEntries={['/files?project=123456789abcdef0']}><FilesPage/></MemoryRouter>);await screen.findByText('result.txt');
  await userEvent.click(screen.getByRole('button',{name:'New file'}));expect(screen.getByRole('dialog',{name:'New file'})).toBeInTheDocument();
+ await userEvent.type(screen.getByRole('textbox',{name:'New file'}),'draft.txt');
  const listed=await entries();let resolve!:(value:typeof listed)=>void;entries.mockReturnValueOnce(new Promise(done=>{resolve=done;}));
- await userEvent.click(screen.getByRole('button',{name:'Refresh files'}));
- try{expect(screen.getByRole('dialog',{name:'New file'})).toBeInTheDocument();}finally{await act(async()=>resolve(listed));}
+ fireEvent(window,new CustomEvent('scikeel.workspace-files-updated',{detail:{scope:{kind:'project',projectId:'123456789abcdef0'},path:'result.txt'}}));
+ try{
+  expect(screen.getByRole('dialog',{name:'New file'})).toBeInTheDocument();
+  expect(screen.getByRole('textbox',{name:'New file'})).toHaveValue('draft.txt');
+  expect(screen.getByRole('textbox',{name:'New file'})).toBeDisabled();
+ }finally{await act(async()=>resolve(listed));}
+ expect(screen.getByRole('textbox',{name:'New file'})).toBeEnabled();
+ expect(screen.getByRole('textbox',{name:'New file'})).toHaveValue('draft.txt');
 });
 it('refreshes project entries after a recovered operation is confirmed committed',async()=>{
  render(<MemoryRouter initialEntries={['/files?project=123456789abcdef0']}><FilesPage/></MemoryRouter>);await screen.findByText('result.txt');entries.mockClear();

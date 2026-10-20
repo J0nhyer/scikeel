@@ -56,7 +56,7 @@ const mocks = vi.hoisted(() => ({
   createSessionDirectorySpy: vi.fn(),
   createGate: null as Promise<void> | null,
   createProject: vi.fn(),
-  listProjects: vi.fn(async () => []),
+  listProjects: vi.fn(async (): Promise<{ id: string; name: string; path: string; createdAt: number; imported: boolean; pinned: boolean }[]> => []),
   forkSessionSpy: vi.fn(),
   appendTextPartSpy: vi.fn(),
   setSessionArchivedSpy: vi.fn(),
@@ -1021,6 +1021,27 @@ describe("Web browser recovery and model retry", () => {
 });
 
 describe("gateway runtime selection", () => {
+  it("loads projects even when the initial conversation inventory fails", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false; mocks.failSessionLists = 10;
+    const project = { id: "p_independent", name: "Available project", path: "/ws/project", createdAt: 1, imported: false, pinned: false };
+    mocks.listProjects.mockResolvedValue([project]);
+    useRuntimeStore.setState({ projects: [] });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", runtime: "codex", available: [] }), { status: 200 })));
+    try {
+      expect(await useRuntimeStore.getState().connectRetry(1)).toBe(false);
+      await vi.waitFor(() => expect(useRuntimeStore.getState().projects).toEqual([project]));
+    } finally { mocks.listProjects.mockResolvedValue([]); }
+  });
+  it("does not publish project inventory from an earlier account", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    let finish!: (projects: Awaited<ReturnType<typeof mocks.listProjects>>) => void;
+    mocks.listProjects.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    useRuntimeStore.setState({ gatewayUser: { id: "usr_a", username: "a", role: "user" }, projects: [] });
+    const loading = useRuntimeStore.getState().refreshProjects();
+    useRuntimeStore.setState({ gatewayUser: { id: "usr_b", username: "b", role: "user" } });
+    finish([{ id: "p_a", name: "A", path: "/ws/a", createdAt: 1, imported: false, pinned: false }]);
+    await loading; expect(useRuntimeStore.getState().projects).toEqual([]);
+  });
   it("requests account and runtime metadata while the workspace identity is still loading", async () => {
     mocks.isGatewayWeb = true; mocks.isTauri = false;
     let release!: (response: Response) => void;

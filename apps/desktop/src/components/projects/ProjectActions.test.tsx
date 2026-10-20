@@ -1,4 +1,4 @@
-import {act,cleanup,fireEvent,render,screen,within} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,within,waitFor} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {MemoryRouter} from 'react-router-dom';
@@ -7,10 +7,29 @@ import {makeLeaf,useLayoutStore} from '@/lib/layout';
 import {WorkspaceRequestError} from '@/lib/workspaceManagement';
 const patch=vi.fn(),trash=vi.fn(),projects=vi.fn();
 vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),patchWorkspaceProject:(...args:unknown[])=>patch(...args),trashWorkspaceProject:(...args:unknown[])=>trash(...args),listWorkspaceProjects:()=>projects()}));
-const {ProjectActions}=await import('./ProjectActions').catch(()=>({} as typeof import('./ProjectActions')));
+const {ProjectActions}=await import('./ProjectActions');
 const project={id:'123456789abcdef0',name:'A',path:'/ws/a',createdAt:1,imported:false,pinned:false,revision:'r1'};
 beforeEach(()=>{vi.clearAllMocks();projects.mockResolvedValue([project]);useRuntimeStore.setState({webReadOnly:false,projects:[project],sessions:[]});});
 afterEach(cleanup);
+it('focuses a rename opened from a transformed sidebar menu and returns focus after Escape',async()=>{
+ render(<MemoryRouter><div style={{transform:'translateY(-50%)'}}><ProjectActions project={project}/></div></MemoryRouter>);
+ const trigger=screen.getByRole('button',{name:'Project actions: A'});
+ await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Rename'}));
+ await waitFor(()=>expect(screen.getByRole('textbox')).toHaveFocus());
+ await userEvent.keyboard('{Escape}');
+ expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+ await waitFor(()=>expect(trigger).toHaveFocus());
+ expect(patch).not.toHaveBeenCalled();
+});
+it('focuses the safe trash action and dismisses it with Escape without a mutation',async()=>{
+ render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
+ const trigger=screen.getByRole('button',{name:'Project actions: A'});
+ await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Move to trash'}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Cancel'})).toHaveFocus());
+ await userEvent.keyboard('{Escape}');
+ expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+ await waitFor(()=>expect(trigger).toHaveFocus());expect(trash).not.toHaveBeenCalled();
+});
 it('rename failure retains input and dialog, then retry updates once',async()=>{
   patch.mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce({id:project.id});
   render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
+import { ManagementDialog } from "@/components/ui/ManagementDialog";
 
 /** Modal for naming a new (from-scratch) project: a focused, pre-selected input
  *  with Save/Cancel. Used instead of an inline row so "New project" reads as a
@@ -17,6 +18,7 @@ export function NameProjectDialog({
   created = false,
   inputDisabled = false,
   cancelDisabled = false,
+  returnFocusRef,
 }: {
   defaultName: string;
   title: string;
@@ -29,41 +31,27 @@ export function NameProjectDialog({
   created?: boolean;
   inputDisabled?: boolean;
   cancelDisabled?: boolean;
+  returnFocusRef?: RefObject<HTMLElement>;
 }) {
   const { t } = useTranslation(["common", "nav"]);
   const [name, setName] = useState(defaultName);
   const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    ref.current?.focus();
-    ref.current?.select();
-  }, []);
   const save = () => {
     const v = name;
     if (v.trim() && !busy) onSave(v);
   };
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={() => !busy && !cancelDisabled && onCancel()}
-      role="presentation"
-    >
-      <div
-        role="dialog"
-        aria-label={title}
-        className="w-[420px] max-w-[calc(100vw-2rem)] rounded-card border border-border bg-surface p-5 shadow-card"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="text-base font-semibold text-text">{title}</div>
-        <p className="mt-1 text-sm text-muted">{subtitle}</p>
+    <ManagementDialog title={title} description={subtitle || undefined} onClose={onCancel} dismissible={!busy && !cancelDisabled} initialFocusRef={ref} returnFocusRef={returnFocusRef}>
         <input
           ref={ref}
+          aria-label={title}
+          onFocus={(event) => event.currentTarget.select()}
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={placeholder}
           disabled={busy || created || inputDisabled}
           onKeyDown={(e) => {
             if (e.key === "Enter") save();
-            else if (e.key === "Escape" && !busy && !cancelDisabled) onCancel();
           }}
           className={cn(
             "mt-4 w-full rounded-input border border-border bg-surface px-3 py-2 text-sm text-text outline-none placeholder:text-muted focus:border-accent",
@@ -87,7 +75,6 @@ export function NameProjectDialog({
             {created ? t("nav:projects.retryOpening") : t("actions.save")}
           </button>
         </div>
-      </div>
-    </div>
+    </ManagementDialog>
   );
 }

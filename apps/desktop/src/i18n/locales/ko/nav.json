@@ -43,6 +43,8 @@
     "colSources": "소스",
     "colUpdated": "업데이트",
     "noResults": "일치하는 프로젝트가 없습니다.",
+    "empty": "아직 프로젝트가 없습니다.",
+    "loadFailed": "프로젝트를 불러오지 못했습니다.",
     "pin": "고정",
     "unpin": "고정 해제",
     "rename": "이름 바꾸기",

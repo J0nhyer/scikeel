@@ -10,6 +10,7 @@ import {hasParkedDraft} from '@/lib/composerStash';
 import {hasPendingComposerAttachments} from '@/components/thread/useComposerAttachments';
 import {listWorkspaceProjects,patchWorkspaceProject,trashWorkspaceProject,workspaceOperationId,WorkspaceRequestError} from '@/lib/workspaceManagement';
 import {NameProjectDialog} from './NameProjectDialog';
+import {ManagementDialog} from '@/components/ui/ManagementDialog';
 import {hasWorkspaceDraftInDirectory} from '@/lib/workspaceDrafts';
 
 export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNewSession?:()=>void}) {
@@ -19,7 +20,8 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
   const [uncertain,setUncertain]=useState(false);
   const mounted=useRef(true),locked=useRef(false),operation=useRef(workspaceOperationId()),lastName=useRef<string|null>(null);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
-  const begin=(kind:'rename'|'trash')=>{operation.current=workspaceOperationId();lastName.current=null;setUncertain(false);setError(null);setDialog(kind);};
+  const trigger=useRef<HTMLButtonElement>(null),cancel=useRef<HTMLButtonElement>(null),openingDialog=useRef(false);
+  const begin=(kind:'rename'|'trash')=>{openingDialog.current=true;operation.current=workspaceOperationId();lastName.current=null;setUncertain(false);setError(null);setDialog(kind);};
   const openRename=()=>begin('rename');
   const openTrash=()=>begin('trash');
   const run=async(action:()=>Promise<unknown>,after?:()=>void)=>{
@@ -58,8 +60,8 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
   const item='cursor-pointer rounded-input px-3 py-2 text-sm outline-none data-[highlighted]:bg-surface-2 data-[disabled]:opacity-40';
   return <>
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild><button type="button" aria-label={t('projects.actionsAria',{name:project.name})} title={t('projects.more')} className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"><MoreHorizontal size={16}/></button></DropdownMenu.Trigger>
-      <DropdownMenu.Portal><DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[170px] max-w-[calc(100vw-2rem)] rounded-card border border-border bg-surface p-1 text-text shadow-pop">
+      <DropdownMenu.Trigger asChild><button ref={trigger} type="button" aria-label={t('projects.actionsAria',{name:project.name})} title={t('projects.more')} className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-text"><MoreHorizontal size={16}/></button></DropdownMenu.Trigger>
+      <DropdownMenu.Portal><DropdownMenu.Content align="end" sideOffset={4} onCloseAutoFocus={event=>{if(openingDialog.current){event.preventDefault();openingDialog.current=false;}}} className="z-50 min-w-[170px] max-w-[calc(100vw-2rem)] rounded-card border border-border bg-surface p-1 text-text shadow-pop">
         {onNewSession && <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={onNewSession}>{t('projects.newSession')}</DropdownMenu.Item>}
         <DropdownMenu.Item className={item} onSelect={()=>navigate('/files?project='+encodeURIComponent(project.id))}>{t('projects.openFiles')}</DropdownMenu.Item>
         <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={openRename}>{t('projects.rename')}</DropdownMenu.Item>
@@ -67,11 +69,11 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
         <DropdownMenu.Item className={item+' text-error'} disabled={readOnly||busy} onSelect={openTrash}>{t('projects.trash')}</DropdownMenu.Item>
       </DropdownMenu.Content></DropdownMenu.Portal>
     </DropdownMenu.Root>
-    {dialog==='rename' && <NameProjectDialog defaultName={project.name} title={t('projects.rename')} subtitle={t('projects.nameSubtitle')} busy={busy} inputDisabled={uncertain} cancelDisabled={uncertain} error={error??undefined} onCancel={()=>{if(!busy && !uncertain)setDialog(null);}} onSave={rename}/>}
-    {dialog==='trash' && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"><div role="alertdialog" aria-label={t('projects.trashTitle',{name:project.name})} className="w-[360px] max-w-[calc(100vw-2rem)] rounded-card border border-border bg-surface p-4 shadow-card">
-      <p className="text-sm font-medium text-text">{t('projects.trashTitle',{name:project.name})}</p><p className="mt-2 text-sm text-muted">{t('projects.trashBody')}</p>{error && <p role="alert" className="mt-2 text-sm text-error">{error}</p>}
-      <div className="mt-4 flex justify-end gap-2"><button disabled={busy} onClick={()=>setDialog(null)} className="rounded border border-border px-3 py-2 text-sm">{t('common:actions.cancel')}</button><button disabled={busy||readOnly} onClick={()=>void run(trash)} className="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">{t('projects.trash')}</button></div>
-    </div></div>}
+    {dialog==='rename' && <NameProjectDialog returnFocusRef={trigger} defaultName={project.name} title={t('projects.rename')} subtitle={t('projects.nameSubtitle')} busy={busy} inputDisabled={uncertain} cancelDisabled={uncertain} error={error??undefined} onCancel={()=>{if(!busy && !uncertain)setDialog(null);}} onSave={rename}/>}
+    {dialog==='trash' && <ManagementDialog role="alertdialog" title={t('projects.trashTitle',{name:project.name})} description={t('projects.trashBody')} onClose={()=>setDialog(null)} dismissible={!busy} initialFocusRef={cancel} returnFocusRef={trigger} className="w-[360px]">
+      {error && <p role="alert" className="mt-2 text-sm text-error">{error}</p>}
+      <div className="mt-4 flex justify-end gap-2"><button ref={cancel} disabled={busy} onClick={()=>setDialog(null)} className="rounded border border-border px-3 py-2 text-sm">{t('common:actions.cancel')}</button><button disabled={busy||readOnly} onClick={()=>void run(trash)} className="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">{t('projects.trash')}</button></div>
+    </ManagementDialog>}
     {error && dialog===null && <p role="alert" className="text-xs text-error">{error}</p>}
   </>;
 }

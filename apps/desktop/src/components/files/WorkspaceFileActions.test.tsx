@@ -1,14 +1,35 @@
-import {cleanup,fireEvent,render,screen,within} from '@testing-library/react';
+import {cleanup,fireEvent,render,screen,within,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import userEvent from '@testing-library/user-event';
 import {useRuntimeStore} from '@/lib/runtime';
 const operate=vi.fn(),entries=vi.fn();
 vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),operateWorkspace:(...args:unknown[])=>operate(...args),workspaceEntries:(...args:unknown[])=>entries(...args)}));
 import {WorkspaceRequestError} from '@/lib/workspaceManagement';
-const {WorkspaceFileActions,WorkspaceFileControls}=await import('./WorkspaceFileActions').catch(()=>({} as typeof import('./WorkspaceFileActions')));
+const {WorkspaceFileActions,WorkspaceFileControls}=await import('./WorkspaceFileActions');
 const scope={kind:'project' as const,projectId:'123456789abcdef0'};
 const entry={name:'result.txt',path:'reports/result.txt',size:8,modified:1,isDir:false,revision:'a'.repeat(64),capabilities:['rename','move','trash']};
 beforeEach(()=>{vi.clearAllMocks();useRuntimeStore.setState({webReadOnly:false});});afterEach(cleanup);
+it('focuses rename from the file menu and dismisses with Escape without changing files',async()=>{
+ render(<WorkspaceFileActions scope={scope} entry={entry} onChanged={()=>{}}/>);
+ const trigger=screen.getByRole('button',{name:'File actions: result.txt'});
+ await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Rename'}));
+ await waitFor(()=>expect(screen.getByRole('textbox')).toHaveFocus());
+ await userEvent.keyboard('{Escape}');expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+ await waitFor(()=>expect(trigger).toHaveFocus());expect(operate).not.toHaveBeenCalled();
+});
+it('portals move and trash dialogs and focuses their safe controls',async()=>{
+ entries.mockResolvedValue({entries:[],nextCursor:null});
+ const view=render(<div style={{transform:'translateY(-50%)'}}><WorkspaceFileActions scope={scope} entry={entry} onChanged={()=>{}}/></div>);
+ const trigger=screen.getByRole('button',{name:'File actions: result.txt'});
+ await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Move'}));
+ expect(view.container).not.toContainElement(screen.getByRole('dialog',{name:'Move'}));
+ await userEvent.keyboard('{Escape}');expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+ await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Move to trash'}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Cancel'})).toHaveFocus());
+ expect(view.container).not.toContainElement(screen.getByRole('alertdialog'));
+ await userEvent.keyboard('{Escape}');expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+ expect(operate).not.toHaveBeenCalled();
+});
 it('renames relative to its selected scope and retains a rejected name',async()=>{
  operate.mockRejectedValueOnce(new Error('Name already exists')).mockResolvedValueOnce({state:'committed'});
  const changed=vi.fn();render(<WorkspaceFileActions scope={scope} entry={entry} onChanged={changed}/>);

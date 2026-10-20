@@ -731,9 +731,12 @@
     "find": "Buscar…"
   },
   "environment": {
-    "title": "Python environment",
-    "absent": "Shared science environment",
-    "valid": "Private project environment",
+    "title": "Entorno",
+    "absent": "Dependencias integradas",
+    "valid": "Dependencias del proyecto",
+    "loadFailed": "No se pudieron cargar los detalles del entorno.",
+    "detailsLoading": "Cargando detalles del entorno…",
+    "close": "Cerrar",
     "broken": "Private environment needs repair",
     "explanation": "Common scientific libraries are already available. Extra dependencies use a separate environment for this project.",
     "lockRequired": "Add requirements.lock with exact package versions and SHA256 hashes to prepare a private environment.",

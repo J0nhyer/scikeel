@@ -43,6 +43,8 @@
     "colSources": "Sources",
     "colUpdated": "Updated",
     "noResults": "No projects match.",
+    "empty": "No projects yet.",
+    "loadFailed": "Projects could not be loaded.",
     "pin": "Pin",
     "unpin": "Unpin",
     "rename": "Rename",

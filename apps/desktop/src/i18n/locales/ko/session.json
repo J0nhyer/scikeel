@@ -720,9 +720,12 @@
     "find": "찾기…"
   },
   "environment": {
-    "title": "Python environment",
-    "absent": "Shared science environment",
-    "valid": "Private project environment",
+    "title": "환경",
+    "absent": "기본 제공 의존성",
+    "valid": "프로젝트 의존성",
+    "loadFailed": "환경 정보를 불러오지 못했습니다.",
+    "detailsLoading": "환경 정보 불러오는 중…",
+    "close": "닫기",
     "broken": "Private environment needs repair",
     "explanation": "Common scientific libraries are already available. Extra dependencies use a separate environment for this project.",
     "lockRequired": "Add requirements.lock with exact package versions and SHA256 hashes to prepare a private environment.",

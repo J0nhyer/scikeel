@@ -462,6 +462,8 @@ interface RuntimeState {
   /** Projects: named shared workspaces under `<base>/projects`. Sessions group
    *  under a project by `directory`; multiple sessions share the folder. */
   projects: ProjectInfo[];
+  projectsLoading: boolean;
+  projectsError: string | null;
   refreshProjects: () => Promise<void>;
   /** Create a project folder and move into it with a fresh pinned draft. */
   createProject: (name: string) => Promise<ProjectInfo | null>;
@@ -674,6 +676,7 @@ let gatewayCatalogVersion = 0;
 let commandsInFlight: Promise<void> | null = null;
 let modelCatalogVersion = 0;
 let webContextVersion = 0;
+let projectReadVersion = 0;
 const uncertainWebCreates = new Set<string>();
 let connectionVersion = 0;
 let catalogController: AbortController | null = null;
@@ -3701,6 +3704,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     c.onEvent(event => { if (active() && c === client) sharedEventHandler?.(event); });
     try {
       void logDebug(`connect → ${get().serverUrl}`);
+      if (isGatewayWeb) void get().refreshProjects();
       const initialSessions = isGatewayWeb ? get().refreshSessions(true) : null;
       if (isGatewayWeb) await withSignal(c.connect(), requestSignal(5000));
       else await c.connect();
@@ -3726,7 +3730,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         failed(i18n.t("session:live.starting.sessionsError"));
         return;
       }
-      void get().refreshProjects();
+      if (!isGatewayWeb) void get().refreshProjects();
       // Catalog (skills/agents/commands) fills in behind the page — a session
       // switch must not wait on it to show the conversation.
       if (!isGatewayWeb) void get().loadCatalog();
@@ -4107,6 +4111,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   setAgentMode: (mode, sessionId) =>
     set((s) => ({ sessionAgents: { ...s.sessionAgents, [sessionId ?? s.currentId ?? DRAFT_KEY]: mode } })),
   projects: [],
+  projectsLoading: false,
+  projectsError: null,
   workspace: null,
   webWorkspace: null,
   gatewayWorkspace: null,
@@ -4667,7 +4673,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     useToastStore.getState().reset();
     clearWorkspaceTextDrafts();
     set({ gatewayUser: null, gatewayUserRole: null, gatewayPolicyRevision: null, gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
-      workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [],
+      workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [], projectsLoading: false, projectsError: null,
       sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
       runningSessions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},
       gatewayRuntimes: [], providers: [], defaultModel: null, error: null });
@@ -4840,10 +4846,16 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
 
   refreshProjects: async () => {
     if (!isTauri && !isGatewayWeb) return;
+    const version = ++projectReadVersion, context = webContextVersion, account = get().gatewayUser?.id;
+    const current = () => version === projectReadVersion && (!isGatewayWeb || (context === webContextVersion && account === get().gatewayUser?.id));
+    set({ projectsLoading: true, projectsError: null });
     try {
-      set({ projects: await listProjects() });
-    } catch {
-      /* ignore transient scan failures */
+      const projects = await listProjects();
+      if (current()) set({ projects, projectsError: null });
+    } catch (error) {
+      if (current()) set({ projectsError: error instanceof Error ? error.message : String(error) });
+    } finally {
+      if (current()) set({ projectsLoading: false });
     }
   },
 
