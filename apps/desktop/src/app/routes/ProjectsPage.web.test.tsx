@@ -6,7 +6,21 @@ import { MemoryRouter } from "react-router-dom";
 import { ProjectsPage } from "./ProjectsPage";
 const renderAt = (_path: string) => render(<MemoryRouter><ProjectsPage /></MemoryRouter>);
 vi.mock("@/lib/webMode", async (original) => ({ ...await original<typeof import("@/lib/webMode")>(), isGatewayWeb: true }));
-afterEach(cleanup);
+const initial=useRuntimeStore.getState();
+afterEach(()=>{cleanup();useRuntimeStore.setState(initial,true);});
+it('shows a retryable inventory failure without claiming no projects match',async()=>{
+ const retry=vi.fn(async()=>{});
+ useRuntimeStore.setState({projects:[],projectsLoading:false,projectsError:'Unavailable',refreshProjects:retry});
+ renderAt('/projects');
+ expect(screen.getByRole('alert')).toHaveTextContent('Projects could not be loaded.');
+ expect(screen.queryByText('No projects match.')).not.toBeInTheDocument();
+ await userEvent.click(screen.getByRole('button',{name:'Retry'}));expect(retry).toHaveBeenCalledOnce();
+});
+it('distinguishes loading from an empty project list',()=>{
+ useRuntimeStore.setState({projects:[],projectsLoading:true,projectsError:null});
+ renderAt('/projects');expect(screen.getByRole('status')).toHaveTextContent('Loading');
+ expect(screen.queryByText('No projects match.')).not.toBeInTheDocument();
+});
 it("offers project-page entry even for an empty project", async () => {
   const original = useRuntimeStore.getState().startDraftInWorkspace;
   const enter = vi.fn(async () => true);

@@ -728,9 +728,12 @@
     "find": "查找…"
   },
   "environment": {
-    "title": "Python 环境",
-    "absent": "共享科学环境",
-    "valid": "项目私人环境",
+    "title": "运行环境",
+    "absent": "内置依赖",
+    "valid": "项目依赖",
+    "loadFailed": "运行环境信息加载失败。",
+    "detailsLoading": "正在加载运行环境信息…",
+    "close": "关闭",
     "broken": "私人环境需要修复",
     "explanation": "常用科学库已预装。额外依赖安装在这个项目自己的环境中。",
     "lockRequired": "请在项目中添加 requirements.lock，包含准确版本和 SHA256 校验值，再准备私人环境。",

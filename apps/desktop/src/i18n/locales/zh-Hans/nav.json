@@ -44,6 +44,8 @@
     "colSources": "来源",
     "colUpdated": "更新时间",
     "noResults": "没有匹配的项目。",
+    "empty": "暂无项目。",
+    "loadFailed": "项目加载失败。",
     "pin": "置顶",
     "unpin": "取消置顶",
     "rename": "重命名",

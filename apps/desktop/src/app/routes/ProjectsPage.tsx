@@ -10,6 +10,7 @@ import {
   Pin,
   Plus,
   Search,
+  RefreshCw,
 } from "lucide-react";
 import type { SessionMeta } from "@ai4s/sdk";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -40,6 +41,8 @@ export function ProjectsPage() {
   const transition = useWebDraftTransition();
   const webReadOnly = useRuntimeStore((state) => state.webReadOnly);
   const projects = useRuntimeStore((s) => s.projects);
+  const projectsLoading = useRuntimeStore((s) => s.projectsLoading);
+  const projectsError = useRuntimeStore((s) => s.projectsError);
   const sessions = useRuntimeStore((s) => s.sessions);
   const setProjectPinned = useRuntimeStore((s) => s.setProjectPinned);
   const deleteProject = useRuntimeStore((s) => s.deleteProject);
@@ -127,8 +130,9 @@ export function ProjectsPage() {
           <span />
         </div>
 
-        {rows.length === 0 ? (
-          <p className="px-2 py-10 text-center text-sm text-muted">{t("projects.noResults")}</p>
+        {projectsError && <div className="mt-4 flex items-center gap-3" role="alert"><p className="min-w-0 flex-1 text-sm text-error">{t("projects.loadFailed")}</p><button type="button" title={t("common:notification.retry")} aria-label={t("common:notification.retry")} disabled={projectsLoading} onClick={()=>void useRuntimeStore.getState().refreshProjects()} className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-border disabled:opacity-50"><RefreshCw size={15}/></button></div>}
+        {rows.length === 0 && projectsLoading ? <p role="status" className="px-2 py-10 text-center text-sm text-muted">{t("history.loading")}</p> : rows.length === 0 ? (
+          !projectsError && <p className="px-2 py-10 text-center text-sm text-muted">{t(query.trim() ? "projects.noResults" : "projects.empty")}</p>
         ) : (
           <div className="divide-y divide-border">
             {rows.map((p) => {

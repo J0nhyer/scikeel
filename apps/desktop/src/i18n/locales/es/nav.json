@@ -44,6 +44,8 @@
     "colSources": "Fuentes",
     "colUpdated": "Actualizado",
     "noResults": "No hay proyectos que coincidan.",
+    "empty": "Aún no hay proyectos.",
+    "loadFailed": "No se pudieron cargar los proyectos.",
     "pin": "Fijar",
     "unpin": "Quitar fijación",
     "rename": "Renombrar",

@@ -44,6 +44,8 @@
     "colSources": "Sources",
     "colUpdated": "Mis à jour",
     "noResults": "Aucun projet correspondant.",
+    "empty": "Aucun projet pour le moment.",
+    "loadFailed": "Impossible de charger les projets.",
     "pin": "Épingler",
     "unpin": "Détacher",
     "rename": "Renommer",

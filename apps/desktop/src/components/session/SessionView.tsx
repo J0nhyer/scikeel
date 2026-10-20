@@ -486,6 +486,10 @@ export function SessionView({
   // The folder shown in the Files toggle: this session's own directory (falling
   // back to the active workspace on a draft that has none yet).
   const sessionDir = sessions.find((s) => s.id === eid)?.directory ?? workspace;
+  const environmentProject = useRuntimeStore((state) => {
+    const directory = state.sessions.find(session => session.id === eid)?.directory;
+    return directory ? state.projects.find(project => project.path === directory)?.id : undefined;
+  });
 
   // Offer the subagent panel only once this conversation has actually spawned
   // one — a plain chat should not carry a control for something it never does.
@@ -765,6 +769,7 @@ export function SessionView({
             />
           )}
           <div data-tauri-drag-region={asTitlebar || undefined} className="flex-1" />
+          {isGatewayWeb && gatewayRuntime === "opencode" && eid && environmentProject && <ProjectEnvironmentPanel key={eid} sessionId={eid} running={running} visible={visible} />}
           {eid && (
             <button
               onClick={() => {
@@ -952,7 +957,6 @@ export function SessionView({
         )}
         {(!inspectorFillsPane || isGatewayWeb) && (
           <div className={inspectorFillsPane ? "hidden" : "contents"}>
-        {isGatewayWeb && eid && <ProjectEnvironmentPanel sessionId={eid} running={running} visible={visible} />}
         {finding && (
           <FindBar
             scope={chatRef}

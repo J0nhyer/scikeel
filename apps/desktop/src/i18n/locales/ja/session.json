@@ -720,9 +720,12 @@
     "find": "検索…"
   },
   "environment": {
-    "title": "Python environment",
-    "absent": "Shared science environment",
-    "valid": "Private project environment",
+    "title": "環境",
+    "absent": "組み込みの依存関係",
+    "valid": "プロジェクトの依存関係",
+    "loadFailed": "環境の詳細を読み込めませんでした。",
+    "detailsLoading": "環境の詳細を読み込み中…",
+    "close": "閉じる",
     "broken": "Private environment needs repair",
     "explanation": "Common scientific libraries are already available. Extra dependencies use a separate environment for this project.",
     "lockRequired": "Add requirements.lock with exact package versions and SHA256 hashes to prepare a private environment.",
