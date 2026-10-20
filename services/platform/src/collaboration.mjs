@@ -27,6 +27,8 @@ export class CollaborationStore {
     research = null,
     applyPermissions = async () => {},
     retainUnverifiedExecution = false,
+    onAnalyticsFact = null,
+    logger = () => {},
   } = {}) {
     Object.assign(this, {
       rootDir: resolve(rootDir),
@@ -37,6 +39,8 @@ export class CollaborationStore {
       research,
       applyPermissions,
       retainUnverifiedExecution,
+      onAnalyticsFact,
+      logger,
     });
     this.records = new Map();
     this.queues = new Map();
@@ -72,6 +76,16 @@ export class CollaborationStore {
       }
     }finally{await fs.rm(tmp,{force:true});}
     this.records.set(this.key(s), s);
+    if(this.onAnalyticsFact&&s.execution>0){
+      try{
+        this.onAnalyticsFact({accountId:s.userId,runtime:s.runtime,instanceId:s.instanceId,generation:s.generation},{
+          sessionId:s.sessionId,execution:s.execution,startedAt:s.startedAt,sourceVersion:s.revision,phase:s.phase,
+          delivery:s.delivery?{status:s.delivery.status,code:s.delivery.issue,checkedAt:s.delivery.checkedAt}:null,
+          pending:s.pending?{id:s.pending.id,startedAt:s.pending.createdAt}:null,
+          decisions:s.decisions.filter(d=>d.execution===s.execution).map(d=>({id:d.id,startedAt:d.createdAt,endedAt:d.answeredAt})),
+        });
+      }catch{this.logger({type:'analytics.unavailable'});}
+    }
     return structuredClone(s);
   }
   async load(o) {
@@ -217,6 +231,7 @@ export class CollaborationStore {
         throw fail("Step confirmation requires Guided mode", 400);
       s.pending = {
         id: randomUUID(),
+        createdAt: this.now(),
         execution: s.execution,
         kind: value.kind,
         question: text(value.question),

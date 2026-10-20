@@ -18,6 +18,7 @@ import { recoveryError } from "../src/workspace-recovery.mjs";
 import { WorkspaceAdmission } from "../src/workspace-admission.mjs";
 import {localRevertFiles} from '../fixtures/conversation-revert-files.mjs';
 import {createManagedModelCatalogReader} from '../src/managed-model-catalog.mjs';
+import {createAnalyticsCollector} from '../src/agent-analytics-collector.mjs';
 
 const fakeOsd = fileURLToPath(new URL("../fixtures/fake-osd.mjs", import.meta.url));
 const fakeCli = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
@@ -76,7 +77,7 @@ function makeClient(base) {
   };
 }
 
-async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null, enableWorkspaceManagement = false, logger = () => {} } = {}) {
+async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null, enableWorkspaceManagement = false, logger = () => {}, analyticsCollector = null } = {}) {
   const root = providedRoot ?? (await mkdtemp(join(tmpdir(), "osd-platform-server-")));
   const authStore = new AuthStore({
     filePath: join(root, "platform", "auth.json"),
@@ -89,7 +90,7 @@ async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRo
     startupTimeoutMs: 5_000,
     stopTimeoutMs: 1_000,
   });
-  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles, enableWorkspaceManagement, logger });
+  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles, enableWorkspaceManagement, logger, analyticsCollector });
   const address = await server.listen();
   const fixture = { root, authStore, manager, server, cliRuntime, base: `http://${address.host}:${address.port}` };
   fixtures.push(fixture);
@@ -1464,6 +1465,22 @@ async function until(check,attempts=100){
  for(let n=0;n<attempts;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,10));}
  assert.fail('Timed out waiting for native turn settlement');
 }
+test('native HTTP admission supplies trusted account context for passive analytics',async t=>{
+ const facts=[],collector=createAnalyticsCollector({store:{offer:fact=>facts.push(fact)}});t.after(()=>collector.close());
+ const f=await nativeHttpFixture(t,async args=>{
+  await args.onAccepted({nativeSessionId:'analytics-http-native',turnId:'analytics-http-turn'});
+  await args.emit({type:'tool',callId:'analytics-http-command',tool:'bash',state:{status:'completed',input:{command:'PRIVATE_COMMAND'},output:'PRIVATE_OUTPUT'}});
+  await args.emit({type:'text',text:'PRIVATE_REPLY'});await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'analytics-http-native'};
+ },{analyticsCollector:collector});
+ f.cliRuntime.onAnalyticsFact=(scope,fact)=>collector.nativeFact(scope,fact);
+ const response=await f.send('analytics-http');assert.equal(response.status,202,await response.text());
+ await until(()=>f.cliRuntime.activeTurns.size===0);
+ const runs=facts.filter(fact=>fact.kind==='run');
+ assert.ok(runs.some(fact=>fact.runtime==='codex'&&fact.outcome==='completed'));
+ assert.ok(facts.some(fact=>fact.kind==='tool'&&fact.capabilityId==='bash'&&fact.runId===runs[0].runId));
+ assert.ok(facts.every(fact=>fact.accountId===f.user.id&&fact.generation===1));
+ assert.ok(!JSON.stringify(facts).includes('PRIVATE_'));
+});
 test('canonical native rename survives owned read, history refresh and platform reconstruction',async t=>{
  const f=await nativeHttpFixture(t,async()=>{throw Error('Metadata must not dispatch inference');});
  const title='Checked canonical research title';

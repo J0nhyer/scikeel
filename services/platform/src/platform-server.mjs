@@ -395,6 +395,7 @@ export class PlatformServer {
         return {userId,instanceId:worker.id,generation:worker.generation};}}) : null;
     this.collaborationCapabilities = new Map();
     this.collaboration = new CollaborationStore({research:this.researchTasks,readLegacy:(o)=>this.researchTasks.get(o.userId,o.sessionId),rootDir:resolve(workerManager.rootDir,"../collaboration"),
+      onAnalyticsFact:analyticsCollector?(scope,fact)=>analyticsCollector.collaboration(scope,fact):null,logger,
       retainUnverifiedExecution:typeof workerManager.assistantInventory==="function",
       applyPermissions:async(owner,mode)=>{
         if(owner.runtime !== "opencode" && !this.cliRuntime?.isManaged(owner.userId))return;
@@ -1322,7 +1323,7 @@ export class PlatformServer {
           catch(error){if(error.code==='conversation_not_found')return;throw error;}
           await this.conversations.rename(owner,value.id,{expectedRevision:value.revision,title});
         }:undefined,
-        workspaceContext: this.tenantPolicy ? { instanceId: worker.id, generation: worker.generation } : undefined,
+        workspaceContext: this.tenantPolicy ? { userId: user.id, instanceId: worker.id, generation: worker.generation } : undefined,
       });
       if (handled) return;
     }

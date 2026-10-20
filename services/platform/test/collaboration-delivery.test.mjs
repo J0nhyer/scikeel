@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CollaborationStore } from "../src/collaboration.mjs";
 import { ResearchTasks } from "../src/research-tasks.mjs";
+import { createAnalyticsCollector } from '../src/agent-analytics-collector.mjs';
+import { mergeFact } from '../src/agent-analytics-metrics.mjs';
 
 async function fixture(t, mode = "delegated") {
   const root = await mkdtemp(join(tmpdir(), "scikeel-delivery-"));
@@ -51,6 +53,73 @@ test("Delegated delivery records real output hashes and evidence without a plan 
   assert.equal(done.delivery.report.checks[0].evidenceExists, true);
   assert.equal(done.delivery.report.limitations, "Self-check only");
   assert.equal((await f.store.guard(f.owner)).repairExhausted, false);
+});
+
+test('collaboration delivery promotes its accepted turn and preserves verified metadata through settlement',async t=>{
+ const f=await fixture(t),facts=[];
+ const collector=createAnalyticsCollector({store:{offer:fact=>facts.push(fact)}});t.after(()=>collector.close());
+ const scope={accountId:'user',runtime:'codex',instanceId:'user-user',generation:1};
+ Object.assign(f.owner,{runtime:'codex',instanceId:'user-user',generation:1});
+ Object.assign(f.store.records.get(f.store.key(f.owner)),f.owner);
+ f.store.onAnalyticsFact=(context,fact)=>collector.collaboration(context,fact);
+ const state=await f.store.get(f.owner);
+ collector.nativeFact(scope,{kind:'accepted_turn',entityId:'user-turn',executionId:'user-turn',sessionId:f.owner.sessionId,startedAt:state.startedAt+1});
+ collector.nativeFact(scope,{kind:'message_link',entityId:'assistant',executionId:'user-turn',sessionId:f.owner.sessionId});
+ const pending=await f.store.checkpoint(f.owner,{kind:'method',question:'PRIVATE_QUESTION',execution:state.execution});
+ await f.store.answer(f.owner,{id:pending.pending.id,execution:state.execution,revision:pending.revision,answer:'PRIVATE_ANSWER'});
+ collector.nativeFact(scope,{kind:'tool',entityId:'checkpoint-tool',messageId:'assistant',sessionId:f.owner.sessionId,capabilityId:'research_checkpoint',outcome:'completed'});
+ await f.prepare();await f.outputs();await f.report();await f.verify();
+ collector.nativeFact(scope,{kind:'tool',entityId:'delivery-tool',messageId:'assistant',sessionId:f.owner.sessionId,capabilityId:'research_delivery',outcome:'completed'});
+ collector.nativeFact(scope,{kind:'turn_end',entityId:'assistant',executionId:'user-turn',sessionId:f.owner.sessionId,outcome:'completed',endedAt:Date.now()});
+ await f.store.settled(f.owner,state.execution);
+ const runs=facts.filter(fact=>fact.kind==='run'),last=runs.at(-1);
+ assert.equal(last.runType,'research');assert.equal(last.outcome,'completed');
+ assert.equal(new Set(runs.map(fact=>fact.runId)).size,1);
+ assert.equal(new Set(runs.map(fact=>fact.eventKey)).size,1);
+ assert.deepEqual(last.delivery,{outputs:'passed',evidence:'passed',inputsPreserved:'passed'});
+ for(const tool of ['research_checkpoint','research_delivery'])assert.ok(facts.some(fact=>fact.kind==='tool'&&fact.capabilityId===tool&&fact.runId===last.runId));
+ const decision=facts.findLast(fact=>fact.kind==='intervention');
+ assert.equal(decision.code,'clarification');assert.equal(decision.outcome,'answered');
+ assert.ok(decision.startedAt<=decision.endedAt);assert.equal(decision.runId,last.runId);
+ assert.ok(!JSON.stringify(facts).includes('PRIVATE_'));assert.ok(!JSON.stringify(facts).includes('input.csv'));
+});
+
+test('delivery analytics retains failed checks, repairs and distinct subsequent conversation turns',async t=>{
+ const f=await fixture(t),facts=[];
+ const collector=createAnalyticsCollector({store:{offer:fact=>facts.push(fact)}});t.after(()=>collector.close());
+ const scope={accountId:'user',runtime:'codex',instanceId:'user-user',generation:1};
+ Object.assign(f.owner,{runtime:'codex',instanceId:'user-user',generation:1});
+ Object.assign(f.store.records.get(f.store.key(f.owner)),f.owner);
+ f.store.onAnalyticsFact=(context,fact)=>collector.collaboration(context,fact);
+ const state=await f.store.get(f.owner),sessionId=f.owner.sessionId;
+ collector.nativeFact(scope,{kind:'accepted_turn',entityId:'first-turn',executionId:'first-turn',sessionId,startedAt:state.startedAt+1});
+ await f.prepare();await f.report();await f.verify();
+ assert.equal(facts.findLast(fact=>fact.kind==='run').outcome,'running');
+ assert.equal(facts.findLast(fact=>fact.kind==='run').delivery.outputs,'failed');
+ await f.outputs();await f.verify();await f.store.settled(f.owner,state.execution);
+ const merged=facts.filter(fact=>fact.kind==='run').reduce(mergeFact,null);
+ assert.equal(merged.outcome,'completed');assert.equal(merged.delivery.outputs,'passed');
+ let next=await f.store.begin(f.owner,(await f.store.get(f.owner)).revision);
+ collector.nativeFact(scope,{kind:'accepted_turn',entityId:'second-turn',executionId:'second-turn',sessionId,startedAt:next.startedAt+1});
+ collector.nativeFact(scope,{kind:'turn_end',entityId:'second-turn',executionId:'second-turn',sessionId,outcome:'completed',endedAt:Date.now()});
+ await f.store.settled(f.owner,next.execution);
+ const last=facts.findLast(fact=>fact.kind==='run');
+ assert.equal(last.runType,'conversation');assert.equal(last.outcome,'completed');assert.notEqual(last.runId,merged.runId);
+ next=await f.store.begin(f.owner,(await f.store.get(f.owner)).revision);
+ collector.nativeFact(scope,{kind:'accepted_turn',entityId:'third-turn',executionId:'third-turn',sessionId,startedAt:next.startedAt+1});
+ await f.store.delivery(f.owner,{operation:'prepare',execution:next.execution,inputs:['input.csv'],deliverables:['pending.txt']});
+ await f.store.settled(f.owner,next.execution);
+ assert.equal(facts.findLast(fact=>fact.kind==='run').outcome,'unknown');
+});
+
+test('collaboration analytics emits safe fields and reports observer failure without changing delivery authority',async t=>{
+ const f=await fixture(t),events=[],logged=[];
+ f.store.onAnalyticsFact=(scope,fact)=>{events.push({scope,fact});throw Error('PRIVATE_OBSERVER_FAILURE');};
+ f.store.logger=event=>logged.push(event);
+ const prepared=await f.prepare();
+ assert.equal(prepared.delivery.status,'pending');
+ assert.ok(events.length>0);assert.ok(!JSON.stringify(events).includes('input.csv'));
+ assert.ok(!JSON.stringify(events).includes('result.csv'));assert.deepEqual(logged,[{type:'analytics.unavailable'}]);
 });
 
 for (const [name, issue, setup] of [

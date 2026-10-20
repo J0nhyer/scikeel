@@ -93,6 +93,31 @@ export function createAnalyticsCollector({ store, createObserver = createOpenCod
     }
     return {
         bindRun, record, nativeFact: incoming,
+        collaboration(scope,f){
+            const active=[...bindings.values()].filter(b=>key(b.scope,'worker')===key(scope,'worker')&&b.sessionId===f.sessionId&&
+                (b.collaborationExecution===f.execution||!b.collaborationExecution&&b.outcome==='running'&&b.startedAt>=f.startedAt));
+            if(active.length!==1)return;
+            const b=active[0];
+            // Delivery verification promotes the accepted turn without creating a second execution.
+            if(f.delivery&&(b.runType==='conversation'||b.collaborationExecution===f.execution)){
+                b.collaborationExecution=f.execution;b.runType='research';
+                const completed=f.delivery.status==='completed',idle=f.phase==='idle';
+                b.outcome=completed?'completed':f.phase==='paused'?'paused':f.phase==='waiting_input'?'waiting_input':
+                    idle?(f.delivery.status==='failed'?'failed':'unknown'):'running';
+                record(scope,{kind:'run',entityId:`${b.sessionId}:${b.executionId}`,runId:b.runId,runType:b.runType,
+                    startedAt:b.startedAt,endedAt:completed?f.delivery.checkedAt:idle?now():null,sourceVersion:f.sourceVersion,
+                    outcome:b.outcome,code:f.delivery.code,delivery:{
+                        outputs:completed?'passed':f.delivery.code==='missing_outputs'?'failed':'unknown',
+                        evidence:completed?'passed':f.delivery.code==='failed_checks'?'failed':'unknown',
+                        inputsPreserved:completed?'passed':f.delivery.code==='changed_inputs'?'failed':'unknown',
+                    }});
+            }
+            for(const decision of [...(f.pending?[f.pending]:[]),...f.decisions]){
+                incoming(scope,{kind:'intervention',entityId:`collaboration:${f.execution}:${decision.id}`,sessionId:f.sessionId,
+                    executionId:b.executionId,runType:b.runType,startedAt:decision.startedAt,endedAt:decision.endedAt??null,
+                    outcome:decision.endedAt===undefined?'pending':'answered',code:'clarification'});
+            }
+        },
         cancelSession(scope,sessionId,at=now()){
             for(const b of bindings.values())if(key(b.scope,'worker')===key(scope,'worker')&&b.sessionId===sessionId&&b.runType==='conversation'&&b.outcome==='running'){
                 b.outcome='cancelled';
