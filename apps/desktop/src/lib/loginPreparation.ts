@@ -1,4 +1,4 @@
-import { isWorkspaceReport, type WorkspaceReport } from "@ai4s/sdk";
+import type { WorkspaceReport } from "@ai4s/sdk";
 
 type PreparationState = {
   status: string;
@@ -23,7 +23,7 @@ export function installLoginPreparation(source: PreparationSource, signOut?: () 
   let failureShown = false;
   let waiting = false;
   let unsubscribe = () => {};
-  const finish = (event: "scikeel:login-ready" | "scikeel:login-error" | "scikeel:login-recovery") => {
+  const finish = (event: "scikeel:login-ready" | "scikeel:login-error") => {
     if (finished) return;
     clearTimeout(timer);
     if (event === "scikeel:login-error") {
@@ -33,7 +33,7 @@ export function installLoginPreparation(source: PreparationSource, signOut?: () 
     }
     finished = true;
     unsubscribe();
-    document.removeEventListener("scikeel:sign-out", logout);
+    document.removeEventListener("scikeel:return-to-login", logout);
     document.dispatchEvent(new Event(event));
   };
   const timer = setTimeout(() => finish("scikeel:login-error"), 90_000);
@@ -44,29 +44,28 @@ export function installLoginPreparation(source: PreparationSource, signOut?: () 
       waiting = capacityWaiting;
       document.dispatchEvent(new CustomEvent("scikeel:login-waiting", { detail: { waiting } }));
     }
-    if (state.status === "error" && isWorkspaceReport(state.gatewayWorkspaceReport)) finish("scikeel:login-recovery");
-    else if (state.status === "error" || (state.status === "ready" && state.sessionListReady && state.gatewayCatalogState === "unavailable")) finish("scikeel:login-error");
+    if (state.status === "error" || (state.status === "ready" && state.sessionListReady && state.gatewayCatalogState === "unavailable")) finish("scikeel:login-error");
     else if (state.status === "ready" && state.sessionListReady &&
       (state.gatewayCatalogState === "ready" || state.gatewayCatalogState === "limited") && state.defaultModel) finish("scikeel:login-ready");
   };
   const logout = () => {
-    if (!signOut || signingOut || disposed) return;
+    if (!failureShown || !signOut || signingOut || disposed) return;
     signingOut = true;
     finished = true;
     clearTimeout(timer);
     unsubscribe();
     void (async () => {
       try { await signOut(); }
-      catch { if (!disposed) document.dispatchEvent(new Event("scikeel:sign-out-failed")); }
+      catch { if (!disposed) document.dispatchEvent(new Event("scikeel:return-to-login-failed")); }
       finally { signingOut = false; }
     })();
   };
-  document.addEventListener("scikeel:sign-out", logout);
+  document.addEventListener("scikeel:return-to-login", logout);
   unsubscribe = source.subscribe(update);
   update(source.getState());
   return () => {
     disposed = true;
-    document.removeEventListener("scikeel:sign-out", logout);
+    document.removeEventListener("scikeel:return-to-login", logout);
     clearTimeout(timer);
     if (!finished) unsubscribe();
     finished = true;

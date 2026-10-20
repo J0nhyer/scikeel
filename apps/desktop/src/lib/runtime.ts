@@ -437,6 +437,7 @@ interface RuntimeState {
   gatewayWorkspaceReport: WorkspaceReport | null;
   gatewayWorkspaceFailure: WorkspaceFailure | null;
   gatewayRestartPending: boolean;
+  gatewaySigningOut: boolean;
   restartGatewayWorkspace: (context: WorkspaceContext) => Promise<boolean>;
   answerQuestion: (requestId: string, answers: string[][]) => Promise<void>;
   rejectQuestion: (requestId: string) => Promise<void>;
@@ -699,10 +700,14 @@ export function installPlatformAccountLifecycle(): () => void {
     suspend: () => useRuntimeStore.getState().suspendPlatformBrowser(),
     clear: () => useRuntimeStore.getState().clearPlatformPresentation(),
     navigate: () => window.location.replace("/login"),
+    onSigningOut: gatewaySigningOut => useRuntimeStore.setState({ gatewaySigningOut }),
     onIdentityState: gatewayIdentityState => useRuntimeStore.setState({gatewayIdentityState}),
   });
   platformAccount = account;
-  setPlatformSessionExpiryHandler(account.suspend);
+  setPlatformSessionExpiryHandler(() => {
+    if (useRuntimeStore.getState().gatewaySigningOut) return false;
+    account.suspend();
+  });
   return () => {
     account.dispose();
     if (platformAccount !== account) return;
@@ -3819,6 +3824,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   gatewayPolicyRevision: null,
   gatewayRuntimes: [],
   gatewayUser: null,
+  gatewaySigningOut: false,
   gatewayIdentityState: 'unknown',
   gatewayCatalogState: "loading",
   refreshGatewayRuntimes: async () => {
@@ -4707,7 +4713,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     ++gatewayCatalogVersion;
     teardownClient();
     teardownStreamClients();
-    set({ status: "offline", switching: false, modelSwitching: false, gatewayRuntimeSwitching: false });
+    set({ ...(get().gatewaySigningOut ? {} : { status: "offline" as const }), switching: false, modelSwitching: false, gatewayRuntimeSwitching: false });
   },
 
   clearPlatformPresentation: () => {
@@ -4715,6 +4721,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     setPlatformAssistantRevision(null); setPlatformWorkspaceGeneration(null);
     useToastStore.getState().reset();
     clearWorkspaceTextDrafts();
+    if (get().gatewaySigningOut) return;
     set({ gatewayUser: null, gatewayUserRole: null, gatewayIdentityState:'unknown', gatewayPolicyRevision: null, gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
       workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [], projectsLoading: false, projectsError: null,
       sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},

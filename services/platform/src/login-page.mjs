@@ -117,7 +117,7 @@ export function withLoginPreparation(html) {
     const page = loginPage({ locale });
     const css = LOGIN_STYLES;
     const body = page.match(/<body>([\s\S]*?)<script>/)[1];
-    return [locale, `<style>${css}:host{display:block;min-height:100vh;background:var(--login-bg);color:var(--login-text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.sign-out{display:block;width:100%;min-height:44px;margin-top:12px;border:0;border-radius:6px;background:transparent;color:var(--login-text);font-size:14px}.sign-out:hover{background:var(--login-border)}.sign-out-error{margin-top:12px}</style>${body}`];
+    return [locale, `<style>${css}:host{display:block;min-height:100vh;background:var(--login-bg);color:var(--login-text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.return-to-login{display:block;width:100%;min-height:44px;margin-top:12px;border:0;border-radius:6px;background:transparent;color:var(--login-text);font-size:14px}.return-to-login:hover{background:var(--login-border)}.return-to-login-error{margin-top:12px}</style>${body}`];
   }));
   const payload = JSON.stringify(templates).replaceAll("<", "\\u003c");
   const head = `<script>${loginAppearanceBootstrap({ followSystem: false })}</script><style id="scikeel-login-visibility">html[data-scikeel-login-preparing] #root{visibility:hidden}</style><script>
@@ -156,23 +156,24 @@ try {
       ? (locale === 'en' ? 'Waiting for workspace…' : '正在等待工作区…')
       : (locale === 'en' ? 'Signing in…' : '正在登录…');
   });
-  const signOut = document.createElement('button');
-  signOut.type = 'button'; signOut.className = 'sign-out';
-  signOut.textContent = locale === 'en' ? 'Sign out' : '退出登录';
-  form.after(signOut);
-  const signOutError = document.createElement('p');
-  signOutError.className = 'error sign-out-error'; signOutError.hidden = true;
-  signOutError.setAttribute('role', 'alert'); signOut.after(signOutError);
-  signOut.addEventListener('click', () => {
-    signOut.disabled = true; signOut.setAttribute('aria-busy', 'true');
-    signOutError.hidden = true;
-    failed = false; submit.disabled = true;
-    document.dispatchEvent(new Event('scikeel:sign-out'));
+  const back = document.createElement('button');
+  back.type = 'button'; back.className = 'return-to-login'; back.hidden = true;
+  back.textContent = locale === 'en' ? 'Back to sign in' : '返回登录';
+  form.after(back);
+  const backError = document.createElement('p');
+  backError.className = 'error return-to-login-error'; backError.hidden = true;
+  backError.setAttribute('role', 'alert'); back.after(backError);
+  back.addEventListener('click', () => {
+    back.disabled = true; back.setAttribute('aria-busy', 'true');
+    backError.hidden = true;
+    submit.disabled = true;
+    document.dispatchEvent(new Event('scikeel:return-to-login'));
   });
-  document.addEventListener('scikeel:sign-out-failed', () => {
-    signOut.disabled = false; signOut.removeAttribute('aria-busy');
-    signOutError.textContent = locale === 'en' ? 'Could not sign out. Please retry.' : '无法退出登录，请重试。';
-    signOutError.hidden = false;
+  document.addEventListener('scikeel:return-to-login-failed', () => {
+    back.disabled = false; back.removeAttribute('aria-busy');
+    submit.disabled = false;
+    backError.textContent = locale === 'en' ? 'Could not return to sign in. Please retry.' : '暂时无法返回登录，请重试。';
+    backError.hidden = false;
   });
   form.addEventListener('submit', event => {
     event.preventDefault();
@@ -188,9 +189,9 @@ try {
     try { sessionStorage.removeItem('scikeel.login.pending'); } catch {}
   };
   document.addEventListener('scikeel:login-ready', handoff, { once: true });
-  document.addEventListener('scikeel:login-recovery', handoff, { once: true });
   document.addEventListener('scikeel:login-error', () => {
     failed = true;
+    back.hidden = false;
     submit.disabled = false;
     submit.removeAttribute('aria-busy');
     form.removeAttribute('aria-busy');

@@ -16,6 +16,7 @@ it("coalesces repeated form submission and keeps the command busy", async () => 
   const form = button.closest("form")!;
   fireEvent.submit(form); fireEvent.submit(form);
   expect(signOut).toHaveBeenCalledOnce();
+  expect(button).toHaveTextContent("Signing out…");
   expect(button).toBeDisabled(); expect(button).toHaveAttribute("aria-busy", "true");
   await act(async () => release());
   expect(button).toBeEnabled();

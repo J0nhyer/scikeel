@@ -70,7 +70,7 @@ export function consumeUrlToken(): void {
 // token gate, instead of silently looping on "connecting".
 
 let unauthorizedHandler: (() => void) | null = null;
-let platformSessionExpiryHandler: (() => void) | null = null;
+let platformSessionExpiryHandler: (() => void | false) | null = null;
 let platformWorkspaceGeneration: number | null = null;
 let platformAssistantRevision: number | null = null;
 export function setPlatformAssistantRevision(revision: number | null): void {
@@ -88,7 +88,8 @@ export function platformWorkspaceMutationHeaders(): Record<string, string> {
   } : {};
 }
 
-export function setPlatformSessionExpiryHandler(fn: (() => void) | null): void {
+/** Return false while an explicit logout owns session navigation. */
+export function setPlatformSessionExpiryHandler(fn: (() => void | false) | null): void {
   platformSessionExpiryHandler = fn;
 }
 
@@ -129,8 +130,8 @@ export function installGatewayAuthGuard(): void {
       const redirectedUrl = res.redirected ? new URL(res.url, origin) : null;
       const loginRedirect = redirectedUrl?.origin === origin && redirectedUrl.pathname === "/login";
       if ((sessionExpired || loginRedirect) && !redirecting) {
+        if (platformSessionExpiryHandler?.() === false) return res;
         redirecting = true;
-        platformSessionExpiryHandler?.();
         clearGatewayToken();
         const next = window.location.pathname + window.location.search;
         window.location.replace(`/login?next=${encodeURIComponent(next)}`);

@@ -5,6 +5,7 @@ type AccountOptions = {
   suspend: () => void;
   clear: () => void;
   navigate: () => void;
+  onSigningOut?: (pending: boolean) => void;
   onIdentityState?: (state:'ready'|'unavailable') => void;
 };
 
@@ -82,13 +83,14 @@ export function createGatewayAccountLifecycle(options: AccountOptions) {
   function signOut(): Promise<void> {
     if (disposed) return Promise.reject(new Error("Account lifecycle disposed"));
     if (pendingLogout) return pendingLogout;
-    suspend();
+    options.onSigningOut?.(true);
     const controller = new AbortController();
     logoutController = controller;
     const run = (async () => {
       const body = await request("/auth/logout", { method: "POST", headers: { accept: "application/json" } }, controller);
       if (disposed || controller.signal.aborted) throw new Error("Logout cancelled");
       if (typeof body !== "object" || body === null || !("ok" in body) || body.ok !== true) throw new Error("Invalid logout response");
+      suspend();
       options.clear();
       options.navigate();
     })();
@@ -97,7 +99,10 @@ export function createGatewayAccountLifecycle(options: AccountOptions) {
       if (pendingLogout === run) pendingLogout = null;
       if (logoutController === controller) logoutController = null;
     };
-    void run.then(clearPending, clearPending);
+    void run.then(clearPending, () => {
+      clearPending();
+      if (!disposed) options.onSigningOut?.(false);
+    });
     return run;
   }
 

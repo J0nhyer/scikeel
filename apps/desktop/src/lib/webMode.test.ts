@@ -52,6 +52,18 @@ it("does not open the token gate or log out for an upstream 401", async () => {
   expect(suspend).not.toHaveBeenCalled();
 });
 
+it("lets an active logout own navigation until its response is verified", async () => {
+  const { mode, replace } = await setup(true, 401, { "x-scikeel-auth": "session-required" });
+  let signingOut = true;
+  const suspend = vi.fn(() => signingOut ? false : undefined);
+  mode.setPlatformSessionExpiryHandler(suspend);
+  await window.fetch("/api/me");
+  expect(replace).not.toHaveBeenCalled();
+  signingOut = false;
+  await window.fetch("/api/me");
+  expect(replace).toHaveBeenCalledOnce();
+});
+
 it("does not suspend authentication for a workspace 502", async () => {
   const { mode, replace } = await setup(true, 502);
   const suspend = vi.fn(); mode.setPlatformSessionExpiryHandler(suspend);

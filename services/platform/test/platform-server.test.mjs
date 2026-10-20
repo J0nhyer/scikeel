@@ -1058,9 +1058,9 @@ test("login preloads public client assets without starting a workspace, and the 
   assert.equal(app.status, 200);
   const prepared = await app.text();
   assert.match(prepared, /scikeel:login-ready/);
-  assert.match(prepared, /scikeel:sign-out/);
-  assert.match(prepared, /scikeel:sign-out-failed/);
-  assert.match(prepared, /form\.after\(signOut\)/);
+  assert.match(prepared, /scikeel:return-to-login/);
+  assert.match(prepared, /scikeel:return-to-login-failed/);
+  assert.match(prepared, /back\.hidden = true/);
 });
 
 test("logout revokes only its independent login session without touching an unavailable workspace", async () => {

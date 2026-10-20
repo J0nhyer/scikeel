@@ -5,7 +5,6 @@ import { useTranslation } from "react-i18next";
 import type { WorkspaceContext, WorkspaceReport } from "@ai4s/sdk";
 import { useRuntimeStore } from "@/lib/runtime";
 import { isPlatformWeb, setPlatformWorkspaceGeneration } from "@/lib/webMode";
-import { GatewaySignOut } from "@/components/sidebar/GatewaySignOut";
 
 export function WorkspaceRecoveryActions({ report, waiting = false }: { report: WorkspaceReport | null; waiting?: boolean }) {
   const { t } = useTranslation("session");
@@ -32,7 +31,6 @@ export function WorkspaceRecoveryActions({ report, waiting = false }: { report: 
         className="flex min-h-11 items-center gap-2 rounded-input border border-border px-3 text-sm disabled:opacity-50">
         <RotateCcw size={15} aria-hidden />{t("live.recovery.restart")}
       </button>}
-      <GatewaySignOut />
     </div>
     <Dialog.Root open={captured !== null} onOpenChange={open => { if (!open) setCaptured(null); }}>
       <Dialog.Portal>

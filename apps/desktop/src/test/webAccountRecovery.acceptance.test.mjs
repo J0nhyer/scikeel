@@ -29,15 +29,15 @@ test.skipIf(process.env.OSD_ACCOUNT_RECOVERY_ACCEPTANCE !== "1")("account logout
     const login = context => context.request.post(origin + "/auth/login", { headers: { accept: "application/json" }, data: { username: "fixture", password: "fixture-password" } });
     expect((await login(second)).status()).toBe(200);
     for (const width of [1280, 390, 320]) for (const locale of width === 1280 ? ["en", "zh-Hans"] : ["zh-Hans"]) for (const surface of ["known", "unknown", "preparation", "recovery"]) {
-      const labels = locale === "en" ? { signOut: "Sign out", retry: "Retry", restart: "Restart workspace", retryConnection: "Retry connection", cancel: "Cancel", confirm: "Confirm restart", expand: "Expand sidebar", account: "fixture account", settings: "Settings", failed: "Could not sign out. Please retry.", impact: "all devices" } :
-        { signOut: "退出登录", retry: "重试", restart: "重启工作区", retryConnection: "重试连接", cancel: "取消", confirm: "确认重启", expand: "展开侧边栏", account: "fixture 的账号", settings: "设置", failed: "无法退出登录，请重试。", impact: "所有设备" };
+      const labels = locale === "en" ? { signOut: "Sign out", back: "Back to sign in", backFailed: "Could not return to sign in. Please retry.", retry: "Retry", restart: "Restart workspace", retryConnection: "Retry connection", cancel: "Cancel", confirm: "Confirm restart", expand: "Expand sidebar", account: "fixture account", settings: "Settings", failed: "Could not sign out. Please retry.", impact: "all devices" } :
+        { signOut: "退出登录", back: "返回登录", backFailed: "暂时无法返回登录，请重试。", retry: "重试", restart: "重启工作区", retryConnection: "重试连接", cancel: "取消", confirm: "确认重启", expand: "展开侧边栏", account: "fixture 的账号", settings: "设置", failed: "无法退出登录，请重试。", impact: "所有设备" };
       const context = await browser.newContext({ viewport: { width, height: 900 } });
       try {
         expect((await login(context)).status()).toBe(200);
         await context.addInitScript(({ preparing, locale }) => {
           localStorage.setItem("ai4s.locale", locale);
           if (preparing) sessionStorage.setItem("scikeel.login.pending", JSON.stringify({ locale, startedAt: Date.now() }));
-        }, { preparing: surface === "preparation" || surface === "recovery", locale });
+        }, { preparing: surface === "preparation", locale });
         const page = await context.newPage(); const errors = [];
         page.on("pageerror", error => errors.push(error.message));
         let workspaceRequests = 0; let logoutRequests = 0;
@@ -61,10 +61,10 @@ test.skipIf(process.env.OSD_ACCOUNT_RECOVERY_ACCEPTANCE !== "1")("account logout
           ? route.fulfill({ status: 502, contentType: "application/json", body: "{}" }) : route.continue());
         await page.goto(origin + "/live");
         if (surface === "preparation" || surface === "recovery") {
-          const earlySignOut = page.getByRole("button", { name: labels.signOut, exact: true });
-          await earlySignOut.waitFor(); expect(await earlySignOut.isEnabled()).toBe(true);
           if (surface === "preparation") {
             await page.getByRole("button", { name: labels.retry, exact: true }).waitFor();
+            expect(await page.getByRole("button", { name: labels.signOut, exact: true }).count()).toBe(0);
+            expect(await page.getByRole("button", { name: labels.back, exact: true }).isEnabled()).toBe(true);
             expect(await page.locator("#root").evaluate(element => element.inert)).toBe(true);
             expect(await page.locator("#scikeel-login-preparation input:not([type=hidden])").count()).toBe(2);
             expect(await page.locator("#scikeel-login-preparation input").evaluateAll(elements => elements.every(element => element.disabled && !element.value))).toBe(true);
@@ -88,22 +88,21 @@ test.skipIf(process.env.OSD_ACCOUNT_RECOVERY_ACCEPTANCE !== "1")("account logout
           await page.getByRole("button", { name: labels.retryConnection, exact: true }).waitFor();
           expect(restarts).toBe(1);
           }
-        } else {
+        }
+        if (surface !== "preparation") {
           if (width < 768) await page.getByRole("button", { name: labels.expand, exact: true }).click();
-          if (surface === "known") await page.getByRole("button", { name: labels.account, exact: true }).click();
+          if (surface !== "unknown") await page.getByRole("button", { name: labels.account, exact: true }).click();
           else expect(await page.getByRole("menuitem", { name: labels.settings, exact: true }).count()).toBe(0);
         }
-        const signOut = surface === "known" ? page.getByRole("menuitem", { name: labels.signOut, exact: true }) :
-          surface === "unknown" ? page.locator("aside").getByRole("button", { name: labels.signOut, exact: true }) : page.getByRole("button", { name: labels.signOut, exact: true });
+        const signOut = surface === "preparation" ? page.getByRole("button", { name: labels.back, exact: true }) :
+          surface === "unknown" ? page.locator("aside").getByRole("button", { name: labels.signOut, exact: true }) : page.getByRole("menuitem", { name: labels.signOut, exact: true });
         await signOut.waitFor();
         expect(await signOut.isEnabled()).toBe(true);
         await signOut.click();
-        await page.getByText(labels.failed, { exact: true }).waitFor();
+        await page.getByText(surface === "preparation" ? labels.backFailed : labels.failed, { exact: true }).waitFor();
         expect((await context.request.get(origin + "/api/me", { headers: { accept: "application/json" } })).status()).toBe(200);
-        const requestsAfterSuspension = workspaceRequests;
-        await page.evaluate(() => { window.dispatchEvent(new Event("online")); document.dispatchEvent(new Event("visibilitychange")); });
-        await page.waitForTimeout(500);
-        expect(workspaceRequests).toBe(requestsAfterSuspension);
+        expect(await signOut.isEnabled()).toBe(true);
+        expect(await page.locator("[aria-busy=true]").count()).toBe(0);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         const box = await signOut.boundingBox();
         expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(width);

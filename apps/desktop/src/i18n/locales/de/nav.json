@@ -6,6 +6,7 @@
     "expandTitle": "Seitenleiste ausklappen ({{shortcut}})",
     "settings": "Einstellungen",
     "signOut": "Abmelden",
+    "signingOut": "Abmeldung läuft…",
     "account": "Konto {{username}}",
     "adminBadge": "Admin",
     "home": "Startseite",

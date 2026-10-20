@@ -36,6 +36,14 @@ export function AppShell() {
   useConversationLeases();
   const { sidebarCollapsed, setSidebarCollapsed } = useUiStore();
   const isMobile = useIsMobile();
+  const signingOut = useRuntimeStore(state => state.gatewaySigningOut);
+  useEffect(() => {
+    if (!signingOut) return;
+    const block = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation(); };
+    const events = ["click", "pointerdown", "keydown", "submit"];
+    for (const event of events) window.addEventListener(event, block, true);
+    return () => { for (const event of events) window.removeEventListener(event, block, true); };
+  }, [signingOut]);
   // The platform verifies the login cookie before serving this page.
   // Standalone gateways still require a browser token.
   const [webReady, setWebReady] = useState(!isGatewayWeb || isPlatformWeb || !!gatewayToken());
@@ -207,7 +215,8 @@ export function AppShell() {
     //
     // The window background lives on <main>, not the shell: under vibrancy
     // the area behind the (translucent) sidebar must stay transparent.
-    <div className="flex h-screen w-screen flex-col overflow-hidden text-text">
+    <div className="flex h-screen w-screen flex-col overflow-hidden text-text" aria-busy={signingOut || undefined}>
+      {signingOut && <div className="fixed inset-0 z-[2147483646] cursor-wait" aria-hidden="true" />}
       <div className="flex min-h-0 flex-1">
         <Sidebar project={mockProject} />
         {/* Mobile: dim + close the overlay drawer by tapping outside it. */}

@@ -6,6 +6,7 @@
     "expandTitle": "Expandir barra lateral ({{shortcut}})",
     "settings": "Configuración",
     "signOut": "Cerrar sesión",
+    "signingOut": "Cerrando sesión…",
     "account": "Cuenta de {{username}}",
     "adminBadge": "Administrador",
     "home": "Inicio",

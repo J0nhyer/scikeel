@@ -9,7 +9,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 function fixture(fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response())) {
-  const callbacks = { publish: vi.fn(), suspend: vi.fn(), clear: vi.fn(), navigate: vi.fn() };
+  const callbacks = { publish: vi.fn(), suspend: vi.fn(), clear: vi.fn(), navigate: vi.fn(), onSigningOut: vi.fn() };
   return { ...callbacks, fetchImpl, account: createGatewayAccountLifecycle({ fetchImpl, ...callbacks }) };
 }
 afterEach(() => vi.useRealTimers());
@@ -59,28 +59,41 @@ it.each([null, { user: { ...user, role: "owner" } }, { user: { ...user, id: "" }
   f.account.dispose();
 });
 
-it("suspends before logout and coalesces submissions until verified success", async () => {
+it("preserves the workspace until logout is confirmed and coalesces submissions", async () => {
   const gate = deferred<Response>();
   const f = fixture(vi.fn(() => gate.promise));
   const a = f.account.signOut(); const b = f.account.signOut();
-  expect(f.suspend).toHaveBeenCalledOnce();
+  expect(f.onSigningOut).toHaveBeenCalledExactlyOnceWith(true);
+  expect(f.suspend).not.toHaveBeenCalled();
   expect(f.clear).not.toHaveBeenCalled();
   expect(f.navigate).not.toHaveBeenCalled();
   expect(f.fetchImpl).toHaveBeenCalledExactlyOnceWith("/auth/logout", expect.objectContaining({ method: "POST", credentials: "same-origin", headers: { accept: "application/json" } }));
   gate.resolve(new Response(JSON.stringify({ ok: true })));
   await Promise.all([a, b]);
+  expect(f.suspend).toHaveBeenCalledOnce();
   expect(f.clear).toHaveBeenCalledOnce();
   expect(f.navigate).toHaveBeenCalledOnce();
+  expect(f.onSigningOut).not.toHaveBeenCalledWith(false);
 });
 
-it("keeps suspension and allows logout retry after 502 without claiming success", async () => {
+it("keeps the workspace active and unlocks logout retry after 502", async () => {
   const f = fixture(vi.fn().mockResolvedValueOnce(new Response("offline", { status: 502 }))
     .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }))));
   await expect(f.account.signOut()).rejects.toThrow();
-  expect(f.account.suspended).toBe(true);
+  expect(f.account.suspended).toBe(false);
+  expect(f.suspend).not.toHaveBeenCalled();
+  expect(f.onSigningOut.mock.calls).toEqual([[true], [false]]);
   expect(f.clear).not.toHaveBeenCalled(); expect(f.navigate).not.toHaveBeenCalled();
   await f.account.signOut();
   expect(f.clear).toHaveBeenCalledOnce(); expect(f.suspend).toHaveBeenCalledOnce();
+});
+
+it("preserves account reads after a failed logout", async () => {
+  const f = fixture(vi.fn().mockResolvedValueOnce(new Response("offline", { status: 502 })).mockResolvedValueOnce(response()));
+  await expect(f.account.signOut()).rejects.toThrow();
+  await f.account.load();
+  expect(f.publish).toHaveBeenCalledExactlyOnceWith(user);
+  f.account.dispose();
 });
 
 it("requires a valid logout success body and bounds decoding", async () => {

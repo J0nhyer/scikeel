@@ -959,6 +959,21 @@ describe("platform connection context", () => {
     expect(useRuntimeStore.getState().status).toBe("offline");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+  it("retains the visible workspace during the final logout navigation", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => response(String(input))));
+    await useRuntimeStore.getState().connectRetry(1);
+    const before = useRuntimeStore.getState();
+    useRuntimeStore.setState({ gatewaySigningOut: true });
+    try {
+      useRuntimeStore.getState().suspendPlatformBrowser();
+      useRuntimeStore.getState().clearPlatformPresentation();
+      const after = useRuntimeStore.getState();
+      expect(after.status).toBe(before.status);
+      expect(after.workspace).toBe(before.workspace);
+      expect(after.gatewayUser).toEqual(before.gatewayUser);
+      expect(after.gatewaySigningOut).toBe(true);
+    } finally { useRuntimeStore.setState({ gatewaySigningOut: false }); }
+  });
   it("clears account and workspace presentation only after confirmed logout", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => response(String(input))));
     await useRuntimeStore.getState().connectRetry(1);

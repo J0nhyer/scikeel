@@ -19,13 +19,13 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const failed: WorkspaceReport = { context: { instanceId: "user-a", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 };
 
 describe("workspace recovery controls", () => {
-  it("keeps automatic capacity waiting in the recovery controls with signout and no restart", async()=>{
+  it("keeps capacity waiting focused on connection recovery", async()=>{
     const {WorkspaceRecoveryActions}=await import("./WorkspaceRecoveryActions");
     render(<WorkspaceRecoveryActions waiting report={{context:null,state:"capacity",activity:"unknown",canRestart:false,retryAfterMs:5000}}/>);
     expect(screen.getByRole("status")).toHaveTextContent("live.recovery.states.capacityWaiting");
     expect(screen.getByRole("button",{name:"Retry connection"})).toBeDisabled();
     expect(screen.queryByRole("button",{name:"Restart workspace"})).not.toBeInTheDocument();
-    expect(screen.getByRole("button",{name:"Sign out"})).toBeEnabled();
+    expect(screen.queryByRole("button",{name:"Sign out"})).not.toBeInTheDocument();
     expect(screen.queryByText("live.recovery.cooldown")).not.toBeInTheDocument();
   });
   it("requires confirmation and keeps the observed generation when the report changes", async () => {
@@ -41,6 +41,7 @@ describe("workspace recovery controls", () => {
   it("retry does not invoke restart and keyboard cancellation is non-destructive", async () => {
     const { WorkspaceRecoveryActions } = await import("./WorkspaceRecoveryActions"); const user = userEvent.setup();
     render(<WorkspaceRecoveryActions report={failed} />);
+    expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Retry connection" }));
     expect(actions.retry).toHaveBeenCalledOnce(); expect(actions.restart).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Restart workspace" }));

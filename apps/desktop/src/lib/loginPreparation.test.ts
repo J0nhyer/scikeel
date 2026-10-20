@@ -66,56 +66,70 @@ it("hands off a usable limited catalog without waiting for optional checks", () 
   expect(ready).toHaveBeenCalledOnce();
 });
 
-it("handles overlay logout after login failure and reports a failed request for retry", async () => {
+it("returns to sign in after preparation failure and permits retry after a failed request", async () => {
   const signOut = vi.fn().mockRejectedValueOnce(new Error("HTTP 502")).mockResolvedValue(undefined);
-  const failed = vi.fn(); document.addEventListener("scikeel:sign-out-failed", failed);
+  const failed = vi.fn(); document.addEventListener("scikeel:return-to-login-failed", failed);
   const stop = installLoginPreparation(source, signOut);
   current = { ...current, status: "error" }; listener(current);
-  document.dispatchEvent(new Event("scikeel:sign-out"));
+  document.dispatchEvent(new Event("scikeel:return-to-login"));
   await Promise.resolve(); await Promise.resolve();
   expect(signOut).toHaveBeenCalledOnce(); expect(failed).toHaveBeenCalledOnce();
-  document.dispatchEvent(new Event("scikeel:sign-out"));
+  document.dispatchEvent(new Event("scikeel:return-to-login"));
   await Promise.resolve(); await Promise.resolve();
   expect(signOut).toHaveBeenCalledTimes(2);
-  stop(); document.removeEventListener("scikeel:sign-out-failed", failed);
+  stop(); document.removeEventListener("scikeel:return-to-login-failed", failed);
 });
 
-it("coalesces overlay logout and never hands off the app while signing out", async () => {
+it("coalesces return-to-login submissions and keeps preparation visible", async () => {
   let release!: () => void;
   const signOut = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
   const ready = vi.fn(); document.addEventListener("scikeel:login-ready", ready);
   const stop = installLoginPreparation(source, signOut);
-  document.dispatchEvent(new Event("scikeel:sign-out")); document.dispatchEvent(new Event("scikeel:sign-out"));
+  current = { ...current, status: "error" }; listener(current);
+  document.dispatchEvent(new Event("scikeel:return-to-login")); document.dispatchEvent(new Event("scikeel:return-to-login"));
   current = { ...current, status: "ready", sessionListReady: true, gatewayCatalogState: "ready", defaultModel: "model" };
   listener(current);
   expect(signOut).toHaveBeenCalledOnce(); expect(ready).not.toHaveBeenCalled();
   release(); await Promise.resolve(); await Promise.resolve();
-  stop(); document.dispatchEvent(new Event("scikeel:sign-out"));
+  stop(); document.dispatchEvent(new Event("scikeel:return-to-login"));
   expect(signOut).toHaveBeenCalledOnce();
   document.removeEventListener("scikeel:login-ready", ready);
 });
 
-it("hands off structured workspace failure without falsely declaring the runtime ready", () => {
-  const recovery = vi.fn(); const ready = vi.fn();
+it("keeps structured workspace failure on the login recovery screen", () => {
+  const recovery = vi.fn(); const ready = vi.fn(); const failure = vi.fn();
+  document.addEventListener("scikeel:login-error", failure);
   document.addEventListener("scikeel:login-recovery", recovery);
   document.addEventListener("scikeel:login-ready", ready);
   const stop = installLoginPreparation(source);
   current = { ...current, status: "error", gatewayWorkspaceReport: { context: { instanceId: "user-a", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 } };
   listener(current); listener(current);
-  expect(recovery).toHaveBeenCalledOnce(); expect(ready).not.toHaveBeenCalled();
-  expect(current.status).toBe("error"); expect(unsubscribe).toHaveBeenCalledOnce();
+  expect(recovery).not.toHaveBeenCalled(); expect(ready).not.toHaveBeenCalled();
+  expect(failure).toHaveBeenCalledOnce();
+  expect(current.status).toBe("error"); expect(unsubscribe).not.toHaveBeenCalled();
+  document.removeEventListener("scikeel:login-error", failure);
   stop(); document.removeEventListener("scikeel:login-recovery", recovery); document.removeEventListener("scikeel:login-ready", ready);
 });
 
-it("permits a later structured report to hand off fallback failure but never after logout", async () => {
+it("keeps later failure reports in preparation and ignores reports during return to login", async () => {
   const recovery = vi.fn(); document.addEventListener("scikeel:login-recovery", recovery);
   const stop = installLoginPreparation(source);
   current = { ...current, status: "error" }; listener(current);
   current = { ...current, gatewayWorkspaceReport: { context: null, state: "unknown", activity: "unknown", canRestart: false, retryAfterMs: 0 } }; listener(current);
-  expect(recovery).toHaveBeenCalledOnce(); stop(); recovery.mockClear();
+  expect(recovery).not.toHaveBeenCalled(); stop(); recovery.mockClear();
   current = initial(); const secondStop = installLoginPreparation(source, vi.fn(async () => {}));
-  document.dispatchEvent(new Event("scikeel:sign-out"));
+  current = { ...current, status: "error" }; listener(current);
+  document.dispatchEvent(new Event("scikeel:return-to-login"));
   current = { ...current, status: "error", gatewayWorkspaceReport: { context: null, state: "unknown", activity: "unknown", canRestart: false, retryAfterMs: 0 } }; listener(current);
   expect(recovery).not.toHaveBeenCalled(); await Promise.resolve();
   secondStop(); document.removeEventListener("scikeel:login-recovery", recovery);
+});
+
+it("does not expose return-to-login while normal preparation is pending", async () => {
+  const signOut = vi.fn(async () => {});
+  const stop = installLoginPreparation(source, signOut);
+  document.dispatchEvent(new Event("scikeel:return-to-login"));
+  await Promise.resolve();
+  expect(signOut).not.toHaveBeenCalled();
+  stop();
 });

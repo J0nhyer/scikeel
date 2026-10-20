@@ -147,22 +147,21 @@ test("real account capacity recovery preserves work, isolates background reconne
     assert(waitingPages[0].requests.slice(1).every((value, index) => value - waitingPages[0].requests[index] >= 4500), "Capacity attempts respect their delay");
     evidence.retryIntervalsMs = waitingPages[0].requests.slice(1).map((value, index) => value - waitingPages[0].requests[index]);
     const deadlinePage = waitingPages[0].page;
-    await deadlinePage.getByRole("button", { name: "Retry connection", exact: true }).waitFor({ state: "visible", timeout: 100000 });
+    await deadlinePage.getByRole("button", { name: "Retry", exact: true }).waitFor({ state: "visible", timeout: 100000 });
     for (const [index, locale] of ["en", "zh-Hans"].entries()) {
       const page = waitingPages[index].page;
-      await page.getByRole("button", { name: locale === "en" ? "Retry connection" : "重试连接", exact: true }).waitFor({ timeout: 10000 });
+      await page.getByRole("button", { name: locale === "en" ? "Retry" : "重试", exact: true }).waitFor({ timeout: 10000 });
       for (const width of [1280, 390, 320]) { await page.setViewportSize({ width, height: 900 }); await screenshot(page, `deadline-${locale}-${width}`); }
     }
     assert.equal(heartbeatFailure, undefined);
     assert((await scoped(a, "/question")).some(value => value.id === question.id), "Protected question survives the entire deadline");
     evidence.cases.push("active_execution_preserved_for_capacity_deadline");
     const logoutPage = waitingPages[1].page;
-    await logoutPage.getByRole("button", { name: "重试连接", exact: true }).click(); await delay(1000);
-    await logoutPage.getByRole("button", { name: "退出登录", exact: true }).click(); await logoutPage.waitForURL(/\/login/);
+    await logoutPage.getByRole("button", { name: "返回登录", exact: true }).click(); await logoutPage.waitForURL(/\/login/);
     const requestsAfterLogout = waitingPages[1].requests.length; await delay(6000);
     assert.equal(waitingPages[1].requests.length, requestsAfterLogout); evidence.cases.push("logout_cancels_capacity_retry");
     await waitingPages[1].context.close(); contexts.delete(waitingPages[1].context);
-    await deadlinePage.getByRole("button", { name: "Retry connection", exact: true }).click();
+    await deadlinePage.getByRole("button", { name: "Retry", exact: true }).click();
     await scoped(a, `/question/${encodeURIComponent(question.id)}/reply`, { body: { answers: question.questions.map(() => ["Continue"]) } });
     clearInterval(heartbeat); heartbeat = undefined;
     await deadlinePage.getByRole("button", { name: /^Model:/ }).first().waitFor({ timeout: 90000 }); await initialize(b);

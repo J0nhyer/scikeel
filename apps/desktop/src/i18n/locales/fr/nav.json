@@ -6,6 +6,7 @@
     "expandTitle": "Développer la barre latérale ({{shortcut}})",
     "settings": "Paramètres",
     "signOut": "Se déconnecter",
+    "signingOut": "Déconnexion en cours…",
     "account": "Compte de {{username}}",
     "adminBadge": "Admin",
     "home": "Accueil",

@@ -28,7 +28,7 @@ export function GatewaySignOut({ inMenu = false }: { inMenu?: boolean }) {
   };
   const button = <button type="submit" disabled={pending} aria-busy={pending}
     className="flex min-h-11 w-full cursor-pointer items-center gap-2 rounded px-3 text-left text-sm text-text outline-none hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-accent data-[highlighted]:bg-surface-2 disabled:cursor-wait disabled:opacity-60">
-    <LogOut size={15} aria-hidden={true} /> {t("nav:sidebar.signOut")}
+    <LogOut size={15} aria-hidden={true} /> {t(pending ? "nav:sidebar.signingOut" : "nav:sidebar.signOut")}
   </button>;
   return <form method="post" action="/auth/logout" onSubmit={event => { void submitSignOut(event); }}>
     {inMenu ? <DropdownMenu.Item asChild onSelect={event => event.preventDefault()}>{button}</DropdownMenu.Item> : button}
