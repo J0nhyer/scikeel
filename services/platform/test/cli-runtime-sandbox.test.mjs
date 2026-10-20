@@ -5,6 +5,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {CliRuntimeManager} from "../src/cli-runtime.mjs";
 import {ConversationState} from "../src/conversation-state.mjs";
+import {createAnalyticsCollector} from '../src/agent-analytics-collector.mjs';
 async function fixture(t,jobs) {
   const root=await mkdtemp(join(tmpdir(),"scikeel-native-sandbox-"));t.after(()=>rm(root,{recursive:true,force:true}));
   const workspace=join(root,"workspace");const project=join(workspace,"project");await mkdir(project,{recursive:true});
@@ -34,6 +35,23 @@ test('managed native execution emits only metadata to analytics without a browse
  assert.ok(seen.some(({fact})=>fact.kind==='usage'&&fact.providerId==='codex'&&fact.modelId==='approved'));
  assert.ok(seen.every(({scope})=>scope.accountId==='a'&&scope.runtime==='codex'&&scope.instanceId==='user-a'&&scope.generation===3));
  assert.ok(!JSON.stringify(seen).includes('PRIVATE_'));
+});
+test('canonical Codex research events belong to the existing research run without duplicate conversation counts',async t=>{
+ const facts=[],collector=createAnalyticsCollector({store:{offer:f=>facts.push(f)}});t.after(()=>collector.close());
+ const f=await fixture(t,{run:async args=>{
+  await args.onAccepted({nativeSessionId:'native-research',turnId:'native-turn'});
+  await args.emit({type:'tool',callId:'research-command',tool:'bash',state:{status:'completed',input:{command:'PRIVATE_COMMAND'},output:'PRIVATE_OUTPUT'}});
+  await args.onCleanup({cleanupVerified:true});return {nativeSessionId:'native-research'};
+ }});
+ f.session.publicConversationId='canonical_research';
+ f.manager.onAnalyticsFact=(scope,fact)=>collector.nativeFact(scope,fact);
+ const context={userId:'a',instanceId:'user-a',generation:3};
+ collector.research({accountId:'a',runtime:'codex',instanceId:'user-a',generation:3},
+  {sessionId:'canonical_research',execution:1,startedAt:Date.now(),outcome:'running'});
+ await f.manager.sendPrompt({userId:'a',sessionId:'canonical_research',text:'PRIVATE_RESEARCH',workspaceContext:context});
+ assert.equal(facts.filter(f=>f.kind==='run'&&f.runType==='conversation').length,0);
+ assert.equal(facts.find(f=>f.kind==='tool').runId,facts.find(f=>f.kind==='run'&&f.runType==='research').runId);
+ assert.ok(!JSON.stringify(facts).includes('PRIVATE_'));
 });
 test('native aliases persist owned canonical ancestry and refuse direct private IDs or uncertain history',async t=>{
  const f=await fixture(t,{run:async()=>{throw Error('Alias preparation cannot infer');}});

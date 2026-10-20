@@ -1273,7 +1273,7 @@ export class CliRuntimeManager {
       const scope={accountId:userId,runtime:session.runtime,instanceId:context.instanceId,generation:context.generation};
       const metadataEvent={...event,properties:{...event.properties,...(event.properties?.sessionID?{sessionID:session.id}:{})}};
       for(const fact of metadataFacts(metadataEvent)){
-        try{this.onAnalyticsFact(scope,fact);}catch{/* Optional metadata must not affect execution. */}
+        try{this.onAnalyticsFact(scope,{...fact,sessionId:session.publicConversationId??session.id});}catch{/* Optional metadata must not affect execution. */}
       }
     }
     if(session){
