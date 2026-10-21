@@ -11,6 +11,7 @@ import { inventorySource, fingerprintFiles, commonStore, freezeSource, sourceAll
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const repository = 'J0nhyer/scikeel';
 const workflow = 'sandbox-image.yml';
+export const publicationCITimeoutMs = (120 + 45 + 15) * 60 * 1000;
 const stages = ['snapshot', 'push', 'ci', 'artifact', 'install', 'deploy'];
 const hex = /^[a-f0-9]{40}$/;
 const publicationCIRef = /^ci\/web-publication-([A-Za-z0-9][A-Za-z0-9_-]{1,99})$/;
@@ -269,7 +270,7 @@ async function worker(job, directory, store) {
         await github(`actions/workflows/${workflow}/dispatches`, env, { ref: ciBranch, inputs: { python_image: 'python:3.12.12-slim-bookworm', uv_image: 'ghcr.io/astral-sh/uv:0.11.26' } });
         job.dispatchedAt = new Date().toISOString(); await save(path, job);
       }
-      const deadline = Date.now() + 75 * 60 * 1000;
+      const deadline = Date.now() + publicationCITimeoutMs;
       while (Date.now() < deadline) {
         const response = await github(`actions/workflows/${workflow}/runs?branch=${encodeURIComponent(ciBranch)}&event=workflow_dispatch&per_page=20`, env);
         const runs = response.workflow_runs.filter(run => run.head_sha === job.commit && run.head_branch === ciBranch && run.event === 'workflow_dispatch');

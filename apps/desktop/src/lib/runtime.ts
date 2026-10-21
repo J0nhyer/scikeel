@@ -8,6 +8,9 @@ import { create } from "zustand";
 import {
   OpenCodeClient,
   GatewayWorkspaceClient,
+  GatewayBootstrapClient,
+  catalogDirectory,
+  type WorkspaceBootstrap,
   GatewayWorkspaceError,
   decodeWorkspaceFailure,
   isWorkspaceReport,
@@ -2889,6 +2892,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     let gatewayRuntime: GatewayRuntimeId | null = null;
     let gatewayPolicyRevision: number | null = null;
     let gatewayRuntimes: GatewayRuntimeOption[] = [];
+    let bootstrapSnapshot:WorkspaceBootstrap|null=null;
+    const managedBootstrap=isPlatformWeb&&typeof document!=='undefined'&&document.querySelector('meta[name="scikeel-workspace-bootstrap"][content="1"]')!==null;
     const gatewayUserRole: GatewayUserRole | null = null;
     const gatewayUser: GatewayUser | null = null;
     let account: Promise<{ user?: GatewayUser } | null> = Promise.resolve(null);
@@ -2922,7 +2927,17 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           return response.json() as Promise<T>;
         })(), signal);
       };
-      const metadata = readContext<{ runtime?: GatewayRuntimeId; policyRevision?: number; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[]; context?: {instanceId:string;generation:number} | null }>("/api/runtime", 15000).then(value => ({ value, error: null }), error => ({ value: null, error }));
+      const metadataRead=managedBootstrap?new GatewayBootstrapClient({baseUrl}).read({signal:requestSignal(beforeDeadline(deadline,90_000)),timeoutMs:beforeDeadline(deadline,90_000)}).then(snapshot=>{
+        if(!active())throw new Error('Account connection changed');
+        if(get().gatewayUser?.id!==snapshot.account.id)throw new Error('Account identity changed');
+        bootstrapSnapshot=snapshot;
+        const assistant=snapshot.assistant;
+        const option:GatewayRuntimeOption={runtime:assistant.runtime,kind:assistant.runtime==='opencode'?'opencode':'server',managed:assistant.runtime!=='opencode',
+          label:assistant.label,enabled:assistant.enabled,models:assistant.defaultModel?[assistant.defaultModel]:[],defaultModel:assistant.defaultModel,
+          selectedModel:assistant.defaultModel,status:assistant.capabilities.prompt?'ready':'unavailable',catalogRevision:null};
+        return {runtime:assistant.runtime,policyRevision:snapshot.policyRevision,kind:option.kind,label:assistant.label,available:[option],context:snapshot.workspace.state==='healthy'?snapshot.workspace.context:null};
+      }):readContext<{ runtime?: GatewayRuntimeId; policyRevision?: number; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[]; context?: {instanceId:string;generation:number} | null }>("/api/runtime", 15000);
+      const metadata=metadataRead.then(value=>({value,error:null}),error=>({value:null,error}));
       if (!isPlatformWeb) account = readContext<{ user?: GatewayUser }>("/api/me", 15000).catch(() => null);
       try {
         const who = await readContext("/v1/whoami", 60000, password ? { Authorization: `Bearer ${password}` } : undefined) as { directory?: string; mode?: string };
@@ -3022,6 +3037,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       if (gatewayRuntime && gatewayRuntime !== "opencode") {
         set((state) => reconcileGatewayModels(state, gatewayRuntimes));
       }
+      if(bootstrapSnapshot&&get().gatewayWorkspace){
+        const snapshot=bootstrapSnapshot as WorkspaceBootstrap,root=get().gatewayWorkspace!;
+        set({sessions:snapshot.conversations.items.map(row=>({id:row.id,title:row.title,directory:catalogDirectory(snapshot.conversations,row.directoryRef,root),
+          ...(row.parentId?{parentId:row.parentId}:{}),updated:row.updatedAt})),sessionListReady:true,
+          projects:snapshot.projects.items.map(row=>({id:row.id,name:row.name,path:catalogDirectory(snapshot.projects,row.directoryRef,root),createdAt:row.createdAt??0,imported:row.imported??false,pinned:row.pinned??false})),
+          projectsLoading:false,projectsError:null});
+      }
     } else {
       // Scope skill discovery to the sidecar's workspace (null in browser dev).
       directory = await workspacePath();
@@ -3089,6 +3111,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         directory: directory ?? undefined,
         password: password ?? undefined,
         sessionTitlePresentation: isGatewayWeb,
+        accountWideSessions: isPlatformWeb,
+        workspaceCatalogRoot:managedBootstrap?get().gatewayWorkspace??undefined:undefined,
       });
       fencePlatformClient(oc, get());
       if (isPlatformWeb) oc.setGatewayContextChangedHandler?.(() => {
@@ -3749,8 +3773,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     c.onEvent(event => { if (active() && c === client) sharedEventHandler?.(event); });
     try {
       void logDebug(`connect → ${get().serverUrl}`);
-      if (isGatewayWeb) void get().refreshProjects();
-      const initialSessions = isGatewayWeb ? get().refreshSessions(true) : null;
+      if (isGatewayWeb&&!bootstrapSnapshot) void get().refreshProjects();
+      const initialSessions = isGatewayWeb&&!bootstrapSnapshot ? get().refreshSessions(true) : null;
       if (isGatewayWeb) await withSignal(c.connect(), requestSignal(5000));
       else await c.connect();
       if (!active()) return;
@@ -3763,8 +3787,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // Models and sessions are independent reads. Begin both immediately so
       // a login waits for their slowest request, not the sum of both stages.
       if (isGatewayWeb) void get().loadCatalog();
-      if (initialSessions) await withSignal(initialSessions, requestSignal(15000));
-      else await get().refreshSessions();
+      if (initialSessions) await withSignal(initialSessions, requestSignal(beforeDeadline(deadline, 90_000)));
+      else if(!bootstrapSnapshot)await get().refreshSessions();
       if (!active()) return;
       // Web panes cannot open until their session list is known. A failed list
       // must retry the connection instead of leaving a ready stream and a
@@ -4766,7 +4790,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     const source = client;
     try {
       let directories: string[] | undefined;
-      if (isGatewayWeb && get().gatewayRuntime) {
+      if (isGatewayWeb && !isPlatformWeb && get().gatewayRuntime) {
         const projects = await listProjects();
         if (source !== client) return;
         const state = get();

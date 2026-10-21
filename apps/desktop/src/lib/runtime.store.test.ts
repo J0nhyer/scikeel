@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   /** Number of connect() attempts that fail before one succeeds. */
   failConnects: 0,
   failSessionLists: 0,
+  sessionListGate: null as Promise<void> | null,
   agentGate: null as Promise<void> | null,
   commandGate: null as Promise<void> | null,
   providerGate: null as Promise<void> | null,
@@ -229,6 +230,7 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
     }
     async listSessions(directories?: string[]) {
       mocks.sessionListDirectories(directories);
+      if (mocks.sessionListGate) await mocks.sessionListGate;
       if (mocks.failSessionLists > 0) {
         mocks.failSessionLists--;
         throw new Error("Session list temporarily unavailable");
@@ -424,6 +426,7 @@ beforeEach(async () => {
   mocks.activeWorkspace = "/ws/base";
   mocks.failConnects = 0;
   mocks.failSessionLists = 0;
+  mocks.sessionListGate = null;
   mocks.agentGate = mocks.commandGate = mocks.providerGate = mocks.skillGate = null;
   mocks.failCreates = 0;
   mocks.createGate = null;
@@ -1169,6 +1172,37 @@ describe("gateway runtime selection", () => {
     expect(await useRuntimeStore.getState().connectRetry(2)).toBe(true);
     expect(useRuntimeStore.getState().sessionListReady).toBe(true);
     expect(useRuntimeStore.getState().sessions.some(session => session.id === "ses_recovered")).toBe(true);
+  });
+
+  it("allows initial session discovery to share the overall Web connection deadline", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(milliseconds => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("signal timed out", "TimeoutError")), milliseconds);
+      return controller.signal;
+    });
+    let release!: () => void;
+    mocks.sessionListGate = new Promise(resolve => { release = resolve; });
+    mocks.sessionList = [{ id: "ses_slow_initial", title: "Existing conversation" }];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", runtime: "opencode", available: [] }))));
+    let finished = false;
+    const connection = useRuntimeStore.getState().connectRetry(1).then(result => { finished = true; return result; });
+    try {
+      await vi.advanceTimersByTimeAsync(16000);
+      expect(finished).toBe(false);
+      expect(useRuntimeStore.getState().sessionListReady).toBe(false);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await connection).toBe(true);
+      expect(useRuntimeStore.getState().sessions.some(session => session.id === "ses_slow_initial")).toBe(true);
+    } finally {
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      await connection;
+      timeout.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("finishes connection while another workspace's running status is still loading", async () => {

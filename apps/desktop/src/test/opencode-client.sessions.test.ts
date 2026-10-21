@@ -4,6 +4,17 @@ import { ApiError, isApiStatus, OpenCodeClient } from "@ai4s/sdk";
 
 const BASE = "http://127.0.0.1:9999";
 
+it("reads the managed account-wide list once without a project filter", async () => {
+  const fetchImpl = vi.fn(async (_input:RequestInfo|URL) => new Response(JSON.stringify([
+    { id: "ses_a", title: "A", directory: "/ws/a", time: { updated: 2 } },
+    { id: "ses_b", title: "B", directory: "/ws/b", time: { updated: 1 } },
+  ])));
+  const client = new OpenCodeClient({ baseUrl: BASE, directory: "/ws/a", accountWideSessions: true, fetchImpl });
+  expect((await client.listSessions(["/ws/a", "/ws/b"])).map(row => row.id)).toEqual(["ses_a", "ses_b"]);
+  expect(fetchImpl).toHaveBeenCalledOnce();
+  expect(new URL(String(fetchImpl.mock.calls[0][0])).searchParams.has("directory")).toBe(false);
+});
+
 it("lists each permitted project directory instead of treating the default project list as global", async () => {
   const calls: string[] = [];
   const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async (input) => {

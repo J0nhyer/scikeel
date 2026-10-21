@@ -22,6 +22,23 @@ import { extractCodexArchive } from "../../../scripts/dev/fetch-sandbox-codex.mj
 import { validateGuardLock, buildGuardRuntime } from "../../../scripts/dev/build-codex-guard-runtime.mjs";
 import * as integration from "../../../scripts/dev/build-codex-guard-runtime.mjs";
 
+test("native fixture subprocesses use their private writable temporary directory", async t => {
+  assert.equal(typeof protocol.nativeFixtureEnvironment, "function");
+  const directory = await mkdtemp(join(tmpdir(), "scikeel-native-environment-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const environment = protocol.nativeFixtureEnvironment(directory);
+  const temporary = join(directory, "home/.cache/tmp");
+  await mkdir(temporary, { recursive: true });
+  assert.equal(environment.HOME, join(directory, "home"));
+  assert.equal(environment.CODEX_HOME, environment.HOME);
+  for (const key of ["TMPDIR", "TMP", "TEMP"]) assert.equal(environment[key], temporary);
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e",
+    "import { tmpdir } from \"node:os\"; import { mkdtempSync } from \"node:fs\"; import { join } from \"node:path\"; console.log(mkdtempSync(join(tmpdir(), \"native-\")));"],
+    { env: environment, encoding: "utf8", timeout: 3000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.ok(child.stdout.trim().startsWith(temporary + "/native-"));
+});
+
 test("fallback helper proof requires an actual inside update and an OS permission denial outside", () => {
   assert.equal(typeof protocol.validFallbackPatchHelperProof, "function");
   const proof = { loginShellHelper: true, bytesVerified: true, insideUpdateVerified: true,

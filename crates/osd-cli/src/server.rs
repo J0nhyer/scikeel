@@ -53,7 +53,17 @@ mod tests {
     }
 }
 
+fn runtime_on_demand(args: &Args) -> Result<bool, String> {
+    match args.value("runtime-mode").as_deref() {
+        None | Some("eager") => Ok(false),
+        Some("on-demand") if args.has("managed") => Ok(true),
+        Some("on-demand") => Err("on-demand runtime mode requires managed startup".into()),
+        Some(_) => Err("invalid runtime mode".into()),
+    }
+}
+
 pub fn run(args: &Args) -> Result<(), String> {
+    let on_demand = runtime_on_demand(args)?;
     let env = crate::env(args)?;
     #[cfg(target_os = "linux")]
     let env = if args.has("managed") {
@@ -191,8 +201,13 @@ pub fn run(args: &Args) -> Result<(), String> {
 
     // The sidecar first, so the gateway never answers a request with "runtime
     // not started" during the first seconds.
-    eprintln!("Starting the agent runtime…");
-    let sidecar = runtime::start_runtime(&env)?;
+    runtime::set_on_demand(env.runtime(), on_demand);
+    let sidecar = if on_demand {
+        "on-demand".to_string()
+    } else {
+        eprintln!("Starting the agent runtime…");
+        runtime::start_runtime(&env)?
+    };
 
     // From here on the sidecar is OURS to clean up: it is a separate process, so
     // returning an error without killing it (a port already in use is the easy
@@ -304,4 +319,17 @@ fn local_ip() -> Option<String> {
     let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("8.8.8.8:80").ok()?;
     s.local_addr().ok().map(|a| a.ip().to_string())
+}
+
+#[cfg(test)]
+mod runtime_mode_tests {
+    use super::*;
+    #[test]
+    fn eager_is_default_and_on_demand_requires_managed_mode() {
+        let parse = |values: &[&str]| Args::parse(values.iter().map(|v| v.to_string()).collect()).unwrap();
+        assert!(!runtime_on_demand(&parse(&["server"])).unwrap());
+        assert!(runtime_on_demand(&parse(&["server", "--runtime-mode", "on-demand"])).is_err());
+        assert!(runtime_on_demand(&parse(&["server", "--managed", "--runtime-mode", "on-demand"])).unwrap());
+        assert!(runtime_on_demand(&parse(&["server", "--managed", "--runtime-mode", "other"])).is_err());
+    }
 }

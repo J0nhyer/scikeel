@@ -2,8 +2,9 @@ import {createHash,randomUUID} from 'node:crypto';
 import {mkdir,open,rename,unlink,lstat,readdir} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {join} from 'node:path';
+import {validateEnvelope,appendCatalogChange,workspaceSummaries,acknowledgeEnvelope,projectEnvelope} from './catalog-outbox.mjs';
 
-export const WORKSPACE_LIFECYCLE_SCHEMA = 1;
+export const WORKSPACE_LIFECYCLE_SCHEMA = 2;
 
 export function workspaceError(code,statusCode=409) {
   return Object.assign(new Error(code.replaceAll('_',' ')),{code,statusCode});
@@ -58,7 +59,8 @@ export class WorkspaceState {
               !sameRevision(before,await lstat(path,{bigint:true})))throw Error('metadata changed');
           value=JSON.parse(bytes);
         }finally {await file.close();}
-        if(!record(value) || value.schema!==1 || !record(value.projects) || !record(value.operations))throw Error('invalid metadata');
+        if(!record(value) || ![1,2].includes(value.schema) || !record(value.projects) || !record(value.operations))throw Error('invalid metadata');
+        if(value.schema===2)validateEnvelope(value);
         if(Object.hasOwn(value,'runtimeMutation')) {
           const mutation=value.runtimeMutation;
           if(!record(mutation) || !Number.isSafeInteger(mutation.generation) || mutation.generation<1)throw Error('invalid mutation');
@@ -90,14 +92,17 @@ export class WorkspaceState {
       try{if((await file.stat()).size>this.maxStateBytes)throw workspaceError('workspace_metadata_full',507);bytes=await file.readFile('utf8');}finally{await file.close();}
       if(Buffer.byteLength(bytes)>this.maxStateBytes)throw workspaceError('workspace_metadata_full',507);
       const value=JSON.parse(bytes);
-      if(value.schema!==1 || !value.projects || !value.operations)throw workspaceError('invalid_workspace_state',503);
+      if(![1,2].includes(value.schema) || !value.projects || !value.operations)throw workspaceError('invalid_workspace_state',503);
+      if(value.schema===1){value.schema=2;value.catalogRevision=0;value.catalogOutbox=[];}
+      validateEnvelope(value);
       return value;
     }catch(error) {
-      if(error.code==='ENOENT')return {schema:1,projects:{},operations:{}};
+      if(error.code==='ENOENT')return {schema:2,projects:{},operations:{},catalogRevision:0,catalogOutbox:[]};
       throw error;
     }
   }
-  async #save(userId,value) {
+  async #save(userId,value,{project=true}={}) {
+    if(project)appendCatalogChange(await this.open(userId),value,{userId,source:'workspace',sourceKey:'workspace',summarize:workspaceSummaries});
     const serialized=JSON.stringify(value);
     const reserved=Object.values(value.operations).reduce((sum,operation)=>sum+(operation.reservedBytes??0),0)
       +Object.values(value.uploads??{}).reduce((sum,upload)=>sum+(upload.reservedMetadataBytes??0),0);
@@ -113,6 +118,7 @@ export class WorkspaceState {
       await rename(temporary,path);
       const parent=await open(this.dataDir,'r');try {await parent.sync();}finally{await parent.close();}
     }finally {await file?.close();await unlink(temporary).catch(error=>{if(error.code!=='ENOENT')throw error;});}
+    if(project)await projectEnvelope(this.catalog,value,()=>this.#save(userId,value,{project:false}));
   }
   async update(userId,run) {
     identifier(userId);
@@ -125,6 +131,13 @@ export class WorkspaceState {
   }
   async receipt(userId,operationId) {
     identifier(operationId);return (await this.open(userId)).operations[operationId]?.receipt??null;
+  }
+  pendingCatalogChanges(userId){return (this.#queues.get(userId)??Promise.resolve()).then(async()=>structuredClone((await this.open(userId)).catalogOutbox));}
+  acknowledgeCatalogChange(userId,changeId,payloadHash){
+    const next=(this.#queues.get(userId)??Promise.resolve()).catch(()=>{}).then(async()=>{
+      const data=await this.open(userId);
+      if(acknowledgeEnvelope(data,changeId,payloadHash))await this.#save(userId,data,{project:false});
+    });this.#queues.set(userId,next);return next.finally(()=>{if(this.#queues.get(userId)===next)this.#queues.delete(userId);});
   }
   async runtimeMutation(context) {
     identifier(context.userId);identifier(context.instanceId);

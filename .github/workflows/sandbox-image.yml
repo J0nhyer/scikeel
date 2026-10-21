@@ -115,7 +115,7 @@ jobs:
             --network=none --read-only --user 1000:1000 --memory=768m --memory-swap=896m --pids-limit=128 --cpus=1 \
             --cap-drop=ALL --security-opt no-new-privileges \
             --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            --tmpfs /fixture/temporary:rw,nosuid,nodev,uid=1000,gid=1000,size=64m -e TMPDIR=/fixture/temporary -e TMP=/fixture/temporary -e TEMP=/fixture/temporary \
             --tmpfs /fixture/native:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
             -v "$PWD:/fixture/repo:ro" \
             -v "$PWD/.deploy/science-context/tools/bin:/opt/scikeel/tools/bin:ro" \
@@ -150,7 +150,7 @@ jobs:
             --network=none --read-only --user 1000:1000 --memory=768m --memory-swap=896m --pids-limit=128 --cpus=1 \
             --cap-drop=ALL --security-opt no-new-privileges \
             --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            --tmpfs /fixture/temporary:rw,nosuid,nodev,uid=1000,gid=1000,size=64m -e TMPDIR=/fixture/temporary -e TMP=/fixture/temporary -e TEMP=/fixture/temporary \
             --tmpfs /fixture/native:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
             -v "$PWD:/fixture/repo:ro" \
             -v "$PWD/.deploy/science-context/tools/bin:/opt/scikeel/tools/bin:ro" \
@@ -301,7 +301,7 @@ jobs:
           cp runtime/sandbox/probe-entry.mjs .deploy/science-test/probe-entry.mjs
           sudo chown root:root .deploy/science-test/case.json
           docker run --rm --network=none --read-only --memory=640m --memory-swap=768m --pids-limit=256 --cpus=1 \
-            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --tmpfs /fixture/temporary:rw,nosuid,nodev,noexec,size=64m -e TMPDIR=/fixture/temporary -e TMP=/fixture/temporary -e TEMP=/fixture/temporary \
             -v "$PWD/.deploy/science-workspace:/workspace" \
             -v "$PWD/.deploy/science-test:/opt/scikeel/test:ro" \
             --entrypoint /opt/scikeel/tools/bin/node scikeel-science-probe:ci \
@@ -329,7 +329,7 @@ jobs:
             --network=none --read-only --user 1000:1000 --memory=768m --memory-swap=896m --pids-limit=128 --cpus=1 \
             --cap-drop=ALL --security-opt no-new-privileges \
             --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --tmpfs /fixture/temporary:rw,nosuid,nodev,noexec,uid=1000,gid=1000,size=64m -e TMPDIR=/fixture/temporary -e TMP=/fixture/temporary -e TEMP=/fixture/temporary \
             --tmpfs /fixture/native:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
             -v "$PWD:/fixture/repo:ro" \
             -v "$PWD/services/platform/fixtures/native-protocol.mjs:/opt/scikeel/runtime/required-effect-guard.mjs:ro" \
@@ -357,7 +357,7 @@ jobs:
             --network=none --read-only --memory=1024m --memory-swap=1152m --pids-limit=256 --cpus=1 \
             --cap-drop=ALL --security-opt no-new-privileges \
             --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --tmpfs /fixture/temporary:rw,nosuid,nodev,noexec,size=64m -e TMPDIR=/fixture/temporary -e TMP=/fixture/temporary -e TEMP=/fixture/temporary \
             -v "$PWD/.deploy/runner-fixture/workspace:/fixture/workspace" \
             -v "$PWD/.deploy/runner-fixture/state:/fixture/state" \
             -v "$PWD/.deploy/runner-fixture/home:/fixture/home" \
@@ -373,7 +373,7 @@ jobs:
         run: |
           timeout --signal=TERM --kill-after=10s 120s docker run --rm \
             --network=none --read-only --memory=1024m --memory-swap=1152m --pids-limit=256 --cpus=1 \
-            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            --tmpfs /fixture/temporary:rw,nosuid,nodev,size=64m -e TMPDIR=/fixture/temporary -e TMP=/fixture/temporary -e TEMP=/fixture/temporary \
             -v "$PWD:/fixture/repo:ro" \
             -e OSD_COLLABORATION_BINARY=/opt/scikeel/tools/bin/opencode \
             -w /fixture/repo/services/platform \
