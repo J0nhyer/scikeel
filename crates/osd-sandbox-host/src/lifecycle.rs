@@ -6,6 +6,16 @@ pub const MEMORY_HIGH:u64=640*1024*1024;
 pub const MEMORY_MAX:u64=1024*1024*1024;
 pub const SWAP_MAX:u64=128*1024*1024;
 pub const PIDS_MAX:u64=256;
+pub const WORKSPACE_SLICE:&str="system-scikeel-workspaces.slice";
+pub const WORKSPACE_CGROUP:&str="/sys/fs/cgroup/system.slice/system-scikeel.slice/system-scikeel-workspaces.slice";
+pub fn slice_unit()->String {
+    format!("[Unit]\nDescription=SciKeel workspace resource budget\n[Slice]\nMemoryHigh={MEMORY_HIGH}\nMemoryMax={MEMORY_MAX}\nMemorySwapMax={SWAP_MAX}\nTasksMax={PIDS_MAX}\nCPUQuota=100%\n")
+}
+pub fn inspect_workspace_budget()->Result<Limits> {
+    let root=Path::new(WORKSPACE_CGROUP);
+    let read=|name:&str|fs::read_to_string(root.join(name)).map_err(|_|"workspace_budget_unavailable");
+    verify_limits(&read("memory.high")?,&read("memory.max")?,&read("memory.swap.max")?,&read("pids.max")?,&read("cpu.max")?,true)
+}
 #[derive(Clone,Debug,Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct Limits {pub memory_high:u64,pub memory_max:u64,pub swap_max:u64,pub pids_max:u64,
@@ -31,9 +41,10 @@ fn process_belongs(root:&Path,content:&str)->bool {
     content.lines().any(|line|line.strip_prefix("0::").is_some_and(|path|path==expected || path.starts_with(&format!("{expected}/"))))
 }
 pub fn inspect_cgroup(root:&Path)->Result<Limits> {
-    if !root.starts_with("/sys/fs/cgroup/system.slice") || root.file_name().is_none_or(|n|!n.to_string_lossy().starts_with("scikeel-tenant-")) {
+    if root.parent()!=Some(Path::new(WORKSPACE_CGROUP)) || root.file_name().is_none_or(|n|!n.to_string_lossy().starts_with("scikeel-tenant-")) {
         return Err("foreign_cgroup");
     }
+    inspect_workspace_budget()?;
     let read=|name:&str|fs::read_to_string(root.join(name)).map_err(|_|"controller_unavailable");
     let mut processes=Vec::new();
     fn descend(root:&Path,processes:&mut Vec<u32>,depth:usize)->Result<()> {
@@ -58,10 +69,10 @@ pub fn unit_name(instance_id:&str,generation:u64)->Result<String> {
     if !crate::protocol::identifier(instance_id,64) || generation==0 {return Err("invalid_unit_identity");}
     Ok(format!("scikeel-tenant-{instance_id}-g{generation}.service"))
 }
-pub fn unit_properties()->[String;8] {
+pub fn unit_properties()->[String;9] {
     [format!("MemoryHigh={MEMORY_HIGH}"),format!("MemoryMax={MEMORY_MAX}"),format!("MemorySwapMax={SWAP_MAX}"),
         format!("TasksMax={PIDS_MAX}"),"CPUQuota=100%".into(),"KillMode=control-group".into(),
-        "TimeoutStopSec=5s".into(),"Delegate=no".into()]
+        "TimeoutStopSec=5s".into(),"Delegate=no".into(),format!("Slice={WORKSPACE_SLICE}")]
 }
 #[cfg(test)]
 mod tests {
@@ -89,6 +100,7 @@ mod tests {
         assert_eq!(unit_name("user-a",1).unwrap(),"scikeel-tenant-user-a-g1.service");
         assert!(unit_name("../peer",1).is_err());
         let props=unit_properties();assert!(props.contains(&"KillMode=control-group".to_string()));
-        assert!(props.contains(&"Delegate=no".to_string()));assert_eq!(props.len(),8);
+        assert!(props.contains(&"Delegate=no".to_string()));assert_eq!(props.len(),9);
+        assert!(props.contains(&"Slice=system-scikeel-workspaces.slice".to_string()));
     }
 }

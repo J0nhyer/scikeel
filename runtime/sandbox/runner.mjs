@@ -19,6 +19,7 @@ function validateManifest(value) {
 }
 export class TenantRunner {
   #active = new Set(); #operations = new Set();
+  #runtime = null;
   constructor({ manifest, token, files = new FileRpc(), environments = new EnvironmentRpc(), configureProfile, healthy=()=>true, jobsFactory=options=>new CliJobs(options), timeoutMs = 30000 } = {}) {
     this.manifest = validateManifest(manifest);
     if (!/^[a-f0-9]{64}$/.test(token ?? "") || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new Error("invalid tenant runner configuration");
@@ -46,9 +47,13 @@ export class TenantRunner {
       if (res.destroyed) return;
       res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(JSON.stringify(body));
     };
+    if (req.method === "GET" && req.url === "/health/live") {send(200,{live:true});return;}
     if (req.method === "GET" && req.url === "/health") { const ready=this.healthy();send(ready ? 200 : 503, {ready});return; }
     const credential = /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization ?? "")?.[1];
     if (!credential || !timingSafeEqual(Buffer.from(credential), Buffer.from(this.token))) { send(403, { error: "runner_denied" }); return; }
+    if(req.method==='GET'&&req.url==='/readiness'){
+      const ready=this.healthy();send(ready&&this.#runtime ? 200:503,{configured:this.#runtime!==null,runtime:this.#runtime,gatewayReady:ready,jobsReady:!!this.jobs});return;
+    }
     if (req.method !== "POST" || !["/files", "/profile", "/environments", "/jobs", "/native-network"].includes(req.url)) { send(404, { error: "runner_route_unavailable" }); return; }
     if (this.#operations.has(req.url) || this.#operations.has("/profile") || (req.url === "/profile" && this.#active.size)) { send(429, { error: "runner_busy" }); return; }
     const controller = new AbortController(); this.#active.add(controller); this.#operations.add(req.url);
@@ -68,15 +73,18 @@ export class TenantRunner {
       const { instanceId: _instanceId, generation: _generation, ...operation } = body;
       let result;
       if (req.url === "/profile") {
-        if (Object.keys(operation).some(key=>!["profile","imageDigest"].includes(key)) || !this.configureProfile || this.jobs?.busy) throw new Error("profile unavailable");
+        if (Object.keys(operation).some(key=>!["profile","imageDigest","runtime"].includes(key)) || !this.configureProfile || this.jobs?.busy) throw new Error("profile unavailable");
+        const runtime=operation.runtime??'opencode';
+        if(!['opencode','codex','claude'].includes(runtime))throw new Error('invalid runtime');
         const profile=validateProfile(operation.profile);
         if(operation.imageDigest!==undefined && !/^sha256:[a-f0-9]{64}$/.test(operation.imageDigest))throw new Error("invalid immutable job image");
-        await this.configureProfile(profile, { signal: controller.signal, imageDigest:operation.imageDigest });
+        await this.configureProfile(profile, { signal: controller.signal, imageDigest:operation.imageDigest,runtime });
         await this.jobs?.close();this.jobs=undefined;
         if(operation.imageDigest) {
           this.jobs=this.jobsFactory({manifest:this.manifest,environments:this.environments,imageDigest:operation.imageDigest});
           this.jobs.configure(profile);
         }
+        this.#runtime=runtime;
         result = { configured: true };
       } else if(req.url==="/jobs"||req.url==='/native-network') {
         if(!this.jobs || !this.healthy())throw new Error("managed jobs unavailable");
@@ -142,6 +150,8 @@ async function trustedJson(path) {
 }
 export class TenantGateway {
   #child;
+  #configuration;
+  #starting;
   constructor({ manifest, token, address, port = 4790, spawnImpl = spawn }) {
     this.manifest = validateManifest(manifest);
     if (!/^[a-f0-9]{64}$/.test(token ?? "") || !/^(?:127\.0\.0\.[12]|172\.31\.240\.\d{1,3})$/.test(address ?? "") ||
@@ -158,11 +168,25 @@ export class TenantGateway {
       child.once("close", () => { clearTimeout(timer); done(); });
     });
   }
-  async start(profile, {imageDigest} = {}) {
+  start(profile, {imageDigest,runtime='opencode'} = {}) {
+    if(!['opencode','codex','claude'].includes(runtime))return Promise.reject(new Error('invalid managed runtime'));
+    const configuration={profile:profile??null,imageDigest:imageDigest??null,runtime};
+    if(isDeepStrictEqual(configuration,this.#configuration)) {
+      if(this.#starting)return this.#starting;
+      if(this.ready)return Promise.resolve();
+    }
+    if(this.#starting)return Promise.reject(new Error('managed gateway configuration busy'));
+    this.#configuration=structuredClone(configuration);
+    const starting=this.#start(profile,{imageDigest,runtime});this.#starting=starting;
+    void starting.finally(()=>{if(this.#starting===starting)this.#starting=undefined;}).catch(()=>{});
+    return starting;
+  }
+  async #start(profile, {imageDigest,runtime}) {
     await this.stop();
     const manifest = this.manifest;
     const env = buildJobEnvironment({ privateHome: manifest.home, projectDir: manifest.workspaceDir,
       environment: { kind: "base", python: "/opt/scikeel/science/bin/python" } });
+    await mkdir(env.TMPDIR,{recursive:true,mode:0o700});
     const config = `${manifest.stateDir}/runtime/xdg-config/opencode`;
     await mkdir(config, { recursive: true, mode: 0o700 });
     await writeFile(`${manifest.stateDir}/runtime/base-workspace.txt`, manifest.workspaceDir, { mode: 0o600 });
@@ -182,7 +206,7 @@ export class TenantGateway {
     };
     await writeFile(temporary, JSON.stringify(configured), { flag: "wx", mode: 0o600 });
     await rename(temporary, `${config}/opencode.json`);
-    const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", this.address,
+    const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", ...(runtime==='opencode'?[]:['--runtime-mode','on-demand']), "--bind-address", this.address,
       "--port", String(this.port), "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,
       "--resources", "/opt/scikeel/tools/resources", "--token", this.token], {
       cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir, SCIKEEL_SESSION_TITLE_POLICY: "conversation-v1", OPENCODE_WEBSEARCH_PROVIDER: searchProvider, OPENCODE_ENABLE_PARALLEL: searchProvider === "parallel" ? "1" : undefined, SCIKEEL_MANAGED_NETWORK_TOKEN: profile?.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey }, detached: true,
@@ -213,7 +237,6 @@ async function startTenant() {
   })();
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void stop(); });
   try {
-    await gateway.start();
     await runner.listen({ host: address });
   } catch (error) { await stop(); throw error; }
 }

@@ -905,8 +905,8 @@ fn serve_asset(stream: &mut TcpStream, ctx: &Ctx, path: &str) -> bool {
 /// swapping the gateway token for the sidecar's own Basic-auth password.
 fn proxy_opencode(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     let (base, pw) = match endpoint(ctx) {
-        Some(v) => v,
-        None => return respond_json(stream, 503, "{\"error\":\"runtime not started\"}"),
+        Ok(v) => v,
+        Err(error) => return respond_json(stream, 503, &err_json(&error)),
     };
     let target = if req.query.is_empty() {
         format!("{base}{}", req.path)
@@ -1148,8 +1148,8 @@ fn send_open_file(stream: &mut TcpStream, name: &Path, file: std::fs::File) {
 /// connection thread until the sidecar closes or the client disconnects.
 fn events(stream: &mut TcpStream, ctx: &Ctx, directory: &str) {
     let (base, pw) = match endpoint(ctx) {
-        Some(v) => v,
-        None => return respond_json(stream, 503, "{\"error\":\"runtime not started\"}"),
+        Ok(v) => v,
+        Err(error) => return respond_json(stream, 503, &err_json(&error)),
     };
     // A dedicated client with NO timeout — an idle event stream must not be cut.
     let client = match reqwest::blocking::Client::builder().build() {
@@ -1197,9 +1197,12 @@ fn shared_client() -> &'static reqwest::blocking::Client {
 }
 
 /// (sidecar base URL, per-run password) or None if the runtime is not up.
-fn endpoint(ctx: &Ctx) -> Option<(String, &'static str)> {
-    let base = sidecar_url(ctx.env.runtime())?;
-    Some((base, server_password()))
+fn endpoint(ctx: &Ctx) -> Result<(String, &'static str), String> {
+    if sidecar_url(ctx.env.runtime()).is_none() && crate::runtime::is_on_demand(ctx.env.runtime()) {
+        crate::runtime::start_runtime(&ctx.env)?;
+    }
+    let base = sidecar_url(ctx.env.runtime()).ok_or_else(|| "runtime not started".to_string())?;
+    Ok((base, server_password()))
 }
 
 fn ws_dir(ctx: &Ctx) -> String {
@@ -1228,7 +1231,7 @@ fn with_query(path: &str, query: &[(&str, &str)]) -> String {
 type UpstreamResult = Result<reqwest::blocking::Response, String>;
 
 fn upstream_get(ctx: &Ctx, path: &str, query: &[(&str, &str)]) -> UpstreamResult {
-    let (base, pw) = endpoint(ctx).ok_or_else(|| "runtime not started".to_string())?;
+    let (base, pw) = endpoint(ctx)?;
     shared_client()
         .get(format!("{base}{}", with_query(path, query)))
         .basic_auth("opencode", Some(pw))
@@ -1237,7 +1240,7 @@ fn upstream_get(ctx: &Ctx, path: &str, query: &[(&str, &str)]) -> UpstreamResult
 }
 
 fn upstream_post(ctx: &Ctx, path: &str, query: &[(&str, &str)], body: &str) -> UpstreamResult {
-    let (base, pw) = endpoint(ctx).ok_or_else(|| "runtime not started".to_string())?;
+    let (base, pw) = endpoint(ctx)?;
     shared_client()
         .post(format!("{base}{}", with_query(path, query)))
         .basic_auth("opencode", Some(pw))
@@ -1248,7 +1251,7 @@ fn upstream_post(ctx: &Ctx, path: &str, query: &[(&str, &str)], body: &str) -> U
 }
 
 fn upstream_delete(ctx: &Ctx, path: &str) -> UpstreamResult {
-    let (base, pw) = endpoint(ctx).ok_or_else(|| "runtime not started".to_string())?;
+    let (base, pw) = endpoint(ctx)?;
     shared_client()
         .delete(format!("{base}{path}"))
         .basic_auth("opencode", Some(pw))

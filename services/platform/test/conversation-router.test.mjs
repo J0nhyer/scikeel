@@ -29,6 +29,12 @@ test('reads merged owned history independently of selected assistant without a m
  assert.equal((await router.messages(owner,'old-opencode'))[0].info.id,'message-oc');
  assert(calls.some(x=>x[0]==='authorize'));
 });
+test('verified native conversation reads do not start the unrelated runtime',async()=>{
+ const {router,calls}=fixture();
+ router.catalog={conversation:async()=>({runtime:'claude',lifecycle:'active'})};
+ assert.equal((await router.read(owner,'old-cli')).id,'old-cli');
+ assert.equal(calls.filter(value=>value[0]==='opencode').length,0);
+});
 test('a current binding maps native IDs to a stable public identity and rejects direct native lookup',async()=>{
  const conversation={id:'public-conversation',title:'Stable',directory:owner.directory,parentId:null,lifecycle:'active',
   currentBindingId:'binding-codex',bindings:[{id:'binding-codex',runtime:'codex',nativeSessionId:'native-codex'}]};

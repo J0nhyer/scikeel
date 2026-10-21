@@ -5,6 +5,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::env::Env;
 use crate::opencode_config::merge_config;
@@ -39,12 +40,21 @@ struct RuntimeLifecycle {
 /// "stopped", spawn on the same port, and overwrite each other's child handle.
 #[derive(Default)]
 pub struct RuntimeState {
+    on_demand: AtomicBool,
     lifecycle: Mutex<RuntimeLifecycle>,
     /// The tail of what the running sidecar wrote to stderr. A process that
     /// refuses to start says why there and then exits, so without this the exit
     /// status alone ("exit code 1") explains nothing — and it takes more than
     /// one LINE: the runtime prints a headline plus the detail under it.
     stderr_tail: Mutex<Vec<String>>,
+}
+
+pub fn set_on_demand(state: &RuntimeState, enabled: bool) {
+    state.on_demand.store(enabled, Ordering::Release);
+}
+
+pub fn is_on_demand(state: &RuntimeState) -> bool {
+    state.on_demand.load(Ordering::Acquire)
 }
 
 /// A sidecar that exited: how many have, and the last one's own words. None

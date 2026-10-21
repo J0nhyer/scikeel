@@ -32,7 +32,7 @@ try {
   const deadline = Date.now() + 30000; let ready = false;
   while (Date.now() < deadline && !spawnFailed && child.exitCode === null && child.signalCode === null) {
     try {
-      const response = await fetch(`http://${address}:4791/health`, { signal: AbortSignal.timeout(500) });
+      const response = await fetch(`http://${address}:4791/health/live`, { signal: AbortSignal.timeout(500) });
       if (response.ok) { ready = true; break; }
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 100));

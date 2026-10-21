@@ -8,6 +8,7 @@ import { CliProfileResolver } from "./cli-profile.mjs";
 import { AssistantPolicy, validateAssistantPolicyState } from "./assistant-policy.mjs";
 import {handoverText,prepareHandover} from './conversation-handover.mjs';
 import {nativePublicMessageId} from './conversation-router.mjs';
+import {validateEnvelope,appendCatalogChange,cliSummaries,acknowledgeEnvelope,projectEnvelope} from './catalog-outbox.mjs';
 import { metadataFacts } from '@ai4s/sdk/agent-analytics-observer';
 export {handoverText} from './conversation-handover.mjs';
 export const RUNTIME_STORAGE_VERSION = 5;
@@ -64,8 +65,9 @@ async function readPrivateHistory(root, branch, userId) {
     }
     if (!bytes) return null;
     const data = JSON.parse(bytes.toString("utf8"));
-    if (!data || Object.keys(data).sort().join(",") !== "sessions,version" || data.version !== 1 ||
+    if (!data || Object.keys(data).sort().join(",") !== (data.version===2?"catalogOutbox,catalogRevision,sessions,version":"sessions,version") || ![1,2].includes(data.version) ||
         !Array.isArray(data.sessions) || data.sessions.length > 10000) throw historyFailure();
+    if(data.version===2)validateEnvelope(data);
     return { sessions: data.sessions, revision: historyHash(bytes) };
   } catch { throw historyFailure(); }
 }
@@ -165,14 +167,7 @@ async function ensureDirectory(path) {
 
 async function writePrivate(path, content) {
   await ensureDirectory(dirname(path));
-  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporary, content, { mode: 0o600 });
-  try {
-    await fs.chmod(temporary, 0o600);
-  } catch {
-    // Best effort on platforms without POSIX modes.
-  }
-  await fs.rename(temporary, path);
+  await writeRuntimePolicy(path,content);
 }
 
 async function writeRuntimePolicy(path, content) {
@@ -977,12 +972,33 @@ export class CliRuntimeManager {
 
   async persistUser(state) {
     const snapshot = {
-      version: 1,
+      version: 2,
       sessions: [...state.sessions.values()].map((session) => Object.fromEntries(Object.entries(session)
         .filter(([key]) => key !== "status" && !key.startsWith("_")))),
     };
-    await this.#withUserStorage(state.userId, () => writePrivate(state.paths.sessionsPath, `${JSON.stringify(snapshot, null, 2)}\n`));
+    await this.#withUserStorage(state.userId, async() => {
+      const previous=await readJson(state.paths.sessionsPath,{version:1,sessions:[]});
+      if(![1,2].includes(previous.version)||!Array.isArray(previous.sessions))throw historyFailure();
+      if(previous.version===2)validateEnvelope(previous);
+      appendCatalogChange(previous,snapshot,{userId:state.userId,source:'cli',sourceKey:'cli/main',summarize:cliSummaries});
+      const save=()=>writePrivate(state.paths.sessionsPath,`${JSON.stringify(snapshot,null,2)}\n`);
+      await save();await projectEnvelope(this.catalog,snapshot,save);
+    });
   }
+  pendingCatalogChanges(userId){return this.#withUserStorage(userId,async()=>{
+    const data=await readJson(this.userPaths(userId).sessionsPath,{version:1,sessions:[]});
+    if(data.version===1)return [];validateEnvelope(data);return structuredClone(data.catalogOutbox);
+  });}
+  async catalogDirectories(userId){
+    const data=await readJson(this.userPaths(userId).sessionsPath,{version:1,sessions:[]});
+    if(![1,2].includes(data.version)||!Array.isArray(data.sessions))throw historyFailure();
+    if(data.version===2)validateEnvelope(data);return data.sessions.map(row=>row.directory);
+  }
+  acknowledgeCatalogChange(userId,changeId,payloadHash){return this.#withUserStorage(userId,async()=>{
+    const path=this.userPaths(userId).sessionsPath,data=await readJson(path,{version:1,sessions:[]});
+    if(data.version===1)return;validateEnvelope(data);
+    if(acknowledgeEnvelope(data,changeId,payloadHash))await writePrivate(path,`${JSON.stringify(data,null,2)}\n`);
+  });}
 
   #withUserStorage(userId, operation) {
     const previous = this.persistQueues.get(userId) ?? Promise.resolve();
@@ -1306,7 +1322,7 @@ export class CliRuntimeManager {
   async subscribe(userId, request, response) {
     const parsed = new URL(request.url ?? "/", "http://platform.invalid");
     const directory = parsed.searchParams.get("directory");
-    await this.ensureUser(userId);
+    if(!USER_ID.test(userId))throw issue('invalid_user','Invalid account',400);
     const subscription = { response, directory };
     let set = this.subscribers.get(userId);
     if (!set) this.subscribers.set(userId, (set = new Set()));

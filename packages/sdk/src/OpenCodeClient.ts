@@ -29,6 +29,9 @@ import type { MessageUsage } from "@ai4s/shared";
 import { DEFAULT_OPENCODE_URL } from "./types";
 import type { AgentRuntime } from "./runtime";
 import { BaseAgentRuntime } from "./base-runtime";
+import {GatewayBootstrapClient,catalogDirectory} from './GatewayBootstrapClient';
+import {isWorkspaceReport} from './GatewayWorkspaceClient';
+import type {CatalogPage,ConversationSummary} from './GatewayBootstrapClient';
 
 export interface ProjectEnvironmentInfo {
   imageDigest: string;
@@ -301,6 +304,20 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  calls (`/session/:id/…`) need no directory: the server routes them by the
    *  session's own recorded folder (verified live: `pwd` runs in it). */
   private readonly directory: string | null;
+  private readonly accountWideSessions: boolean;
+  private readonly workspaceCatalogRoot: string | null;
+  private workspaceAcknowledged: (() => void) | null = null;
+  private acknowledgeWorkspace(raw: OpenCodeRawEvent): void {
+    if (!this.workspaceCatalogRoot || raw.type !== 'workspace.bootstrap') return;
+    const properties=raw.properties??{},workspace=properties.workspace;
+    if (!isWorkspaceReport(workspace) || workspace.state !== 'healthy' || !workspace.context ||
+        workspace.context.generation !== this.gatewayGeneration || properties.policyRevision !== this.gatewayAssistantRevision ||
+        !Number.isSafeInteger(properties.catalogRevision) || Number(properties.catalogRevision)<0 ||
+        typeof properties.accountId !== 'string' || !properties.accountId) {
+      throw new Error('Workspace acknowledgement does not match the active connection');
+    }
+    this.workspaceAcknowledged?.();
+  }
   private abort: AbortController | null = null;
   private es: EventSource | null = null;
   /** Pending self-heal of a dead event stream (see reconnectSoon). */
@@ -348,6 +365,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     this.authToken = opts.password ? btoa(`${opts.username ?? "opencode"}:${opts.password}`) : null;
     this.authHeader = this.authToken ? `Basic ${this.authToken}` : null;
     this.directory = opts.directory ?? null;
+    this.accountWideSessions = opts.accountWideSessions === true;
+    this.workspaceCatalogRoot=opts.workspaceCatalogRoot??null;
     this.connectTimeoutMs = opts.connectTimeoutMs ?? 5000;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 15000;
     this.titleReader = opts.sessionTitlePresentation ? new SessionTitleReader(async (sid, mid) => {
@@ -483,7 +502,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           if (this.es === es) this.es = null;
           reject(new Error("Timed out opening OpenCode event stream"));
         }, this.connectTimeoutMs);
-        es.onopen = () => {
+        const acknowledge = () => {
           if (finished) return;
           opened = true;
           finished = true;
@@ -491,11 +510,15 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           this.setStatus("ready");
           resolve();
         };
+        this.workspaceAcknowledged=acknowledge;
+        es.onopen = () => { if (!this.workspaceCatalogRoot) acknowledge(); };
         es.onmessage = (ev) => {
           try {
-            this.normalize(JSON.parse(ev.data) as OpenCodeRawEvent);
-          } catch {
-            /* ignore malformed frame */
+            const raw=JSON.parse(ev.data) as OpenCodeRawEvent;
+            this.acknowledgeWorkspace(raw);
+            this.normalize(raw);
+          } catch (error) {
+            if(this.workspaceCatalogRoot&&!finished){finished=true;clearTimeout(timer);es.close();this.setStatus('error');reject(error);}
           }
         };
         es.onerror = () => {
@@ -529,6 +552,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     return new Promise((resolve, reject) => {
       let opened = false;
       const abort = this.abort!;
+      const acknowledge=()=>{if(opened)return;opened=true;clearTimeout(timer);this.setStatus('ready');resolve();};
+      this.workspaceAcknowledged=acknowledge;
       const timer = setTimeout(() => {
         if (!opened) abort.abort(new Error("Timed out opening OpenCode event stream"));
       }, this.connectTimeoutMs);
@@ -538,16 +563,15 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       })
         .then(async (res) => {
           this.captureContext(res);
-          clearTimeout(timer);
           if (!res.ok || !res.body) {
+            clearTimeout(timer);
             this.setStatus("error");
             reject(new Error(`OpenCode /event returned ${res.status}`));
             return;
           }
-          this.setStatus("ready");
-          opened = true;
-          resolve();
+          if(!this.workspaceCatalogRoot)acknowledge();
           await this.readStream(res.body);
+          if(!opened)throw new Error('Workspace event stream ended before acknowledgement');
         })
         .catch((err) => {
           clearTimeout(timer);
@@ -563,6 +587,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
 
   close(): void {
     this.closed = true;
+    this.workspaceAcknowledged=null;
     this.titleReader?.close();
     this.titleUpdates.clear();
     this.titleDeleted.clear();
@@ -633,7 +658,12 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  workspace folder, archived ones excluded. Bounded by RECENT_WINDOW — the
    *  whole history is never held in memory (see the constant). */
   async listSessions(directories?: string[]): Promise<SessionMeta[]> {
-    const targets = directories?.length ? [...new Set(directories)] : [this.directory ?? undefined];
+    if(this.workspaceCatalogRoot){
+      const page=await new GatewayBootstrapClient({baseUrl:this.baseUrl,fetchImpl:this.fetchImpl}).conversations({},
+        {signal:new AbortController().signal,timeoutMs:this.requestTimeoutMs});
+      return this.catalogSessions(page);
+    }
+    const targets = this.accountWideSessions ? [undefined] : directories?.length ? [...new Set(directories)] : [this.directory ?? undefined];
     const sessions = new Map<string, SessionMeta>();
     // Read sequentially to bound workspace initialization on small gateway hosts.
     for (const directory of targets) {
@@ -641,6 +671,12 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       for (const session of page.sessions) sessions.set(session.id, session);
     }
     return [...sessions.values()].sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0)).slice(0, RECENT_WINDOW);
+  }
+  private catalogSessions(page:CatalogPage<ConversationSummary>):SessionMeta[]{
+    if(!this.workspaceCatalogRoot)throw new Error('Managed workspace root unavailable');
+    return page.items.map(row=>({id:row.id,title:row.title,directory:catalogDirectory(page,row.directoryRef,this.workspaceCatalogRoot!),
+      ...(row.parentId?{parentId:row.parentId}:{}),updated:row.updatedAt,
+      ...(row.lifecycle==='archived'?{archived:row.updatedAt||1}:{}),metadata:{}}));
   }
 
   /** One page of conversation history, newest first, across every workspace
@@ -1687,8 +1723,9 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
           this.handleSseChunk(chunk);
         }
       }
-    } catch {
+    } catch (error) {
       // aborted or connection dropped
+      if(this.workspaceCatalogRoot)throw error;
     } finally {
       this.setStatus("offline");
     }
@@ -1706,6 +1743,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     } catch {
       return;
     }
+    this.acknowledgeWorkspace(raw);
     this.normalize(raw);
   }
 

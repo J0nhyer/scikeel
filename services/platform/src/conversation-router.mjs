@@ -16,17 +16,20 @@ export class ConversationRouter {
       typeof readOpenCode!=='function')throw fail('invalid_conversation_router',400);
   Object.assign(this,{authorize,conversations,cliRuntime,readOpenCode,listOpenCode});
  }
- async #row(owner,row) {
+ async #row(owner,row,{includeTrashed=false}={}) {
   if(!row || !id(row.id) || typeof row.title!=='string' || typeof row.directory!=='string' ||
       posix.normalize(row.directory)!==row.directory || row.directory!==owner.workspaceDir && !row.directory.startsWith(owner.workspaceDir+'/') ||
       row.parentID!=null && !id(row.parentID))throw fail('conversation_history_invalid');
-  await this.authorize({...owner,directory:row.directory});return row;
+  try {await this.authorize({...owner,directory:row.directory});}
+  catch(error){if(!includeTrashed||error.code!=='project_trashed')throw error;row.lifecycle='trashed';}
+  return row;
  }
- async #snapshot(owner) {
+ async #snapshot(owner,{includeTrashed=false,nativeOnly=false}={}) {
   await this.authorize(owner);
-  const canonical=await this.conversations.list(owner);
-  const cli=await this.cliRuntime.readHistoricalSessions(owner);
-  const native=this.listOpenCode?await this.listOpenCode(owner):await this.readOpenCode(owner,'/experimental/session?limit=10000');
+  const [canonical,cli,native]=await Promise.all([
+   this.conversations.list(owner,{includeTrashed}),this.cliRuntime.readHistoricalSessions(owner),
+   nativeOnly?[]:this.listOpenCode?this.listOpenCode(owner):this.readOpenCode(owner,'/experimental/session?limit=10000'),
+  ]);
   if(!Array.isArray(cli)||!Array.isArray(native)||!Array.isArray(canonical)||cli.length+native.length+canonical.length>30000)
    throw fail('conversation_history_invalid');
   const sources=new Map(),hidden=new Set();
@@ -34,12 +37,12 @@ export class ConversationRouter {
    if(!runtimes.has(row.runtime)||row.runtime==='opencode')throw fail('conversation_history_invalid');
    if(row.bindingHistory!==undefined&&(!Array.isArray(row.bindingHistory)||row.bindingHistory.length>128||
     row.bindingHistory.some(binding=>!id(binding?.nativeSessionId)||!id(binding.identityRevision))))throw fail('conversation_history_invalid');
-   try {await this.#row(owner,row);}catch(error){if(error.code==='project_trashed')continue;throw error;}
+   try {await this.#row(owner,row,{includeTrashed});}catch(error){if(error.code==='project_trashed')continue;throw error;}
    if(sources.has(row.id))throw fail('conversation_origin_conflict');
    sources.set(row.id,{row,runtime:row.runtime,sourceId:row.id});
   }
   for(const row of native) {
-   try {await this.#row(owner,row);}catch(error){if(error.code==='project_trashed')continue;throw error;}
+   try {await this.#row(owner,row,{includeTrashed});}catch(error){if(error.code==='project_trashed')continue;throw error;}
    if(sources.has(row.id))throw fail('conversation_origin_conflict');
    sources.set(row.id,{row,runtime:'opencode',sourceId:row.id});
   }
@@ -75,11 +78,20 @@ export class ConversationRouter {
    if(base&&base!==archival&&![...bindingSources.values()].includes(base)&&!unbound)throw fail('conversation_origin_conflict');
    const row={...(origin?.row??{}),id:value.id,title:value.title,directory:value.directory,parentID:value.parentId,
     metadata:{...(origin?.row.metadata??{}),...(value.lifecycle==='archived'?{archived:true}:{})}};
-   await this.#row(owner,row);
+   await this.#row(owner,row,{includeTrashed});
    sources.set(value.id,{...origin,row,canonical:value,bindingSources,archival});
   }
   for(const hiddenId of hidden)sources.delete(hiddenId);
   await this.authorize(owner);return {rows:sources,rawSources};
+ }
+ async exportCatalog(owner,{runtime='opencode'}={}) {
+  const snapshot=await this.#snapshot(owner,{includeTrashed:true});
+  return [...snapshot.rows.values()].map(source=>({
+   ...clone(source.row),runtime:source.runtime??source.canonical?.bindings.find(binding=>binding.id===source.canonical.currentBindingId)?.runtime??runtime,
+   canonical:!!source.canonical,sourceId:source.sourceId??source.row.id,
+   lifecycle:source.row.lifecycle==='trashed'||source.canonical?.lifecycle==='trashed'?'trashed':source.canonical?.lifecycle==='archived'||source.row.metadata?.archived?'archived':'active',
+   sourceRevision:source.canonical?.revision??0,updatedAt:Math.max(source.canonical?.updatedAt??0,source.row.time?.updated??0),
+  }));
  }
  async list(owner,{limit=200,cursor=null,search='',directory}={}) {
   if(!Number.isSafeInteger(limit)||limit<1||limit>10000||cursor!==null && (!Number.isSafeInteger(cursor)||cursor<0)||
@@ -93,7 +105,9 @@ export class ConversationRouter {
  }
  async #resolve(owner,conversationId) {
   if(!id(conversationId))throw fail('invalid_conversation_query',400);
-  const {rows,rawSources}=await this.#snapshot(owner),source=rows.get(conversationId);
+  const indexed=this.catalog?await this.catalog.conversation(owner.userId,conversationId):null;
+  if(this.catalog&&(!indexed||indexed.lifecycle==='trashed'))throw fail('conversation_not_found',404);
+  const {rows,rawSources}=await this.#snapshot(owner,{nativeOnly:!!indexed&&indexed.runtime!=='opencode'}),source=rows.get(conversationId);
   if(!source)throw fail('conversation_not_found',404);
   return {...source,rawSources};
  }
