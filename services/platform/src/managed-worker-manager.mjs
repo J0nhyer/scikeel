@@ -19,12 +19,12 @@ async function inventoryStatus(response) {
 }
 export class ManagedWorkerManager {
   #workers = new Map(); #starting = new Map(); #queue = Promise.resolve(); #closed = false; #admissions = new Map(); #handoffs = new Map();
-  constructor({ rootDir, instancesDir = posix.join(rootDir ?? "", "instances"), imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker, admitWorker, refreshWorker, now = Date.now, logger = () => {} } = {}) {
+  constructor({ rootDir, instancesDir = posix.join(rootDir ?? "", "instances"), imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker, admitWorker, refreshWorker, maxResidents=1, now = Date.now, logger = () => {} } = {}) {
     if (typeof rootDir !== "string" || !rootDir.startsWith("/") || rootDir === "/" || posix.normalize(rootDir) !== rootDir ||
         !instancesDir.startsWith("/") || instancesDir === "/" || posix.normalize(instancesDir) !== instancesDir ||
-        !/^sha256:[a-f0-9]{64}$/.test(imageDigest ?? "") || !client || !tenantPolicy || typeof fetchImpl !== "function")
+        !/^sha256:[a-f0-9]{64}$/.test(imageDigest ?? "") || !client || !tenantPolicy || typeof fetchImpl !== "function"||![1,2].includes(maxResidents))
       throw new Error("invalid managed worker configuration");
-    Object.assign(this, { rootDir, instancesDir, imageDigest, client, tenantPolicy, fetchImpl, configureWorker, revokeWorker, admitWorker, refreshWorker, now, logger });
+    Object.assign(this, { rootDir, instancesDir, imageDigest, client, tenantPolicy, fetchImpl, configureWorker, revokeWorker, admitWorker, refreshWorker, maxResidents,now, logger });
     this.recovery = new WorkspaceRecovery({ rootDir, now, probe: (context, options) => this.#probe(context, options) });
   }
   async init() { if (this.#closed) throw unavailable("worker manager closed"); }
@@ -70,12 +70,15 @@ export class ManagedWorkerManager {
           jobs.add(job.jobId);nativeActive ||= ["running","settling"].includes(job.status);
         }
         if(nativeActive && !native.busy)throw failure();
+        let statuses={};
+        if(this.#runtime(context)==="opencode") {
         const response=await this.fetchImpl(`${record.url}/session/status`,{headers:{
           authorization:`Basic ${Buffer.from(`opencode:${record.token}`).toString("base64")}`},signal:AbortSignal.timeout(3000)});
         if(!response.ok)throw failure();
-        const statuses=await inventoryStatus(response);
+        statuses=await inventoryStatus(response);
         if(!statuses || typeof statuses!=="object" || Array.isArray(statuses) || Object.keys(statuses).length>10000 ||
             Object.values(statuses).some(status=>!status || !["idle","busy","retry"].includes(status.type)))throw failure();
+        }
         const current=await this.client.inspect({instanceId:account.instanceId},{timeoutMs:3000});
         if(current.instanceId!==account.instanceId || current.generation!==account.generation || current.status!=="ready" ||
             record.generation!==account.generation || record.status!=="running" || record.cleanupUnverified)throw failure();
@@ -107,6 +110,20 @@ export class ManagedWorkerManager {
     return record;
   }
   #context(record) { return { userId: record.userId, instanceId: record.id, generation: record.generation }; }
+  #runtime(context) {
+    const runtime=this.runtimeForContext?.(context)??"opencode";
+    if(!["opencode","codex","claude"].includes(runtime))throw new Error("invalid managed runtime");
+    return runtime;
+  }
+  async #nativeActivity(context) {
+    if(typeof this.inspectNative!=="function")throw new Error("native inspection unavailable");
+    const snapshot=await this.inspectNative(context);
+    if(!snapshot || typeof snapshot.busy!=="boolean" || typeof snapshot.starting!=="boolean" || !Array.isArray(snapshot.jobs) || snapshot.jobs.length>16 ||
+        snapshot.starting&&!snapshot.busy || snapshot.jobs.some(job=>!["running","settling","completed","failed","cancelled"].includes(job?.status)))throw new Error("invalid native status");
+    const active=snapshot.starting||snapshot.jobs.some(job=>["running","settling"].includes(job.status));
+    if(active&&!snapshot.busy)throw new Error("inconsistent native status");
+    return snapshot.busy;
+  }
   #report(record, state, activity = "unknown", canRestart = false) {
     return { context: record.generation ? { instanceId: record.id, generation: record.generation } : null, state, activity, canRestart, retryAfterMs: 0 };
   }
@@ -146,6 +163,10 @@ export class ManagedWorkerManager {
         const health = await this.fetchImpl(`${record.url}/v1/health`, { headers: { authorization: `Bearer ${record.token}` }, signal: requestSignal });
         if (!health.ok) throw new Error("gateway unavailable");
         await health.body?.cancel();
+        if(this.#runtime(context)!=="opencode") {
+          const busy=await this.#nativeActivity(context);
+          return this.#report(record,"healthy",record.maintenance?"maintenance":busy||record.activeMutations?"running":"unknown");
+        }
         const response = await this.fetchImpl(`${record.url}/session/status?directory=${encodeURIComponent(record.workspaceDir)}`, {
           headers: { authorization: `Basic ${Buffer.from(`opencode:${record.token}`).toString("base64")}` }, signal: requestSignal });
         if (!response.ok) throw new Error("runtime unavailable");
@@ -196,7 +217,8 @@ export class ManagedWorkerManager {
     if (this.#handoffs.has(record.id)) throw this.#capacity("workspace_reassigned", record, record, { category: "handoff" });
     if (expectedGeneration === undefined) return;
     if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1) throw recoveryError("stale_workspace_context", { context: this.#context(record) });
-    const replacement = record.status !== "running" && [...this.#workers.values()].find(other=>other.id!==record.id && ["starting","running"].includes(other.status));
+    const residents=[...this.#workers.values()].filter(other=>other.id!==record.id && ["starting","running"].includes(other.status));
+    const replacement = record.status !== "running" && residents.length>=this.maxResidents&&residents[0];
     if (replacement) throw this.#capacity("workspace_reassigned", record, replacement, { category: "generation_scope" });
   }
   ensureWorker({ instanceId, userId, allowRecovery = true, expectedGeneration }) {
@@ -234,8 +256,18 @@ export class ManagedWorkerManager {
   }
   async #start(record) {
       const { id: instanceId, userId } = record;
-      for (const other of this.#workers.values()) if (other.id !== instanceId && other.status === "running") {
-        await this.#handoff(other, record);
+      const residents=[...this.#workers.values()].filter(other=>other.id!==instanceId&&other.status==='running');
+      if(residents.length>=this.maxResidents){
+        if(this.maxResidents===1)await this.#handoff(residents[0],record);
+        else{
+          const candidates=residents.filter(other=>!other.activeMutations&&!other.maintenance&&!other.cleanupUnverified);
+          let evicted=false,lastError;
+          for(const candidate of candidates){
+            try{await this.#handoff(candidate,record);evicted=true;break;}
+            catch(error){if(!error.capacityReason)throw error;lastError=error;}
+          }
+          if(!evicted)throw lastError??this.#capacity('active_operations',record,residents[0]);
+        }
       }
       const registered = await this.client.register({ instanceId, userId });
       record.generation = registered.generation; record.status = "starting";
@@ -326,6 +358,14 @@ export class ManagedWorkerManager {
     } finally { this.#handoffs.delete(other.id); }
   }
   async #idleState(record) {
+    const context=this.#context(record);
+    if(this.#runtime(context)!=="opencode") {
+      let busy;
+      try {busy=await this.#nativeActivity(context);}
+      catch {return {state:"idle_unverified",category:"malformed_status"};}
+      if(busy)return {state:"execution_active",category:"runtime_busy"};
+      return await this.executionProbe?.(context)?{state:"execution_active",category:"execution_busy"}:{state:"idle"};
+    }
     let body;
     try {
       const response = await this.fetchImpl(`${record.url}/session/status`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${record.token}`).toString("base64")}` }, signal: AbortSignal.timeout(3000) });

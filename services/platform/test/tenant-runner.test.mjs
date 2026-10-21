@@ -133,6 +133,9 @@ test("gateway configuration is published before startup and restart preserves pr
   assert.equal(bootstrap.permission.websearch, "ask");
   const profile = { model: "fixture/one", permission: { bash: "ask", edit: "ask", external_directory: "deny", webfetch: "ask", websearch: "ask" } };
   await gateway.start(profile);
+  const startedCount=childEnvironments.length;
+  await gateway.start(structuredClone(profile));
+  assert.equal(childEnvironments.length,startedCount,'identical configured profiles must reuse the healthy gateway');
   assert.equal((await (await fetch(`http://127.0.0.1:${port}/v1/health`)).json()).model, "fixture/one");
   const published = JSON.parse(await readFile(`${config.stateDir}/runtime/xdg-config/opencode/opencode.json`, "utf8"));
   const skills = "/opt/scikeel/tools/resources/skills-core";

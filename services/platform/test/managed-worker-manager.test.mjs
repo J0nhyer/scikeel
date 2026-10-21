@@ -40,6 +40,19 @@ test("quota tenant directories remain separate from writable platform metadata",
   assert.equal(worker.workspaceDir, "/var/lib/scikeel/tenant-data/instances/user-a/workspace");
   assert.ok(manager.rootDir.includes("scikeel-manager-"));
 });
+test('two bounded resident environments remain available until the third account needs capacity',async t=>{
+ const {manager,calls}=fixture({maxResidents:2});t.after(()=>manager.close());
+ await manager.ensureWorker({instanceId:'user-a',userId:'a'});
+ await manager.ensureWorker({instanceId:'user-b',userId:'b'});
+ assert.equal(manager.getWorker('user-a').status,'running');
+ assert.equal(manager.getWorker('user-b').status,'running');
+ assert.equal(calls.filter(([operation])=>operation==='stop').length,0);
+ const active=manager.retainWorker('user-a');
+ await manager.ensureWorker({instanceId:'user-c',userId:'c'});
+ assert.equal(manager.getWorker('user-a').status,'running');
+ assert.equal(manager.getWorker('user-b').status,'stopped');
+ active.release();
+});
 test('passive analytics registration follows verified lifecycle without extra starts or authority',async(t)=>{
   const {manager,calls,policy}=fixture();t.after(()=>manager.close());const observed=[];
   manager.onWorkerReady=({context,access})=>{
@@ -87,6 +100,24 @@ test("assistant inventory requires current native and OpenCode observations, not
  f.manager.inspectNative=async()=>{throw Error("synthetic unavailable runner");};
  assert.equal((await f.manager.assistantInventory()).uncertainEffects.length,1);
  assert.equal(f.calls.filter(([op])=>op==="start").length,1);
+});
+test("native workspace health and inventory never start OpenCode",async t=>{
+ const f=inventoryFixture(t);const urls=[];
+ f.manager.runtimeForContext=()=>"codex";
+ f.manager.fetchImpl=async url=>{
+   urls.push(url);
+   assert.ok(!url.includes("/session/status"));
+   return {ok:true,json:async()=>({})};
+ };
+ const context={instanceId:"user-a",userId:"a",generation:1};
+ await f.manager.ensureWorker(context);
+ assert.equal((await f.manager.workspaceStatus(context)).state,"healthy");
+ assert.equal(await f.manager.isIdle(context),true);
+ assert.deepEqual(await f.manager.assistantInventory(),{activeExecutions:[],uncertainEffects:[]});
+ f.manager.inspectNative=async()=>({busy:true,starting:true,jobs:[]});
+ assert.equal(await f.manager.isIdle(context),false);
+ assert.equal((await f.manager.assistantInventory()).activeExecutions.length,1);
+ assert.ok(urls.some(url=>url.endsWith("/v1/health")));
 });
 test("assistant inventory fails closed on unavailable registry, unowned generations and malformed native snapshots",async t=>{
  const f=inventoryFixture(t);await f.manager.ensureWorker({instanceId:"user-a",userId:"a"});

@@ -11,7 +11,7 @@ import { WorkspaceAdmission } from "./workspace-admission.mjs";
 import { WorkspaceFiles } from "./workspace-files.mjs";
 import { WorkspaceUploads } from "./workspace-uploads.mjs";
 import { WorkspaceProvenance } from "./workspace-provenance.mjs";
-import { WorkspaceManagement, historicalSessionRoots } from "./workspace-management.mjs";
+import { WorkspaceManagement, historicalSessionRoots, historicalSessions } from "./workspace-management.mjs";
 import { WorkspaceTickets } from "./workspace-tickets.mjs";
 import { createWorkspaceRoutes } from "./workspace-routes.mjs";
 import { NetworkOperations } from "./network-operations.mjs";
@@ -36,6 +36,10 @@ import { ManagedAttachmentCopies } from "./managed-attachment-copies.mjs";
 import { AttachmentStore } from "./attachments.mjs";
 import { createAttachmentRouter } from "./attachment-routes.mjs";
 import { recoveryError } from "./workspace-recovery.mjs";
+import {CatalogProjector,directoryBindings} from './catalog-outbox.mjs';
+import {WorkspaceBootstrap} from './workspace-bootstrap.mjs';
+import {WorkspaceCatalogImporter} from './workspace-catalog-import.mjs';
+import {waitManagedRuntime} from './sandbox-control-plane.mjs';
 
 const SESSION_COOKIE = "osd_session";
 const BOOTSTRAP_COOKIE = "osd_worker_bootstrap";
@@ -327,6 +331,7 @@ export class PlatformServer {
     analyticsRoutes = null,
     analyticsCollector = null,
     enableWorkspaceManagement = false,
+    workspaceCatalog = null,
   } = {}) {
     if (!authStore) throw new Error("authStore is required");
     if (!workerManager) throw new Error("workerManager is required");
@@ -564,6 +569,48 @@ export class PlatformServer {
     }
     this.server = null;
     this.listenPromise = null;
+    this.workspaceCatalog=workspaceCatalog;
+    if(workspaceCatalog){
+      if(!this.workspaceManagement||!this.conversationRouter||!cliRuntime)throw new Error('workspace catalog requires managed workspace services');
+      const sources=[this.conversations,this.workspaceManagement.state,cliRuntime];
+      for(const source of sources)source.catalog=workspaceCatalog;
+      this.conversationRouter.catalog=workspaceCatalog;
+      this.catalogProjector=new CatalogProjector({catalog:workspaceCatalog,sources});
+      workspaceCatalog.resolveDirectories=async change=>{
+        const workspaceDir=workerManager.instancePaths(workerIdForUser(change.userId)).workspaceDir;
+        const directories=change.source==='canonical'?await this.conversations.catalogDirectories(change.userId):
+          change.source==='cli'?await cliRuntime.catalogDirectories(change.userId):Object.values((await this.workspaceManagement.state.open(change.userId)).projects).map(entry=>entry.project.path);
+        return directoryBindings(change.userId,workspaceDir,directories);
+      };
+      this.workspaceBootstrap=new WorkspaceBootstrap({catalog:workspaceCatalog,projector:this.catalogProjector,
+        describe:user=>{
+          if(cliRuntime.assistantSnapshot(user.id).recoveryRequired)throw workspaceError('assistant_recovery_required',503);
+          return cliRuntime.describe(user.id);
+        },
+        withAccount:(userId,run)=>this.workspaceAdmission.start(userId,run),
+        status:user=>workerManager.workspaceStatus({userId:user.id,instanceId:workerIdForUser(user.id)}),
+        prepare:async user=>{await this.#ensureWorker(user);return workerManager.workspaceStatus({userId:user.id,instanceId:workerIdForUser(user.id)});},
+      });
+      workspaceCatalog.onChanged=(userId,revision)=>this.workspaceBootstrap.changed(userId,'catalog.changed',{catalogRevision:revision});
+    }
+  }
+
+  async importWorkspaceCatalog({verifyOnly=false}={}) {
+    if(!this.workspaceCatalog)throw new Error('workspace catalog unavailable');
+    const importer=new WorkspaceCatalogImporter({catalog:this.workspaceCatalog,projector:this.catalogProjector,
+      withAccount:(userId,run)=>this.workspaceAdmission.start(userId,run),
+      readSources:async userId=>{
+        const user=(await this.authStore.listUsers()).find(user=>user.id===userId);
+        if(!user)throw new Error('catalog owner unavailable');
+        const {worker,access}=await this.#ensureWorker(user);
+        await waitManagedRuntime(access,{directory:worker.workspaceDir,runtime:'opencode'});
+        const owner={userId,instanceId:worker.id,generation:worker.generation,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir};
+        const [projects,conversations,state]=await Promise.all([this.workspaceManagement.allProjects(owner),
+          this.conversationRouter.exportCatalog(owner,{runtime:this.cliRuntime.runtimeForUser(userId)}),this.workspaceManagement.state.open(userId)]);
+        return {workspaceDir:worker.workspaceDir,projects:projects.map(row=>({...row,lifecycle:state.projects[row.id]?.state==='trashed'?'trashed':'active'})),conversations};
+      },
+    });
+    return importer.run({userIds:(await this.authStore.listUsers()).map(user=>user.id),resume:true,verifyOnly});
   }
 
   async assistantExecutionInventory() {
@@ -745,6 +792,7 @@ export class PlatformServer {
     if (!payload) return;
     try {
       const user = await this.authStore.createUser(payload);
+      if(this.workspaceCatalog)await this.workspaceCatalog.verify(user.id,createHash('sha256').update(JSON.stringify(['new-account',user.id])).digest('hex'));
       sendJson(response, 201, { user });
     } catch (error) {
       const status = error?.code === "duplicate_username" ? 409 : 400;
@@ -916,27 +964,14 @@ export class PlatformServer {
   }
 
   async #listConversationSources(owner) {
-    const directories=new Set([owner.workspaceDir,...await this.workspaceManagement?.roots(owner)??[]]),rows=new Map();
-    for(const directory of directories) {
-      let cursor=null;
-      for(let page=0;page<61;page++) {
-        const query=new URLSearchParams({directory,limit:"200",...(cursor===null?{}:{cursor:String(cursor)})});
-        const items=await this.#workspaceGateway(owner,"/experimental/session?"+query);
-        if(!Array.isArray(items)||items.length>10000)throw workspaceError("conversation_history_invalid",503);
-        let fresh=0;
-        for(const item of items) {
-          const previous=rows.get(item?.id);
-          if(previous&&JSON.stringify(previous)!==JSON.stringify(item))throw workspaceError("conversation_origin_conflict",503);
-          if(!previous){rows.set(item?.id,item);fresh++;}
-        }
-        if(rows.size>10000)throw workspaceError("conversation_history_limit",503);
-        if(items.length<200)break;
-        const last=items[items.length-1]?.time?.updated;
-        if(!Number.isSafeInteger(last)||last<0||!fresh||cursor!==null&&last+1>=cursor||page===60)
-          throw workspaceError("conversation_history_limit",503);
-        cursor=last+1;
-      }
+    const rows=new Map();
+    for(const item of await historicalSessions(owner,(context,path)=>this.#workspaceGateway(context,path))) {
+      if(typeof item?.id!=="string")throw workspaceError("conversation_history_invalid",503);
+      const previous=rows.get(item.id);
+      if(previous&&JSON.stringify(previous)!==JSON.stringify(item))throw workspaceError("conversation_origin_conflict",503);
+      rows.set(item.id,item);
     }
+    if(rows.size>10000)throw workspaceError("conversation_history_limit",503);
     return [...rows.values()];
   }
 
@@ -2524,9 +2559,13 @@ export class PlatformServer {
           sendJson(response, 405, { error: "method not allowed" }, { allow: "GET" });
           return;
         }
-        const clientHtml = this.webRoot ? await readFile(resolve(this.webRoot, "index.html"), "utf8").catch(() => "") : "";
+        let clientManifest=null;
+        if(this.webRoot){
+          try{clientManifest=JSON.parse(await readFile(resolve(this.webRoot,'.vite/manifest.json'),'utf8'));}
+          catch(error){if(error.code!=='ENOENT'||this.workspaceCatalog)throw error;}
+        }
         sendHtml(response, 200, loginPage({
-          preloads: loginAssetPreloads(clientHtml),
+          preloads: clientManifest?loginAssetPreloads(clientManifest):'',
           next: safeNextPath(parsed.searchParams.get("next")),
           locale: parsed.searchParams.get("lang"),
           explicitLocale: parsed.searchParams.has("lang"),
@@ -2562,8 +2601,8 @@ export class PlatformServer {
         }
         // A browser login starts its isolated workspace immediately; the
         // document and client assets can load while startup continues.
-        if (this.tenantPolicy && !isJsonRequest(request) && !isAnalyticsDestination(payload.next)) {
-          void this.#ensureWorker(user).catch(() => this.logger({ type: "login.preparation_failed", userId: user.id }));
+        if (this.tenantPolicy && (this.workspaceBootstrap||!isJsonRequest(request)) && !isAnalyticsDestination(payload.next)) {
+          void (this.workspaceBootstrap?this.workspaceBootstrap.prepare(user):this.#ensureWorker(user)).catch(() => this.logger({ type: "login.preparation_failed", userId: user.id }));
         }
         const cookies = [
           sessionCookie(
@@ -2623,6 +2662,22 @@ export class PlatformServer {
         if (!user) {
           this.#unauthorized(request, response);
           return;
+        }
+        if(this.workspaceBootstrap&&request.method==='GET'&&['/api/workspace/bootstrap','/api/workspace/catalog/conversations','/api/workspace/catalog/projects'].includes(path)){
+          if([...parsed.searchParams.keys()].some(key=>!['limit','cursor','directoryRef','lifecycle'].includes(key)||parsed.searchParams.getAll(key).length!==1))throw workspaceError('invalid_catalog_query',400);
+          const query=Object.fromEntries(parsed.searchParams);
+          if(query.limit!==undefined){if(!/^[1-9]\d{0,2}$/.test(query.limit))throw workspaceError('invalid_catalog_query',400);query.limit=Number(query.limit);}
+          const controller=new AbortController();request.once('aborted',()=>controller.abort());
+          if(path==='/api/workspace/bootstrap'){
+            if(Object.keys(query).some(key=>key!=='limit'))throw workspaceError('invalid_catalog_query',400);
+            void this.workspaceBootstrap.prepare(user).catch(()=>this.logger({type:'login.preparation_failed',userId:user.id}));
+            sendJson(response,200,await this.workspaceBootstrap.read(user,{...query,signal:controller.signal}),{'cache-control':'no-store'});
+          }else{
+            const value=await this.workspaceAdmission.start(user.id,async()=>{
+              await this.catalogProjector.drain(user.id);
+              return path.endsWith('/conversations')?this.workspaceCatalog.listConversations(user.id,query):this.workspaceCatalog.listProjects(user.id,query);
+            });sendJson(response,200,value,{'cache-control':'no-store'});
+          }return;
         }
         if (path === "/api/workspace/status" && request.method === "GET") {
           if (!this.tenantPolicy || !this.workerManager.workspaceStatus) { sendJson(response, 404, { error: "not found" }); return; }
@@ -2775,6 +2830,13 @@ export class PlatformServer {
       }
       if (this.tenantPolicy && await this.#serveWeb(request, response)) return;
       await this.#requireAssistantContext(request, response);
+      if(this.workspaceBootstrap&&request.method==='GET'&&path==='/event'&&this.cliRuntime.isManaged(user.id)){
+        const snapshot=await this.workspaceBootstrap.read(user);
+        const generation=request.headers['x-scikeel-runtime-generation'];
+        if(generation!==undefined&&String(snapshot.workspace.context?.generation)!==generation)throw recoveryError('stale_workspace_context',{context:snapshot.workspace.context});
+        if(snapshot.workspace.context)response.setHeader('x-scikeel-runtime-generation',String(snapshot.workspace.context.generation));
+        await this.cliRuntime.subscribe(user.id,request,response);this.workspaceBootstrap.subscribe(user,response,snapshot);return;
+      }
       if(this.workspaceTickets && request.method==="GET" && path==="/v1/fs/read" && parsed.searchParams.has("ticket")){
         const classified=classifyGatewayRoute(request.method,path);
         for(const key of parsed.searchParams.keys())if(!classified.query.includes(key)||parsed.searchParams.getAll(key).length!==1)throw workspaceError("invalid_gateway_input",400);

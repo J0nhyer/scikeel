@@ -20,7 +20,8 @@ export class HostAdmission {
       throw new Error("invalid host admission lock");
     this.lockPath = lockPath;
   }
-  async acquire({ signal } = {}) {
+  async acquire({ signal,shared=false } = {}) {
+    if(typeof shared!=='boolean')throw new Error('invalid host admission mode');
     if (signal?.aborted) throw new Error("host admission cancelled");
     const file = await open(this.lockPath, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     const info = await file.stat();
@@ -28,9 +29,9 @@ export class HostAdmission {
     let child; let closed = false; let startError; let completion; let exitCode;
     try {
       // Pass an already-open descriptor: flock cannot follow a replaced pathname.
-      child = spawn("/usr/bin/flock", ["-n", "-F", "/proc/self/fd/3", process.execPath, "-e",
+      child = spawn("/usr/bin/flock", ["-n",...(shared?["-s"]:[]), "-F", "/proc/self/fd/3", process.execPath, "-e",
         'process.stdin.resume();process.stdin.on("end",()=>process.exit(0));process.stdout.write("ready\\n");'], {
-        env: { PATH: "/usr/bin:/bin" }, stdio: ["pipe", "pipe", "ignore", file.fd],
+        env: { PATH: "/usr/bin:/bin",...Object.fromEntries(['TMPDIR','TMP','TEMP'].filter(key=>process.env[key]).map(key=>[key,process.env[key]])) }, stdio: ["pipe", "pipe", "ignore", file.fd],
       });
       // Subscribe before yielding: a rejected flock can exit while the fd closes.
       completion = new Promise((done) => child.once("close", code => { closed = true; exitCode = code; done(); }));

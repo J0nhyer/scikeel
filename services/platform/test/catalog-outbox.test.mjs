@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {WorkspaceCatalog} from '../src/workspace-catalog.mjs';
+import {ConversationState} from '../src/conversation-state.mjs';
+import {CatalogProjector} from '../src/catalog-outbox.mjs';
+
+test('a committed source survives projection failure and restart without repeating metadata effects',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'catalog-outbox-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const owner={userId:'alice',instanceId:'alice',workspaceDir:'/workspace/alice',directory:'/workspace/alice'};
+ const options={rootDir:join(root,'conversations'),authorize:async()=>{}};
+ const source=new ConversationState(options);
+ source.catalog={apply:async()=>{throw Object.assign(Error('unavailable'),{code:'catalog_storage_unavailable'});}};
+ await assert.rejects(source.create(owner,{conversationId:'owned',title:'Owned',parentId:null,lifecycle:'active'}),{code:'catalog_storage_unavailable'});
+ assert.equal((await source.list(owner)).length,1);
+ assert.equal((await source.pendingCatalogChanges('alice')).length,1);
+ const catalog=await WorkspaceCatalog.open({path:join(root,'catalog.sqlite'),cursorKey:'c'.repeat(64)});t.after(()=>catalog.close());
+ const restarted=new ConversationState(options);
+ const projector=new CatalogProjector({catalog,sources:[restarted]});
+ await projector.drain('alice');await projector.drain('alice');await catalog.verify('alice','b'.repeat(64));
+ assert.equal((await restarted.pendingCatalogChanges('alice')).length,0);
+ assert.equal((await catalog.snapshot('alice')).revision,1);
+ assert.equal((await catalog.snapshot('alice')).conversations.items[0].title,'Owned');
+ restarted.catalog=catalog;
+ await restarted.rename(owner,'owned',{title:'Renamed',expectedRevision:1});
+ assert.equal((await catalog.snapshot('alice')).conversations.items[0].title,'Renamed');
+ assert.equal((await restarted.pendingCatalogChanges('alice')).length,0);
+});

@@ -2,8 +2,9 @@ import {createHash,randomUUID} from 'node:crypto';
 import {constants,promises as filesystem} from 'node:fs';
 import {lstat,mkdir,rename,rm,readdir} from 'node:fs/promises';
 import {join,posix} from 'node:path';
-export const CONVERSATION_STORAGE_SCHEMA = 2;
-export const READABLE_CONVERSATION_SCHEMAS = Object.freeze([1, 2]);
+import {validateEnvelope,appendCatalogChange,canonicalSummaries,acknowledgeEnvelope,projectEnvelope} from './catalog-outbox.mjs';
+export const CONVERSATION_STORAGE_SCHEMA = 3;
+export const READABLE_CONVERSATION_SCHEMAS = Object.freeze([1, 2, 3]);
 
 const fail=(code,statusCode=409)=>Object.assign(new Error(code.replaceAll('_',' ')),{code,statusCode});
 const invalid=()=>fail('invalid_conversation_input',400);
@@ -22,7 +23,7 @@ const sameFile=(a,b)=>['dev','ino','size','mtimeNs','ctimeNs'].every(key=>a[key]
 const bindingFields=['runtime','nativeSessionId','identityRevision','representedSequence'];
 const eventFields=['nativeEventId','nativeMessageId','publicMessageId','role','state','contentHash'];
 const conversationFields=['id','userId','instanceId','workspaceDir','directory','title','parentId','lifecycle',
-  'revision','sequence','bindings','currentBindingId','events','execution','turns','historicalSource'];
+  'revision','sequence','bindings','currentBindingId','events','execution','turns','historicalSource','updatedAt'];
 const turnInputFields=['requestId','payloadHash','policyRevision','runtime','generation','model','identityRevision'];
 const identityFields=['userId','instanceId','generation','conversationId','execution','requestId','policyRevision','runtime'];
 const model=value=>typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/.test(value);
@@ -67,23 +68,27 @@ export class ConversationState {
   const stat=await lstat(pathname,{bigint:true});if(!privateEntry(stat,true))throw storage();return stat;
  }
  #validate(data,userId) {
-  if(!exact(data,['schema','userId','conversations']) || !READABLE_CONVERSATION_SCHEMAS.includes(data.schema) || data.userId!==userId ||
+  if(!exact(data,data.schema===3?['schema','userId','conversations','catalogRevision','catalogOutbox']:['schema','userId','conversations']) || !READABLE_CONVERSATION_SCHEMAS.includes(data.schema) || data.userId!==userId ||
       !record(data.conversations) || Object.keys(data.conversations).length>10000)throw storage();
   if(data.schema===1) {
    for(const value of Object.values(data.conversations)) {
-    if(!exact(value,conversationFields.filter(field=>field!=='historicalSource'))||!Array.isArray(value.events))throw storage();
+    if(!exact(value,conversationFields.filter(field=>!['historicalSource','updatedAt'].includes(field)))||!Array.isArray(value.events))throw storage();
     value.historicalSource=null;
     for(const event of value.events) {
      if(!exact(event,[...eventFields,'sequence','bindingId','originKey']))throw storage();
      event.historicalSourceId=null;
     }
    }
-   data.schema=CONVERSATION_STORAGE_SCHEMA;
   }
+  if(data.schema<3){
+   for(const value of Object.values(data.conversations)){if(data.schema===2&&!exact(value,conversationFields.filter(field=>field!=='updatedAt')))throw storage();value.updatedAt=0;}
+   data.schema=3;data.catalogRevision=0;data.catalogOutbox=[];
+  }
+  validateEnvelope(data);
   const origins=new Set();
   for(const [id,value] of Object.entries(data.conversations)) {
    if(!name(id) || !exact(value,conversationFields) || value.id!==id || value.userId!==userId ||
-       !integer(value.revision) || value.revision<1 || !integer(value.sequence) || !Array.isArray(value.events) ||
+       !integer(value.revision) || value.revision<1 || !integer(value.updatedAt) || !integer(value.sequence) || !Array.isArray(value.events) ||
        value.events.length!==value.sequence || value.sequence>12000 || !Array.isArray(value.bindings) ||
        value.bindings.length>64 || typeof value.title!=='string' || value.title.length>512 ||
        !['active','archived','trashed'].includes(value.lifecycle) || value.parentId!==null && !name(value.parentId))throw storage();
@@ -147,7 +152,7 @@ export class ConversationState {
    const root=await this.#directory(this.rootDir),parent=await this.#directory(folder);
    let file;
    try {file=await filesystem.open(path,constants.O_RDONLY|(constants.O_NOFOLLOW??0));}
-   catch(error) {if(error.code==='ENOENT')return {schema:CONVERSATION_STORAGE_SCHEMA,userId,conversations:{}};throw error;}
+   catch(error) {if(error.code==='ENOENT')return {schema:CONVERSATION_STORAGE_SCHEMA,userId,conversations:{},catalogRevision:0,catalogOutbox:[]};throw error;}
    let data;
    try {
     const before=await file.stat({bigint:true});
@@ -159,9 +164,14 @@ export class ConversationState {
     data=JSON.parse(bytes.subarray(0,length).toString('utf8'));
    }finally {await file.close();}
    return this.#validate(data,userId);
-  }catch(error) {if(error.code==='ENOENT')return {schema:CONVERSATION_STORAGE_SCHEMA,userId,conversations:{}};throw storage();}
+  }catch(error) {if(error.code==='ENOENT')return {schema:CONVERSATION_STORAGE_SCHEMA,userId,conversations:{},catalogRevision:0,catalogOutbox:[]};throw storage();}
  }
- async #save(data,owner) {
+ async #save(data,owner,{project=true}={}) {
+  if(project){
+   const previous=await this.#load(data.userId);
+   for(const value of Object.values(data.conversations))if(value.revision!==previous.conversations[value.id]?.revision)value.updatedAt=Date.now();
+   appendCatalogChange(previous,data,{userId:data.userId,source:'canonical',sourceKey:'canonical',summarize:canonicalSummaries});
+  }
   this.#validate(data,data.userId);
   const bytes=JSON.stringify(data);if(Buffer.byteLength(bytes)>this.maxStateBytes)throw fail('conversation_metadata_full',507);
   const folder=join(this.rootDir,data.userId);await mkdir(folder,{recursive:true,mode:0o700});
@@ -176,7 +186,17 @@ export class ConversationState {
    const parent=await filesystem.open(folder,constants.O_RDONLY|(constants.O_DIRECTORY??0)|(constants.O_NOFOLLOW??0));
    try {await parent.sync();}finally{await parent.close();}
   }finally{await rm(temporary,{force:true});}
+  if(project)await projectEnvelope(this.catalog,data,()=>this.#save(data,owner,{project:false}));
  }
+ pendingCatalogChanges(userId){return this.#serialized(userId,async()=>structuredClone((await this.#load(userId)).catalogOutbox));}
+ async catalogDirectories(userId){return Object.values((await this.#load(userId)).conversations).map(row=>row.directory);}
+ acknowledgeCatalogChange(userId,changeId,payloadHash){return this.#serialized(userId,async()=>{
+  const data=await this.#load(userId);
+  if(acknowledgeEnvelope(data,changeId,payloadHash)){
+   const owner=Object.values(data.conversations)[0];
+   if(!owner)throw storage();await this.#save(data,ownerInput({...owner,directory:owner.workspaceDir}),{project:false});
+  }
+ });}
  #serialized(userId,run) {
   const key=JSON.stringify([this.rootDir,userId]);
   const next=(this.#queues.get(userId)??Promise.resolve()).catch(()=>{}).then(async()=>{
@@ -196,13 +216,13 @@ export class ConversationState {
   owner=await this.#owner(owner);
   return this.#serialized(owner.userId,async()=>structuredClone(await this.#owned(await this.#load(owner.userId),owner,id)));
  }
- async list(owner) {
+ async list(owner,{includeTrashed=false}={}) {
   owner=await this.#owner(owner);
   return this.#serialized(owner.userId,async()=>{
    const data=await this.#load(owner.userId),values=[];
    for(const id of Object.keys(data.conversations).sort()) {
     try {values.push(structuredClone(await this.#owned(data,owner,id)));}
-    catch(error){if(error.code!=='project_trashed')throw error;}
+    catch(error){if(error.code!=='project_trashed')throw error;if(includeTrashed){const value=data.conversations[id];if(value.userId!==owner.userId||value.workspaceDir!==owner.workspaceDir||value.instanceId!==owner.instanceId)throw storage();values.push(structuredClone(value));}}
    }
    return values;
   });
@@ -235,7 +255,7 @@ export class ConversationState {
    if(Object.keys(data.conversations).length>=10000)throw fail('conversation_metadata_full',507);
    if(input.parentId!==null)await this.#owned(data,owner,input.parentId);
    const value={id:input.conversationId,...ownerInput(owner),title:input.title,parentId:input.parentId,lifecycle:input.lifecycle,
-    revision:1,sequence:0,bindings:[],currentBindingId:null,events:[],execution:0,turns:{},historicalSource:null};
+    revision:1,sequence:0,bindings:[],currentBindingId:null,events:[],execution:0,turns:{},historicalSource:null,updatedAt:Date.now()};
    data.conversations[value.id]=value;await this.#save(data,owner);return structuredClone(value);
   });
  }

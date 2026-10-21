@@ -16,7 +16,23 @@ fn command(binary:&str,args:&[String],seconds:u64)->Result<()> {
 }
 fn stage(config:&Config,account:&Account)->PathBuf {config.state_dir.join("bundles").join(format!("{}-g{}",account.instance_id,account.generation))}
 fn container_id(account:&Account)->String {format!("scikeel-{}-g{}",account.instance_id,account.generation)}
-fn unit_cgroup(account:&Account)->Result<PathBuf> {Ok(Path::new("/sys/fs/cgroup/system.slice").join(lifecycle::unit_name(&account.instance_id,account.generation)?))}
+fn unit_cgroup(account:&Account)->Result<PathBuf> {Ok(Path::new(lifecycle::WORKSPACE_CGROUP).join(lifecycle::unit_name(&account.instance_id,account.generation)?))}
+fn ensure_workspace_budget()->Result<()> {
+    let directory=Path::new("/run/systemd/system");secure::root_owned(directory,true)?;
+    let path=directory.join(lifecycle::WORKSPACE_SLICE);let content=lifecycle::slice_unit();
+    if path.exists() {
+        if secure::read_root_owned(&path,4096)?!=content.as_bytes(){return Err("workspace_budget_changed");}
+    } else {
+        let temporary=directory.join(format!(".{}-{}",lifecycle::WORKSPACE_SLICE,std::process::id()));
+        let mut file=OpenOptions::new().write(true).create_new(true).mode(0o644).open(&temporary).map_err(|_|"workspace_budget_write_failed")?;
+        file.write_all(content.as_bytes()).and_then(|_|file.sync_all()).map_err(|_|"workspace_budget_write_failed")?;
+        fs::rename(&temporary,&path).map_err(|_|"workspace_budget_write_failed")?;
+        secure::root_owned(directory,true)?.sync_all().map_err(|_|"workspace_budget_write_failed")?;
+        command("/usr/bin/systemctl",&["daemon-reload".into()],5)?;
+    }
+    command("/usr/bin/systemctl",&["start".into(),lifecycle::WORKSPACE_SLICE.into()],5)?;
+    lifecycle::inspect_workspace_budget()?;Ok(())
+}
 fn image(config:&Config,digest:&str)->Result<PathBuf> {
     if !crate::protocol::digest(digest) {return Err("invalid_image");}
     let base=config.roots.images.join(&digest[7..]);
@@ -32,6 +48,7 @@ fn network_manifest(config:&Config,account:&Account)->Result<PathBuf> {
     network::verify(config,account)
 }
 pub fn preflight(config:&Config,account:&Account,digest:&str)->Result<()> {
+    ensure_workspace_budget()?;
     image(config,digest)?;
     quota::verify_backing_file(&config.quota_backing_file,&config.quota_device,config.quota_capacity)?;
     let sources=config.source_descriptors(account)?;
@@ -42,7 +59,10 @@ pub fn preflight(config:&Config,account:&Account,digest:&str)->Result<()> {
     let memory=fs::read_to_string("/proc/meminfo").map_err(|_|"host_reserve_unavailable")?;
     let available=memory.lines().find_map(|line|line.strip_prefix("MemAvailable:")?.split_whitespace().next()?.parse::<u64>().ok())
         .ok_or("host_reserve_unavailable")?;
-    if available<600*1024+1024*1024 {return Err("host_reserve_insufficient");}
+    let current=fs::read_to_string(Path::new(lifecycle::WORKSPACE_CGROUP).join("memory.current")).map_err(|_|"workspace_budget_unavailable")?
+        .trim().parse::<u64>().map_err(|_|"workspace_budget_unavailable")?;
+    let remaining=lifecycle::MEMORY_MAX.saturating_sub(current).div_ceil(1024);
+    if available<600*1024+remaining {return Err("host_reserve_insufficient");}
     Ok(())
 }
 fn mount(source:Option<&str>,target:&Path,kind:Option<&str>,flags:libc::c_ulong,data:Option<&str>)->Result<()> {
@@ -173,7 +193,7 @@ pub fn inspect(config:&Config,account:&Account)->Result<(Limits,QuotaEvidence)> 
     Ok((limits,quota))
 }
 fn health_request(port:u16,synthetic:bool,token:&str)->String {
-    let path=if port==4790 && !synthetic {"/v1/health"} else {"/health"};
+    let path=if port==4790 && !synthetic {"/v1/health"} else if port==4791 && !synthetic {"/health/live"} else {"/health"};
     format!("GET {path} HTTP/1.1\r\nHost: sandbox\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n")
 }
 fn health(address:u8,port:u16,synthetic:bool,token:&str)->bool {
@@ -199,7 +219,7 @@ pub fn start(config:&Config,account:&Account)->Result<()> {
     let token=credentials["internalToken"].as_str().ok_or("invalid_runner_token")?;
     let deadline=Instant::now()+Duration::from_secs(20);
     while Instant::now()<deadline {
-        if health(account.address,4790,config.synthetic,token) && health(account.address,4791,config.synthetic,token) {inspect(config,account)?;return Ok(());}
+        if (!config.synthetic || health(account.address,4790,true,token)) && health(account.address,4791,config.synthetic,token) {inspect(config,account)?;return Ok(());}
         std::thread::sleep(Duration::from_millis(100));
     }Err("sandbox_readiness_failed")
 }

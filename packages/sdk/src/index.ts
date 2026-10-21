@@ -3,6 +3,8 @@ export * from './admin-analytics';
 export { OpenCodeClient, ApiError, isApiStatus } from "./OpenCodeClient";
 export { GatewayWorkspaceClient, GatewayWorkspaceError, isWorkspaceReport, decodeWorkspaceFailure } from "./GatewayWorkspaceClient";
 export type { WorkspaceContext, WorkspaceReport, WorkspaceFailure, WorkspaceRecoveryCommand } from "./GatewayWorkspaceClient";
+export {GatewayBootstrapClient,decodeBootstrap,catalogDirectory} from './GatewayBootstrapClient';
+export type {WorkspaceBootstrap,CatalogPage,ProjectSummary,ConversationSummary} from './GatewayBootstrapClient';
 export type { OpenCodeCatalogReadOptions, CustomProviderModality, CustomProviderModel, ProjectEnvironmentInfo, ProjectEnvironmentApproval } from "./OpenCodeClient";
 export type { AgentRuntime } from "./runtime";
 export { BaseAgentRuntime } from "./base-runtime";

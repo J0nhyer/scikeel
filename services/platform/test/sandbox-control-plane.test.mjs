@@ -3,6 +3,12 @@ import assert from "node:assert/strict";
 import { validateBrokerConfiguration, brokerProfile, waitManagedRuntime } from "../src/sandbox-control-plane.mjs";
 
 const context = { userId: "a", instanceId: "user-a", generation: 1 };
+test('native readiness verifies the gateway API without querying OpenCode',async()=>{
+  const calls=[];
+  await waitManagedRuntime({url:'http://worker',token:'a'.repeat(64)},{runtime:'codex',directory:'/tenant/workspace',timeoutMs:100,
+    fetchImpl:async(url)=>{calls.push(url);return new Response(JSON.stringify({directory:'/tenant/workspace'}));}});
+  assert.deepEqual(calls,['http://worker/v1/whoami']);
+});
 test("gateway liveness cannot admit a cold or failed OpenCode runtime",async()=>{
   const access={url:"http://172.31.240.2:4790",token:"a".repeat(64)};let calls=0;
   await waitManagedRuntime(access,{directory:"/tenant/workspace",delayMs:1,timeoutMs:100,fetchImpl:async(url,options)=>{

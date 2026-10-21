@@ -20,7 +20,7 @@ export function buildJobEnvironment({ privateHome, projectDir, environment, brok
       ["modelToken", "packageToken", "egressToken"].some((key) => brokers[key] !== undefined && !/^[a-f0-9]{64}$/.test(brokers[key])))
     throw new Error("untrusted job broker configuration");
   const env = { PATH: `${posix.dirname(environment.python)}:/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin`,
-    HOME: privateHome, LANG: "C.UTF-8", TMPDIR: "/tmp", UV_CACHE_DIR: `${privateHome}/.cache/uv`,
+    HOME: privateHome, LANG: "C.UTF-8", TMPDIR: `${privateHome}/.cache/tmp`,TMP:`${privateHome}/.cache/tmp`,TEMP:`${privateHome}/.cache/tmp`,UV_CACHE_DIR: `${privateHome}/.cache/uv`,
     XDG_CONFIG_HOME: `${privateHome}/.config`, XDG_CACHE_HOME: `${privateHome}/.cache`, XDG_DATA_HOME: `${privateHome}/.local/share`,
     MPLCONFIGDIR: `${privateHome}/.cache/matplotlib`, UV_PYTHON_DOWNLOADS: "never", UV_LINK_MODE: "copy",
     PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", OMP_NUM_THREADS: "1", OPENBLAS_NUM_THREADS: "1", MKL_NUM_THREADS: "1", NUMEXPR_NUM_THREADS: "1",

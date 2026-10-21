@@ -15,6 +15,14 @@ const root = "/fixture/native";
 const port = 48177;
 export const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
 
+export function nativeFixtureEnvironment(directory) {
+  const home = `${directory}/home`;
+  const temporary = `${home}/.cache/tmp`;
+  return { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", HOME: home,
+    CODEX_HOME: home, TMPDIR: temporary, TMP: temporary, TEMP: temporary,
+    OPENAI_API_KEY: "synthetic-not-a-real-key", LANG: "C.UTF-8" };
+}
+
 export const nativeNetworkDenialScript = `denials=[]
 for address,port in [('127.0.0.1',${port}),('172.31.240.1',4792),('1.1.1.1',443)]:
  stage='socket'
@@ -358,7 +366,8 @@ export async function runNativeProtocolProbe() {
       const label = { deny: "denied", allow: "allowed", crash: "crashed", timeout: "timedout" }[mode] ?? mode;
       const name = `${label}-${kind}`;
       const directory = `${root}/${name}`;
-      await mkdir(`${directory}/workspace`, { recursive: true }); await mkdir(`${directory}/home`);
+      await mkdir(`${directory}/workspace`, { recursive: true });
+      await mkdir(`${directory}/home/.cache/tmp`, { recursive: true });
       const marker = `${directory}/workspace/result.txt`;
       const outside = `${directory}/outside-canary.txt`;
       if ((kind === 'command' || kind === 'patch-helper') && mode === 'allow') await writeFile(outside, 'unchanged');
@@ -423,8 +432,8 @@ pathlib.Path("patch-helper.json").write_text(json.dumps({"loginShellHelper":True
       const child = spawn(binary, ["app-server", "--listen", "stdio://", "-c", 'model_provider="fixture"', "-c",
         `model_providers.fixture={name="Fixture",base_url="http://127.0.0.1:${port}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}`,
         ...(kind==="patch-helper"?[]:["-c", 'model_catalog_json="/fixture/config/models.json"']), "-c", 'web_search="disabled"', "-c", `features.hooks=${mode !== "missing"}`, "-c", 'features.unified_exec=true'], {
-        cwd: `${directory}/workspace`, env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", HOME: `${directory}/home`,
-          CODEX_HOME: `${directory}/home`, OPENAI_API_KEY: "synthetic-not-a-real-key", LANG: "C.UTF-8" }, detached: true, stdio: ["pipe", "pipe", "pipe"],
+        cwd: `${directory}/workspace`, env: nativeFixtureEnvironment(directory),
+        detached: true, stdio: ["pipe", "pipe", "pipe"],
       });
       const connection = new NativeConnection(child, mode);
       current.connection = connection;

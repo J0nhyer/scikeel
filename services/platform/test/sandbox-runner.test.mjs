@@ -11,6 +11,7 @@ test("managed jobs never inherit host secrets or shared writable Python paths", 
     assert.equal(env.UV_PYTHON_DOWNLOADS, "never"); assert.equal(env.UV_LINK_MODE, "copy");
     assert.equal(env.OPENBLAS_NUM_THREADS, "1"); assert.equal(env.PYTHONPATH, undefined);
     assert.equal(env.UV_CACHE_DIR, "/tenant/home/.cache/uv");
+    for(const key of ['TMPDIR','TMP','TEMP'])assert.equal(env[key],'/tenant/home/.cache/tmp');
     const privateEnv = buildJobEnvironment({ privateHome: "/tenant/home", projectDir: "/tenant/workspace/project",
       environment: { kind: "private", python: "/tenant/workspace/project/.venv/bin/python" }, brokers: {} });
     assert.ok(privateEnv.PATH.startsWith("/tenant/workspace/project/.venv/bin:"));

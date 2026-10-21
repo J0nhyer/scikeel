@@ -14,13 +14,33 @@ import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { crc32, inflateSync } from "node:zlib";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { capabilityResult, nativePin, responsesFrame } from "../fixtures/native-protocol.mjs";
 import * as protocol from "../fixtures/native-protocol.mjs";
 import { extractCodexArchive } from "../../../scripts/dev/fetch-sandbox-codex.mjs";
 import { validateGuardLock, buildGuardRuntime } from "../../../scripts/dev/build-codex-guard-runtime.mjs";
 import * as integration from "../../../scripts/dev/build-codex-guard-runtime.mjs";
+
+test("native fixture subprocesses use their private writable temporary directory", async t => {
+  assert.equal(typeof protocol.nativeFixtureEnvironment, "function");
+  const temporaryRoot = join(dirname(fileURLToPath(import.meta.url)), "../../../.deploy/test-tmp");
+  await mkdir(temporaryRoot, { recursive: true });
+  const directory = await mkdtemp(join(temporaryRoot, "scikeel-native-environment-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const environment = protocol.nativeFixtureEnvironment(directory);
+  const temporary = join(directory, "home/.cache/tmp");
+  await mkdir(temporary, { recursive: true });
+  assert.equal(environment.HOME, join(directory, "home"));
+  assert.equal(environment.CODEX_HOME, environment.HOME);
+  for (const key of ["TMPDIR", "TMP", "TEMP"]) assert.equal(environment[key], temporary);
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e",
+    "import { tmpdir } from \"node:os\"; import { mkdtempSync } from \"node:fs\"; import { join } from \"node:path\"; console.log(mkdtempSync(join(tmpdir(), \"native-\")));"],
+    { env: environment, encoding: "utf8", timeout: 3000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.ok(child.stdout.trim().startsWith(temporary + "/native-"));
+});
 
 test("fallback helper proof requires an actual inside update and an OS permission denial outside", () => {
   assert.equal(typeof protocol.validFallbackPatchHelperProof, "function");
@@ -36,6 +56,11 @@ test("fallback helper proof requires an actual inside update and an OS permissio
 });
 
 const workflow = new URL("../../../.github/workflows/sandbox-image.yml", import.meta.url);
+test("native Codex daemon sockets use project-local temporary storage in both isolated probes", async () => {
+ const source = await readFile(workflow, "utf8");
+ assert.match(source, /sudo install -d -o 1000 -g 1000 -m 0700 "\$TMPDIR\/codex-daemon-1000"/);
+ assert.equal((source.match(/-v "\$TMPDIR\/codex-daemon-1000:\/tmp\/codex-daemon-1000:rw"/g) ?? []).length, 3);
+});
 test('restricted native network evidence requires exact EPERM from socket creation or connect, never route errors or success',()=>{
  assert.equal(typeof protocol.nativeNetworkDenialScript,'string');
  const run=(stage,code)=>spawnSync('python3',['-c',`import errno,json,socket

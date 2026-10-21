@@ -8,7 +8,15 @@ import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {inventorySource,fingerprintFiles} from './web-release-source.mjs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {createRequire} from 'node:module';
 const sha = 'a'.repeat(40);
+test('publication waiting covers the bounded sequential CI jobs and queue allowance',async()=>{
+ const {load}=createRequire(new URL('../../services/platform/package.json',import.meta.url))('js-yaml');
+ const workflow=load(await readFile(new URL('../../.github/workflows/sandbox-image.yml',import.meta.url),'utf8'));
+ const minutes=Object.values(workflow.jobs).reduce((total,job)=>total+job['timeout-minutes'],0);
+ assert.equal(typeof publication.publicationCITimeoutMs,'number');
+ assert.equal(publication.publicationCITimeoutMs,(minutes+15)*60000);
+});
 test('background publication workers explicitly keep host temporary files inside the project',()=>{
  assert.equal(typeof publication.publicationWorkerTemporaryArguments,'function');
  assert.deepEqual(publication.publicationWorkerTemporaryArguments('/project/.deploy'),[

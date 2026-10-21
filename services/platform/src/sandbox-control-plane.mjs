@@ -15,16 +15,19 @@ import { SandboxScheduler } from "./sandbox-scheduler.mjs";
 import { WorkspaceRpc } from "./workspace-rpc.mjs";
 import { SandboxEnvironments } from "./sandbox-environments.mjs";
 import { PackageGrants } from "./package-grants.mjs";
+import {capacityError} from './workspace-capacity.mjs';
 
 const routeSet = new Set(["/v1/responses", "/v1/chat/completions", "/v1/messages"]);
-export async function waitManagedRuntime(access, {directory,fetchImpl=fetch,timeoutMs=60000,delayMs=250}={}) {
+export async function waitManagedRuntime(access, {directory,runtime='opencode',fetchImpl=fetch,timeoutMs=60000,delayMs=250}={}) {
+  if(!['opencode','codex','claude'].includes(runtime))throw new Error('invalid managed runtime');
   const deadline=Date.now()+timeoutMs;
   while(Date.now()<deadline) {
     try {
-      const response=await fetchImpl(`${access.url}/session?directory=${encodeURIComponent(directory)}`,{headers:{authorization:`Basic ${Buffer.from(`opencode:${access.token}`).toString("base64")}`},
+      const path=runtime==='opencode'?`/session?directory=${encodeURIComponent(directory)}`:'/v1/whoami';
+      const response=await fetchImpl(`${access.url}${path}`,{headers:{authorization:runtime==='opencode'?`Basic ${Buffer.from(`opencode:${access.token}`).toString("base64")}`:`Bearer ${access.token}`},
         signal:AbortSignal.timeout(Math.max(1,Math.min(15000,deadline-Date.now())))});
       const body=response.ok ? await response.json() : null;
-      if(Array.isArray(body))return;
+      if(runtime==='opencode'?Array.isArray(body):body?.directory===directory)return;
       await response.body?.cancel();
     }catch{}
     await new Promise(done=>setTimeout(done,Math.min(delayMs,Math.max(0,deadline-Date.now()))));
@@ -149,24 +152,33 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     authorize: (context, route, token) => packageGrants.authorize(context, route, token) });
   const client = new SandboxClient({ socketPath: configuration.socketPath });
   const admission = new HostAdmission();
-  const scheduler = new SandboxScheduler({ pressure: hostPressure, admission: (input) => admission.acquire(input) });
+  const scheduler = new SandboxScheduler({maxSandboxes:2,maxJobs:1,pressure:hostPressure,admission:input=>admission.acquire({...input,shared:true})});
   const manager = new ManagedWorkerManager({ rootDir: `${dataDir}/workers`, imageDigest: configuration.imageDigest, client, tenantPolicy,
     logger,
     instancesDir: configuration.roots?.instances,
-    admitWorker: (context) => scheduler.acquire({ context, kind: "job" }),
+    maxResidents:2,
+    admitWorker: async () => {
+      const pressure=await hostPressure();
+      if(pressure.availableBytes<600*1024**2)throw capacityError('memory_reserve');
+      return admission.acquire({shared:true});
+    },
     configureWorker: async ({ context, access }) => {
       const address = new URL(access.url).hostname;
       if (accounts.has(address)) throw new Error("sandbox identity collision");
       accounts.set(address, { context });
       const savedModel = await readManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId });
+      const runtime=plane?.assistantPolicy?.(context)?.activeRuntime??'opencode';
       const profile = brokerProfile({ config, broker: model, context, model: savedModel,
         assistantPolicy: plane?.assistantPolicy?.(context) ?? null });
       const token = profile.provider[config.defaultProvider].options.apiKey;
       const response = await fetch(`${access.runnerUrl}/profile`, { method: "POST", headers: {
         authorization: `Bearer ${access.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ instanceId: context.instanceId, generation: context.generation, profile, imageDigest:configuration.imageDigest }), signal: AbortSignal.timeout(15000) });
+        body: JSON.stringify({ instanceId: context.instanceId, generation: context.generation, profile, imageDigest:configuration.imageDigest,runtime }), signal: AbortSignal.timeout(15000) });
       if (!response.ok) throw new Error("managed profile unavailable");
-      await waitManagedRuntime(access,{directory:context.workspaceDir});
+      await waitManagedRuntime(access,{directory:context.workspaceDir,runtime});
+      const readiness=await fetch(`${access.runnerUrl}/readiness`,{headers:{authorization:`Bearer ${access.token}`},signal:AbortSignal.timeout(3000)});
+      const report=await readiness.json();
+      if(!readiness.ok||report.runtime!==runtime||report.configured!==true||report.gatewayReady!==true||runtime!=='opencode'&&report.jobsReady!==true)throw Error('managed runner unavailable');
       const timer = setInterval(() => {
         try { model.renew(token, context); }
         catch { clearInterval(timer); void manager.stopWorker(context.instanceId, {expectedGeneration:context.generation}).catch(() => {}); }
@@ -193,7 +205,9 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     serviceProfile: new ManagedCodexProfile({ home: join(dataDir, "codex-service") }) });
   const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy,
     issueNativeGrant:input=>nativeProfileResolver.issueNativeGrant(input)});
+  nativeJobs.admitJob=(context,signal)=>scheduler.acquire({context,kind:'job',signal});
   manager.inspectNative = context => nativeJobs.inspect(context);
+  manager.runtimeForContext = context => plane?.assistantPolicy?.(context)?.activeRuntime??"opencode";
   plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, searchProvider: config.searchProvider, nativeJobs, nativeProfileResolver,
     analyticsRegistry:{providers:new Set(Object.keys(config.providers)),models:new Set(Object.values(config.providers).flatMap(p=>p.enabledModels)),skills:new Set(['research-workflow'])},
     runtimeCatalog: createManagedModelCatalogReader({config}),
