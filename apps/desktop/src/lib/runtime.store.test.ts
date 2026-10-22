@@ -1303,6 +1303,14 @@ describe("gateway runtime selection", () => {
         expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-deep");
         expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
       });
+
+      it("keeps the chat usable when the managed catalog read fails", async () => {
+        mocks.failProviders = true;
+        await loadWithManagedAssistant();
+        expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
+        expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-deep");
+        expect(useRuntimeStore.getState().providers).toEqual([]);
+      });
     });
 
     it("sends the effort chosen in the Web picker only for that session", async () => {

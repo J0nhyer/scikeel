@@ -4384,7 +4384,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             // neither read nor written from here.
             managed ? Promise.resolve(null)
               : isGatewayWeb && oc ? oc.getDefaultModel(readOptions()) : source.getDefaultModel().catch(() => null),
-            oc ? listProvidersWithAvailability(oc, availability, readOptions()) : Promise.resolve([]),
+            // A managed assistant's model list does not come from this catalog,
+            // so a failed read must not mark the catalog unavailable and take
+            // the chat down with it: the effort control simply disappears.
+            oc
+              ? managed
+                ? listProvidersWithAvailability(oc, availability, readOptions()).catch(() => [] as ProviderInfo[])
+                : listProvidersWithAvailability(oc, availability, readOptions())
+              : Promise.resolve([] as ProviderInfo[]),
           ]);
           if (!current()) return;
           if (isGatewayWeb && !managed && providers.length === 0) throw new Error("Model catalog is unavailable");
