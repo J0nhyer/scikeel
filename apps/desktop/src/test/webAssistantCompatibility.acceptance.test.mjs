@@ -169,8 +169,19 @@ test.skipIf(process.env.OSD_ASSISTANT_BROWSER!=='1')('Admin cutover preserves or
     await questionPage.reload();await expect.poll(()=>answer.inputValue()).toBe('Preserved method answer');
     expect(await questionPage.getByRole('button',{name:'Submit',exact:true}).isDisabled()).toBe(true);
     expect(writes.filter(row=>row.path.startsWith('/question/'))).toHaveLength(0);
+    // The managed assistant's effort levels are in the model catalog the client
+    // must read. Load the page fresh with the managed assistant already active:
+    // that is the real case, and it is the one where the client has to read
+    // that catalog itself.
+    await page.reload();
+    const effort=page.getByRole('button',{name:/^Reasoning effort:/}).first();
+    await effort.waitFor();
+    // The reload starts an empty composer; put the preserved draft back so the
+    // turn below is the one the scenario describes.
+    await page.locator('textarea').first().fill('Preserved cutover draft');
     await page.getByRole('button',{name:'Send',exact:true}).click();
     await expect.poll(()=>accepted).toBe(1);
+    expect(writes.filter(row=>row.path.endsWith('/prompt_async')).at(-1).body.variant).toBe('low');
     await page.getByRole('button',{name:'Stop',exact:true}).waitFor();
     await page.getByText('https://example.com/',{exact:true}).first().waitFor();
     await page.getByRole('button',{name:'Remove preserved.csv',exact:true}).waitFor({state:'detached'});
