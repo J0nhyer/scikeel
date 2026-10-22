@@ -90,6 +90,8 @@ const mocks = vi.hoisted(() => ({
   listRunningSessions: vi.fn(),
   failSessionStatus: false,
   failSkills: false,
+  /** The next listProviders() read throws (the catalog endpoint is unreachable). */
+  failProviders: false,
   /** Records setDefaultModel calls; `currentModel` is what getDefaultModel returns. */
   setDefaultModelSpy: vi.fn(),
   currentModel: null as string | null,
@@ -270,6 +272,7 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
       mocks.providerReadGate = null;
       if (gate) await gate;
       if (mocks.providerGate) await mocks.providerGate;
+      if (mocks.failProviders) throw new Error("Load failed");
       return mocks.providers;
     }
     async setDefaultModel(model: string) {
@@ -452,6 +455,7 @@ beforeEach(async () => {
   mocks.defaultModelGate = mocks.modelWriteGate = mocks.providerReadGate = null;
   mocks.providers = [];
   mocks.failSetModel = false;
+  mocks.failProviders = false;
   mocks.failRename = false;
   mocks.sessionList = [];
   mocks.sessionListDirectories.mockClear();
@@ -1273,6 +1277,32 @@ describe("gateway runtime selection", () => {
           { id: "big-pickle", name: "Big Pickle", variants: [] },
         ] }], defaultModel: "codex/gpt-deep", sessionModels: {}, sessionVariants: {},
         reasoningVariant: null, currentId: "ses_a" });
+    });
+
+    describe("managed assistant catalog", () => {
+      const managedProviders = [{ id: "codex", name: "Codex", models: [
+        { id: "gpt-deep", name: "GPT Deep", variants: ["low", "high"] },
+        { id: "big-pickle", name: "Big Pickle", variants: [] },
+      ] }];
+      beforeEach(() => {
+        mocks.providers = managedProviders;
+        useRuntimeStore.setState({ providers: [] });
+      });
+      /** The connect in the outer setup starts a catalog load without awaiting
+       *  it. Drain that load first, or the call under test returns the
+       *  in-flight one and never runs. */
+      async function loadWithManagedAssistant() {
+        await useRuntimeStore.getState().loadCatalog();
+        useRuntimeStore.setState({ providers: [] });
+        await useRuntimeStore.getState().loadCatalog();
+      }
+
+      it("loads the managed assistant's effort catalog on connect", async () => {
+        await loadWithManagedAssistant();
+        expect(useRuntimeStore.getState().providers).toEqual(managedProviders);
+        expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-deep");
+        expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
+      });
     });
 
     it("sends the effort chosen in the Web picker only for that session", async () => {

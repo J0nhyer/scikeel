@@ -4370,25 +4370,33 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     })();
 
     const models = (async () => {
-      if (isGatewayWeb && assistant && assistant !== "opencode") return;
+      // A managed assistant's model list comes from /api/runtime, but its effort
+      // levels live in this catalog, which the composer and the send path read.
+      // It is therefore loaded for every assistant.
+      const managed = isGatewayWeb && !!assistant && assistant !== "opencode";
       for (let attempt = 0; attempt < (isGatewayWeb ? 4 : 1); attempt++) {
         try {
           const availability = (providers: ProviderInfo[]) => {
             if (current() && get().gatewayRuntime === assistant) set({ providers });
           };
           const [defaultModel, providers] = await Promise.all([
-            isGatewayWeb && oc ? oc.getDefaultModel(readOptions()) : source.getDefaultModel().catch(() => null),
+            // A managed assistant's default model belongs to /api/runtime; it is
+            // neither read nor written from here.
+            managed ? Promise.resolve(null)
+              : isGatewayWeb && oc ? oc.getDefaultModel(readOptions()) : source.getDefaultModel().catch(() => null),
             oc ? listProvidersWithAvailability(oc, availability, readOptions()) : Promise.resolve([]),
           ]);
           if (!current()) return;
-          if (isGatewayWeb && providers.length === 0) throw new Error("Model catalog is unavailable");
+          if (isGatewayWeb && !managed && providers.length === 0) throw new Error("Model catalog is unavailable");
           set((state) => {
+            if (managed) return { providers };
             if (isGatewayWeb && assistant === "opencode") {
               const configured = state.switching ? state.defaultModel : defaultModel;
               return { providers, ...reconcileGatewayModels({ ...state, providers, defaultModel: configured }, state.gatewayRuntimes) };
             }
             return state.switching ? { providers } : { defaultModel, providers };
           });
+          if (managed) return;
           // Only an identity removed from a successful catalog can heal a stale default.
           const justSwitched = defaultModel === lastSwitchModel && Date.now() - lastSwitchAt < SWITCH_HEAL_GRACE_MS;
           if (!get().switching && !justSwitched && defaultModel) {
