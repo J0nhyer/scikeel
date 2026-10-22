@@ -1311,6 +1311,28 @@ describe("gateway runtime selection", () => {
         expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-deep");
         expect(useRuntimeStore.getState().providers).toEqual([]);
       });
+
+      it("replaces the catalog with the selected assistant's own when the assistant changes", async () => {
+        vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ runtime: "codex",
+          available: [codexCatalog(["gpt-deep"], "gpt-deep")] }), { status: 200 })));
+        useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready",
+          gatewayRuntimes: [codexCatalog(["gpt-deep"], "gpt-deep")], defaultModel: "codex/gpt-deep",
+          providers: [{ id: "openai", name: "OpenAI", models: [{ id: "stale", name: "Stale" }] }] });
+        await useRuntimeStore.getState().refreshGatewayRuntimes();
+        expect(useRuntimeStore.getState().providers).toEqual(managedProviders);
+        expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-deep");
+      });
+
+      it("does not block the chat when the managed catalog read fails during a refresh", async () => {
+        mocks.failProviders = true;
+        vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ runtime: "codex",
+          available: [codexCatalog(["gpt-deep"], "gpt-deep")] }), { status: 200 })));
+        useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready",
+          gatewayRuntimes: [codexCatalog(["gpt-deep"], "gpt-deep")], defaultModel: "codex/gpt-deep" });
+        await useRuntimeStore.getState().refreshGatewayRuntimes();
+        expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
+        expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-deep");
+      });
     });
 
     it("sends the effort chosen in the Web picker only for that session", async () => {

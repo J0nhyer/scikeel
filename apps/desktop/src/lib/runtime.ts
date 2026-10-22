@@ -3895,6 +3895,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           if (version === gatewayCatalogVersion && source === opencodeClient && get().gatewayRuntime === selected && get().gatewayUser?.id === account) set({ providers });
         }, { signal, timeoutMs: 15000 }), source.getDefaultModel({ signal, timeoutMs: 15000 })]);
         if (source !== opencodeClient) return;
+      } else if (source) {
+        // The selected assistant's effort levels come from this catalog, and the
+        // previous assistant's entries must not linger next to its models. Its
+        // model list comes from /api/runtime, so a failed read must not mark
+        // that list unavailable and block the chat.
+        providers = await listProvidersWithAvailability(source, (providers) => {
+          if (version === gatewayCatalogVersion && source === opencodeClient && get().gatewayRuntime === selected && get().gatewayUser?.id === account) set({ providers });
+        }, { signal, timeoutMs: 15000 }).catch(() => [] as ProviderInfo[]);
+        if (source !== opencodeClient) return;
       }
       if (version !== gatewayCatalogVersion || get().gatewayRuntime !== selected || get().gatewayUser?.id !== account) return;
       if (isPlatformWeb) {
@@ -3910,7 +3919,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         gatewayCatalogState: "unavailable",
         gatewayRuntimes: state.gatewayRuntimes.map((option) => option.runtime === selected
           ? { ...option, models: [], status: "unavailable" as const } : option),
-        ...(selected === "opencode" ? { providers: [] } : { defaultModel: null }),
+        ...(selected === "opencode" ? {} : { defaultModel: null }),
+        providers: [],
       }));
     }
   },
