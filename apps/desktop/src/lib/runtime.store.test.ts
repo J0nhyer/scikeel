@@ -1333,6 +1333,18 @@ describe("gateway runtime selection", () => {
         expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
         expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-deep");
       });
+
+      it("shows the effort control for a managed assistant and sends the level the user chose", async () => {
+        await loadWithManagedAssistant();
+        render(createElement(WebModelPicker, { sessionId: "ses_a" }));
+        const user = userEvent.setup();
+        await user.click(screen.getByRole("button", { name: "Reasoning effort: Low" }));
+        await user.click(screen.getByRole("menuitem", { name: "High" }));
+        await act(() => useRuntimeStore.getState().sendPrompt("research", "ses_a"));
+        expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, "codex/gpt-deep", "high");
+        await act(() => useRuntimeStore.getState().sendPrompt("other", "ses_b"));
+        expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_b", "other", undefined, "codex/gpt-deep", "low");
+      });
     });
 
     it("sends the effort chosen in the Web picker only for that session", async () => {

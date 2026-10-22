@@ -1,3 +1,4 @@
+2026-10-22 16:59 The Web client now loads the managed assistant's effort catalog, so the composer's reasoning-effort control is reachable for Codex and the level a pane chose reaches the turn; the deterministic client tests pass with 345/345, while publication and live acceptance remain pending.
 2026-10-22 16:22 The Web client's reasoning-effort control for managed assistants is specified: the platform already serves the Codex effort catalog, the component and send path already read it, and the single broken link is the client catalog read that skips every managed assistant; implementation, publication and live acceptance remain pending.
 2026-10-21 15:04 Native CI subprocesses now use private writable temporary directories; the observed regression passes with all 98 capability/image/manifest tests, while source-matched publication and live acceptance remain pending.
 2026-10-21 05:00 Web 登录路径已完成索引目录、并行准备、按需运行时、资源预加载和懒加载改造；完整前端验收通过，Rust 编译检查通过，准备进入受保护发布流程。
