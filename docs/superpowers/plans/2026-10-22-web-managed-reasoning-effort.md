@@ -642,3 +642,34 @@ git -c user.name=J0nhyer -c user.email=J0nhyer@users.noreply.github.com commit -
 - **Placeholder scan:** no step says "add appropriate handling" or names a test without its code. Every step names the file, the command and the expected result.
 - **Type consistency:** `managed` is a boolean used by Tasks 1-3 in `runtime.ts`; `managedProviders` and `codexCatalog` are the fixtures the tests share; `mocks.failProviders` is declared in Task 1 and used in Tasks 2 and 3; the `ProviderInfo[]` annotation in the containment matches `listProvidersWithAvailability`'s return type.
 - **Review focus:** 1 → Tasks 2 and 3; 2 → the existing `"clears invalid effort on model switch"` test plus Task 4; 3 → Task 3's first test; 4 → Task 4's second send; 5 → Task 4's first send and the existing lowest-level test.
+
+## Resume additions (from the whole-change review, 2026-10-22)
+
+These were found by the independent review after Tasks 1-5 were implemented. They are not part of
+the completed tasks; the work is paused until the concurrent session finishes the deployment
+repair, and these are to be done on resume, in this order.
+
+1. **Contain the platform-web assistant cutover's catalog read (Important).** `refreshGatewayRuntimes`
+   has a second path for the product: `if (isPlatformWeb && data.runtime !== selected)`
+   (`apps/desktop/src/lib/runtime.ts:3914`), which reads the managed catalog with
+   `Promise.all([listProvidersWithAvailability(observedClient, undefined, …), observedClient.getDefaultModel(…)])`
+   and no `catch`. A failure there reaches the catch, which sets `gatewayCatalogState: "unavailable"`
+   and empties `gatewayRuntimes[selected].models`, and the send gate (`runtime.ts:5351`) then refuses
+   every turn. Spec §4.1(b)/§4.6 require a failed managed read to hide only the effort control.
+   Fix: contain that read the way the `loadCatalog` path is contained — a failed catalog read must
+   leave the runtime's model list and the default model intact and only empty the effort catalog.
+   Test (RED first): a platform-web cutover whose provider read fails must keep
+   `gatewayRuntimes[selected].models`, keep `defaultModel`, keep `gatewayCatalogState` usable, and
+   still let a turn send.
+2. **Strengthen the two "does not block the chat" tests (Minor).** They assert `gatewayCatalogState`,
+   `defaultModel` and `providers`; add that a turn still sends afterwards, and that
+   `gatewayRuntimes[selected].models` survived.
+3. **Make the "replaces the catalog" store test able to fail for its name (Minor).** The mocked
+   `listProviders` returns the same providers whatever the active assistant is; give the mock an
+   assistant-dependent catalog so the test can distinguish them. The browser scenario already
+   distinguishes them.
+4. **Consider the catalog's revision (Minor, optional).** `/api/runtime` publishes a per-runtime
+   `catalogRevision` that the client stores but never compares, so a stale level can reach the
+   platform, which answers 400 `invalid_variant` and does not start the turn. Comparing the
+   revision and re-reading the catalog would remove that. Only if it does not collide with the
+   concurrent session's work.
