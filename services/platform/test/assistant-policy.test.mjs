@@ -383,7 +383,8 @@ test("a global unknown execution is reported as a recovery fence with one identi
   assert.equal(admin.recoverable.runtime, "opencode");
   assert.equal(admin.recoverable.userId, "owner_a");
   assert.equal(admin.recoverable.sessionId, "conversation_a");
-  assert.equal(restarted.assistantPolicy.committedSnapshot().recoveryRequired, true);
+  assert.equal(restarted.assistantPolicy.committedSnapshot().recoveryRequired, false,
+    "Read-only duplicate-receipt replay remains available while the deployment fence is set");
   const user = await restarted.freshDescribe("owner_b");
   assert.equal(user.available.every(option => option.enabled === false), true);
   await assert.rejects(restarted.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "fenced" }),

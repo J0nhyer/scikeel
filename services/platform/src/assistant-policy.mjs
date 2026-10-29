@@ -176,9 +176,11 @@ export class AssistantPolicy {
       Object.keys(input).every(field=>execution.identity[field]===input[field]));
   }
   committedSnapshot() {
-    const fenced = Object.values(this.#state.executions).some(execution => execution.status === "unknown");
+    // Read-only duplicate-receipt replay is allowed during a deployment fence:
+    // admit() still refuses the owning user's new work. describe() reports the
+    // fence for the UI, while this gate only covers policy uncertainty.
     return {activeRuntime:this.#state.activeRuntime,revision:this.#state.revision,
-      recoveryRequired:!this.#initialized||this.#uncertain||!!this.#state.transition||fenced};
+      recoveryRequired:!this.#initialized||this.#uncertain||!!this.#state.transition};
   }
   // Reserve the existing workspace queue synchronously under policy ordering.
   // The operation's completion is deliberately outside this brief critical section;
