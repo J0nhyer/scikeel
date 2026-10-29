@@ -11,6 +11,7 @@
     "adminOnly": "An administrator selects the deployment assistant in Models.",
     "busy": "Wait for running work to finish before changing the assistant.",
     "unavailable": "This assistant is unavailable.",
+    "recoveryRequired": "Hay que reconciliar antes de cambiar el asistente. Reintentar para reconciliar la implementación.",
     "retry": "Retry"
   },
   "nav": {

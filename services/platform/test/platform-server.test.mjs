@@ -1040,6 +1040,8 @@ test("login preloads public client assets without starting a workspace, and the 
   await mkdir(join(webRoot, "assets"), { recursive: true });
   await writeFile(join(webRoot, "index.html"), '<html><head><script type="module" src="/assets/app.js"></script><link rel="stylesheet" href="/assets/app.css"></head><body><div id="root"></div></body></html>');
   await writeFile(join(webRoot, "assets/app.js"), 'window.fixtureClient = true;');
+  await mkdir(join(webRoot,'.vite'),{recursive:true});
+  await writeFile(join(webRoot,'.vite/manifest.json'),JSON.stringify({'index.html':{file:'assets/app.js',isEntry:true,css:['assets/app.css']}}));
   const fixture = await makeFixture({ root, webRoot });
   const page = await fetch(fixture.base + "/login");
   const html = await page.text();

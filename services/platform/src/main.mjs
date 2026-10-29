@@ -12,6 +12,8 @@ import { createAnalyticsCollector } from './agent-analytics-collector.mjs';
 import { createAnalyticsRoutes } from './agent-analytics-routes.mjs';
 import {configureNativeEffects} from './native-effects.mjs';
 import {createAssistantRuntimeAuthority} from './assistant-runtime-authority.mjs';
+import {WorkspaceCatalog,catalogCursorKey} from './workspace-catalog.mjs';
+import {prepareWorkspaceService} from './workspace-startup.mjs';
 
 function env(name, fallback = "") {
   return process.env[name] ?? fallback;
@@ -95,6 +97,8 @@ const cliRuntime = new CliRuntimeManager({
   turnTimeoutMs: numberEnv("PLATFORM_AGENT_TURN_TIMEOUT_MS", 20 * 60 * 1_000),
   logger: (event) => console.log(JSON.stringify(event)),
 });
+const workspaceCatalog=controlPlane?await WorkspaceCatalog.open({path:join(dataDir,'workspace-catalog','metadata.sqlite'),
+  cursorKey:await catalogCursorKey(join(dataDir,'workspace-catalog','cursor-key'))}):null;
 const platform = new PlatformServer({
   host: env("PLATFORM_HOST", "127.0.0.1"),
   port: numberEnv("PLATFORM_PORT", 4790),
@@ -103,6 +107,7 @@ const platform = new PlatformServer({
   analyticsCollector,
   analyticsRoutes:analyticsStore?createAnalyticsRoutes({store:analyticsStore,authStore}):null,
   cliRuntime,
+  workspaceCatalog,
   modelBroker: controlPlane?.model,
   tenantPolicy: controlPlane?.tenantPolicy,
   networkEgress: controlPlane?.egress,
@@ -121,7 +126,9 @@ const platform = new PlatformServer({
 
 if(controlPlane) {
   const scope=context=>({accountId:context.userId,runtime:context.runtime??'opencode',instanceId:context.instanceId,generation:context.generation});
-  controlPlane.manager.onWorkerReady=({context,access})=>analyticsCollector?.workerReady({scope:scope(context),access});
+  controlPlane.manager.onWorkerReady=({context,access})=>{
+    if(cliRuntime.runtimeForUser(context.userId)==='opencode')analyticsCollector?.workerReady({scope:scope(context),access});
+  };
   controlPlane.manager.onWorkerRevoked=context=>analyticsCollector?.workerRevoked(scope(context));
   controlPlane.model.onAnalyticsAttempt=(context,fact)=>analyticsCollector?.recordAttempt(context?scope(context):null,fact);
   controlPlane.nativeJobs.logger=event=>console.error(JSON.stringify(event));
@@ -149,6 +156,7 @@ async function shutdown(signal) {
   await analyticsCollector?.close();
   await analyticsStore?.close();
   await cliRuntime?.close().catch((error) => console.error(error));
+  await workspaceCatalog?.close();
   if (controlPlane) await controlPlane.close().catch((error) => console.error(error));
   else await workerManager.close().catch((error) => console.error(error));
   await authStore.close().catch((error) => console.error(error));
@@ -167,6 +175,13 @@ try {
       "no platform users exist; set PLATFORM_ADMIN_PASSWORD for the first administrator",
     );
   }
+  await platform.init();
+  const migrate=boolEnv('PLATFORM_CATALOG_MIGRATE',false);
+  const startup=await prepareWorkspaceService({migrate,manager:controlPlane?.manager,authStore,platform,workspaceCatalog,
+    logger:event=>console.log(JSON.stringify(event))});
+  if(startup.mode==='migrate'){
+    await shutdown('catalog-migration');
+  }else{
   const address = await platform.listen();
   console.log(JSON.stringify({
     type: "platform.started",
@@ -174,6 +189,7 @@ try {
     port: address.port,
     dataDir,
   }));
+  }
 } catch (error) {
   console.error(error?.stack ?? error);
   await shutdown("startup-error");

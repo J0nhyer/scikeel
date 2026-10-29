@@ -1,8 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateBrokerConfiguration, brokerProfile, waitManagedRuntime } from "../src/sandbox-control-plane.mjs";
+import { validateBrokerConfiguration, brokerProfile, runnerProtocol, waitManagedRuntime } from "../src/sandbox-control-plane.mjs";
 
 const context = { userId: "a", instanceId: "user-a", generation: 1 };
+test('native readiness verifies the gateway API without querying OpenCode',async()=>{
+  const calls=[];
+  await waitManagedRuntime({url:'http://worker',token:'a'.repeat(64)},{runtime:'codex',directory:'/tenant/workspace',timeoutMs:100,
+    fetchImpl:async(url)=>{calls.push(url);return new Response(JSON.stringify({directory:'/tenant/workspace'}));}});
+  assert.deepEqual(calls,['http://worker/v1/whoami']);
+});
 test("gateway liveness cannot admit a cold or failed OpenCode runtime",async()=>{
   const access={url:"http://172.31.240.2:4790",token:"a".repeat(64)};let calls=0;
   await waitManagedRuntime(access,{directory:"/tenant/workspace",delayMs:1,timeoutMs:100,fetchImpl:async(url,options)=>{
@@ -122,4 +128,13 @@ test("managed profile restores only a saved model still enabled for its provider
   const make = model => brokerProfile({ config: configured, broker: { issue: () => "a".repeat(64) }, context, model });
   assert.equal(make("fixture/other").model, "fixture/other");
   for (const model of [null, "foreign/other", "fixture/retired"]) assert.equal(make(model).model, "fixture/approved");
+});
+test("a runner from an older image keeps the previous contract and is not asked for a runtime",async()=>{
+  const access={runnerUrl:"http://172.31.240.2:4791",token:"a".repeat(64)};
+  assert.deepEqual(await runnerProtocol(access,{fetchImpl:async()=>({status:404,body:{cancel:async()=>{}}})}),{runtime:false});
+  // A runner that knows the protocol answers the readiness route, even before
+  // the profile is configured.
+  assert.deepEqual(await runnerProtocol(access,{fetchImpl:async()=>({status:503,body:{cancel:async()=>{}}})}),{runtime:true});
+  // An unreachable runner must not claim the protocol.
+  assert.deepEqual(await runnerProtocol(access,{fetchImpl:async()=>{throw new Error("unreachable");}}),{runtime:false});
 });

@@ -45,8 +45,10 @@ export function installLoginPreparation(source: PreparationSource, signOut?: () 
       document.dispatchEvent(new CustomEvent("scikeel:login-waiting", { detail: { waiting } }));
     }
     if (state.status === "error" || (state.status === "ready" && state.sessionListReady && state.gatewayCatalogState === "unavailable")) finish("scikeel:login-error");
+    // The assistant picks its own model when the deployment has no default
+    // one, so a missing default model must not keep the login screen up.
     else if (state.status === "ready" && state.sessionListReady &&
-      (state.gatewayCatalogState === "ready" || state.gatewayCatalogState === "limited") && state.defaultModel) finish("scikeel:login-ready");
+      (state.gatewayCatalogState === "ready" || state.gatewayCatalogState === "limited")) finish("scikeel:login-ready");
   };
   const logout = () => {
     if (!failureShown || !signOut || signingOut || disposed) return;

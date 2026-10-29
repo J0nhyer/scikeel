@@ -21,6 +21,11 @@ import { PresentedArtifactPane } from "@/components/session/PresentedArtifactPan
  *  positions, threads and running turns all live outside the components. */
 const MOUNTED_SCREENS = 10;
 
+/** How long the page waits for a workspace that cannot answer before it
+ *  reports the state as unknown. A wait without an end is the "checking
+ *  project status" surface the user must never be stuck on. */
+const LIFECYCLE_WAIT_MS = 10000;
+
 /** How many of those keep their LAYOUT (see the render below). Measured on a
  *  real workbench, this is the difference between a switch that costs ~3ms of
  *  React and one that costs 30-250ms rebuilding layout, so it covers the
@@ -31,15 +36,16 @@ const MOUNTED_SCREENS = 10;
 const WARM_SCREENS = 5;
 
 /** The first restored URL/layout session that is absent from the selected
- *  runtime. The list-ready gate avoids rejecting a valid deep link during the
- *  short connect → list-sessions window. */
+ *  runtime. The complete-list gate avoids rejecting a valid deep link during
+ *  the short connect → list-sessions window, and while the catalogue's
+ *  remaining pages are still arriving. */
 export function missingSessionId(
   status: string,
-  sessionListReady: boolean,
+  sessionListComplete: boolean,
   candidates: Array<string | null>,
   sessions: Array<{ id: string }>,
 ): string | null {
-  if (status !== "ready" || !sessionListReady) return null;
+  if (status !== "ready" || !sessionListComplete) return null;
   const valid = new Set(sessions.map((session) => session.id));
   return candidates.find((id): id is string => !!id && !valid.has(id)) ?? null;
 }
@@ -94,6 +100,7 @@ export function LiveSessionPage() {
   const switching = useRuntimeStore((s) => s.switching);
   const sessions = useRuntimeStore((s) => s.sessions);
   const sessionListReady = useRuntimeStore((s) => s.sessionListReady);
+  const sessionListComplete = useRuntimeStore((s) => s.sessionListComplete);
   const workspace = useRuntimeStore((s) => s.workspace);
   const runningCount = useRuntimeStore((s) => Object.keys(s.runningSessions).length);
   const openSession = useRuntimeStore((s) => s.openSession);
@@ -141,7 +148,7 @@ export function LiveSessionPage() {
   const urlId = params.sessionId ?? null;
   const waitingForWebSessions = isGatewayWeb && !sessionListReady;
   const unavailableId = isGatewayWeb
-    ? missingSessionId(status, sessionListReady, [urlId, focusedSid], sessions)
+    ? missingSessionId(status, sessionListComplete, [urlId, focusedSid], sessions)
     : null;
 
   const accountId=useRuntimeStore(state=>state.gatewayUser?.id);
@@ -154,9 +161,13 @@ export function LiveSessionPage() {
   useEffect(()=>{
     if(!needsLifecycle || !unavailableId)return;
     let cancelled=false;
+    // A workspace that cannot answer must not hold the surface in a waiting
+    // state forever: the deadline turns it into the explicit unknown state,
+    // which the page offers to retry.
+    const deadline=setTimeout(()=>{if(!cancelled)setLifecycle({id:unavailableId,state:"unknown",accountId});},LIFECYCLE_WAIT_MS);
     void workspaceSessionState(unavailableId).then(result=>{if(!cancelled)setLifecycle({id:unavailableId,state:result.state,accountId});})
       .catch(error=>{if(!cancelled)setLifecycle({id:unavailableId,state:error instanceof WorkspaceRequestError && [403,404].includes(error.status)?"missing":"unknown",accountId});});
-    return()=>{cancelled=true;};
+    return()=>{cancelled=true;clearTimeout(deadline);};
   },[needsLifecycle,unavailableId,accountId,lifecycleAttempt]);
 
   // A URL or persisted layout can point at a session from another account, a

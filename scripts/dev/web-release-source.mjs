@@ -33,26 +33,27 @@ export function command(command, args, options = {}) {
   if (result.error || result.status !== 0 || result.signal) throw new Error(`Command failed: ${command}`);
   return options.trim === false ? result.stdout : result.stdout.trim();
 }
-async function walk(root, prefix = '') {
+async function walk(root, prefix = '', { includeViteManifest = false } = {}) {
   const output = [];
   for (const name of (await readdir(join(root, prefix))).sort()) {
     const path = prefix ? `${prefix}/${name}` : name;
-    if (!sourceAllowed(path)) continue;
+    const viteManifest = includeViteManifest && (path === '.vite' || path === '.vite/manifest.json');
+    if (!sourceAllowed(path) && !viteManifest) continue;
     const info = await lstat(join(root, path));
     if (info.isSymbolicLink()) throw new Error(`Source symlink is unsupported: ${path}`);
-    if (info.isDirectory()) output.push(...await walk(root, path));
+    if (info.isDirectory()) output.push(...await walk(root, path, { includeViteManifest }));
     else if (info.isFile()) output.push(path);
     else throw new Error(`Source special file: ${path}`);
   }
   return output;
 }
-export async function inventorySource(root, { git = true } = {}) {
+export async function inventorySource(root, { git = true, includeViteManifest = false } = {}) {
   root = await realpath(root);
   let paths;
   if (git) {
     const output = command('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root });
-    paths = [...new Set(output.split('\0').filter(Boolean))].filter(sourceAllowed).sort();
-  } else paths = await walk(root);
+    paths = [...new Set(output.split('\0').filter(Boolean))].filter(path => sourceAllowed(path) || includeViteManifest && path === '.vite/manifest.json').sort();
+  } else paths = await walk(root, '', { includeViteManifest });
   const files = [];
   for (const path of paths) {
     if (isAbsolute(path) || path.split('/').includes('..')) throw new Error('Unsafe source path');
@@ -100,11 +101,11 @@ export async function dependencyIdentity(root, { references: pinnedReferences } 
   for (const ref of references) await scan(ref.resolved);
   return { references, fingerprint: fingerprintFiles(files) };
 }
-export async function freezeSource(root, destination, files, { linkDependencies = true, dependencies = null } = {}) {
+export async function freezeSource(root, destination, files, { linkDependencies = true, dependencies = null, includeViteManifest = false } = {}) {
   const views = [];
   await mkdir(destination, { recursive: true });
   for (const file of files) {
-    if (!sourceAllowed(file.path) || isAbsolute(file.path) || file.path.split('/').includes('..')) throw new Error('Unsafe snapshot input');
+    if (!(sourceAllowed(file.path) || includeViteManifest && file.path === '.vite/manifest.json') || isAbsolute(file.path) || file.path.split('/').includes('..')) throw new Error('Unsafe snapshot input');
     const input = join(root, file.path); const output = join(destination, file.path);
     if ((await lstat(input)).isSymbolicLink() || !(await realpath(input)).startsWith((await realpath(root)) + '/')) throw new Error('Source symlink changed during copy');
     await mkdir(dirname(output), { recursive: true }); await copyFile(input, output);

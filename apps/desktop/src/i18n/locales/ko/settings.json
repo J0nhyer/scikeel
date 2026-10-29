@@ -11,6 +11,7 @@
     "adminOnly": "An administrator selects the deployment assistant in Models.",
     "busy": "Wait for running work to finish before changing the assistant.",
     "unavailable": "This assistant is unavailable.",
+    "recoveryRequired": "어시스턴트를 변경하기 전에 조정이 필요합니다. 재시도로 배포를 조정하세요.",
     "retry": "Retry"
   },
   "nav": {

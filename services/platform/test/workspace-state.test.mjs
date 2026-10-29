@@ -4,7 +4,7 @@ import {mkdtemp,rm,writeFile,symlink,link,chmod,readFile} from 'node:fs/promises
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
-const {WorkspaceState}=await import('../src/workspace-state.mjs').catch(()=>({}));
+import {WorkspaceState} from '../src/workspace-state.mjs';
 async function fixture(t) {
   const dataDir=await mkdtemp(join(tmpdir(),'workspace-state-'));
   t.after(()=>rm(dataDir,{recursive:true,force:true}));
@@ -36,7 +36,7 @@ test('project trash preserves identity across restart and isolates users',async 
 });
 test('operation IDs replay one result and reject different input',async t=>{
   const {state}=await fixture(t);
-  const input={kind:'trash',project:{id:'a',path:'/a'}};
+  const input={kind:'trash',project:{id:'a',path:'/a',name:'A'}};
   const first=await state.project('user-a','operation-a',input);
   assert.deepEqual(await state.project('user-a','operation-a',input),first);
   await assert.rejects(state.project('user-a','operation-a',{...input,kind:'restore'}),{code:'operation_conflict'});
@@ -61,7 +61,7 @@ test('reserved object keys cannot be operation identities',async t=>{
 
 test('receipt capacity fails before a new tombstone and existing receipts remain readable',async t=>{
  const {dataDir}=await fixture(t);const state=new WorkspaceState({dataDir,maxOperations:1});
- const input={kind:'trash',project:{id:'a',path:'/a'}};await state.project('user-a','op-a',input);
+ const input={kind:'trash',project:{id:'a',path:'/a',name:'A'}};await state.project('user-a','op-a',input);
  await assert.rejects(state.project('user-a','op-b',{kind:'trash',project:{id:'b',path:'/b'}}),{code:'workspace_metadata_full',statusCode:507});
  assert.equal((await state.receipt('user-a','op-a')).state,'committed');
  assert.equal((await state.open('user-a')).projects.b,undefined);

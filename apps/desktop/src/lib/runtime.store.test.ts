@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   /** Number of connect() attempts that fail before one succeeds. */
   failConnects: 0,
   failSessionLists: 0,
+  sessionListGate: null as Promise<void> | null,
   agentGate: null as Promise<void> | null,
   commandGate: null as Promise<void> | null,
   providerGate: null as Promise<void> | null,
@@ -231,6 +232,7 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
     }
     async listSessions(directories?: string[]) {
       mocks.sessionListDirectories(directories);
+      if (mocks.sessionListGate) await mocks.sessionListGate;
       if (mocks.failSessionLists > 0) {
         mocks.failSessionLists--;
         throw new Error("Session list temporarily unavailable");
@@ -427,6 +429,7 @@ beforeEach(async () => {
   mocks.activeWorkspace = "/ws/base";
   mocks.failConnects = 0;
   mocks.failSessionLists = 0;
+  mocks.sessionListGate = null;
   mocks.agentGate = mocks.commandGate = mocks.providerGate = mocks.skillGate = null;
   mocks.failCreates = 0;
   mocks.createGate = null;
@@ -747,6 +750,60 @@ describe("platform connection context", () => {
     expect(after.sessionModels.ses_legacy).toBe("fixture/model");
     expect(mocks.clientOpts).toHaveLength(clients); expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(sent);
     expect(mocks.abortSession).not.toHaveBeenCalled(); expect(mocks.answerQuestion).not.toHaveBeenCalled();
+  });
+  it("adopts an Admin-committed assistant when its optional effort catalog is unavailable", async () => {
+    let changed = false;
+    const context = { instanceId: "user-usr_fixture", generation: 1 };
+    const codex = { runtime: "codex", kind: "server", managed: true, label: "Codex", enabled: true,
+      models: ["gpt-6.1-sol"], defaultModel: "gpt-6.1-sol", selectedModel: "gpt-6.1-sol", status: "ready" };
+    mocks.currentModel = "codex/gpt-6.1-sol";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      return changed && path.endsWith("/api/runtime") ? new Response(JSON.stringify({
+        runtime: "codex", kind: "server", label: "Codex", policyRevision: 8, context, available: [codex],
+      })) : response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    changed = true;
+    mocks.failProviders = true;
+
+    await useRuntimeStore.getState().refreshGatewayRuntimes();
+
+    const state = useRuntimeStore.getState();
+    expect(state.gatewayRuntime).toBe("codex");
+    expect(state.gatewayCatalogState).toBe("ready");
+    expect(state.gatewayRuntimes.find(option => option.runtime === "codex")?.models).toEqual(["gpt-6.1-sol"]);
+    expect(state.defaultModel).toBe("codex/gpt-6.1-sol");
+    await useRuntimeStore.getState().sendPrompt("research", "ses_new");
+    expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_new", "research", undefined, "codex/gpt-6.1-sol", undefined);
+    expect(state.providers).toEqual([]);
+    expect(state.gatewayPolicyRevision).toBe(8);
+  });
+  it("does not adopt a committed OpenCode assistant when its model catalog cannot be read", async () => {
+    let changed = false;
+    const context = { instanceId: "user-usr_fixture", generation: 1 };
+    const codex = { runtime: "codex", kind: "server", managed: true, label: "Codex", enabled: true,
+      models: ["gpt-6.1-sol"], defaultModel: "gpt-6.1-sol", selectedModel: "gpt-6.1-sol", status: "ready" };
+    const opencode = { runtime: "opencode", kind: "opencode", managed: false, label: "OpenCode", enabled: true,
+      models: [], defaultModel: null, selectedModel: null, status: "ready" };
+    mocks.currentModel = "codex/gpt-6.1-sol";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      return path.endsWith("/api/runtime") ? new Response(JSON.stringify(changed ? {
+        runtime: "opencode", kind: "opencode", label: "OpenCode", policyRevision: 8, context, available: [opencode],
+      } : { runtime: "codex", kind: "server", label: "Codex", policyRevision: 7, context, available: [codex] })) : response(path);
+    }));
+    expect(await useRuntimeStore.getState().connectRetry(1)).toBe(true);
+    expect(useRuntimeStore.getState().gatewayRuntime).toBe("codex");
+    useRuntimeStore.setState({ sessionModels: { ses_keep: "fixture/model" } });
+    changed = true;
+    mocks.failProviders = true;
+
+    await useRuntimeStore.getState().refreshGatewayRuntimes();
+
+    const state = useRuntimeStore.getState();
+    expect(state.gatewayRuntime).toBe("codex");
+    expect(state.sessionModels.ses_keep).toBe("fixture/model");
   });
   it("does not adopt a changed assistant when its fresh workspace identity cannot be verified", async () => {
     let changed = false;
@@ -1173,6 +1230,37 @@ describe("gateway runtime selection", () => {
     expect(await useRuntimeStore.getState().connectRetry(2)).toBe(true);
     expect(useRuntimeStore.getState().sessionListReady).toBe(true);
     expect(useRuntimeStore.getState().sessions.some(session => session.id === "ses_recovered")).toBe(true);
+  });
+
+  it("allows initial session discovery to share the overall Web connection deadline", async () => {
+    mocks.isGatewayWeb = true; mocks.isTauri = false;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(milliseconds => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("signal timed out", "TimeoutError")), milliseconds);
+      return controller.signal;
+    });
+    let release!: () => void;
+    mocks.sessionListGate = new Promise(resolve => { release = resolve; });
+    mocks.sessionList = [{ id: "ses_slow_initial", title: "Existing conversation" }];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", runtime: "opencode", available: [] }))));
+    let finished = false;
+    const connection = useRuntimeStore.getState().connectRetry(1).then(result => { finished = true; return result; });
+    try {
+      await vi.advanceTimersByTimeAsync(16000);
+      expect(finished).toBe(false);
+      expect(useRuntimeStore.getState().sessionListReady).toBe(false);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await connection).toBe(true);
+      expect(useRuntimeStore.getState().sessions.some(session => session.id === "ses_slow_initial")).toBe(true);
+    } finally {
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      await connection;
+      timeout.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("finishes connection while another workspace's running status is still loading", async () => {

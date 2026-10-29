@@ -67,6 +67,17 @@ export async function assistantRollbackPolicy(sourceRoot, dataDir) {
       runtimeReaders, conversationReaders };
   } catch { return { compatible: false, reason: 'assistant_state_unverified' }; }
 }
+/** A publication must not change the deployment's selected assistant. A
+ *  platform that cannot read the stored assistant policy rewrites it with its
+ *  own default, which silently changes the assistant — and an assistant the
+ *  sandbox cannot run leaves the deployment unusable. */
+export async function assertPublishAssistantCompatibility(sourceRoot, dataDir) {
+  const policy = await assistantRollbackPolicy(sourceRoot, dataDir);
+  if (!policy.compatible)
+    throw new Error('The published platform cannot read the stored assistant and conversation state; publishing it would reset the deployment assistant');
+  return policy;
+}
+
 export async function lifecycleRollbackPolicy(sourceRoot,dataDir) {
   const stateDirectory=join(dataDir,'workspace-management');
   const info=await lstat(stateDirectory).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
@@ -233,6 +244,8 @@ async function deploymentOperations(candidate, store) {
         throw new Error('Legacy assistant acceptance cannot authorize this release; prepare again');
       if (resolve(candidate.directory) !== join(store, 'web-releases', candidate.id) || resolve(candidate.source.root) !== join(candidate.directory, 'source')) throw new Error('Unsafe candidate directory');
       if (candidate.production.managedEnv !== '/etc/scikeel/platform-sandbox.env') throw new Error('Unsafe managed environment path');
+      if (candidate.selection.deployPlatform)
+        await assertPublishAssistantCompatibility(candidate.source.root, managedDataDirectory(candidate.production));
       if (candidate.artifacts.web && resolve(candidate.artifacts.web.directory) !== join(candidate.directory, 'web')) throw new Error('Unsafe Web artifact root');
       await validateCandidate(candidate);
       if (candidate.artifacts.web && JSON.stringify(await artifactFiles(candidate.artifacts.web.directory)) !== JSON.stringify(candidate.artifacts.web.files)) throw new Error('Candidate artifacts changed');
@@ -262,7 +275,7 @@ async function deploymentOperations(candidate, store) {
         const views = await freezeSource(production.source, backupRoot, files, { dependencies });
         sourceBackup = { root: backupRoot, files, fingerprint: fingerprintFiles(files), dependencies, views };
       }
-      previous = { production, sourceBackup, files: await artifactFiles(production.webRoot), oldDropIn,
+      previous = { production, sourceBackup, files: await artifactFiles(production.webRoot, { requireManifest: false }), oldDropIn,
         pointer: await readFile(join(store, 'web-releases/current.json'), 'utf8').then(JSON.parse).catch(() => null) };
       if (candidate.selection.liveAssistant) {
         const client=await sessionClient(production);

@@ -24,7 +24,7 @@ function fixture(options = {}) {
   }, inspect: async ({ instanceId }) => {
     const record = records.get(instanceId);
     if (!record) throw Object.assign(new Error("unknown instance"), { reason: "unknown_instance" });
-    return { ...record };
+    return { ...record, endpoint: "http://172.31.240.2:4790", runnerEndpoint: "http://172.31.240.2:4791", internalToken: "b".repeat(64) };
   } };
   const policy = new TenantPolicy();
   const manager = new ManagedWorkerManager({ rootDir, imageDigest: digest, client, tenantPolicy: policy,
@@ -39,6 +39,19 @@ test("quota tenant directories remain separate from writable platform metadata",
   const worker = await manager.ensureWorker({ instanceId: "user-a", userId: "a" });
   assert.equal(worker.workspaceDir, "/var/lib/scikeel/tenant-data/instances/user-a/workspace");
   assert.ok(manager.rootDir.includes("scikeel-manager-"));
+});
+test('two bounded resident environments remain available until the third account needs capacity',async t=>{
+ const {manager,calls}=fixture({maxResidents:2});t.after(()=>manager.close());
+ await manager.ensureWorker({instanceId:'user-a',userId:'a'});
+ await manager.ensureWorker({instanceId:'user-b',userId:'b'});
+ assert.equal(manager.getWorker('user-a').status,'running');
+ assert.equal(manager.getWorker('user-b').status,'running');
+ assert.equal(calls.filter(([operation])=>operation==='stop').length,0);
+ const active=manager.retainWorker('user-a');
+ await manager.ensureWorker({instanceId:'user-c',userId:'c'});
+ assert.equal(manager.getWorker('user-a').status,'running');
+ assert.equal(manager.getWorker('user-b').status,'stopped');
+ active.release();
 });
 test('passive analytics registration follows verified lifecycle without extra starts or authority',async(t)=>{
   const {manager,calls,policy}=fixture();t.after(()=>manager.close());const observed=[];
@@ -88,6 +101,24 @@ test("assistant inventory requires current native and OpenCode observations, not
  assert.equal((await f.manager.assistantInventory()).uncertainEffects.length,1);
  assert.equal(f.calls.filter(([op])=>op==="start").length,1);
 });
+test("native workspace health and inventory never start OpenCode",async t=>{
+ const f=inventoryFixture(t);const urls=[];
+ f.manager.runtimeForContext=()=>"codex";
+ f.manager.fetchImpl=async url=>{
+   urls.push(url);
+   assert.ok(!url.includes("/session/status"));
+   return {ok:true,json:async()=>({})};
+ };
+ const context={instanceId:"user-a",userId:"a",generation:1};
+ await f.manager.ensureWorker(context);
+ assert.equal((await f.manager.workspaceStatus(context)).state,"healthy");
+ assert.equal(await f.manager.isIdle(context),true);
+ assert.deepEqual(await f.manager.assistantInventory(),{activeExecutions:[],uncertainEffects:[]});
+ f.manager.inspectNative=async()=>({busy:true,starting:true,jobs:[]});
+ assert.equal(await f.manager.isIdle(context),false);
+ assert.equal((await f.manager.assistantInventory()).activeExecutions.length,1);
+ assert.ok(urls.some(url=>url.endsWith("/v1/health")));
+});
 test("assistant inventory fails closed on unavailable registry, unowned generations and malformed native snapshots",async t=>{
  const f=inventoryFixture(t);await f.manager.ensureWorker({instanceId:"user-a",userId:"a"});
  for(const snapshot of [{busy:false,starting:false,jobs:[{jobId:"a".repeat(64),sessionId:"owned",status:"running"}]},
@@ -115,6 +146,58 @@ test("assistant inventory bounds native status bytes and rejects a generation re
  f.manager.inspectNative=async()=>{f.records.get("user-a").generation++;return {busy:false,starting:false,jobs:[]};};
  assert.equal((await f.manager.assistantInventory()).uncertainEffects.length,1);
  f.records.get("user-a").generation--;
+});
+test("a live launcher account the platform does not manage can be retired without starting it", async t => {
+  const f = inventoryFixture(t);
+  f.records.set("user-legacy", { instanceId: "user-legacy", userId: "legacy", generation: 4, status: "ready" });
+  const outcome = await f.manager.retireUnmanagedInstances();
+  assert.deepEqual(outcome.retired.map(item => item.instanceId), ["user-legacy"]);
+  assert.deepEqual(outcome.blocked, []);
+  assert.equal(f.records.get("user-legacy").status, "stopped");
+  assert.equal(f.calls.filter(([op]) => op === "start").length, 0);
+  assert.equal(f.calls.filter(([op]) => op === "register").length, 0);
+  assert.deepEqual((await f.manager.assistantInventory()).uncertainEffects, []);
+});
+test("a live account that is executing work is not retired", async t => {
+  const f = inventoryFixture(t);
+  f.records.set("user-busy", { instanceId: "user-busy", userId: "busy", generation: 7, status: "ready" });
+  f.manager.fetchImpl = async () => ({ ok: true, json: async () => ({ owned: { type: "busy" } }) });
+  const outcome = await f.manager.retireUnmanagedInstances();
+  assert.deepEqual(outcome.retired, []);
+  assert.deepEqual(outcome.blocked.map(item => item.instanceId), ["user-busy"]);
+  assert.equal(f.records.get("user-busy").status, "ready");
+  assert.equal((await f.manager.assistantInventory()).uncertainEffects.length, 1);
+});
+test("a managed running account is left to the revocation path", async t => {
+  const f = inventoryFixture(t);
+  await f.manager.ensureWorker({ instanceId: "user-a", userId: "a" });
+  const outcome = await f.manager.retireUnmanagedInstances();
+  assert.deepEqual(outcome.retired, []);
+  assert.deepEqual(outcome.blocked, []);
+  assert.equal(f.manager.getWorker("user-a").status, "running");
+});
+test("a cleanup the host already completed is verified and does not latch the account", async t => {
+  const { manager, calls, records } = fixture(); t.after(() => manager.close());
+  manager.fetchImpl = async () => ({ ok: false });
+  // The launcher retires the instance but hands out no new generation.
+  manager.client.register = async (args) => { calls.push(["register", args]); if (!records.has(args.instanceId)) records.set(args.instanceId, { instanceId: args.instanceId, userId: args.userId, generation: 1, status: "registered" }); return { instanceId: args.instanceId, generation: 1 }; };
+  manager.client.stop = async (args) => { calls.push(["stop", args]); const record = records.get(args.instanceId); if (record) record.status = "stopped"; return { ...args, stopped: true }; };
+  await assert.rejects(manager.ensureWorker({ instanceId: "user-a", userId: "a" }), /health unavailable/);
+  await assert.rejects(manager.ensureWorker({ instanceId: "user-a", userId: "a" }));
+  // The account was not latched: the next attempt starts the worker again.
+  assert.equal(calls.filter(([op]) => op === "start").length, 2);
+});
+test("a cleanup the host cannot confirm stays latched", async t => {
+  const { manager, calls, records } = fixture();
+  // A latched account cannot prove its shutdown either.
+  t.after(async () => { await manager.close().catch(() => {}); });
+  manager.fetchImpl = async () => ({ ok: false });
+  manager.client.register = async (args) => { calls.push(["register", args]); if (!records.has(args.instanceId)) records.set(args.instanceId, { instanceId: args.instanceId, userId: args.userId, generation: 1, status: "registered" }); return { instanceId: args.instanceId, generation: 1 }; };
+  manager.client.stop = async (args) => { calls.push(["stop", args]); return { ...args, stopped: true }; };
+  await assert.rejects(manager.ensureWorker({ instanceId: "user-a", userId: "a" }), { code: "workspace_cleanup_unverified" });
+  await assert.rejects(manager.ensureWorker({ instanceId: "user-a", userId: "a" }), { code: "workspace_cleanup_unverified" });
+  assert.equal(calls.filter(([op]) => op === "start").length, 1);
+  assert.equal((await manager.workspaceStatus({ instanceId: "user-a", userId: "a" })).state, "unknown");
 });
 test("managed workers use launcher endpoints, generations and private internal credentials", async (t) => {
   const { manager, calls, policy } = fixture(); t.after(() => manager.close());

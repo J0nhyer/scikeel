@@ -42,6 +42,7 @@ async function fixture(t, callbacks = {}) {
     prepare: async runtime => { events.push(["prepare", runtime]); await callbacks.prepare?.(runtime); },
     revoke: async input => { events.push(["revoke", input]); await callbacks.revoke?.(input); },
     inventory: callbacks.inventory ?? (async () => ({ activeExecutions: [], uncertainEffects: [] })),
+    settle: async () => { events.push(["settle"]); await callbacks.settle?.(); },
   } };
   let manager = new CliRuntimeManager(options);
   t.after(async () => { await manager.close(); await rm(rootDir, { recursive: true, force: true }); });
@@ -163,6 +164,61 @@ test("an unfinished manager cutover is durable before revocation and reconciles 
   assert.equal(restarted.adminDescribe().recoveryRequired, false);
   assert.equal(restarted.adminDescribe().activeRuntime, "codex");
   assert.equal((await restarted.selectAssistant(selection)).revision, 2);
+});
+
+test("a pending cutover is replayed by the same operation id instead of being refused", async t => {
+  let failing = true;
+  const f = await fixture(t, { revoke: async () => { if (failing) throw Error("synthetic-revocation-failure"); } });
+  const selection = { runtime: "codex", expectedRevision: 1, operationId: "replayed_cutover" };
+  await assert.rejects(f.manager.selectAssistant(selection), { code: "assistant_recovery_required" });
+  assert.equal(f.manager.adminDescribe().recoveryRequired, true);
+  failing = false;
+  const receipt = await f.manager.selectAssistant(selection);
+  assert.deepEqual(receipt, { activeRuntime: "codex", revision: 2, operationId: "replayed_cutover" });
+  assert.equal(f.manager.adminDescribe().recoveryRequired, false);
+  assert.equal(f.manager.adminDescribe().activeRuntime, "codex");
+});
+
+test("a different operation id stays refused while a cutover is pending", async t => {
+  let failing = true;
+  const f = await fixture(t, { revoke: async () => { if (failing) throw Error("synthetic-revocation-failure"); } });
+  await assert.rejects(f.manager.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "pending_first" }),
+    { code: "assistant_recovery_required" });
+  await assert.rejects(f.manager.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "pending_second" }),
+    { code: "assistant_recovery_required" });
+  assert.equal(f.manager.adminDescribe().activeRuntime, "opencode");
+});
+
+test("a blocking effect is settled before the cutover is refused", async t => {
+  let blocked = true;
+  const f = await fixture(t, {
+    inventory: async () => blocked
+      ? { activeExecutions: [], uncertainEffects: [{ source: "worker", userId: "owner_a" }] }
+      : { activeExecutions: [], uncertainEffects: [] },
+    settle: async () => { blocked = false; },
+  });
+  const receipt = await f.manager.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "settled_cutover" });
+  assert.equal(receipt.revision, 2);
+  assert.ok(f.events.some(([name]) => name === "settle"), "The transition must retire what blocks it");
+});
+
+test("an effect that survives settling still refuses the cutover", async t => {
+  const f = await fixture(t, {
+    inventory: async () => ({ activeExecutions: [], uncertainEffects: [{ source: "worker", userId: "owner_a" }] }),
+    settle: async () => {},
+  });
+  await assert.rejects(f.manager.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "unsettled_cutover" }),
+    { code: "assistant_recovery_required" });
+  assert.equal(f.manager.adminDescribe().activeRuntime, "opencode");
+});
+
+test("a cutover that cannot be replayed leaves the manager available and reports recovery", async t => {
+  const f = await fixture(t, { revoke: async () => { throw Error("synthetic-revocation-failure"); } });
+  await assert.rejects(f.manager.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "unreplayable" }),
+    { code: "assistant_recovery_required" });
+  const restarted = await f.restart();
+  assert.equal(restarted.adminDescribe().recoveryRequired, true);
+  assert.equal(restarted.adminDescribe().activeRuntime, "opencode");
 });
 
 test("legacy enabling and per-user runtime changes cannot regain selection authority", async t => {

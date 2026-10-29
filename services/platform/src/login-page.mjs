@@ -102,8 +102,24 @@ ${invalidCredentials ? `<p class="error" id="login-error" role="alert" tabindex=
 }
 
 /** Preload only public client files; never execute the authenticated app here. */
-export function loginAssetPreloads(html) {
-  const paths = new Set([...html.matchAll(/(?:src|href)="(\/assets\/[^"<>]+\.(?:js|css))"/g)].map(match => match[1]));
+export function loginAssetPreloads(manifest) {
+  if(!manifest||typeof manifest!=='object'||Array.isArray(manifest)||!manifest['index.html']?.isEntry)throw new Error('Invalid client asset manifest');
+  const paths=new Set(),visited=new Set();
+  const asset=path=>{
+    if(typeof path!=='string'||!/^assets\/[A-Za-z0-9_./-]+\.(?:js|css)$/.test(path)||path.split('/').includes('..'))throw new Error('Invalid client asset manifest');
+    paths.add('/'+path);
+  };
+  const visit=key=>{
+    if(visited.has(key))return;
+    // A large client is not a broken client: stop walking instead of failing
+    // the only unauthenticated entry point of the product.
+    if(visited.size>=512)return;
+    visited.add(key);
+    const chunk=manifest[key];if(!chunk||typeof chunk!=='object')throw new Error('Invalid client asset manifest');asset(chunk.file);
+    if(chunk.css!==undefined&&!Array.isArray(chunk.css)||chunk.imports!==undefined&&!Array.isArray(chunk.imports))throw new Error('Invalid client asset manifest');
+    for(const path of chunk.css??[])asset(path);
+    for(const dependency of chunk.imports??[])visit(dependency);
+  };visit('index.html');
   return [...paths].map(path => path.endsWith(".js")
     ? `<link rel="modulepreload" href="${escapeHtml(path)}" crossorigin>`
     : `<link rel="preload" as="style" href="${escapeHtml(path)}" crossorigin>`).join("");

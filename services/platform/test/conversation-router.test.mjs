@@ -29,6 +29,12 @@ test('reads merged owned history independently of selected assistant without a m
  assert.equal((await router.messages(owner,'old-opencode'))[0].info.id,'message-oc');
  assert(calls.some(x=>x[0]==='authorize'));
 });
+test('verified native conversation reads do not start the unrelated runtime',async()=>{
+ const {router,calls}=fixture();
+ router.catalog={conversation:async()=>({runtime:'claude',lifecycle:'active'})};
+ assert.equal((await router.read(owner,'old-cli')).id,'old-cli');
+ assert.equal(calls.filter(value=>value[0]==='opencode').length,0);
+});
 test('a current binding maps native IDs to a stable public identity and rejects direct native lookup',async()=>{
  const conversation={id:'public-conversation',title:'Stable',directory:owner.directory,parentId:null,lifecycle:'active',
   currentBindingId:'binding-codex',bindings:[{id:'binding-codex',runtime:'codex',nativeSessionId:'native-codex'}]};
@@ -200,4 +206,18 @@ test('synchronized history retries only canonical revision conflicts and bounds 
  await assert.rejects(router.messages(owner,'old-cli',{synchronize:true}),{code:'conversation_revision_conflict'});assert.equal(attempts,3);
  attempts=0;router.conversations.open=async()=>{attempts++;throw Object.assign(Error('denied'),{code:'conversation_owner_mismatch'});};
  await assert.rejects(router.messages(owner,'old-cli',{synchronize:true}),{code:'conversation_owner_mismatch'});assert.equal(attempts,1);
+});
+test('the catalog may narrow a conversation read but never denies one the source holds',async()=>{
+ const canonical={id:'local',title:'Local',directory:owner.directory,parentId:null,lifecycle:'active',currentBindingId:'binding-codex',
+  bindings:[{id:'binding-codex',runtime:'codex',nativeSessionId:'native-codex'}]};
+ const {router}=fixture({conversations:{list:async()=>[canonical]}});
+ // A catalog that has not projected the conversation yet.
+ router.catalog={conversation:async()=>null};
+ assert.equal((await router.read(owner,'local')).id,'local');
+ // A catalog that is still recovering must not turn a read into a 404.
+ router.catalog={conversation:async()=>{throw Object.assign(Error('recovering'),{code:'catalog_recovering'});}};
+ assert.equal((await router.read(owner,'local')).id,'local');
+ // A catalog that knows the conversation is trashed still denies it.
+ router.catalog={conversation:async()=>({runtime:'codex',lifecycle:'trashed'})};
+ await assert.rejects(router.read(owner,'local'),{code:'conversation_not_found'});
 });

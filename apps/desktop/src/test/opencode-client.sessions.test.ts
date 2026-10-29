@@ -4,6 +4,17 @@ import { ApiError, isApiStatus, OpenCodeClient } from "@ai4s/sdk";
 
 const BASE = "http://127.0.0.1:9999";
 
+it("reads the managed account-wide list once without a project filter", async () => {
+  const fetchImpl = vi.fn(async (_input:RequestInfo|URL) => new Response(JSON.stringify([
+    { id: "ses_a", title: "A", directory: "/ws/a", time: { updated: 2 } },
+    { id: "ses_b", title: "B", directory: "/ws/b", time: { updated: 1 } },
+  ])));
+  const client = new OpenCodeClient({ baseUrl: BASE, directory: "/ws/a", accountWideSessions: true, fetchImpl });
+  expect((await client.listSessions(["/ws/a", "/ws/b"])).map(row => row.id)).toEqual(["ses_a", "ses_b"]);
+  expect(fetchImpl).toHaveBeenCalledOnce();
+  expect(new URL(String(fetchImpl.mock.calls[0][0])).searchParams.has("directory")).toBe(false);
+});
+
 it("lists each permitted project directory instead of treating the default project list as global", async () => {
   const calls: string[] = [];
   const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async (input) => {
@@ -428,4 +439,35 @@ describe("typed operation errors",()=>{
     const client=new OpenCodeClient({baseUrl:BASE,fetchImpl:async()=>new Response(JSON.stringify([{id:"question",sessionID:"session",questions:[],tool}]))});
     expect((await client.listQuestions())[0].tool).toEqual(tool);
   });
+});
+
+it("pages the managed catalog until the recent window is full", async () => {
+  const pages: string[] = [];
+  const fetchImpl = vi.fn(async (input:RequestInfo|URL) => {
+    const url = new URL(String(input));
+    pages.push(url.pathname + url.search);
+    const cursor = url.searchParams.get("cursor");
+    const rows = cursor
+      ? [{ id: "ses_b", title: "B", directoryRef: "dir_b", projectId: null, parentId: null, runtime: "codex", lifecycle: "active", updatedAt: 1, sourceRef: "ref_b", sourceRevision: 1 }]
+      : [{ id: "ses_a", title: "A", directoryRef: "dir_a", projectId: null, parentId: null, runtime: "codex", lifecycle: "active", updatedAt: 2, sourceRef: "ref_a", sourceRevision: 1 }];
+    return new Response(JSON.stringify({
+      items: rows, nextCursor: cursor ? null : "next", revision: 1,
+      directoryPaths: { dir_a: "a", dir_b: "b" },
+    }));
+  });
+  const client = new OpenCodeClient({ baseUrl: BASE, workspaceCatalogRoot: "/ws", fetchImpl });
+  const sessions = await client.listSessions();
+  expect(sessions.map(row => row.id).sort()).toEqual(["ses_a", "ses_b"]);
+  expect(pages).toHaveLength(2);
+  expect(pages[0]).toContain("/api/workspace/catalog/conversations");
+  expect(pages[1]).toContain("cursor=next");
+});
+
+it("keeps a conversation that the managed catalog page does not contain reachable", async () => {
+  const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+    items: [{ id: "ses_a", title: "A", directoryRef: "dir_a", projectId: null, parentId: null, runtime: "codex", lifecycle: "active", updatedAt: 2, sourceRef: "ref_a", sourceRevision: 1 }],
+    nextCursor: null, revision: 1, directoryPaths: { dir_a: "a" },
+  })));
+  const client = new OpenCodeClient({ baseUrl: BASE, workspaceCatalogRoot: "/ws", fetchImpl });
+  expect((await client.listSessions()).map(row => row.id)).toEqual(["ses_a"]);
 });

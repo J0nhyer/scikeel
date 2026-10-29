@@ -8,6 +8,9 @@ import { create } from "zustand";
 import {
   OpenCodeClient,
   GatewayWorkspaceClient,
+  GatewayBootstrapClient,
+  catalogDirectory,
+  type WorkspaceBootstrap,
   GatewayWorkspaceError,
   decodeWorkspaceFailure,
   isWorkspaceReport,
@@ -75,6 +78,7 @@ import {
   type ProxyMode,
   type ToolStatus,
 } from "./tauri";
+import { collectCatalogueConversations, CATALOGUE_PAGE_LIMIT } from "@/lib/catalogueConversations";
 import { isGatewayWeb, isPlatformWeb, gatewayToken, gatewayOrigin, setPlatformSessionExpiryHandler, setPlatformWorkspaceGeneration, setPlatformAssistantRevision } from "./webMode";
 import { createGatewayAccountLifecycle } from "./gatewayAccount";
 import { createResearchTask, type ResearchBrief } from "./research";
@@ -308,6 +312,10 @@ interface RuntimeState {
   /** True after the current runtime's session list has loaded at least once.
    *  Web deep links must not reject a session during the connect/list gap. */
   sessionListReady: boolean;
+  /** True once the conversation list covers every conversation. A page of the
+   *  catalogue is not the whole list: a conversation outside it must not be
+   *  judged missing, and it must stay reachable. */
+  sessionListComplete: boolean;
   gatewayRuntimeSwitching: boolean;
   selectGatewayRuntime: (runtime: GatewayRuntimeId) => Promise<void>;
   /** The connected ACP agent's display name, or null on OpenCode. */
@@ -2858,7 +2866,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
 
     if (isGatewayWeb) {
       ++gatewayCatalogVersion;
-      set({ sessionListReady: false, gatewayCatalogState: "loading" });
+      set({ sessionListReady: false, sessionListComplete: false, gatewayCatalogState: "loading" });
     }
     // This attempt failed. Inside a retry loop that is a step, not an outcome:
     // the message is kept for connectRetry to report if the window runs out,
@@ -2889,6 +2897,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     let gatewayRuntime: GatewayRuntimeId | null = null;
     let gatewayPolicyRevision: number | null = null;
     let gatewayRuntimes: GatewayRuntimeOption[] = [];
+    let bootstrapSnapshot:WorkspaceBootstrap|null=null;
+    const managedBootstrap=isPlatformWeb&&typeof document!=='undefined'&&document.querySelector('meta[name="scikeel-workspace-bootstrap"][content="1"]')!==null;
     const gatewayUserRole: GatewayUserRole | null = null;
     const gatewayUser: GatewayUser | null = null;
     let account: Promise<{ user?: GatewayUser } | null> = Promise.resolve(null);
@@ -2922,7 +2932,36 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           return response.json() as Promise<T>;
         })(), signal);
       };
-      const metadata = readContext<{ runtime?: GatewayRuntimeId; policyRevision?: number; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[]; context?: {instanceId:string;generation:number} | null }>("/api/runtime", 15000).then(value => ({ value, error: null }), error => ({ value: null, error }));
+      const runtimeContext=readContext<{ runtime?: GatewayRuntimeId; policyRevision?: number; kind?: RuntimeKind; label?: string; available?: GatewayRuntimeOption[]; context?: {instanceId:string;generation:number} | null }>("/api/runtime", 15000);
+      // The direct read is the managed metadata's fallback. When the managed
+      // read answers first, this promise is never awaited, so its rejection
+      // must be claimed here: an unhandled rejection would break the
+      // connection instead of only the fallback.
+      runtimeContext.catch(() => {});
+      const metadataRead=managedBootstrap?new GatewayBootstrapClient({baseUrl}).read({signal:requestSignal(beforeDeadline(deadline,90_000)),timeoutMs:beforeDeadline(deadline,90_000),limit:CATALOGUE_PAGE_LIMIT}).then(snapshot=>{
+        if(!active())throw new Error('Account connection changed');
+        // Authentication owns the account read. The platform binds the managed
+        // metadata to the session, so an identity that is not known yet is not
+        // a mismatch; a different one is.
+        const known=get().gatewayUser;
+        if(known&&known.id!==snapshot.account.id)throw new Error('Account identity changed');
+        bootstrapSnapshot=snapshot;
+        const assistant=snapshot.assistant;
+        const option:GatewayRuntimeOption={runtime:assistant.runtime,kind:assistant.runtime==='opencode'?'opencode':'server',managed:assistant.runtime!=='opencode',
+          label:assistant.label,enabled:assistant.enabled,models:assistant.defaultModel?[assistant.defaultModel]:[],defaultModel:assistant.defaultModel,
+          selectedModel:assistant.defaultModel,status:assistant.capabilities.prompt?'ready':'unavailable',catalogRevision:null};
+        return {runtime:assistant.runtime,policyRevision:snapshot.policyRevision,kind:option.kind,label:assistant.label,available:[option],context:snapshot.workspace.state==='healthy'?snapshot.workspace.context:null};
+      }).catch(error=>{
+        // The managed metadata is an optimization. A platform that does not
+        // serve it yet — no catalog, an older platform, or a route that answers
+        // with something else — keeps the handshake the client used before, so
+        // a login is never blocked by it.
+        const status=(error as {status?:number})?.status;
+        const code=(error as {code?:string})?.code;
+        if(status===404||status===503||code==='invalid_bootstrap')return runtimeContext;
+        throw error;
+      }):runtimeContext;
+      const metadata=metadataRead.then(value=>({value,error:null}),error=>({value:null,error}));
       if (!isPlatformWeb) account = readContext<{ user?: GatewayUser }>("/api/me", 15000).catch(() => null);
       try {
         const who = await readContext("/v1/whoami", 60000, password ? { Authorization: `Bearer ${password}` } : undefined) as { directory?: string; mode?: string };
@@ -3022,6 +3061,27 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       if (gatewayRuntime && gatewayRuntime !== "opencode") {
         set((state) => reconcileGatewayModels(state, gatewayRuntimes));
       }
+      // The catalogue's remaining pages. Every conversation must stay
+      // reachable, so the list is only complete when the cursor is exhausted.
+      const loadCatalogueConversations=async(cursor:string,root:string,isActive:()=>boolean)=>{
+        const result=await collectCatalogueConversations(new GatewayBootstrapClient({baseUrl}),cursor,root,{isActive,limit:CATALOGUE_PAGE_LIMIT});
+        if(!isActive())return;
+        set(state=>({sessions:[...state.sessions,...result.sessions],sessionListComplete:result.complete}));
+      };
+      if(bootstrapSnapshot&&get().gatewayWorkspace){
+        const snapshot=bootstrapSnapshot as WorkspaceBootstrap,root=get().gatewayWorkspace!;
+        const page=snapshot.conversations;
+        // The bootstrap delivers the FIRST page of the catalogue. The rest
+        // arrives behind it; until then the list is partial, and a
+        // conversation outside it must not be judged missing.
+        const sessionParents:Record<string,string>={};
+        for(const row of page.items)if(row.parentId)sessionParents[row.id]=row.parentId;
+        set({sessions:page.items.map(row=>({id:row.id,title:row.title,directory:catalogDirectory(page,row.directoryRef,root),
+          ...(row.parentId?{parentId:row.parentId}:{}),updated:row.updatedAt})),sessionParents,sessionListReady:true,sessionListComplete:page.nextCursor===null,
+          projects:snapshot.projects.items.map(row=>({id:row.id,name:row.name,path:catalogDirectory(snapshot.projects,row.directoryRef,root),createdAt:row.createdAt??0,imported:row.imported??false,pinned:row.pinned??false})),
+          projectsLoading:false,projectsError:null});
+        if(page.nextCursor)void loadCatalogueConversations(page.nextCursor,root,active);
+      }
     } else {
       // Scope skill discovery to the sidecar's workspace (null in browser dev).
       directory = await workspacePath();
@@ -3089,6 +3149,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         directory: directory ?? undefined,
         password: password ?? undefined,
         sessionTitlePresentation: isGatewayWeb,
+        accountWideSessions: isPlatformWeb,
+        // The catalog listing is only used when the managed metadata was
+        // actually read. Without it the client lists the live sources.
+        workspaceCatalogRoot:managedBootstrap&&(bootstrapSnapshot as WorkspaceBootstrap|null)?(get().gatewayWorkspace??undefined):undefined,
+        // A proxied runtime stream carries no workspace announcement, so the
+        // client must not wait for one.
+        workspaceAcknowledgement:((bootstrapSnapshot as WorkspaceBootstrap|null)?.assistant.capabilities.eventAcknowledgement)!==false,
       });
       fencePlatformClient(oc, get());
       if (isPlatformWeb) oc.setGatewayContextChangedHandler?.(() => {
@@ -3749,8 +3816,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     c.onEvent(event => { if (active() && c === client) sharedEventHandler?.(event); });
     try {
       void logDebug(`connect → ${get().serverUrl}`);
-      if (isGatewayWeb) void get().refreshProjects();
-      const initialSessions = isGatewayWeb ? get().refreshSessions(true) : null;
+      if (isGatewayWeb&&!bootstrapSnapshot) void get().refreshProjects();
+      const initialSessions = isGatewayWeb&&!bootstrapSnapshot ? get().refreshSessions(true) : null;
       if (isGatewayWeb) await withSignal(c.connect(), requestSignal(5000));
       else await c.connect();
       if (!active()) return;
@@ -3763,8 +3830,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // Models and sessions are independent reads. Begin both immediately so
       // a login waits for their slowest request, not the sum of both stages.
       if (isGatewayWeb) void get().loadCatalog();
-      if (initialSessions) await withSignal(initialSessions, requestSignal(15000));
-      else await get().refreshSessions();
+      if (initialSessions) await withSignal(initialSessions, requestSignal(beforeDeadline(deadline, 90_000)));
+      else if(bootstrapSnapshot){
+        // The managed snapshot carries the first page of conversations. The
+        // full recent window arrives right behind it.
+        void get().refreshSessions();
+      }else await get().refreshSessions();
       if (!active()) return;
       // Web panes cannot open until their session list is known. A failed list
       // must retry the connection instead of leaving a ready stream and a
@@ -3863,9 +3934,20 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           throw new Error("Assistant identity is unavailable");
         // The gateway protocol stays the same across assistants. Refresh its
         // authority and catalog without disposing the client's owned drafts.
+        // A managed assistant's model list comes from /api/runtime, so its
+        // effort catalog is optional and a failed read only empties that
+        // catalog. An OpenCode cutover has no other model source, so a failed
+        // read must abort the cutover instead of adopting an assistant with no
+        // models and pruning the session's model choices.
+        const optionalCatalog = nextRuntime !== "opencode";
+        const currentDefaultModel = get().defaultModel;
         const [providers, configured] = await Promise.all([
-          listProvidersWithAvailability(observedClient, undefined, { signal, timeoutMs: 15000 }),
-          observedClient.getDefaultModel({ signal, timeoutMs: 15000 }),
+          optionalCatalog
+            ? listProvidersWithAvailability(observedClient, undefined, { signal, timeoutMs: 15000 }).catch(() => [] as ProviderInfo[])
+            : listProvidersWithAvailability(observedClient, undefined, { signal, timeoutMs: 15000 }),
+          optionalCatalog
+            ? Promise.resolve(currentDefaultModel)
+            : observedClient.getDefaultModel({ signal, timeoutMs: 15000 }),
         ]);
         const verified = await withSignal(readMetadata(), signal);
         if (verified.runtime !== nextRuntime || verified.policyRevision !== data.policyRevision ||
@@ -3926,6 +4008,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   },
   gatewayUserRole: null,
   sessionListReady: false,
+  sessionListComplete: false,
   gatewayRuntimeSwitching: false,
   selectGatewayRuntime: async (runtime) => {
     if (!isGatewayWeb) return;
@@ -3976,6 +4059,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       set({
         sessions: [],
         sessionListReady: false,
+        sessionListComplete: false,
         currentId: null,
         threads: {},
         skills: [],
@@ -4783,6 +4867,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       modelSwitchError: null,
       backgroundReviews: {},
       sessionListReady: false,
+      sessionListComplete: false,
     });
   },
 
@@ -4791,7 +4876,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     const source = client;
     try {
       let directories: string[] | undefined;
-      if (isGatewayWeb && get().gatewayRuntime) {
+      if (isGatewayWeb && !isPlatformWeb && get().gatewayRuntime) {
         const projects = await listProjects();
         if (source !== client) return;
         const state = get();
@@ -4818,7 +4903,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             }
           }
         }
-        return { sessions, sessionParents, sessionModels, sessionListReady: true };
+        // A runtime list is a bounded window of the conversations, never the
+        // whole catalogue: the completeness of the list is not claimed here.
+        return { sessions, sessionParents, sessionModels, sessionListReady: true, sessionListComplete: s.sessionListComplete };
       });
       // A reload clears browser memory even when another conversation keeps
       // running on the worker. Discover it without opening or resuming a turn.

@@ -8,7 +8,7 @@ import { SandboxClient, launcherRequest } from "../src/sandbox-client.mjs";
 
 async function socketFixture(handler, callback) {
   const directory = await mkdtemp(join(tmpdir(), "scikeel-client-"));
-  const socketPath = join(directory, "host.sock");
+  const socketPath = join(directory, "s");
   const sockets = new Set();
   const server = createServer((socket) => {
     sockets.add(socket); socket.on("close", () => sockets.delete(socket));

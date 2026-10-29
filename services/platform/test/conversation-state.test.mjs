@@ -20,7 +20,8 @@ test('owned canonical renames preserve native provenance and reject stale or for
  const {state,rootDir,authorize}=await fixture(t),before=await state.importNative(owner,imported);
  const changed=await state.rename(owner,before.id,{expectedRevision:before.revision,title:'Reviewed research title'});
  assert.equal(changed.title,'Reviewed research title');assert.equal(changed.revision,before.revision+1);
- assert.deepEqual({...changed,title:before.title,revision:before.revision},before);
+ assert.ok(changed.updatedAt>=before.updatedAt);
+ assert.deepEqual({...changed,title:before.title,revision:before.revision,updatedAt:before.updatedAt},before);
  await assert.rejects(state.rename(owner,before.id,{expectedRevision:before.revision,title:'Stale'}),error=>error.code==='conversation_revision_conflict');
  for(const title of ['', ' ', 'x'.repeat(241),null])await assert.rejects(state.rename(owner,before.id,{expectedRevision:changed.revision,title}));
  await assert.rejects(state.rename({...owner,userId:'foreign',instanceId:'user-foreign'},before.id,{expectedRevision:changed.revision,title:'Foreign'}));
@@ -54,7 +55,8 @@ test('archival origins preserve partial/failure messages and reject credentials 
 test('a version-one conversation reader upgrades references in memory without rewriting historical bytes',async t=>{
  const {state,rootDir}=await fixture(t);const first=await state.importNative(owner,imported);
  const file=join(rootDir,owner.userId,'conversations.json'),data=JSON.parse(await readFile(file,'utf8'));
- data.schema=1;for(const value of Object.values(data.conversations)){delete value.historicalSource;for(const event of value.events)delete event.historicalSourceId;}
+ data.schema=1;delete data.catalogRevision;delete data.catalogOutbox;
+ for(const value of Object.values(data.conversations)){delete value.historicalSource;delete value.updatedAt;for(const event of value.events)delete event.historicalSourceId;}
  const bytes=JSON.stringify(data);await writeFile(file,bytes);
  const restored=await state.open(owner,first.id);assert.equal(restored.historicalSource,null);assert.equal(restored.events[0].historicalSourceId,null);
  assert.equal(await readFile(file,'utf8'),bytes);

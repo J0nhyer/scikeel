@@ -58,11 +58,13 @@ export function validateAssistantPolicyState(value) {
 // Persistence is injected by CliRuntimeManager; this authority owns no second policy file.
 export class AssistantPolicy {
   #state; #queue = Promise.resolve(); #initialized = false; #uncertain = false; #live = new Set();
-  constructor({ state, persist, prepare, revoke, inventory, load }) {
+  constructor({ state, persist, prepare, revoke, inventory, load, settle }) {
     if (![persist, prepare, revoke, inventory].every(value => typeof value === "function"))
       throw error("invalid_assistant_policy", 503);
     this.#state = validateAssistantPolicyState(state);
-    Object.assign(this, { persist, prepare, revoke, inventory, load });
+    // Settling is optional: an authority that cannot retire anything simply
+    // leaves every effect in place, and the transition stays refused.
+    Object.assign(this, { persist, prepare, revoke, inventory, load, settle: typeof settle === "function" ? settle : async () => {} });
   }
   #serial(run) {
     const next = this.#queue.catch(() => {}).then(run);
@@ -74,8 +76,15 @@ export class AssistantPolicy {
     catch { this.#uncertain = true; throw error("assistant_persistence_uncertain", 503); }
     this.#state = value;
   }
-  #assertAvailable() {
-    if (!this.#initialized || this.#uncertain || this.#state.transition) throw error("assistant_recovery_required", 503);
+  #assertAvailable({ replay = false } = {}) {
+    if (!this.#initialized || this.#uncertain) throw error("assistant_recovery_required", 503);
+    if (this.#state.transition && !replay) throw error("assistant_recovery_required", 503);
+  }
+  /** Retire whatever the transition can retire. A failure here is not the
+   *  answer: the transition re-reads the inventory and refuses if the effect
+   *  is still there. */
+  async #settle() {
+    try { await this.settle(); } catch { /* the inventory decides */ }
   }
   async #inventory() {
     let value;
@@ -97,8 +106,14 @@ export class AssistantPolicy {
     for (const [id, execution] of Object.entries(next.executions))
       if (!this.#live.has(id)) execution.status = "unknown";
     if (JSON.stringify(next) !== JSON.stringify(this.#state)) await this.#save(next);
-    if (this.#state.transition) await this.#commitTransition();
-    this.#initialized = true; this.#uncertain = false;
+    if (this.#state.transition) {
+      // A cutover that cannot be replayed keeps its durable intent and its
+      // recovery fence. The platform starts and reports that reconciliation is
+      // required; it must not die because the intent is still pending.
+      try { await this.#commitTransition(); }
+      catch { /* the pending intent stays; an administrator reconciles it */ }
+    }
+    this.#initialized = true; this.#uncertain = !!this.#state.transition;
   }
   async reconcile() {
     return this.#serial(async () => {
@@ -177,7 +192,13 @@ export class AssistantPolicy {
     });
   }
   async #commitTransition() {
-    const transition = this.#state.transition, inventory = await this.#inventory();
+    const transition = this.#state.transition;
+    let inventory = await this.#inventory();
+    if (inventory.uncertainEffects.length) {
+      // Retire what the transition can retire before refusing it.
+      await this.#settle();
+      inventory = await this.#inventory();
+    }
     if (inventory.uncertainEffects.length) throw error("assistant_recovery_required", 503);
     if (inventory.activeExecutions.length || Object.keys(this.#state.executions).length) throw error("assistant_busy");
     await this.#prepare(transition.runtime);
@@ -197,7 +218,13 @@ export class AssistantPolicy {
   }
   async select(input) {
     return this.#serial(async () => {
-      this.#assertAvailable();
+      // A pending cutover is replayed by the same intent instead of refused:
+      // the commit path runs again and still refuses a runtime it cannot
+      // retire. A different intent stays refused.
+      const pending = this.#state.transition;
+      const replay = !!pending && !!input && typeof input === "object" &&
+        pending.operationId === input.operationId && pending.payloadHash === hashSelection(input);
+      this.#assertAvailable({ replay });
       if (!input || !runtimes.has(input.runtime) || !integer(input.expectedRevision) || !name(input.operationId) ||
           Object.keys(input).sort().join(",") !== "expectedRevision,operationId,runtime") throw error("invalid_assistant_selection", 400);
       const payloadHash = hashSelection(input), prior = this.#state.receipts.find(receipt => receipt.operationId === input.operationId);
@@ -205,9 +232,16 @@ export class AssistantPolicy {
         if (prior.payloadHash !== payloadHash) throw error("assistant_operation_conflict");
         return structuredClone(prior.result);
       }
+      if (replay) return this.#commitTransition();
       if (input.expectedRevision !== this.#state.revision) throw error("assistant_revision_conflict");
       if (this.#state.revision === Number.MAX_SAFE_INTEGER) throw error("assistant_policy_full", 507);
-      const inventory = await this.#inventory(), executions = Object.values(this.#state.executions);
+      let inventory = await this.#inventory();
+      if (inventory.uncertainEffects.length) {
+        // Retire what the transition can retire before refusing it.
+        await this.#settle();
+        inventory = await this.#inventory();
+      }
+      const executions = Object.values(this.#state.executions);
       if (inventory.uncertainEffects.length || executions.some(execution => execution.status === "unknown"))
         throw error("assistant_recovery_required", 503);
       if (inventory.activeExecutions.length || executions.length) throw error("assistant_busy");

@@ -136,7 +136,10 @@ describe("ManagedAgentsCard deployment selection", () => {
   it("does not repeat POST while the server reports a pending durable transition", async () => {
     let operationId = "", settled = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === "POST") { operationId = JSON.parse(String(init.body)).operationId; return response({ code: "assistant_recovery_required" }, 503); }
+      if (init?.method === "POST") {
+        if (String(input).includes("/reconcile")) return response({ activeRuntime: "opencode", revision: 1 });
+        operationId = JSON.parse(String(init.body)).operationId; return response({ code: "assistant_recovery_required" }, 503);
+      }
       return response(String(input).includes("operationId=") ? settled ? committed(operationId) : { ...snapshot, recoveryRequired: true,
         operation: { operationId, state: "pending" } } : snapshot);
     });
@@ -144,9 +147,41 @@ describe("ManagedAgentsCard deployment selection", () => {
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex); await screen.findByRole("alert");
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(codex).toBeDisabled(); expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
+    // The pending cutover is reconciled, never replaced by another selection.
+    expect(posts.filter(([input]) => !String(input).includes("/reconcile"))).toHaveLength(1);
+    expect(posts.filter(([input]) => String(input).includes("/reconcile")).length).toBeGreaterThan(0);
+    expect(codex).toBeDisabled();
     settled = true; await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(codex).toBeChecked());
+  });
+
+  it("releases the panel and names the reconciliation when the server refuses without holding an intent", async () => {
+    let operationId = "";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") { operationId = JSON.parse(String(init.body)).operationId; return response({ code: "assistant_recovery_required" }, 503); }
+      return response(String(input).includes("operationId=") ? unknown(operationId) : snapshot);
+    }));
+    render(<ManagedAgentsCard />);
+    const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
+    await userEvent.click(codex);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Work must be reconciled before the assistant can change."));
+    expect(codex).toBeEnabled();
+    expect(sessionStorage.getItem(storageKey)).toBeNull();
+  });
+
+  it("reconciles the deployment when the policy itself requires recovery", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/reconcile")) { calls.push("reconcile"); return response({ activeRuntime: "opencode", revision: 1 }); }
+      if (init?.method === "POST") { calls.push("select"); return response({ code: "assistant_recovery_required" }, 503); }
+      return response(String(input).includes("operationId=") ? unknown("fixture-operation") : { ...snapshot, recoveryRequired: true });
+    }));
+    render(<ManagedAgentsCard />);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Work must be reconciled before the assistant can change."));
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(calls).toContain("reconcile"));
+    expect(calls).not.toContain("select");
   });
 
   it("unlocks a definitively rejected busy selection only after checking the committed policy", async () => {

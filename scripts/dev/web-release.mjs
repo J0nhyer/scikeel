@@ -50,13 +50,15 @@ export async function prepareRelease(candidate, selection, ops) {
   if (selection.rustPackages?.length) await ops.stage('rust-checks');
   if (selection.imageRequired) await ops.stage('image-validation');
   if (selection.liveAssistant) await ops.stage('assistant-target');
-  if (selection.buildWeb) { await ops.stage('vendor'); await ops.stage('web-bundle'); await ops.stage('candidate-browser'); }
+  if (selection.buildWeb) { await ops.stage('vendor'); await ops.stage('web-bundle'); }
   await ops.validateSource(candidate); await ops.validateArtifacts(candidate);
   if (selection.liveAssistant) await ops.stage('compatible-recovery');
   await ops.markPrepared(candidate); return candidate;
 }
-export async function artifactFiles(directory) {
-  return inventorySource(directory, { git: false });
+export async function artifactFiles(directory, { requireManifest = true } = {}) {
+  const files = await inventorySource(directory, { git: false, includeViteManifest: true });
+  if (requireManifest && !files.some((file) => file.path === '.vite/manifest.json')) throw new Error('Built Web artifacts are missing .vite/manifest.json');
+  return files;
 }
 export function productionFingerprint(production) {
   return createHash('sha256').update(JSON.stringify(production)).digest('hex');

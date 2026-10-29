@@ -10,7 +10,7 @@ test('the recovery reader preserves new selection, native history, bindings and 
  const sourceRoot=fileURLToPath(new URL('../../../',import.meta.url));
  const proof=await verifyAssistantRollbackReader({sourceRoot});
  assert.equal(proof.status,'passed');assert.equal(proof.schema,1);
- assert.equal(proof.runtimeVersion,5);assert.equal(proof.conversationSchema,2);
+ assert.equal(proof.runtimeVersion,5);assert.equal(proof.conversationSchema,3);
  assert.deepEqual(proof.checks,['exclusive_selection','native_history','canonical_bindings','continued_write','workspace_preserved']);
 });
 

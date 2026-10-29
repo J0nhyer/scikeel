@@ -6,7 +6,17 @@ import {join} from 'node:path';
 import {WorkspaceState} from '../src/workspace-state.mjs';
 import {WorkspaceAdmission} from '../src/workspace-admission.mjs';
 import {TenantPolicy} from '../src/tenant-policy.mjs';
-const {WorkspaceManagement,historicalSessionRoots}=await import('../src/workspace-management.mjs').catch(()=>({}));
+import {WorkspaceManagement,historicalSessionRoots,historicalSessions} from '../src/workspace-management.mjs';
+test('account history is enumerated once per archive state without project rescans',async()=>{
+  const calls=[];
+  const rows=await historicalSessions({},async(_owner,path)=>{
+    calls.push(path);
+    return path.endsWith('=true')?[{id:'archived',directory:'/owned/old'}]:[{id:'current',directory:'/owned/current'}];
+  });
+  assert.deepEqual(rows.map(row=>row.id),['current','archived']);
+  assert.equal(calls.length,2);
+  assert(calls.every(path=>!new URL(path,'http://worker').searchParams.has('directory')));
+});
 test('historical roots inventory includes archived sessions and children across all projects',async()=>{
   const calls=[];const context={userId:'a',instanceId:'user-a',generation:1};
   const roots=await historicalSessionRoots(context,async(owner,path)=>{
@@ -43,6 +53,7 @@ test('rename preserves project ID/path and rejects invalid names',async t=>{
   assert.equal(f.projects[0].name,'Renamed');assert.equal(f.projects[0].path,'/owned/a/projects/a');
   for(const name of ['', 'x\nname','x'.repeat(241)])await assert.rejects(f.management.patchProject(f.context,f.projects[0].id,{name}));
   assert.equal(f.mutations(),1);
+  assert.equal((await f.state.open('a')).projects[f.projects[0].id].project.name,'Renamed');
 });
 test('trash filters normal project lists and denies nested old session/file paths; restore keeps IDs',async t=>{
   const f=await fixture(t);const [p]=await f.management.listProjects(f.context);

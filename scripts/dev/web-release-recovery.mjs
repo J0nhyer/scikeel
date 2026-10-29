@@ -30,7 +30,7 @@ export async function loadCompatibleRecovery(candidate,{validate=validateCandida
   throw Error('Compatible recovery reader or target identity changed');
  validateProof(reader.readerProof);
  await validate(reader);
- if(fingerprintFiles(await inventorySource(reader.artifacts.web.directory,{git:false}))!==reader.artifacts.web.fingerprint)
+ if(fingerprintFiles(await inventorySource(reader.artifacts.web.directory,{git:false,includeViteManifest:true}))!==reader.artifacts.web.fingerprint)
   throw Error('Retained recovery Web artifacts changed');
  return reader;
 }
@@ -53,10 +53,10 @@ export async function prepareCompatibleRecovery(candidate,{freeze=freezeSource,v
   verifyReader=fixture.verifyAssistantRollbackReader;
  }
  const proof=await verifyReader({sourceRoot,writerSourceRoot:candidate.source.root});validateProof(proof);
- const files=await inventorySource(candidate.artifacts.web.directory,{git:false});
+ const files=await inventorySource(candidate.artifacts.web.directory,{git:false,includeViteManifest:true});
  if(fingerprintFiles(files)!==candidate.artifacts.web.fingerprint)throw Error('Compatible recovery Web artifacts changed');
  const web=join(directory,'web');
- await freezeSource(candidate.artifacts.web.directory,web,files,{linkDependencies:false});
+ await freezeSource(candidate.artifacts.web.directory,web,files,{linkDependencies:false,includeViteManifest:true});
  const reader={schema:1,id,directory,status:'recovery-prepared',kind:'assistant-forward-reader',recoveryFor:candidate.id,
   source,baseline:structuredClone(candidate.baseline),assistantTargetHash:assistantTargetHash(candidate.assistantTarget),
   stages:{'reader-persistence':{status:'passed'}},readerProof:proof,

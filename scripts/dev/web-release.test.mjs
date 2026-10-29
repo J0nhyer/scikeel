@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { fingerprintFiles, inventorySource, freezeSource, changedPaths, validateSourceSnapshot, inspectProduction, dependencyIdentity } from './web-release-source.mjs';
+import { artifactFiles } from './web-release.mjs';
 import { writeManifest, readManifest, recordStage, canResume, classifyStorage } from './web-release-state.mjs';
 import { selectVerification } from './web-release-policy.mjs';
 
@@ -45,6 +46,30 @@ test('snapshot freezes untracked source and excludes deployment, credentials and
   await writeFile(join(source, 'apps/desktop/src/new.ts'), 'changed');
   assert.equal(await readFile(join(out, 'apps/desktop/src/new.ts'), 'utf8'), 'export const a = 1;');
 });
+test('Web release artifacts retain the login preload manifest in compatible recovery copies', async (t) => {
+  const root = await fixture(t), web = join(root, 'web'), reader = join(root, 'reader');
+  await mkdir(join(web, '.vite'), { recursive: true });
+  await mkdir(join(web, 'assets'), { recursive: true });
+  await writeFile(join(web, 'index.html'), '<html></html>');
+  await writeFile(join(web, 'assets/app.js'), 'window.app = true;');
+  const manifest = JSON.stringify({ 'index.html': { file: 'assets/app.js', isEntry: true } });
+  await writeFile(join(web, '.vite/manifest.json'), manifest);
+
+  const files = await artifactFiles(web);
+  assert.ok(files.some((file) => file.path === '.vite/manifest.json'));
+  await freezeSource(web, reader, files, { linkDependencies: false, includeViteManifest: true });
+  assert.equal(await readFile(join(reader, '.vite/manifest.json'), 'utf8'), manifest);
+  assert.deepEqual(await artifactFiles(reader), files);
+});
+test('a legacy published Web bundle without a Vite manifest remains archivable for recovery', async (t) => {
+  const root = await fixture(t), web = join(root, 'web');
+  await mkdir(join(web, 'assets'), { recursive: true });
+  await writeFile(join(web, 'index.html'), '<html></html>');
+  await writeFile(join(web, 'assets/app.js'), 'window.app = true;');
+
+  assert.deepEqual((await artifactFiles(web, { requireManifest: false })).map(file => file.path), ['assets/app.js', 'index.html']);
+  await assert.rejects(artifactFiles(web), /missing \.vite\/manifest\.json/);
+});
 test('source symlink escapes and source changes during copying fail', async (t) => {
   const root = await fixture(t); const source = join(root, 'source');
   await mkdir(join(source, 'apps/desktop/src'), { recursive: true });
@@ -55,6 +80,7 @@ test('source symlink escapes and source changes during copying fail', async (t) 
 test('unknown sources and incomplete baseline broaden verification; docs do not build', () => {
   assert.equal(selectVerification(['apps/desktop/src/new-area.ts'], { known: true }).frontendFull, true);
   assert.equal(selectVerification(['apps/desktop/src/components/thread/WorkflowStarters.tsx'], { known: false }).full, true);
+  assert.equal(selectVerification(['apps/desktop/src/components/thread/WorkflowStarters.tsx'], { known: false }).liveAssistant, false);
   const docs = selectVerification(['README.md'], { known: true });
   assert.equal(docs.buildWeb, false); assert.equal(docs.deploy, false);
 });
@@ -110,13 +136,18 @@ test('release bundles only the matching checked source and excludes ACP', async 
 
 import { browserStage, prepareRelease, requireBrowserConfiguration, parseArguments, validateResume, validateInstalledImage, assertSelectedSource } from './web-release.mjs';
 
-test('admin analytics source changes select a required protected browser scenario', () => {
+test('admin analytics source changes select browser coverage without requiring it for publication', () => {
   for (const path of ['services/platform/src/agent-analytics-store.mjs','packages/sdk/src/agent-analytics-observer.mjs','apps/desktop/src/components/sidebar/GatewayAccountMenu.tsx']) {
     const selection=selectVerification([path],{known:true});
     assert.ok(selection.browserGroups.includes('agent-analytics'),path);
     assert.equal(selection.buildWeb,true);
   }
   assert.ok(selectVerification([],{known:false}).browserGroups.includes('agent-analytics'));
+});
+test('release policy tooling changes do not require live assistant calls', () => {
+  const selection = selectVerification(['scripts/dev/web-release-policy.mjs'], { known: true });
+  assert.equal(selection.workflowTests, true);
+  assert.equal(selection.liveAssistant, false);
 });
 test('CLI requires explicit source and rejects ambiguous commands/options', () => {
   assert.throws(() => parseArguments(['prepare']), /source/);
@@ -130,9 +161,10 @@ test('preparation checks once, follows stage order, and never publishes failed c
     validateSource: async () => calls.push('source'), stage: async (name) => calls.push(name),
     validateArtifacts: async () => calls.push('artifacts'), markPrepared: async () => calls.push('prepared'),
   };
-  const selection = { lint: true, typecheck: true, frontendFiles: ['a'], platformFull: true, imageRequired: false, buildWeb: true };
+  const selection = { lint: true, typecheck: true, frontendFiles: ['a'], platformFull: true, imageRequired: false, buildWeb: true,
+    browserGroups: ['login', 'session'] };
   await prepareRelease({}, selection, ops);
-  assert.deepEqual(calls, ['source', 'lint', 'typecheck', 'frontend-tests', 'platform-tests', 'vendor', 'web-bundle', 'candidate-browser', 'source', 'artifacts', 'prepared']);
+  assert.deepEqual(calls, ['source', 'lint', 'typecheck', 'frontend-tests', 'platform-tests', 'vendor', 'web-bundle', 'source', 'artifacts', 'prepared']);
   calls.length = 0;
   await assert.rejects(prepareRelease({}, selection, { ...ops, stage: async (name) => { calls.push(name); if (name === 'typecheck') throw new Error('fixture'); } }));
   assert(!calls.includes('web-bundle')); assert(!calls.includes('prepared'));
@@ -160,7 +192,7 @@ test('selected assistant preparation rejects an incompatible host launcher befor
 test('release launcher readiness exercises the exact read-only socket protocol and rejects the old empty response', async t => {
   const { verifyReleaseLauncher } = await import('./web-assistant-release.mjs');
   assert.equal(typeof verifyReleaseLauncher, 'function');
-  const root = await fixture(t), socketPath = join(root, 'host.sock');
+  const root = await fixture(t), socketPath = join(root, 's');
   const requests = [], sockets = new Set();
   let result;
   const server = createServer(socket => {
@@ -215,6 +247,17 @@ test('rollback refuses readers that would discard exclusive assistant policy or 
  await writeFile(join(data,'conversation-state/historical-owner/conversations.json'),JSON.stringify({schema:3}));
  assert.equal((await assistantRollbackPolicy(source,data)).compatible,false);
 });
+test('a publication refuses a platform that cannot read the stored assistant state',async t=>{
+ const {assertPublishAssistantCompatibility}=await import('./web-release-deploy.mjs');
+ assert.equal(typeof assertPublishAssistantCompatibility,'function');
+ const root=await fixture(t),source=join(root,'source'),data=join(root,'data');
+ await mkdir(join(source,'services/platform/src'),{recursive:true});await mkdir(data);
+ await mkdir(join(data,'cli-runtime'));await writeFile(join(data,'cli-runtime/runtime.json'),JSON.stringify({version:5}));
+ await assert.rejects(assertPublishAssistantCompatibility(source,data),/would reset the deployment assistant/);
+ await writeFile(join(source,'services/platform/src/cli-runtime.mjs'),'export const READABLE_RUNTIME_STORAGE_VERSIONS = [1,2,3,4,5];\n');
+ await writeFile(join(source,'services/platform/src/conversation-state.mjs'),'export const READABLE_CONVERSATION_SCHEMAS = [1,2];\n');
+ assert.equal((await assertPublishAssistantCompatibility(source,data)).compatible,true);
+});
 test('assistant rollback inspection rejects symlinks and malformed or unversioned state without changing bytes',async t=>{
  const {assistantRollbackPolicy}=await import('./web-release-deploy.mjs');
  assert.equal(typeof assistantRollbackPolicy,'function');
@@ -250,15 +293,16 @@ test('compatible recovery freezes the checked reader and refuses missing evidenc
  const {prepareCompatibleRecovery,loadCompatibleRecovery}=await import('./web-release-recovery.mjs');
  const {validateSourceSnapshot}=await import('./web-release-source.mjs');
  const root=await fixture(t),store=join(root,'store'),source=join(root,'candidate/source'),web=join(root,'old-web');
- await mkdir(join(source,'services/platform/src'),{recursive:true});await mkdir(join(store,'web-releases'),{recursive:true});await mkdir(web);
+ await mkdir(join(source,'services/platform/src'),{recursive:true});await mkdir(join(store,'web-releases'),{recursive:true});await mkdir(join(web,'.vite'),{recursive:true});
  await writeFile(join(source,'services/platform/src/main.mjs'),'export const fixture = true;');await writeFile(join(web,'index.html'),'retained');
- const files=await inventorySource(source,{git:false}),webFiles=await inventorySource(web,{git:false});
+ await writeFile(join(web,'.vite/manifest.json'),JSON.stringify({'index.html':{file:'assets/app.js',isEntry:true}}));
+ const files=await inventorySource(source,{git:false}),webFiles=await inventorySource(web,{git:false,includeViteManifest:true});
  const candidate={id:'candidate',sharedStore:store,source:{root:source,files,fingerprint:fingerprintFiles(files),dependencies:{}},
   production:{webRoot:web,webFingerprint:fingerprintFiles(webFiles)},baseline:{fingerprint:'original-baseline'},
   artifacts:{image:{imageDigest:'sha256:'+'a'.repeat(64)},web:{directory:web,files:webFiles,fingerprint:fingerprintFiles(webFiles)}},assistantTarget:{schema:2,runtime:'codex',model:'gpt-6.1-sol'}};
  const proof={schema:1,status:'passed',runtimeVersion:5,conversationSchema:2,
   checks:['exclusive_selection','native_history','canonical_bindings','continued_write','workspace_preserved']};
- const options={freeze:(from,to,files)=>freezeSource(from,to,files,{linkDependencies:false}),validate:validateSourceSnapshot,
+ const options={freeze:(from,to,files)=>freezeSource(from,to,files,{linkDependencies:false,includeViteManifest:true}),validate:validateSourceSnapshot,
   verifyReader:async({sourceRoot,writerSourceRoot})=>{assert.equal(writerSourceRoot,source);assert.notEqual(sourceRoot,source);
    assert.equal(await readFile(join(sourceRoot,'services/platform/src/main.mjs'),'utf8'),'export const fixture = true;');return proof;}};
  candidate.compatibleRecovery=await prepareCompatibleRecovery(candidate,options);
@@ -339,6 +383,7 @@ test('snapshot validation rejects added inputs and executable-mode changes', asy
 });
 test('unknown empty baseline runs conservative bootstrap while runtime callers and Rust widen checks', () => {
   assert.equal(selectVerification([], { known: false }).full, true);
+  assert.equal(selectVerification([], { known: false }).liveAssistant, false);
   assert.equal(selectVerification([], { known: true }, { full: true }).full, true);
   assert.equal(selectVerification(['apps/desktop/src/lib/runtime.ts'], { known: true }).platformFull, true);
   assert.deepEqual(selectVerification(['crates/osd-core/src/gateway.rs'], { known: true }).rustPackages, ['osd-core']);

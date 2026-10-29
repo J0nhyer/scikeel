@@ -388,6 +388,14 @@ export interface HistoryPart {
 }
 
 export interface OpenCodeClientOptions {
+  /** Managed platform listings already span every owned project. */
+  accountWideSessions?: boolean;
+  /** Verified managed metadata API; its workspace root is independent of the current folder. */
+  workspaceCatalogRoot?: string;
+  /** The platform announces the workspace on its event stream. A proxied
+   *  runtime stream carries no announcement, so the client must not wait for
+   *  one. Defaults to true. */
+  workspaceAcknowledgement?: boolean;
   /** Interpret durable title jobs for the gateway Web UI. */
   sessionTitlePresentation?: boolean;
   /** Base URL of a running `opencode serve`, e.g. http://127.0.0.1:4096 */

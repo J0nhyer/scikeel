@@ -63,6 +63,18 @@ test("the existing Admin runtime endpoint accepts one revisioned deployment sele
   }
 });
 
+test("the reconciliation route is administrator-only, same-origin and reports the state", async t => {
+  const f = await fixture(t);
+  assert.equal((await f.request("/api/admin/runtime/reconcile")).status, 401);
+  assert.equal((await f.request("/api/admin/runtime/reconcile", f.student, {})).status, 403);
+  assert.equal((await f.request("/api/admin/runtime/reconcile", f.admin, {}, { origin: "http://elsewhere.invalid" })).status, 403);
+  const response = await f.request("/api/admin/runtime/reconcile", f.admin, {});
+  assert.equal(response.status, 200);
+  const state = await response.json();
+  assert.equal(state.activeRuntime, "opencode");
+  assert.equal(state.revision, 1);
+});
+
 test("legacy independent enabling cannot bypass exclusive Admin selection", async t => {
   const f = await fixture(t);
   const response = await f.request("/api/admin/runtime", f.admin, { runtime: "codex", enabled: true });

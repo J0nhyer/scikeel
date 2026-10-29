@@ -7,7 +7,7 @@ import { useRuntimeStore, type GatewayRuntimeId } from "@/lib/runtime";
 import { gatewayOrigin } from "@/lib/webMode";
 
 type Selection = { runtime: GatewayRuntimeId; expectedRevision: number; operationId: string };
-type Message = "managedAgents.failed" | "managedAgents.busy" | "managedAgents.unavailable" | "managedAgents.pending" | "managedAgents.loadFailed";
+type Message = "managedAgents.failed" | "managedAgents.busy" | "managedAgents.unavailable" | "managedAgents.pending" | "managedAgents.loadFailed" | "managedAgents.recoveryRequired";
 type Policy = { activeRuntime: GatewayRuntimeId; revision: number; recoveryRequired: boolean;
   available: { runtime: GatewayRuntimeId; status?: string; models: string[]; defaultModel?: string | null }[];
   operation: { operationId: string; state: "pending" | "unknown" | "committed";
@@ -63,6 +63,7 @@ export function ManagedAgentsCard() {
       // and, only if absent and still at its original revision, reuses its ID.
       for (let attempt = 0; attempt < 2; attempt++) {
         let definitive = false;
+        let refusal: string | null = null;
         let failureKey: Message = "managedAgents.failed";
         if (post && selection) {
           try {
@@ -71,8 +72,14 @@ export function ManagedAgentsCard() {
             if (!result.ok) {
               definitive = [400, 403, 409].includes(result.status);
               const body = await result.json().catch(() => null) as { code?: string } | null;
-              if (body?.code === "assistant_busy") failureKey = "managedAgents.busy";
-              if (body?.code === "assistant_unavailable") failureKey = "managedAgents.unavailable";
+              refusal = typeof body?.code === "string" ? body.code : null;
+              if (refusal === "assistant_busy") failureKey = "managedAgents.busy";
+              if (refusal === "assistant_unavailable") failureKey = "managedAgents.unavailable";
+              // A refusal that needs reconciliation is not a lost acknowledgement:
+              // the server holds no intent, and the administrator must be told
+              // what has to be reconciled.
+              if (refusal === "assistant_recovery_required" || refusal === "assistant_persistence_uncertain")
+                failureKey = "managedAgents.recoveryRequired";
             } else await result.body?.cancel();
           } catch { /* A lost HTTP acknowledgement does not prove rejection. */ }
         }
@@ -87,7 +94,7 @@ export function ManagedAgentsCard() {
           pendingRef.current = null; setPending(null);
           try { sessionStorage.removeItem(storageKey(account)); } catch { /* A later load can reconcile the same receipt. */ }
         };
-        if (!selection) { setMessage(next.recoveryRequired ? "managedAgents.pending" : null); return; }
+        if (!selection) { setMessage(next.recoveryRequired ? "managedAgents.recoveryRequired" : null); return next; }
         const operation = next.operation;
         if (operation?.operationId !== selection.operationId) throw Error("Mismatched assistant receipt");
         if (operation.state === "committed") {
@@ -98,22 +105,50 @@ export function ManagedAgentsCard() {
           toast.success(t("managedAgents.saved", { runtime: AGENTS.find(agent => agent.id === selection.runtime)!.label }),
             { accountId: account, eventId: selection.operationId, returnFocus: options.returnFocus });
           void refresh().catch(() => {});
-          return;
+          return next;
         }
         if (operation.state === "unknown" && !next.recoveryRequired && (definitive || next.revision > selection.expectedRevision)) {
-          clear(); setMessage(failureKey); return;
+          clear(); setMessage(failureKey); return next;
         }
-        if (operation.state === "unknown" && !next.recoveryRequired && next.revision === selection.expectedRevision && retry) {
-          post = true; retry = false; continue;
+        if (operation.state === "unknown" && !next.recoveryRequired && next.revision === selection.expectedRevision) {
+          // The server holds no intent for this selection. A refusal is final,
+          // and the panel must not stay fenced by a request that was never
+          // persisted — the administrator could not act at all.
+          if (refusal && refusal !== "assistant_persistence_uncertain") { clear(); setMessage(failureKey); return next; }
+          if (retry) { post = true; retry = false; continue; }
         }
-        setMessage("managedAgents.pending"); return;
+        if (operation.state === "pending") {
+          // The server holds a durable intent. It is reconciled, not replaced.
+          setMessage(next.recoveryRequired ? "managedAgents.recoveryRequired" :
+            failureKey === "managedAgents.failed" ? "managedAgents.pending" : failureKey); return next;
+        }
+        setMessage("managedAgents.pending"); return next;
       }
+      return null;
     } catch {
       if (current(options.epoch)) setMessage(selection ? "managedAgents.pending" : "managedAgents.loadFailed");
+      return null;
     } finally {
       if (current(options.epoch)) { resolvingRef.current = false; setResolving(false); setLoading(false); }
     }
   }, [account, current, refresh, t]);
+
+  /** Reconcile the deployment's assistant policy. A transition that something
+   *  still blocks cannot be replaced by another request; the policy has to be
+   *  reconciled first, and this is the administrator's way to do it. */
+  const reconcile = useCallback(async () => {
+    if (!account || !current(epochRef.current)) return;
+    resolvingRef.current = true; setResolving(true);
+    try {
+      await fetch(`${gatewayOrigin()}/api/admin/runtime/reconcile`, { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }, body: "{}", signal: AbortSignal.timeout(15000) }).catch(() => null);
+    } finally {
+      resolvingRef.current = false; setResolving(false);
+    }
+    // The reconciliation may have committed the cutover the browser holds.
+    const next = await check(pendingRef.current, { epoch: epochRef.current });
+    if (next?.recoveryRequired) setMessage("managedAgents.recoveryRequired");
+  }, [account, check, current]);
 
   useEffect(() => {
     const epoch = ++epochRef.current;
@@ -153,7 +188,11 @@ export function ManagedAgentsCard() {
     {detail && <div role="alert" className="px-4 pb-3"><StateNotice issueId={`assistant-selection:${pending?.operationId ?? policy?.revision ?? 0}:${message}`}
       summary={t("common:notification.problem")} detail={detail}
       action={retryable ? { label: t("managedAgents.retry"), run: () => {
-        if (!resolvingRef.current) void check(pendingRef.current, { epoch: epochRef.current, retry: true });
+        if (resolvingRef.current) return;
+        // A policy that must be reconciled is not repaired by another
+        // selection request: the deployment reconciles it instead.
+        if (message === "managedAgents.recoveryRequired") { void reconcile(); return; }
+        void check(pendingRef.current, { epoch: epochRef.current, retry: true });
       } } : undefined} /></div>}
   </Section>;
 }

@@ -165,6 +165,7 @@
     "adminOnly": "部署使用的助手由管理员在模型菜单中选择。",
     "busy": "请等待正在执行的工作结束后再切换助手。",
     "unavailable": "此助手暂不可用。",
+    "recoveryRequired": "需要先完成协调，助手才能切换。点“重试”以协调部署状态。",
     "retry": "重试"
   },
   "managedModels": {

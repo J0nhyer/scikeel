@@ -101,3 +101,55 @@ local workspace + SQLite + JSONL provenance.
   equivalent verified cgroup limit. A failed build must leave the deployed Web
   bundle untouched. If the bounded build runs out of memory, optimize its
   footprint; never remove the host guard or raise it into the system reserve.
+
+## Proportionate Web releases (mandatory)
+
+The 2026-10-21 login-performance work expanded into runtime and image changes.
+The selected publication path consequently rebuilt Codex for about 78 minutes;
+its 75-minute publication deadline expired, and a subsequent native capability
+check failed on a subprocess temporary-directory configuration. The requested
+login improvement remained unpublished. Treat end-to-end delivery time and
+verification cost as design constraints from the beginning.
+
+- Keep implementation within the requested user outcome. Do not add runtime,
+  image, infrastructure, or release-system changes without code or measurement
+  evidence that the outcome requires them. Before choosing a change, account for
+  its build, deployment, and acceptance consequences. Explain an unavoidable
+  expensive dependency before starting it.
+- Use the shortest existing deployment path that correctly publishes the changed
+  components. An authorized release does not require another planning cycle,
+  new documents, a new publication framework, or repeated user confirmation.
+- Build and publish the frontend for frontend changes; update the platform for
+  platform changes. Reuse installed runtimes and images when their relevant
+  source, dependencies, configuration, and compatibility remain unchanged and
+  verified. Routine Web releases must not automatically rebuild native agents
+  or scientific images.
+- Changed runtime or image inputs require the corresponding build and safety
+  checks. Never relabel those changes as frontend-only, disable isolation, or
+  bypass a relevant release check to obtain a faster publication.
+- Select tests from affected behavior, shared dependencies, and actual risk.
+  Keep test-first regressions and code review. Run broader suites when their
+  coverage is needed; do not repeatedly run the entire repository solely because
+  a generic script selects everything. Reuse passing results only while their
+  verified inputs remain unchanged.
+- Before a costly stage, validate its prerequisites with inexpensive checks:
+  arguments, dependencies, available resources, source and artifact identity,
+  compatibility, and writable project-local temporary directories inherited by
+  every subprocess. Publication deadlines must cover the selected bounded jobs
+  and queue allowance.
+- Follow long-running work through one task with bounded, low-frequency status
+  checks. Inspect meaningful progress and failures. Do not busy-wait, repeat
+  unchanged output, start duplicate builds, or consume model calls just to wait.
+  A timeout requires diagnosis before another attempt; merely extending a
+  deadline does not resolve a failed check.
+- Preserve user data, existing published behavior, and the working deployment
+  until the candidate is ready. After deployment, verify the served version,
+  service health, and the affected user workflow against real services and
+  data. For login changes, check login, workspace readiness, history access,
+  and logout, and measure user-visible readiness time. Unit-test success or a
+  health response alone cannot establish the requested login speed.
+- Report implementation, verification, deployment, and live acceptance as
+  separate states. Claim publication only after the intended version is served
+  and the required live checks pass; state measured timings and remaining
+  failures accurately. Finish verification once the acceptance criteria are
+  satisfied instead of adding unrelated checks.

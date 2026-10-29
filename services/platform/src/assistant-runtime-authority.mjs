@@ -8,6 +8,22 @@ export function createAssistantRuntimeAuthority({configuration,controlPlane,plat
   typeof manager?.stopWorker!=='function'||typeof model?.revokeAssistant!=='function')throw unavailable();
  return {
   inventory:()=>platform.assistantExecutionInventory(),
+  // Retire the live launcher accounts this process does not manage. A
+  // platform restart leaves them running, and an account it cannot account
+  // for blocks every transition.
+  async settle(){
+   if(typeof manager.retireUnmanagedInstances!=='function')return;
+   await manager.retireUnmanagedInstances();
+  },
+  // Whether something still blocks a transition. Cheap: the launcher
+  // inventory and the platform's own latched accounts. A launcher that
+  // cannot be read leaves the state unknown, and unknown blocks.
+  async blocking(){
+   const unmanaged=typeof manager.unmanagedLiveAccounts==='function'?await manager.unmanagedLiveAccounts():[];
+   if(unmanaged===null)return true;
+   const latched=manager.pendingRecoveries?.()??[];
+   return unmanaged.length>0||latched.length>0;
+  },
   async prepare(runtime){
    if(configuration?.enabled!==true||configuration.imageCapabilities?.imageDigest!==configuration.imageDigest||
     !configuration.enabledRuntimes?.includes(runtime)||!['opencode','codex'].includes(runtime))throw unavailable();

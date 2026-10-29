@@ -179,6 +179,8 @@ export class SandboxNativeJobs {
       reservation.lease=lease;
       if(lease.generation!==context.generation)throw new Error("native worker generation changed");
       signal.throwIfAborted();
+      reservation.jobAdmission=await this.admitJob?.(context,signal);
+      signal.throwIfAborted();
       if(this.#effects){
         const prepared=await this.#effects.prepare({identity:turnIdentity,context,session});
         if(!Number.isSafeInteger(prepared?.researchExecution)||prepared.researchExecution<1)throw Error('Native research execution unavailable');
@@ -296,7 +298,7 @@ export class SandboxNativeJobs {
       catch {cleanupVerified=false;throw new Error('native model cleanup unverified; workspace remains reserved');}
       finally{
         try{await onCleanup?.({cleanupVerified});}
-        finally{settled();if(cleanupVerified){lease?.release();if(this.#turns.get(key)===reservation)this.#turns.delete(key);}}
+        finally{settled();if(cleanupVerified){reservation.jobAdmission?.release();lease?.release();if(this.#turns.get(key)===reservation)this.#turns.delete(key);}}
       }
     }
   }
@@ -313,7 +315,7 @@ export class SandboxNativeJobs {
       try { await Promise.race([turn.settled,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error("native cleanup unverified")),3000);})]); }
       finally { clearTimeout(timer); }
       await turn.grant?.revoke();
-      turn.lease?.release(); if(this.#turns.get(key)===turn)this.#turns.delete(key);
+      turn.jobAdmission?.release();turn.lease?.release(); if(this.#turns.get(key)===turn)this.#turns.delete(key);
     }
   }
   async answer({userId,sessionId,id,answers,reject=false}) {

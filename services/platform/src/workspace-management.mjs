@@ -4,13 +4,16 @@ import {relativeInput} from './tenant-policy.mjs';
 /** Pinned OpenCode 1.18.32 exposes a global, unscoped inventory here.
  * Query both archive states and one extra row so truncation fails closed.
  */
-export async function historicalSessionRoots(context,gateway) {
+export async function historicalSessions(context,gateway) {
   let pages;
   try {pages=await Promise.all(['false','true'].map(archived=>gateway(context,'/experimental/session?limit=10001&archived='+archived)));}
   catch {throw workspaceError('session_inventory_unavailable',503);}
   if(pages.some(page=>!Array.isArray(page) || page.length>10000 || page.some(session=>typeof session?.directory!=='string' || !session.directory.startsWith('/') || session.directory.length>4096)))
     throw workspaceError('session_inventory_unavailable',503);
-  const roots=[...new Set(pages.flatMap(page=>page.map(session=>session.directory)))];
+  return pages.flat();
+}
+export async function historicalSessionRoots(context,gateway) {
+  const roots=[...new Set((await historicalSessions(context,gateway)).map(session=>session.directory))];
   if(roots.length>10000)throw workspaceError('session_inventory_unavailable',503);
   return roots;
 }
@@ -46,6 +49,13 @@ export class WorkspaceManagement {
     const [projects,data]=await Promise.all([this.allProjects(context),this.state.open(context.userId)]);
     return projects.filter(project=>data.projects[project.id]?.state!=='trashed');
   }
+  async synchronizeProjects(context) {
+    const projects=await this.allProjects(context);
+    await this.state.update(context.userId,data=>{
+      for(const project of projects){const prior=data.projects[project.id];data.projects[project.id]={id:project.id,project,state:prior?.state??'active',deletedAt:prior?.deletedAt??0};}
+    });
+    return projects;
+  }
   async resolveProject(context,id,{trashed=false}={}) {
     const projects=await this.allProjects(context);
     const matches=projects.filter(project=>project.id===id);
@@ -74,6 +84,7 @@ export class WorkspaceManagement {
     }
     if(patch.name!==undefined && patch.name!==project.name)await this.gateway(context,`/v1/projects/${id}`,'PATCH',{name:patch.name});
     if(patch.pinned!==undefined && patch.pinned!==project.pinned)await this.gateway(context,`/v1/projects/${id}/pin`,'POST',{pinned:patch.pinned});
+    await this.synchronizeProjects(context);
     const result={id:project.id};
     if(input.operationId)await this.state.advance(context.userId,input.operationId,result);
     return result;
