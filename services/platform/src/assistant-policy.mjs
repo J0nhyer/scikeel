@@ -150,9 +150,16 @@ export class AssistantPolicy {
         operation = receipt ? { operationId, state: "committed", result: structuredClone(receipt.result) } :
           { operationId, state: pending?.operationId === operationId ? "pending" : "unknown" };
       }
+      const fenced = Object.values(this.#state.executions).some(execution => execution.status === "unknown");
       return { activeRuntime: this.#state.activeRuntime, revision: this.#state.revision,
-        recoveryRequired: !this.#initialized || this.#uncertain || !!pending, operation };
+        recoveryRequired: !this.#initialized || this.#uncertain || !!pending || fenced, operation };
     });
+  }
+  recoveryDescriptor() {
+    const unknown = Object.entries(this.#state.executions)
+      .filter(([, execution]) => execution.status === "unknown");
+    if (unknown.length !== 1) return null;
+    return { executionId: unknown[0][0], identity: structuredClone(unknown[0][1].identity) };
   }
   // Synchronous committed state avoids reentering the policy queue while its
   // inventory callback identifies receipts owned by this live process.
@@ -169,8 +176,9 @@ export class AssistantPolicy {
       Object.keys(input).every(field=>execution.identity[field]===input[field]));
   }
   committedSnapshot() {
+    const fenced = Object.values(this.#state.executions).some(execution => execution.status === "unknown");
     return {activeRuntime:this.#state.activeRuntime,revision:this.#state.revision,
-      recoveryRequired:!this.#initialized||this.#uncertain||!!this.#state.transition};
+      recoveryRequired:!this.#initialized||this.#uncertain||!!this.#state.transition||fenced};
   }
   // Reserve the existing workspace queue synchronously under policy ordering.
   // The operation's completion is deliberately outside this brief critical section;

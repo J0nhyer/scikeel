@@ -654,11 +654,16 @@ export class CliRuntimeManager {
 
   describe(userId, policy) {
     const selected = policy?.activeRuntime ?? this.runtimeForUser(userId);
+    const fenced = policy?.recoveryRequired === true;
     return {
       ...this.runtimeOption(selected, userId, selected),
       policyRevision: policy?.revision ?? this.#policyState?.revision,
+      recoveryRequired: fenced,
       model: this.modelForUser(userId, selected),
-      available: RUNTIME_ORDER.map((runtime) => this.runtimeOption(runtime, userId, selected)),
+      available: RUNTIME_ORDER.map((runtime) => {
+        const option = this.runtimeOption(runtime, userId, selected);
+        return fenced ? { ...option, enabled: false } : option;
+      }),
     };
   }
 
@@ -832,11 +837,18 @@ export class CliRuntimeManager {
   }
 
   adminDescribe(policy = this.#policyDescription ?? { activeRuntime: this.defaultRuntime, revision: this.#policyState?.revision, recoveryRequired: true }) {
+    const recovery = this.assistantPolicy.recoveryDescriptor();
+    const recoveryReason = !policy.recoveryRequired ? null : recovery ? "execution" :
+      this.#policyState.transition ? "transition" : this.#policyStorageUncertain ? "persistence" : "manual";
     return {
       ...policy,
       defaultRuntime: policy.activeRuntime,
       available: RUNTIME_ORDER.map((runtime) => this.runtimeOption(runtime, null, policy.activeRuntime)),
       assistantEnabled: { claude: policy.activeRuntime === "claude", codex: policy.activeRuntime === "codex" },
+      recoveryReason,
+      recoverable: recovery && { ...recovery, runtime: recovery.identity.runtime,
+        generation: recovery.identity.generation, userId: recovery.identity.userId,
+        sessionId: recovery.identity.conversationId },
     };
   }
 

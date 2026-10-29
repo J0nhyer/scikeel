@@ -367,3 +367,25 @@ test("an initial file-sync failure leaves the previous policy bytes and selectio
   assert.equal(f.manager.adminDescribe().recoveryRequired, false);
   assert.equal(f.manager.adminDescribe().activeRuntime, "opencode");
 });
+
+test("a global unknown execution is reported as a recovery fence with one identity", async t => {
+  const f = await fixture(t);
+  const identity = { userId: "owner_a", instanceId: "instance_a", generation: 1,
+    conversationId: "conversation_a", execution: 1, requestId: "request_a",
+    policyRevision: 1, runtime: "opencode" };
+  await f.manager.assistantPolicy.admit(identity, async () => ({}));
+  const restarted = await f.restart();
+  const admin = restarted.adminDescribe();
+  assert.equal(admin.recoveryRequired, true);
+  assert.equal(admin.recoveryReason, "execution");
+  assert.deepEqual(admin.recoverable.identity, identity);
+  assert.match(admin.recoverable.executionId, /^[a-f0-9-]{36}$/);
+  assert.equal(admin.recoverable.runtime, "opencode");
+  assert.equal(admin.recoverable.userId, "owner_a");
+  assert.equal(admin.recoverable.sessionId, "conversation_a");
+  assert.equal(restarted.assistantPolicy.committedSnapshot().recoveryRequired, true);
+  const user = await restarted.freshDescribe("owner_b");
+  assert.equal(user.available.every(option => option.enabled === false), true);
+  await assert.rejects(restarted.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "fenced" }),
+    { code: "assistant_recovery_required" });
+});
