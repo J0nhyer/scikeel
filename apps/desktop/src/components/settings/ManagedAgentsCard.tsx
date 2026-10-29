@@ -19,6 +19,7 @@ type Policy = { activeRuntime: GatewayRuntimeId; revision: number; recoveryRequi
   operation: { operationId: string; state: "pending" | "unknown" | "committed";
     result?: { activeRuntime: GatewayRuntimeId; revision: number; operationId: string } } | null };
 const AGENTS = [{ id: "opencode", label: "OpenCode" }, { id: "claude", label: "Claude Code" }, { id: "codex", label: "Codex" }] as const;
+const RECOVERY_DIALOG_TONE = "default" as const;
 const runtime = (value: unknown): value is GatewayRuntimeId => AGENTS.some(agent => agent.id === value);
 const positive = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 const storageKey = (account: string) => `scikeel.assistant-selection.v1:${account}`;
@@ -283,6 +284,6 @@ export function ManagedAgentsCard() {
       } } : undefined} /></div>}
     {confirming && policy?.recoverable && <ConfirmDialog title={t("managedAgents.recoverConfirmTitle")}
       body={t("managedAgents.recoverConfirmBody")} confirmLabel={t("managedAgents.recoverConfirm")}
-      tone="default" onConfirm={() => void recover()} onCancel={() => setConfirming(false)} />}
+      tone={RECOVERY_DIALOG_TONE} onConfirm={() => void recover()} onCancel={() => setConfirming(false)} />}
   </Section>;
 }
