@@ -12,7 +12,18 @@
     "busy": "Wait for running work to finish before changing the assistant.",
     "unavailable": "This assistant is unavailable.",
     "recoveryRequired": "Vor dem Wechsel des Assistenten muss eine Abstimmung erfolgen. „Erneut versuchen“ stimmt die Bereitstellung ab.",
-    "retry": "Retry"
+    "retry": "Retry",
+    "recoveryTitle": "Assistentenwiederherstellung erforderlich",
+    "recoveryHint": "Ein unterbrochener {{runtime}}-Turn muss abgeschlossen werden, bevor der KI-Assistent geändert werden kann.",
+    "recoverySession": "Betroffene Sitzung: {{session}}",
+    "recover": "Unterbrochenen Turn wiederherstellen",
+    "recoverConfirmTitle": "Den unterbrochenen Assistenten-Turn wiederherstellen?",
+    "recoverConfirmBody": "Der Prozess des Turns ist beendet. Dateien und Verlauf bleiben erhalten; die unterbrochene Arbeit wird nicht erneut ausgeführt. Der Datensatz wird als abgeschlossen markiert, damit der Assistent geändert werden kann.",
+    "recoverConfirm": "Wiederherstellen",
+    "recovering": "Wird wiederhergestellt…",
+    "recovered": "Unterbrochener Turn wiederhergestellt.",
+    "recoveryManual": "Diese Bereitstellung erfordert eine manuelle Wiederherstellung. Befolgen Sie das Assistenten-Runbook.",
+    "recoveryUnavailable": "Das Workspace-Konto ist nicht nachweislich gestoppt. Wiederherstellung nicht verfügbar."
   },
   "nav": {
     "back": "Zurück zur App",

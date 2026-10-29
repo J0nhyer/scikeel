@@ -12,7 +12,18 @@
     "busy": "Wait for running work to finish before changing the assistant.",
     "unavailable": "This assistant is unavailable.",
     "recoveryRequired": "Hay que reconciliar antes de cambiar el asistente. Reintentar para reconciliar la implementación.",
-    "retry": "Retry"
+    "retry": "Retry",
+    "recoveryTitle": "Se requiere recuperación del asistente",
+    "recoveryHint": "Un turno interrumpido de {{runtime}} debe resolverse antes de cambiar el asistente de IA.",
+    "recoverySession": "Sesión afectada: {{session}}",
+    "recover": "Recuperar turno interrumpido",
+    "recoverConfirmTitle": "¿Recuperar el turno interrumpido del asistente?",
+    "recoverConfirmBody": "El proceso del turno ya no existe. Los archivos y el historial se conservan; el trabajo interrumpido no se vuelve a ejecutar. Su registro se marca como resuelto para poder cambiar el asistente.",
+    "recoverConfirm": "Recuperar",
+    "recovering": "Recuperando…",
+    "recovered": "Turno interrumpido recuperado.",
+    "recoveryManual": "Este despliegue requiere recuperación manual. Siga el runbook de recuperación del asistente.",
+    "recoveryUnavailable": "La cuenta del espacio de trabajo no está detenida de forma verificable. La recuperación no está disponible."
   },
   "nav": {
     "back": "Volver a la app",

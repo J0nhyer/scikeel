@@ -1,4 +1,5 @@
 import { toast } from "@/lib/toast";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { StateNotice } from "../ui/StateNotice";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,8 +8,13 @@ import { useRuntimeStore, type GatewayRuntimeId } from "@/lib/runtime";
 import { gatewayOrigin } from "@/lib/webMode";
 
 type Selection = { runtime: GatewayRuntimeId; expectedRevision: number; operationId: string };
-type Message = "managedAgents.failed" | "managedAgents.busy" | "managedAgents.unavailable" | "managedAgents.pending" | "managedAgents.loadFailed" | "managedAgents.recoveryRequired";
+type Message = "managedAgents.failed" | "managedAgents.busy" | "managedAgents.unavailable" | "managedAgents.recoveryUnavailable" | "managedAgents.pending" | "managedAgents.loadFailed" | "managedAgents.recoveryRequired";
+type Recovery = { executionId: string; runtime: GatewayRuntimeId; generation: number; userId: string; sessionId: string;
+  identity: { userId: string; instanceId: string; generation: number; conversationId: string;
+    execution: number; requestId: string; policyRevision: number; runtime: GatewayRuntimeId } };
 type Policy = { activeRuntime: GatewayRuntimeId; revision: number; recoveryRequired: boolean;
+  recoveryReason?: "execution" | "transition" | "persistence" | "manual" | null;
+  recoverable?: Recovery | null;
   available: { runtime: GatewayRuntimeId; status?: string; models: string[]; defaultModel?: string | null }[];
   operation: { operationId: string; state: "pending" | "unknown" | "committed";
     result?: { activeRuntime: GatewayRuntimeId; revision: number; operationId: string } } | null };
@@ -29,10 +35,26 @@ async function readPolicy(response: Response): Promise<Policy> {
   if (!response.ok) throw Error("Assistant selection unavailable");
   const value = await response.json() as Policy | null;
   if (!value || !runtime(value.activeRuntime) || !positive(value.revision) || typeof value.recoveryRequired !== "boolean" ||
+      value.recoveryReason !== undefined && value.recoveryReason !== null &&
+        !["execution", "transition", "persistence", "manual"].includes(value.recoveryReason) ||
       !Array.isArray(value.available) || value.available.length !== AGENTS.length ||
       new Set(value.available.map(option => option?.runtime)).size !== AGENTS.length ||
       value.available.some(option => !option || !runtime(option.runtime) || !Array.isArray(option.models) ||
         option.models.length > 1000 || option.models.some(model => typeof model !== "string")) ||
+      value.recoverable !== undefined && value.recoverable !== null && !(
+        typeof value.recoverable.executionId === "string" && value.recoverable.executionId.length > 0 &&
+        runtime(value.recoverable.runtime) && positive(value.recoverable.generation) &&
+        typeof value.recoverable.userId === "string" && typeof value.recoverable.sessionId === "string" &&
+        value.recoverable.identity && runtime(value.recoverable.identity.runtime) &&
+        positive(value.recoverable.identity.generation) && positive(value.recoverable.identity.execution) &&
+        positive(value.recoverable.identity.policyRevision) &&
+        [value.recoverable.identity.userId, value.recoverable.identity.instanceId,
+          value.recoverable.identity.conversationId, value.recoverable.identity.requestId]
+          .every(field => typeof field === "string" && field.length > 0) &&
+        value.recoverable.identity.runtime === value.recoverable.runtime &&
+        value.recoverable.identity.generation === value.recoverable.generation &&
+        value.recoverable.identity.userId === value.recoverable.userId &&
+        value.recoverable.identity.conversationId === value.recoverable.sessionId) ||
       value.operation !== null && (!value.operation || typeof value.operation.operationId !== "string" ||
         !["pending", "unknown", "committed"].includes(value.operation.state))) throw Error("Invalid assistant policy");
   return value;
@@ -47,6 +69,8 @@ export function ManagedAgentsCard() {
   const [pending, setPending] = useState<Selection | null>(null);
   const [loading, setLoading] = useState(true);
   const [resolving, setResolving] = useState(false);
+  const [recovering, setRecovering] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
   const pendingRef = useRef<Selection | null>(null);
   const epochRef = useRef(0);
@@ -94,7 +118,11 @@ export function ManagedAgentsCard() {
           pendingRef.current = null; setPending(null);
           try { sessionStorage.removeItem(storageKey(account)); } catch { /* A later load can reconcile the same receipt. */ }
         };
-        if (!selection) { setMessage(next.recoveryRequired ? "managedAgents.recoveryRequired" : null); return next; }
+        if (!selection) {
+          setMessage(next.recoveryReason === "execution" ? null
+            : next.recoveryRequired ? "managedAgents.recoveryRequired" : null);
+          return next;
+        }
         const operation = next.operation;
         if (operation?.operationId !== selection.operationId) throw Error("Mismatched assistant receipt");
         if (operation.state === "committed") {
@@ -150,6 +178,34 @@ export function ManagedAgentsCard() {
     if (next?.recoveryRequired) setMessage("managedAgents.recoveryRequired");
   }, [account, check, current]);
 
+  const recover = useCallback(async () => {
+    if (!account || !policy?.recoverable || resolvingRef.current) return;
+    setConfirming(false);
+    resolvingRef.current = true; setResolving(true); setRecovering(true); setMessage(null);
+    try {
+      const result = await fetch(`${gatewayOrigin()}/api/admin/runtime/recover`, { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identity: policy.recoverable.identity, expectedRevision: policy.revision }),
+        signal: AbortSignal.timeout(15000) });
+      if (!result.ok) {
+        const body = await result.json().catch(() => null) as { code?: string } | null;
+        setMessage(body?.code === "assistant_busy" ? "managedAgents.busy"
+          : body?.code === "assistant_unavailable" ? "managedAgents.recoveryUnavailable"
+          : "managedAgents.recoveryRequired");
+        return;
+      }
+      await result.body?.cancel();
+      toast.success(t("managedAgents.recovered"), { accountId: account,
+        returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined });
+      void refresh().catch(() => {});
+      await check(null, { epoch: epochRef.current });
+    } catch {
+      setMessage("managedAgents.recoveryRequired");
+    } finally {
+      resolvingRef.current = false; setResolving(false); setRecovering(false);
+    }
+  }, [account, check, policy, refresh, t]);
+
   useEffect(() => {
     const epoch = ++epochRef.current;
     setPolicy(null); setLoading(true); setMessage(null); resolvingRef.current = false;
@@ -170,9 +226,24 @@ export function ManagedAgentsCard() {
   };
   if (role !== "admin") return null;
   const blocked = loading || resolving || !policy || Boolean(pending) || policy.recoveryRequired;
-  const retryable = Boolean(pending) || !policy || policy.recoveryRequired;
+  const retryable = policy?.recoveryReason === "execution" || policy?.recoveryReason === "manual"
+    ? false : Boolean(pending) || !policy || policy.recoveryRequired;
+  const recoveryBlocked = loading || resolving || Boolean(pending) || !policy?.recoverable;
   const detail = message ? t(message) : null;
   return <Section title={t("runtime.platformSelect")} flush>
+    {policy?.recoveryRequired && <div role="status" className="px-4 pb-3 text-xs">
+      <p className="font-medium text-text">{t("managedAgents.recoveryTitle")}</p>
+      <p className="mt-1 text-muted">{t("managedAgents.recoveryHint", {
+        runtime: AGENTS.find(agent => agent.id === (policy.recoverable?.runtime ?? policy.activeRuntime))?.label ?? policy.activeRuntime,
+      })}</p>
+      {policy.recoverable && <p className="mt-1 text-muted">{t("managedAgents.recoverySession", { session: policy.recoverable.sessionId })}</p>}
+      {policy.recoveryReason === "execution" && policy.recoverable && <button type="button" disabled={recoveryBlocked}
+        className="mt-2 rounded-input border border-border px-3 py-2 text-text disabled:opacity-50"
+        onClick={() => setConfirming(true)}>
+        {recovering ? t("managedAgents.recovering") : t("managedAgents.recover")}
+      </button>}
+      {policy.recoveryReason === "manual" && <p className="mt-1 text-muted">{t("managedAgents.recoveryManual")}</p>}
+    </div>}
     <div role="radiogroup" aria-label={t("runtime.platformSelect")}>
       {AGENTS.map(({ id, label }) => {
         const option = policy?.available.find(candidate => candidate.runtime === id);
@@ -194,5 +265,8 @@ export function ManagedAgentsCard() {
         if (message === "managedAgents.recoveryRequired") { void reconcile(); return; }
         void check(pendingRef.current, { epoch: epochRef.current, retry: true });
       } } : undefined} /></div>}
+    {confirming && policy?.recoverable && <ConfirmDialog title={t("managedAgents.recoverConfirmTitle")}
+      body={t("managedAgents.recoverConfirmBody")} confirmLabel={t("managedAgents.recoverConfirm")}
+      tone="default" onConfirm={() => void recover()} onCancel={() => setConfirming(false)} />}
   </Section>;
 }

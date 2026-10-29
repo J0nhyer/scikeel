@@ -235,3 +235,60 @@ describe("ManagedAgentsCard deployment selection", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+const recoverable = {
+  executionId: "execution-1",
+  identity: { userId: "owner", instanceId: "user-owner", generation: 1,
+    conversationId: "session-1", execution: 1, requestId: "request-1",
+    policyRevision: 1, runtime: "codex" as const },
+  runtime: "codex" as const, generation: 1, userId: "owner", sessionId: "session-1",
+};
+const fenced = { ...snapshot, activeRuntime: "codex" as const, recoveryRequired: true,
+  recoveryReason: "execution" as const, recoverable };
+
+describe("ManagedAgentsCard assistant recovery", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en"); sessionStorage.clear();
+    useToastStore.getState().reset(); useToastStore.getState().setAccount("admin-user");
+    refresh.mockReset(); refresh.mockResolvedValue(undefined);
+    useRuntimeStore.setState({ refreshGatewayRuntimes: refresh, gatewayUserRole: "admin",
+      gatewayUser: { id: "admin-user", username: "admin", role: "admin" } });
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); useRuntimeStore.setState(initial, true); });
+
+  it("disables selection and recovers an interrupted deployment assistant", async () => {
+    let recovered = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/api/admin/runtime/recover") && init?.method === "POST") {
+        recovered = true;
+        return response({ activeRuntime: "codex", revision: 1, recovered: true });
+      }
+      return response(recovered ? { ...fenced, recoveryRequired: false, recoveryReason: null, recoverable: null } : fenced);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ManagedAgentsCard />);
+    await screen.findByText("Assistant recovery required");
+    expect(screen.getByRole("radio", { name: "Codex" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "OpenCode" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Recover interrupted turn" }));
+    await screen.findByRole("alertdialog");
+    await userEvent.click(screen.getByRole("button", { name: "Recover" }));
+    await waitFor(() => expect(recovered).toBe(true));
+    const post = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).endsWith("/api/admin/runtime/recover") && init?.method === "POST")!;
+    expect(JSON.parse(String(post[1]?.body))).toEqual({ identity: recoverable.identity, expectedRevision: 1 });
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Codex" })).toBeEnabled());
+  });
+
+  it("keeps the fence and reports why recovery is still blocked", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === "POST" ? response({ code: "assistant_recovery_required" }, 409) : response(fenced));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ManagedAgentsCard />);
+    await screen.findByText("Assistant recovery required");
+    await userEvent.click(screen.getByRole("button", { name: "Recover interrupted turn" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Recover" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("radio", { name: "Codex" })).toBeDisabled();
+  });
+});

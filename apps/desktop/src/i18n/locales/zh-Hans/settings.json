@@ -166,7 +166,18 @@
     "busy": "请等待正在执行的工作结束后再切换助手。",
     "unavailable": "此助手暂不可用。",
     "recoveryRequired": "需要先完成协调，助手才能切换。点“重试”以协调部署状态。",
-    "retry": "重试"
+    "retry": "重试",
+    "recoveryTitle": "需要恢复 AI 助手",
+    "recoveryHint": "必须先结算中断的 {{runtime}} 轮次，才能更改 AI 助手。",
+    "recoverySession": "受影响的会话：{{session}}",
+    "recover": "恢复中断的轮次",
+    "recoverConfirmTitle": "恢复中断的助手轮次？",
+    "recoverConfirmBody": "该轮次的进程已结束。文件和历史会保留，中断的工作不会重跑。其记录将标记为已结算，以便更改助手。",
+    "recoverConfirm": "恢复",
+    "recovering": "正在恢复…",
+    "recovered": "已恢复中断的轮次。",
+    "recoveryManual": "此部署需要手动恢复。请按照助手恢复手册操作。",
+    "recoveryUnavailable": "无法确认工作区账号已停止，暂不能恢复。"
   },
   "managedModels": {
     "title": "托管的 CLI 模型",

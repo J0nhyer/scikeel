@@ -12,7 +12,18 @@
     "busy": "Wait for running work to finish before changing the assistant.",
     "unavailable": "This assistant is unavailable.",
     "recoveryRequired": "アシスタントを切り替える前に調整が必要です。「再試行」でデプロイを調整します。",
-    "retry": "Retry"
+    "retry": "Retry",
+    "recoveryTitle": "アシスタントの復旧が必要です",
+    "recoveryHint": "中断された {{runtime}} ターンを解決するまで、AI アシスタントを変更できません。",
+    "recoverySession": "影響を受けたセッション: {{session}}",
+    "recover": "中断されたターンを復旧",
+    "recoverConfirmTitle": "中断されたアシスタントターンを復旧しますか？",
+    "recoverConfirmBody": "ターンのプロセスは終了しています。ファイルと履歴は保持され、中断された作業は再実行されません。アシスタントを変更できるよう、記録を解決済みにします。",
+    "recoverConfirm": "復旧",
+    "recovering": "復旧中…",
+    "recovered": "中断されたターンを復旧しました。",
+    "recoveryManual": "このデプロイには手動の復旧が必要です。アシスタント復旧ランブックに従ってください。",
+    "recoveryUnavailable": "ワークスペースアカウントが停止していることを確認できません。復旧できません。"
   },
   "nav": {
     "back": "アプリに戻る",

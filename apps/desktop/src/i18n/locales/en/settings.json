@@ -166,7 +166,18 @@
     "busy": "Wait for running work to finish before changing the assistant.",
     "unavailable": "This assistant is unavailable.",
     "recoveryRequired": "Work must be reconciled before the assistant can change. Retry to reconcile the deployment.",
-    "retry": "Retry"
+    "retry": "Retry",
+    "recoveryTitle": "Assistant recovery required",
+    "recoveryHint": "An interrupted {{runtime}} turn must be settled before the AI assistant can be changed.",
+    "recoverySession": "Affected session: {{session}}",
+    "recover": "Recover interrupted turn",
+    "recoverConfirmTitle": "Recover the interrupted assistant turn?",
+    "recoverConfirmBody": "The turn's process is gone. Files and history are preserved; the interrupted work is not re-run. Its record is marked settled so the assistant can be changed.",
+    "recoverConfirm": "Recover",
+    "recovering": "Recovering…",
+    "recovered": "Interrupted turn recovered.",
+    "recoveryManual": "This deployment needs manual recovery. Follow the assistant recovery runbook.",
+    "recoveryUnavailable": "The workspace account is not verifiably stopped. Recovery is unavailable."
   },
   "managedModels": {
     "title": "Managed CLI models",

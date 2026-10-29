@@ -12,7 +12,18 @@
     "busy": "Wait for running work to finish before changing the assistant.",
     "unavailable": "This assistant is unavailable.",
     "recoveryRequired": "Il faut réconcilier avant de changer d'assistant. Réessayer pour réconcilier le déploiement.",
-    "retry": "Retry"
+    "retry": "Retry",
+    "recoveryTitle": "Récupération de l'assistant requise",
+    "recoveryHint": "Un tour {{runtime}} interrompu doit être réglé avant de pouvoir changer l'assistant IA.",
+    "recoverySession": "Session concernée : {{session}}",
+    "recover": "Récupérer le tour interrompu",
+    "recoverConfirmTitle": "Récupérer le tour interrompu de l'assistant ?",
+    "recoverConfirmBody": "Le processus du tour a disparu. Les fichiers et l'historique sont conservés ; le travail interrompu n'est pas rejoué. Son enregistrement est marqué comme réglé afin de pouvoir changer l'assistant.",
+    "recoverConfirm": "Récupérer",
+    "recovering": "Récupération…",
+    "recovered": "Tour interrompu récupéré.",
+    "recoveryManual": "Ce déploiement nécessite une récupération manuelle. Suivez le runbook de récupération de l'assistant.",
+    "recoveryUnavailable": "Le compte de l'espace de travail n'est pas arrêté de manière vérifiable. La récupération est indisponible."
   },
   "nav": {
     "back": "Retour à l'app",
