@@ -389,3 +389,53 @@ test("a global unknown execution is reported as a recovery fence with one identi
   await assert.rejects(restarted.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "fenced" }),
     { code: "assistant_recovery_required" });
 });
+
+test("the manager recovers one unknown execution through its ownership callback", async t => {
+  const f = await fixture(t);
+  const identity = { userId: "owner_a", instanceId: "instance_a", generation: 1,
+    conversationId: "conversation_a", execution: 1, requestId: "request_a",
+    policyRevision: 1, runtime: "opencode" };
+  await f.manager.assistantPolicy.admit(identity, async () => ({}));
+  const restarted = await f.restart();
+  let reconciled = 0;
+  const result = await restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async captured => {
+    reconciled++;
+    assert.deepEqual(captured, identity);
+    return { cleanupVerified: true };
+  });
+  assert.deepEqual(result, { activeRuntime: "opencode", revision: 1, recovered: true });
+  assert.equal(reconciled, 1);
+  assert.equal(restarted.adminDescribe().recoveryRequired, false);
+  assert.equal(restarted.adminDescribe().recoverable, null);
+  let replayed = 0;
+  assert.deepEqual(await restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async () => {
+    replayed++; return { cleanupVerified: true };
+  }), { activeRuntime: "opencode", revision: 1, recovered: true });
+  assert.equal(replayed, 1);
+  assert.deepEqual(await restarted.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "after-recovery" }),
+    { activeRuntime: "codex", revision: 2, operationId: "after-recovery" });
+});
+
+test("manager recovery refuses a stale revision, a foreign effect and invalid proof", async t => {
+  let inventory = { activeExecutions: [], uncertainEffects: [] };
+  const f = await fixture(t, { inventory: async () => inventory });
+  const identity = { userId: "owner_a", instanceId: "instance_a", generation: 1,
+    conversationId: "conversation_a", execution: 1, requestId: "request_a",
+    policyRevision: 1, runtime: "opencode" };
+  await f.manager.assistantPolicy.admit(identity, async () => ({}));
+  const restarted = await f.restart();
+  await assert.rejects(restarted.recoverAssistantExecution({ identity, expectedRevision: 2 }, async () => ({ cleanupVerified: true })),
+    { code: "assistant_revision_conflict" });
+  inventory = { activeExecutions: [], uncertainEffects: [{ source: "conversation",
+    userId: "owner_b", instanceId: "instance_b", generation: 1, conversationId: "conversation_b",
+    execution: 1, requestId: "request_b", policyRevision: 1, runtime: "opencode" }] };
+  await assert.rejects(restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async () => ({ cleanupVerified: true })),
+    { code: "assistant_recovery_required" });
+  inventory = { activeExecutions: [], uncertainEffects: [] };
+  await assert.rejects(restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async () => ({ cleanupVerified: false })),
+    { code: "assistant_recovery_required" });
+  assert.equal(restarted.adminDescribe().recoveryRequired, true);
+  assert.deepEqual(await restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async () => ({ cleanupVerified: true })),
+    { activeRuntime: "opencode", revision: 1, recovered: true });
+  assert.equal(restarted.adminDescribe().recoveryRequired, false);
+});

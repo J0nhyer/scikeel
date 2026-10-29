@@ -610,6 +610,33 @@ export class CliRuntimeManager {
     }
   }
 
+  async recoverAssistantExecution(input, reconcile) {
+    if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
+    await this.init();
+    if (!input || Object.keys(input).sort().join(",") !== "expectedRevision,identity" ||
+        typeof reconcile !== "function")
+      throw issue("invalid_recovery_request", "A complete recovery request is required", 400);
+    const committed = this.assistantPolicy.committedSnapshot();
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision !== committed.revision)
+      throw issue("assistant_revision_conflict", "The deployment assistant changed; reload before continuing", 409);
+    this.#policyDescription = { ...this.#policyDescription, recoveryRequired: true };
+    try { await this.assistantPolicy.recoverExecution(input.identity, reconcile); }
+    catch (error) {
+      // A refused ownership check sets the policy's in-memory uncertainty flag.
+      // Re-read durable state so a corrected retry is possible; the unknown
+      // execution remains durable and the fence stays closed until it commits.
+      await this.reconcileAssistant().catch(() => {});
+      throw error;
+    }
+    finally {
+      this.#policyDescription = await this.assistantPolicy.describe();
+      this.defaultRuntime = this.#policyDescription.activeRuntime;
+      this.assistantEnabled = { claude: this.defaultRuntime === "claude", codex: this.defaultRuntime === "codex" };
+    }
+    return { activeRuntime: this.#policyDescription.activeRuntime,
+      revision: this.#policyDescription.revision, recovered: true };
+  }
+
   async setUserRuntime(userId, runtime, model) {
     await this.init();
     await this.refreshProfiles();
