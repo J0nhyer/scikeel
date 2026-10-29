@@ -465,3 +465,34 @@ test("a cancelled admitted turn settles when the runner verified cleanup", async
       cancelled: true, dispatched: true });
   }
 });
+
+test("a dispatched turn that fails after verified cleanup settles without a fence", async t => {
+  const logs = [];
+  const f = await fixture(t, { run: async args => {
+    await args.onAccepted({ nativeSessionId: "post-dispatch-native", turnId: "post-dispatch-turn" });
+    await args.onCleanup({ cleanupVerified: true });
+    return { nativeSessionId: "post-dispatch-native", turnId: "post-dispatch-turn" };
+  }});
+  f.manager.logger = event => logs.push(event);
+  f.manager.conversationRevert = {
+    begin: async () => ({ captured: true }),
+    complete: async () => { throw Object.assign(new Error("history"), { code: "conversation_history_unavailable", statusCode: 503 }); },
+    discard: async () => {},
+    projection: async () => ({ version: 0, hiddenMessageIds: [], revert: null }),
+  };
+  const owner = { userId: "a", instanceId: "user-a", generation: 1,
+    workspaceDir: f.workspace, directory: f.project };
+  const conversations = new ConversationState({ rootDir: join(f.manager.rootDir, "conversations"), authorize: async () => {} });
+  await conversations.create(owner, { conversationId: f.session.id, title: "Owned", parentId: null, lifecycle: "active" });
+  const admitted = await f.manager.admitHttpPrompt({ conversations, owner, sessionId: f.session.id,
+    requestId: "post-dispatch-send", policyRevision: "2", body: { parts: [{ type: "text", text: "Handover" }] } });
+  await assert.rejects(f.manager.sendPrompt({ userId: "a", sessionId: f.session.id, text: "Handover",
+    executionAdmission: admitted, workspaceContext: owner }), { code: "conversation_history_unavailable" });
+  const saved = await conversations.open(owner, f.session.id);
+  assert.equal(saved.turns["post-dispatch-send"].state, "settled");
+  assert.equal(saved.turns["post-dispatch-send"].cleanupVerified, true);
+  assert.equal(f.manager.assistantSnapshot("a").recoveryRequired, false);
+  assert.equal(Object.keys(JSON.parse(await readFile(join(f.manager.rootDir, "runtime.json"), "utf8"))
+    .assistantPolicy.executions).length, 0);
+  assert.equal(logs.filter(event => event.type === "cli.turn.unverified_cleanup").length, 0);
+});

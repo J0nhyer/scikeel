@@ -1488,11 +1488,10 @@ export class CliRuntimeManager {
 
   async runReservedPrompt(turn) {
     const pending=this.executeReservedPrompt(turn);this.activeTurns.add(pending);
-    let completed=false;
-    try{const result=await pending;completed=true;return result;}
+    try{return await pending;}
     finally{
-      const cleanupVerified=completed && (!turn.executionAdmission || !turn.executionAdmission.dispatched ||
-        turn.nativeCleanupVerified===true);
+      const cleanupVerified=!turn.executionAdmission || !turn.executionAdmission.dispatched ||
+        turn.nativeCleanupVerified===true;
       try{if(turn.executionAdmission)await turn.executionAdmission.settle({cleanupVerified});}
       finally{
         if(turn.executionAdmission && !cleanupVerified) this.logger({ type: "cli.turn.unverified_cleanup",
