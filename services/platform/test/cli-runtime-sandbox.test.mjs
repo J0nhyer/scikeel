@@ -427,3 +427,41 @@ test("manager shutdown waits for verified sandbox cancellation before declaring 
   await f.manager.close();assert.equal(stopped,true);await turn;
   const saved=JSON.parse(await readFile(f.manager.userPaths("a").sessionsPath,"utf8"));assert.equal(saved.sessions.length,1);
 });
+
+test("a cancelled admitted turn settles when the runner verified cleanup", async t => {
+  for (const verified of [true, false]) {
+    let admitted, started;
+    const logs = [];
+    const ready = new Promise(resolve => { started = resolve; });
+    const f = await fixture(t, { run: async args => {
+      await args.onAccepted({ nativeSessionId: "cancel-native", turnId: "cancel-turn" });
+      started();
+      await new Promise((_, reject) => args.signal.addEventListener("abort", () => {
+        args.onCleanup({ cleanupVerified: verified });
+        reject(new Error("cancelled"));
+      }, { once: true }));
+    }});
+    f.manager.logger = event => logs.push(event);
+    const owner = { userId: "a", instanceId: "user-a", generation: 1,
+      workspaceDir: f.workspace, directory: f.project };
+    const conversations = new ConversationState({ rootDir: join(f.manager.rootDir, "conversations"), authorize: async () => {} });
+    await conversations.create(owner, { conversationId: f.session.id, title: "Owned", parentId: null, lifecycle: "active" });
+    admitted = await f.manager.admitHttpPrompt({ conversations, owner, sessionId: f.session.id,
+      requestId: "cancel-send", policyRevision: "2", body: { parts: [{ type: "text", text: "Cancel" }] } });
+    const pending = f.manager.sendPrompt({ userId: "a", sessionId: f.session.id, text: "Cancel",
+      executionAdmission: admitted, workspaceContext: owner }).catch(error => error);
+    await ready;
+    await f.manager.abortSession("a", f.session.id);
+    await pending;
+    const saved = await conversations.open(owner, f.session.id);
+    assert.equal(saved.turns["cancel-send"].state, verified ? "settled" : "unknown");
+    assert.equal(saved.turns["cancel-send"].cleanupVerified, verified);
+    assert.equal(f.manager.assistantSnapshot("a").recoveryRequired, !verified);
+    assert.equal(Object.keys(JSON.parse(await readFile(join(f.manager.rootDir, "runtime.json"), "utf8"))
+      .assistantPolicy.executions).length, verified ? 0 : 1);
+    assert.equal(logs.filter(event => event.type === "cli.turn.unverified_cleanup").length, verified ? 0 : 1);
+    if (!verified) assert.deepEqual(logs.find(event => event.type === "cli.turn.unverified_cleanup"), {
+      type: "cli.turn.unverified_cleanup", userId: "a", sessionId: f.session.id,
+      cancelled: true, dispatched: true });
+  }
+});

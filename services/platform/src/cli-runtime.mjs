@@ -1446,9 +1446,15 @@ export class CliRuntimeManager {
     let completed=false;
     try{const result=await pending;completed=true;return result;}
     finally{
-      try{if(turn.executionAdmission)await turn.executionAdmission.settle({cleanupVerified:completed &&
-        (!turn.executionAdmission.dispatched || turn.nativeCleanupVerified===true)});}
-      finally{this.activeTurns.delete(pending);}
+      const cleanupVerified=completed && (!turn.executionAdmission || !turn.executionAdmission.dispatched ||
+        turn.nativeCleanupVerified===true);
+      try{if(turn.executionAdmission)await turn.executionAdmission.settle({cleanupVerified});}
+      finally{
+        if(turn.executionAdmission && !cleanupVerified) this.logger({ type: "cli.turn.unverified_cleanup",
+          userId: turn.userId, sessionId: turn.session?.id ?? null,
+          cancelled: turn.cancelled === true, dispatched: turn.executionAdmission.dispatched === true });
+        this.activeTurns.delete(pending);
+      }
     }
   }
 
@@ -1966,8 +1972,11 @@ export class CliRuntimeManager {
             model = normalizeModelId(body.model.modelID);
           }
           const turn = await this.reservePrompt({ userId, sessionId, text: body.system ? `${body.system}\n${text || "Attached files"}` : text, displayText: attachmentInput?.displayText ?? (promptBody ? text : undefined), model, variant: body.variant, attachmentInput, workspaceContext, executionAdmission });
-          void this.runReservedPrompt(turn).catch(() => {
-            this.logger({ type: "cli.turn.error", userId, sessionId });
+          void this.runReservedPrompt(turn).catch((error) => {
+            this.logger({ type: "cli.turn.error", userId, sessionId,
+              code: error?.code ?? null, cancelled: turn.cancelled === true,
+              dispatched: turn.executionAdmission?.dispatched === true,
+              nativeCleanupVerified: turn.nativeCleanupVerified === true });
           });
           sendJson(response, 202, {});
         } else if (route === "abort" && request.method === "POST") {
