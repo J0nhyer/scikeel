@@ -772,6 +772,47 @@ export class PlatformServer {
     return user;
   }
 
+  async #reconcileAssistantRecovery(identity) {
+    if (!this.conversationRevert ||
+        typeof this.workerManager.retiredGeneration !== "function")
+      throw workspaceError("assistant_unavailable", 503);
+    const retired = async () => {
+      if (!(await this.workerManager.retiredGeneration(identity.instanceId,
+        identity.generation, identity.userId)))
+        throw workspaceError("assistant_unavailable", 503);
+    };
+    await retired();
+    const workspaceDir = this.workerManager.instancePaths(identity.instanceId).workspaceDir;
+    const probe = { userId: identity.userId, instanceId: identity.instanceId,
+      generation: identity.generation, workspaceDir, directory: workspaceDir };
+    const conversation = await this.conversations.open(probe, identity.conversationId);
+    const turn = conversation.turns[identity.requestId];
+    const same = turn && ["userId","instanceId","generation","conversationId","execution","requestId","policyRevision","runtime"]
+      .every(key => turn.identity[key] === identity[key]);
+    if (!same) throw workspaceError("assistant_recovery_required", 409);
+    if (turn.state === "settled") {
+      if (turn.cleanupVerified !== true) throw workspaceError("assistant_recovery_required", 409);
+      await retired();
+      return { cleanupVerified: true };
+    }
+    if (turn.state !== "unknown" || turn.cleanupVerified !== false)
+      throw workspaceError("assistant_recovery_required", 409);
+    if (Object.values(conversation.turns).some(item => item !== turn && item.state !== "settled"))
+      throw workspaceError("assistant_busy", 409);
+    const owner = { ...probe, directory: conversation.directory };
+    try {
+      await this.conversationRevert.discard(owner,
+        { conversationId: identity.conversationId, requestId: identity.requestId });
+    } catch (error) {
+      throw workspaceError("assistant_recovery_required", 409);
+    }
+    await this.conversations.advanceTurn(owner, identity.conversationId, {
+      requestId: identity.requestId, expectedRevision: conversation.revision,
+      state: "settled", cleanupVerified: true });
+    await retired();
+    return { cleanupVerified: true };
+  }
+
   async #readPayload(request, response, maxBytes=this.maxBodyBytes) {
     try {
       return parseBody(request, await readBody(request, maxBytes));
@@ -2775,6 +2816,33 @@ export class PlatformServer {
             sendJson(response, 200, { workers: this.workerManager.listWorkers() });
           } else {
             sendJson(response, 405, { error: "method not allowed" }, { allow: "GET" });
+          }
+          return;
+        }
+        if (path === "/api/admin/runtime/recover") {
+          if (!(await this.#requireAdmin(request, response))) return;
+          if (!this.cliRuntime) {
+            sendJson(response, 404, { error: "CLI runtime management is unavailable" });
+            return;
+          }
+          if (request.method !== "POST") {
+            sendJson(response, 405, { error: "method not allowed" }, { allow: "POST" });
+            return;
+          }
+          if (!this.#requireRuntimeOrigin(request, response)) return;
+          const payload = await this.#readPayload(request, response);
+          if (!payload) return;
+          try {
+            const result = await this.cliRuntime.recoverAssistantExecution(payload,
+              identity => this.#reconcileAssistantRecovery(identity));
+            this.logger({ type: "assistant.recovery", userId: payload.identity?.userId,
+              runtime: payload.identity?.runtime, outcome: "committed" });
+            response.setHeader("x-scikeel-assistant-revision", String(result.revision));
+            sendJson(response, 200, result);
+          } catch (error) {
+            this.logger({ type: "assistant.recovery", outcome: error?.code ?? "failed" });
+            sendJson(response, error?.status ?? error?.statusCode ?? 400,
+              { error: error?.code ?? "invalid_recovery_request", code: error?.code });
           }
           return;
         }

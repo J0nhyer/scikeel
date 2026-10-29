@@ -544,3 +544,14 @@ test("the status deadline includes initial identity lookup and rejects late iden
   assert.equal(timedOut, true);
   await pending; assert.equal(f.manager.getWorker("user-a").generation, null);
 });
+
+test("retiredGeneration requires the same stopped account above the cancelled generation", async t => {
+  const f = inventoryFixture(t);
+  f.records.set("user-a", { instanceId: "user-a", userId: "a", generation: 4, status: "ready" });
+  assert.equal(await f.manager.retiredGeneration("user-a", 3, "a"), false);
+  f.records.set("user-a", { instanceId: "user-a", userId: "a", generation: 4, status: "stopped" });
+  assert.equal(await f.manager.retiredGeneration("user-a", 3, "a"), true);
+  assert.equal(await f.manager.retiredGeneration("user-a", 4, "a"), false);
+  assert.equal(await f.manager.retiredGeneration("user-a", 3, "other"), false);
+  assert.equal(await f.manager.retiredGeneration("missing", 1, "a"), false);
+});

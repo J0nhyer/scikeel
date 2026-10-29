@@ -98,6 +98,15 @@ export class ManagedWorkerManager {
     const instanceRoot = posix.join(this.instancesDir, instanceId);
     return { instanceRoot, workspaceDir: posix.join(instanceRoot, "workspace"), stateDir: posix.join(instanceRoot, "state") };
   }
+  async retiredGeneration(instanceId, generation, userId) {
+    if (!identifier(instanceId) || !identifier(userId) ||
+        !Number.isSafeInteger(generation) || generation < 1) return false;
+    let accounts;
+    try { ({ accounts } = await this.client.inventory({ timeoutMs: 3000 })); } catch { return false; }
+    const account = accounts.find(item => item.instanceId === instanceId);
+    return Boolean(account) && account.userId === userId && account.status === "stopped" &&
+      Number.isSafeInteger(account.generation) && account.generation > generation;
+  }
   #record({ instanceId, userId }) {
     if (!identifier(instanceId) || !identifier(userId)) throw new Error("invalid worker identity");
     if (this.#closed) throw unavailable("worker manager closed");

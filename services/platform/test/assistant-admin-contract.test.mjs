@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthStore } from "../src/auth-store.mjs";
 import { CliRuntimeManager } from "../src/cli-runtime.mjs";
 import { PlatformServer } from "../src/platform-server.mjs";
+import { TenantPolicy } from "../src/tenant-policy.mjs";
 import { WorkerManager } from "../src/worker-manager.mjs";
 
 async function fixture(t) {
@@ -21,7 +22,27 @@ async function fixture(t) {
   const workerManager = new WorkerManager({ rootDir: join(root, "workers") });
   let workerRequests = 0;
   workerManager.ensureWorker = async () => { workerRequests++; throw new Error("Assistant management must not start a tenant worker"); };
-  const server = new PlatformServer({ authStore, workerManager, cliRuntime });
+  const logs = [];
+  const tenantPolicy = new TenantPolicy();
+  const recoveryWorkspace = workerManager.instancePaths("user-admin-recovery-user").workspaceDir;
+  tenantPolicy.registerAccount({ instanceId: "user-admin-recovery-user",
+    userId: "admin-recovery-user", generation: 1, workspaceDir: recoveryWorkspace });
+  const server = new PlatformServer({ authStore, workerManager, cliRuntime, tenantPolicy,
+    logger: event => logs.push(event) });
+  const revertCalls = [];
+  server.conversationRevert = {
+    discard: async (owner, input) => { revertCalls.push({ owner, input }); },
+  };
+  workerManager.retiredGeneration = async () => true;
+  const restartRuntime = async () => {
+    await cliRuntime.close();
+    const restarted = new CliRuntimeManager({ rootDir: cliRuntime.rootDir, runtime: "opencode",
+      profileResolver: cliRuntime.profileResolver, assistantAuthority: cliRuntime.assistantAuthority });
+    await restarted.init();
+    server.cliRuntime = restarted;
+    t.after(() => restarted.close());
+    return restarted;
+  };
   t.after(async () => { await server.close(); await cliRuntime.close(); await workerManager.close(); await rm(root, { recursive: true, force: true }); });
   const address = await server.listen(), base = `http://${address.host}:${address.port}`;
   await authStore.createUser({ username: "student", password: "fixture-student-password" });
@@ -35,7 +56,25 @@ async function fixture(t) {
   const request = (path, cookie, body, extraHeaders = {}) => fetch(base + path, { method: body ? "POST" : "GET", redirect: "manual",
     headers: { accept: "application/json", "content-type": "application/json", ...(cookie ? { cookie } : {}), ...(body ? { origin: base } : {}), ...extraHeaders },
     ...(body ? { body: JSON.stringify(body) } : {}) });
-  return { base, request, admin, student, workerRequests: () => workerRequests };
+  return { base, request, admin, student, workerRequests: () => workerRequests,
+    cliRuntime, conversations: server.conversations, workerManager, revertCalls, server, logs, restartRuntime };
+}
+
+async function unknownTurn(f) {
+  await f.cliRuntime.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "fixture-codex" });
+  const workspaceDir = f.workerManager.instancePaths("user-admin-recovery-user").workspaceDir;
+  await mkdir(workspaceDir, { recursive: true });
+  const conversationId = "recovery-conversation";
+  const owner = { userId: "admin-recovery-user", instanceId: "user-admin-recovery-user",
+    generation: 1, workspaceDir, directory: workspaceDir };
+  const conversation = await f.conversations.create(owner, { conversationId, title: "Recovery", parentId: null, lifecycle: "active" });
+  const admission = await f.cliRuntime.admitConversation({ conversations: f.conversations, owner,
+    conversationId, expectedRevision: conversation.revision,
+    request: { requestId: "recovery-turn", payloadHash: "a".repeat(64), policyRevision: 2,
+      runtime: "codex", generation: 1, model: "gpt-6.1-sol", identityRevision: "fixture-codex-identity" } });
+  await admission.settle({ cleanupVerified: false });
+  await f.restartRuntime();
+  return { owner, sessionId: conversationId, requestId: "recovery-turn", identity: admission.identity };
 }
 
 test("the existing Admin runtime endpoint remains authenticated and unavailable to ordinary users", async t => {
@@ -169,4 +208,63 @@ test("a stale page may still look up Stop for its captured execution", async t =
   const response = await f.request("/session/owned/abort", f.student, {}, { "x-scikeel-assistant-revision": "1" });
   assert.equal(response.status, 500);
   assert.equal(f.workerRequests(), 1);
+});
+
+test("an interrupted accepted turn is recovered through one explicit Admin request", async t => {
+  const f = await fixture(t);
+  const turn = await unknownTurn(f);
+  const policy = await (await f.request("/api/admin/runtime", f.admin)).json();
+  assert.equal(policy.recoveryRequired, true);
+  assert.deepEqual(policy.recoverable.identity, turn.identity);
+  const response = await f.request("/api/admin/runtime/recover", f.admin,
+    { identity: turn.identity, expectedRevision: policy.revision });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { activeRuntime: policy.activeRuntime,
+    revision: policy.revision, recovered: true });
+  assert.equal((await f.conversations.open(turn.owner, turn.sessionId)).turns[turn.requestId].state, "settled");
+  assert.equal((await f.conversations.open(turn.owner, turn.sessionId)).turns[turn.requestId].cleanupVerified, true);
+  assert.equal(f.revertCalls.length, 1);
+  assert.equal((await (await f.request("/api/admin/runtime", f.admin)).json()).recoveryRequired, false);
+  assert(f.logs.some(event => event.type === "assistant.recovery" && event.outcome === "committed"));
+});
+
+test("recovery is authenticated, same-origin, revisioned and idempotent", async t => {
+  const f = await fixture(t);
+  const turn = await unknownTurn(f);
+  const body = { identity: turn.identity, expectedRevision: 2 };
+  assert.equal((await f.request("/api/admin/runtime/recover")).status, 401);
+  assert.equal((await f.request("/api/admin/runtime/recover", f.student, body)).status, 403);
+  assert.equal((await f.request("/api/admin/runtime/recover", f.admin, body,
+    { origin: "http://elsewhere.invalid" })).status, 403);
+  assert.equal((await f.request("/api/admin/runtime/recover", f.admin,
+    { ...body, expectedRevision: 1 })).status, 409);
+  assert.equal((await f.request("/api/admin/runtime/recover", f.admin, { identity: turn.identity })).status, 400);
+  assert.equal((await f.request("/api/admin/runtime/recover", f.admin, body)).status, 200);
+  assert.equal((await f.request("/api/admin/runtime/recover", f.admin, body)).status, 200);
+  assert.equal(f.revertCalls.length, 1, "A retry must not discard the receipt again");
+});
+
+test("recovery fails closed when the revert receipt holds accepted effects", async t => {
+  const f = await fixture(t);
+  const turn = await unknownTurn(f);
+  f.server.conversationRevert = { discard: async () => { throw Object.assign(Error("revert snapshot conflict"), { code: "revert_snapshot_conflict", statusCode: 409 }); } };
+  const response = await f.request("/api/admin/runtime/recover", f.admin,
+    { identity: turn.identity, expectedRevision: 2 });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, "assistant_recovery_required");
+  assert.equal((await (await f.request("/api/admin/runtime", f.admin)).json()).recoveryRequired, true);
+  f.server.conversationRevert = { discard: async () => {} };
+  assert.equal((await f.request("/api/admin/runtime/recover", f.admin,
+    { identity: turn.identity, expectedRevision: 2 })).status, 200);
+});
+
+test("recovery refuses while the launcher account is not verifiably retired", async t => {
+  const f = await fixture(t);
+  const turn = await unknownTurn(f);
+  f.workerManager.retiredGeneration = async () => false;
+  const response = await f.request("/api/admin/runtime/recover", f.admin,
+    { identity: turn.identity, expectedRevision: 2 });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "assistant_unavailable");
+  assert.equal((await (await f.request("/api/admin/runtime", f.admin)).json()).recoveryRequired, true);
 });
