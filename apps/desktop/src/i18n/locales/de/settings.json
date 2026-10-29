@@ -23,7 +23,9 @@
     "recovering": "Wird wiederhergestellt…",
     "recovered": "Unterbrochener Turn wiederhergestellt.",
     "recoveryManual": "Diese Bereitstellung erfordert eine manuelle Wiederherstellung. Befolgen Sie das Assistenten-Runbook.",
-    "recoveryUnavailable": "Das Workspace-Konto ist nicht nachweislich gestoppt. Wiederherstellung nicht verfügbar."
+    "recoveryUnavailable": "Das Workspace-Konto ist nicht nachweislich gestoppt. Wiederherstellung nicht verfügbar.",
+    "recoveryLive": "Der unterbrochene Turn wird noch von diesem Plattformprozess gehalten. Starten Sie die Plattform neu und stellen Sie dann wieder her. Dateien und Verlauf bleiben erhalten.",
+    "recoveryFailed": "Der unterbrochene Turn konnte nicht wiederhergestellt werden. Prüfen Sie den Workspace-Status und versuchen Sie es erneut."
   },
   "nav": {
     "back": "Zurück zur App",

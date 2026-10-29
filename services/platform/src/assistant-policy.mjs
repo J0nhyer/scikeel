@@ -158,8 +158,12 @@ export class AssistantPolicy {
   recoveryDescriptor() {
     const unknown = Object.entries(this.#state.executions)
       .filter(([, execution]) => execution.status === "unknown");
-    if (unknown.length !== 1) return null;
+    if (unknown.length !== 1 || this.#live.has(unknown[0][0])) return null;
     return { executionId: unknown[0][0], identity: structuredClone(unknown[0][1].identity) };
+  }
+  hasLiveUnknown() {
+    return Object.entries(this.#state.executions)
+      .some(([id, execution]) => execution.status === "unknown" && this.#live.has(id));
   }
   // Synchronous committed state avoids reentering the policy queue while its
   // inventory callback identifies receipts owned by this live process.
@@ -273,7 +277,8 @@ export class AssistantPolicy {
         throw error("assistant_revision_conflict");
       const entries = Object.entries(this.#state.executions);
       const matching = entries.filter(([, execution]) => identityFields.split(",").every(key => execution.identity[key] === captured[key]));
-      if (matching.length > 1 || entries.length && matching.length !== 1 ||
+      if (matching.length > 1 || entries.length > 1 ||
+          entries.length === 1 && matching.length !== 1 ||
           matching.some(([id, execution]) => execution.status !== "unknown" || this.#live.has(id)))
         throw error("assistant_recovery_required", 503);
       const inventory = await this.#inventory();

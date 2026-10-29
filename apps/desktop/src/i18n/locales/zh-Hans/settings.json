@@ -177,7 +177,9 @@
     "recovering": "正在恢复…",
     "recovered": "已恢复中断的轮次。",
     "recoveryManual": "此部署需要手动恢复。请按照助手恢复手册操作。",
-    "recoveryUnavailable": "无法确认工作区账号已停止，暂不能恢复。"
+    "recoveryUnavailable": "无法确认工作区账号已停止，暂不能恢复。",
+    "recoveryLive": "中断的轮次仍被当前平台进程持有。请重启平台后再恢复。文件和历史会保留。",
+    "recoveryFailed": "无法恢复中断的轮次。请检查工作区状态后重试。"
   },
   "managedModels": {
     "title": "托管的 CLI 模型",

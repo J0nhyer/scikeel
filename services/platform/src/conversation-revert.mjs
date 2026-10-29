@@ -30,17 +30,18 @@ const credentialBytes=bytes=>/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\b(?:sk-[
 /** Bounded file versions and a durable, non-atomic multi-file restore journal. */
 export class ConversationRevert {
  #queues=new Map();
- constructor({rootDir,files,authorize,assertIdle,readConversation,withMutation,withReconciliation=withMutation,beforeCommit=async()=>{},
+ constructor({rootDir,files,authorize,authorizeRecovery,assertIdle,readConversation,withMutation,withReconciliation=withMutation,beforeCommit=async()=>{},
   maxFiles=512,maxBytes=32*1024**2,maxFileBytes=25*1024**2,maxStateBytes=96*1024**2,maxTurns=64}){
   if(!absolute(rootDir)||typeof files?.call!=='function'||[authorize,assertIdle,readConversation,withMutation,withReconciliation,beforeCommit].some(value=>typeof value!=='function')||
+   authorizeRecovery!==undefined&&typeof authorizeRecovery!=='function'||
    [maxFiles,maxBytes,maxFileBytes,maxStateBytes,maxTurns].some(value=>!Number.isSafeInteger(value)||value<1)||maxFileBytes>25*1024**2)throw fail('invalid_revert_configuration',400);
-  Object.assign(this,{rootDir,files,authorize,assertIdle,readConversation,withMutation,withReconciliation,beforeCommit,maxFiles,maxBytes,maxFileBytes,maxStateBytes,maxTurns});
+  Object.assign(this,{rootDir,files,authorize,authorizeRecovery:authorizeRecovery??authorize,assertIdle,readConversation,withMutation,withReconciliation,beforeCommit,maxFiles,maxBytes,maxFileBytes,maxStateBytes,maxTurns});
  }
- async #owner(owner){
+ async #owner(owner,authorize=this.authorize){
   if(!object(owner)||![owner.userId,owner.instanceId].every(name)||!absolute(owner.workspaceDir)||!absolute(owner.directory)||
    owner.directory!==owner.workspaceDir&&!owner.directory.startsWith(owner.workspaceDir+'/'))throw fail('revert_owner_denied',403);
   if(owner.generation!==undefined&&(!Number.isSafeInteger(owner.generation)||owner.generation<1))throw fail('revert_owner_denied',403);
-  owner=structuredClone(owner);await this.authorize(owner);return owner;
+  owner=structuredClone(owner);await authorize(owner);return owner;
  }
  #serial(userId,run){
   const next=(this.#queues.get(userId)??Promise.resolve()).catch(()=>{}).then(run);this.#queues.set(userId,next);
@@ -108,13 +109,13 @@ export class ConversationRevert {
    }finally{await file.close();}
   }catch(error){if(error.code==='ENOENT')return empty();throw fail('revert_storage_unavailable',503);}
  }
- async #save(owner,data){
+ async #save(owner,data,authorize=this.authorize){
   this.#validate(data,owner.userId);const bytes=JSON.stringify(data);if(Buffer.byteLength(bytes)>this.maxStateBytes)throw fail('revert_quota_exceeded',507);
   const parent=join(this.rootDir,owner.userId);await mkdir(parent,{recursive:true,mode:0o700});await this.#private(this.rootDir,true);await this.#private(parent,true);
   const temporary=join(parent,`revert-${randomUUID()}.tmp`);
   try{
    const file=await open(temporary,'wx',0o600);try{await file.writeFile(bytes);await file.sync();}finally{await file.close();}
-   await this.beforeCommit();await this.authorize(owner);await rename(temporary,join(parent,'revert.json'));
+   await this.beforeCommit();await authorize(owner);await rename(temporary,join(parent,'revert.json'));
    const directory=await open(parent,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{await directory.sync();}finally{await directory.close();}
   }finally{await rm(temporary,{force:true});}
  }
@@ -219,9 +220,11 @@ export class ConversationRevert {
    await this.#save(owner,data);return {captured:true};
   });
  }
- async discard(owner,{conversationId,requestId}){
-  owner=await this.#owner(owner);const key=this.#key(conversationId,requestId);
-  return this.#serial(owner.userId,async()=>{const data=await this.#load(owner.userId);if(data.turns[key]?.after)throw fail('revert_snapshot_conflict');delete data.turns[key];this.#collectBlobs(data);await this.#save(owner,data);});
+ async discard(owner,{conversationId,requestId},{recovery=false}={}){
+  if(typeof recovery!=='boolean')throw fail('invalid_revert_configuration',400);
+  const authorize=recovery?this.authorizeRecovery:this.authorize;
+  owner=await this.#owner(owner,authorize);const key=this.#key(conversationId,requestId);
+  return this.#serial(owner.userId,async()=>{const data=await this.#load(owner.userId);if(data.turns[key]?.after)throw fail('revert_snapshot_conflict');delete data.turns[key];this.#collectBlobs(data);await this.#save(owner,data,authorize);});
  }
  async accept(owner,{conversationId,requestId}){
   owner=await this.#owner(owner);this.#key(conversationId,requestId);

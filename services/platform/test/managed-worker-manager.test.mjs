@@ -554,4 +554,6 @@ test("retiredGeneration requires the same stopped account above the cancelled ge
   assert.equal(await f.manager.retiredGeneration("user-a", 4, "a"), false);
   assert.equal(await f.manager.retiredGeneration("user-a", 3, "other"), false);
   assert.equal(await f.manager.retiredGeneration("missing", 1, "a"), false);
+  f.manager.client.inventory = async () => ({ accounts: null });
+  assert.equal(await f.manager.retiredGeneration("user-a", 3, "a"), false);
 });

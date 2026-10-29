@@ -103,7 +103,8 @@ export class ManagedWorkerManager {
         !Number.isSafeInteger(generation) || generation < 1) return false;
     let accounts;
     try { ({ accounts } = await this.client.inventory({ timeoutMs: 3000 })); } catch { return false; }
-    const account = accounts.find(item => item.instanceId === instanceId);
+    if (!Array.isArray(accounts)) return false;
+    const account = accounts.find(item => item && item.instanceId === instanceId);
     return Boolean(account) && account.userId === userId && account.status === "stopped" &&
       Number.isSafeInteger(account.generation) && account.generation > generation;
   }

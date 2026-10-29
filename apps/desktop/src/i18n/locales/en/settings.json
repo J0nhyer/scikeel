@@ -177,7 +177,9 @@
     "recovering": "Recovering…",
     "recovered": "Interrupted turn recovered.",
     "recoveryManual": "This deployment needs manual recovery. Follow the assistant recovery runbook.",
-    "recoveryUnavailable": "The workspace account is not verifiably stopped. Recovery is unavailable."
+    "recoveryUnavailable": "The workspace account is not verifiably stopped. Recovery is unavailable.",
+    "recoveryLive": "The interrupted turn is still held by this platform process. Restart the platform, then recover. Files and history are preserved.",
+    "recoveryFailed": "The interrupted turn could not be recovered. Check the workspace status and try again."
   },
   "managedModels": {
     "title": "Managed CLI models",

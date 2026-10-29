@@ -326,7 +326,7 @@ function toolPart({ sessionId, messageId, callId, title, status, input, output }
  * Native histories never share a directory with another user.
  */
 export class CliRuntimeManager {
-  #policyState; #policyDescription; #initializing; #policyStorageUncertain = false; #policyStopped = false;
+  #policyState; #policyDescription; #initializing; #policyStorageUncertain = false; #policyStopped = false; #policyOperation = false;
   constructor({
     rootDir,
     runtime = "opencode",
@@ -515,7 +515,8 @@ export class CliRuntimeManager {
   async persistRuntime(policyState) {
     const next = this.configPersistQueue.then(async () => {
       if (this.#policyStopped || this.closed && policyState === undefined) throw issue("assistant_closed", "Assistant authority is closed", 503);
-      if (this.#policyStorageUncertain || policyState === undefined && this.#policyDescription?.recoveryRequired)
+      if (this.#policyStorageUncertain || policyState === undefined &&
+          (this.#policyOperation || this.assistantPolicy.committedSnapshot().recoveryRequired))
         throw issue("assistant_recovery_required", "Assistant storage requires reconciliation", 503);
       const policy = validateAssistantPolicyState(policyState ?? this.#policyState);
       const snapshot = {
@@ -589,24 +590,30 @@ export class CliRuntimeManager {
   async selectAssistant(input) {
     if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
     await this.init();
+    this.#policyOperation = true;
     this.#policyDescription = { ...this.#policyDescription, recoveryRequired: true };
     try { return await this.assistantPolicy.select(input); }
     finally {
-      this.#policyDescription = await this.assistantPolicy.describe();
-      this.defaultRuntime = this.#policyDescription.activeRuntime;
-      this.assistantEnabled = { claude: this.defaultRuntime === "claude", codex: this.defaultRuntime === "codex" };
+      try {
+        this.#policyDescription = await this.assistantPolicy.describe();
+        this.defaultRuntime = this.#policyDescription.activeRuntime;
+        this.assistantEnabled = { claude: this.defaultRuntime === "claude", codex: this.defaultRuntime === "codex" };
+      } finally { this.#policyOperation = false; }
     }
   }
 
   async reconcileAssistant() {
     if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
     await this.init();
+    this.#policyOperation = true;
     this.#policyDescription = { ...this.#policyDescription, recoveryRequired: true };
     try { return await this.assistantPolicy.reconcile(); }
     finally {
-      this.#policyDescription = await this.assistantPolicy.describe();
-      this.defaultRuntime = this.#policyDescription.activeRuntime;
-      this.assistantEnabled = { claude: this.defaultRuntime === "claude", codex: this.defaultRuntime === "codex" };
+      try {
+        this.#policyDescription = await this.assistantPolicy.describe();
+        this.defaultRuntime = this.#policyDescription.activeRuntime;
+        this.assistantEnabled = { claude: this.defaultRuntime === "claude", codex: this.defaultRuntime === "codex" };
+      } finally { this.#policyOperation = false; }
     }
   }
 
@@ -617,24 +624,37 @@ export class CliRuntimeManager {
         typeof reconcile !== "function")
       throw issue("invalid_recovery_request", "A complete recovery request is required", 400);
     const committed = this.assistantPolicy.committedSnapshot();
-    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision !== committed.revision)
-      throw issue("assistant_revision_conflict", "The deployment assistant changed; reload before continuing", 409);
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision !== committed.revision) {
+      const error = issue("assistant_revision_conflict", "The deployment assistant changed; reload before continuing", 409);
+      error.revision = committed.revision;
+      throw error;
+    }
+    const recovery = this.assistantPolicy.recoveryDescriptor();
+    const executionId = recovery && JSON.stringify(recovery.identity) === JSON.stringify(input.identity)
+      ? recovery.executionId : null;
+    this.#policyOperation = true;
     this.#policyDescription = { ...this.#policyDescription, recoveryRequired: true };
     try { await this.assistantPolicy.recoverExecution(input.identity, reconcile); }
     catch (error) {
       // A refused ownership check sets the policy's in-memory uncertainty flag.
       // Re-read durable state so a corrected retry is possible; the unknown
       // execution remains durable and the fence stays closed until it commits.
+      if (error && typeof error === "object") {
+        error.executionId = executionId ?? undefined;
+        error.revision = committed.revision;
+      }
       await this.reconcileAssistant().catch(() => {});
       throw error;
     }
     finally {
-      this.#policyDescription = await this.assistantPolicy.describe();
-      this.defaultRuntime = this.#policyDescription.activeRuntime;
-      this.assistantEnabled = { claude: this.defaultRuntime === "claude", codex: this.defaultRuntime === "codex" };
+      try {
+        this.#policyDescription = await this.assistantPolicy.describe();
+        this.defaultRuntime = this.#policyDescription.activeRuntime;
+        this.assistantEnabled = { claude: this.defaultRuntime === "claude", codex: this.defaultRuntime === "codex" };
+      } finally { this.#policyOperation = false; }
     }
     return { activeRuntime: this.#policyDescription.activeRuntime,
-      revision: this.#policyDescription.revision, recovered: true };
+      revision: this.#policyDescription.revision, recovered: true, executionId: executionId ?? undefined };
   }
 
   async setUserRuntime(userId, runtime, model) {
@@ -681,16 +701,12 @@ export class CliRuntimeManager {
 
   describe(userId, policy) {
     const selected = policy?.activeRuntime ?? this.runtimeForUser(userId);
-    const fenced = policy?.recoveryRequired === true;
     return {
       ...this.runtimeOption(selected, userId, selected),
       policyRevision: policy?.revision ?? this.#policyState?.revision,
-      recoveryRequired: fenced,
+      recoveryRequired: policy?.recoveryRequired === true,
       model: this.modelForUser(userId, selected),
-      available: RUNTIME_ORDER.map((runtime) => {
-        const option = this.runtimeOption(runtime, userId, selected);
-        return fenced ? { ...option, enabled: false } : option;
-      }),
+      available: RUNTIME_ORDER.map((runtime) => this.runtimeOption(runtime, userId, selected)),
     };
   }
 
@@ -866,6 +882,7 @@ export class CliRuntimeManager {
   adminDescribe(policy = this.#policyDescription ?? { activeRuntime: this.defaultRuntime, revision: this.#policyState?.revision, recoveryRequired: true }) {
     const recovery = this.assistantPolicy.recoveryDescriptor();
     const recoveryReason = !policy.recoveryRequired ? null : recovery ? "execution" :
+      this.assistantPolicy.hasLiveUnknown() ? "live" :
       this.#policyState.transition ? "transition" : this.#policyStorageUncertain ? "persistence" : "manual";
     return {
       ...policy,
@@ -1413,7 +1430,8 @@ export class CliRuntimeManager {
   async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput, workspaceContext, executionAdmission }) {
     await this.init();
     if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
-    if (this.#policyStorageUncertain || this.#policyDescription?.recoveryRequired || this.#policyState.transition)
+    if (this.#policyOperation || this.#policyStorageUncertain ||
+        this.assistantPolicy.committedSnapshot().recoveryRequired || this.assistantSnapshot(userId).recoveryRequired)
       throw issue("assistant_recovery_required", "Assistant selection requires reconciliation", 503);
     const { state, session } = await this.getOwnedSession(userId, sessionId);
     const reserved=this.turnReservations.get(session.id);

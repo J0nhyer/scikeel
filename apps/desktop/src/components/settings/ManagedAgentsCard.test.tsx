@@ -292,3 +292,48 @@ describe("ManagedAgentsCard assistant recovery", () => {
     expect(screen.getByRole("radio", { name: "Codex" })).toBeDisabled();
   });
 });
+
+describe("ManagedAgentsCard recovery edge states", () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en"); sessionStorage.clear();
+    useToastStore.getState().reset(); useToastStore.getState().setAccount("admin-user");
+    refresh.mockReset(); refresh.mockResolvedValue(undefined);
+    useRuntimeStore.setState({ refreshGatewayRuntimes: refresh, gatewayUserRole: "admin",
+      gatewayUser: { id: "admin-user", username: "admin", role: "admin" } });
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); useRuntimeStore.setState(initial, true); });
+
+  it("shows a restart instruction for a live unknown execution", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ ...fenced, recoveryReason: "live", recoverable: null })));
+    render(<ManagedAgentsCard />);
+    await screen.findByText("Assistant recovery required");
+    expect(screen.getByText(/Restart the platform/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Recover interrupted turn" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Codex" })).toBeDisabled();
+  });
+
+  it("allows recovery while an unconfirmed selection is stored", async () => {
+    const selection = { runtime: "codex", expectedRevision: 1, operationId: "stale-selection" };
+    sessionStorage.setItem(storageKey, JSON.stringify(selection));
+    let recovered = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/api/admin/runtime/recover") && init?.method === "POST") {
+        recovered = true;
+        return response({ activeRuntime: "codex", revision: 1, recovered: true, executionId: "execution-1" });
+      }
+      if (recovered) return response({ ...fenced, recoveryRequired: false, recoveryReason: null, recoverable: null });
+      return response(String(input).includes("operationId=")
+        ? { ...fenced, operation: { operationId: selection.operationId, state: "unknown" } }
+        : fenced);
+    });
+    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    await screen.findByText("Assistant recovery required");
+    const recover = screen.getByRole("button", { name: "Recover interrupted turn" });
+    expect(recover).toBeEnabled();
+    await userEvent.click(recover);
+    await userEvent.click(await screen.findByRole("button", { name: "Recover" }));
+    await waitFor(() => expect(recovered).toBe(true));
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Codex" })).toBeEnabled());
+  });
+});

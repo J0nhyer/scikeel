@@ -352,6 +352,12 @@ export class PlatformServer {
         if (owner.workspaceDir !== account.workspaceDir) throw workspaceError("conversation_owner_mismatch", 403);
         tenantPolicy.directory(owner, owner.directory);
         await this.workspaceManagement?.assertAccessible(owner, owner.directory);
+      },
+      authorizeRecovery: async owner => {
+        if (typeof this.workerManager.retiredGeneration !== "function" ||
+            !(await this.workerManager.retiredGeneration(owner.instanceId, owner.generation, owner.userId)) ||
+            owner.workspaceDir !== this.workerManager.instancePaths(owner.instanceId).workspaceDir)
+          throw workspaceError("assistant_unavailable", 503);
       } });
     this.promptAdmissions=new Map();
     this.openCodeTurns=new Map();
@@ -543,6 +549,12 @@ export class PlatformServer {
           const account=tenantPolicy.account(owner);
           if(account.workspaceDir!==owner.workspaceDir)throw workspaceError('conversation_owner_mismatch',403);
           tenantPolicy.directory(owner,owner.directory);await this.workspaceManagement.assertAccessible(owner,owner.directory);
+        },
+        authorizeRecovery:async owner=>{
+          if(typeof this.workerManager.retiredGeneration!=='function'||
+             !(await this.workerManager.retiredGeneration(owner.instanceId,owner.generation,owner.userId))||
+             owner.workspaceDir!==this.workerManager.instancePaths(owner.instanceId).workspaceDir)
+            throw workspaceError('assistant_unavailable',503);
         },
         assertIdle:async owner=>{if(await this.#workspaceBusy(owner.userId))throw workspaceError('workspace_busy',409);},
         readConversation:async(owner,id)=>{
@@ -785,7 +797,7 @@ export class PlatformServer {
     const workspaceDir = this.workerManager.instancePaths(identity.instanceId).workspaceDir;
     const probe = { userId: identity.userId, instanceId: identity.instanceId,
       generation: identity.generation, workspaceDir, directory: workspaceDir };
-    const conversation = await this.conversations.open(probe, identity.conversationId);
+    const conversation = await this.conversations.open(probe, identity.conversationId, { recovery: true });
     const turn = conversation.turns[identity.requestId];
     const same = turn && ["userId","instanceId","generation","conversationId","execution","requestId","policyRevision","runtime"]
       .every(key => turn.identity[key] === identity[key]);
@@ -802,13 +814,13 @@ export class PlatformServer {
     const owner = { ...probe, directory: conversation.directory };
     try {
       await this.conversationRevert.discard(owner,
-        { conversationId: identity.conversationId, requestId: identity.requestId });
+        { conversationId: identity.conversationId, requestId: identity.requestId }, { recovery: true });
     } catch (error) {
       throw workspaceError("assistant_recovery_required", 409);
     }
     await this.conversations.advanceTurn(owner, identity.conversationId, {
       requestId: identity.requestId, expectedRevision: conversation.revision,
-      state: "settled", cleanupVerified: true });
+      state: "settled", cleanupVerified: true }, { recovery: true });
     await retired();
     return { cleanupVerified: true };
   }
@@ -2836,11 +2848,15 @@ export class PlatformServer {
             const result = await this.cliRuntime.recoverAssistantExecution(payload,
               identity => this.#reconcileAssistantRecovery(identity));
             this.logger({ type: "assistant.recovery", userId: payload.identity?.userId,
-              runtime: payload.identity?.runtime, outcome: "committed" });
+              runtime: payload.identity?.runtime, executionId: result.executionId, outcome: "committed" });
             response.setHeader("x-scikeel-assistant-revision", String(result.revision));
             sendJson(response, 200, result);
           } catch (error) {
-            this.logger({ type: "assistant.recovery", outcome: error?.code ?? "failed" });
+            this.logger({ type: "assistant.recovery", userId: payload.identity?.userId,
+              runtime: payload.identity?.runtime, executionId: error?.executionId,
+              outcome: error?.code ?? "failed" });
+            if (Number.isSafeInteger(error?.revision))
+              response.setHeader("x-scikeel-assistant-revision", String(error.revision));
             sendJson(response, error?.status ?? error?.statusCode ?? 400,
               { error: error?.code ?? "invalid_recovery_request", code: error?.code });
           }

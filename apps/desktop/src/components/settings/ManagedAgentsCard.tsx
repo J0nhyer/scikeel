@@ -8,12 +8,12 @@ import { useRuntimeStore, type GatewayRuntimeId } from "@/lib/runtime";
 import { gatewayOrigin } from "@/lib/webMode";
 
 type Selection = { runtime: GatewayRuntimeId; expectedRevision: number; operationId: string };
-type Message = "managedAgents.failed" | "managedAgents.busy" | "managedAgents.unavailable" | "managedAgents.recoveryUnavailable" | "managedAgents.pending" | "managedAgents.loadFailed" | "managedAgents.recoveryRequired";
+type Message = "managedAgents.failed" | "managedAgents.busy" | "managedAgents.unavailable" | "managedAgents.recoveryUnavailable" | "managedAgents.recoveryFailed" | "managedAgents.pending" | "managedAgents.loadFailed" | "managedAgents.recoveryRequired";
 type Recovery = { executionId: string; runtime: GatewayRuntimeId; generation: number; userId: string; sessionId: string;
   identity: { userId: string; instanceId: string; generation: number; conversationId: string;
     execution: number; requestId: string; policyRevision: number; runtime: GatewayRuntimeId } };
 type Policy = { activeRuntime: GatewayRuntimeId; revision: number; recoveryRequired: boolean;
-  recoveryReason?: "execution" | "transition" | "persistence" | "manual" | null;
+  recoveryReason?: "execution" | "live" | "transition" | "persistence" | "manual" | null;
   recoverable?: Recovery | null;
   available: { runtime: GatewayRuntimeId; status?: string; models: string[]; defaultModel?: string | null }[];
   operation: { operationId: string; state: "pending" | "unknown" | "committed";
@@ -36,7 +36,7 @@ async function readPolicy(response: Response): Promise<Policy> {
   const value = await response.json() as Policy | null;
   if (!value || !runtime(value.activeRuntime) || !positive(value.revision) || typeof value.recoveryRequired !== "boolean" ||
       value.recoveryReason !== undefined && value.recoveryReason !== null &&
-        !["execution", "transition", "persistence", "manual"].includes(value.recoveryReason) ||
+        !["execution", "live", "transition", "persistence", "manual"].includes(value.recoveryReason) ||
       !Array.isArray(value.available) || value.available.length !== AGENTS.length ||
       new Set(value.available.map(option => option?.runtime)).size !== AGENTS.length ||
       value.available.some(option => !option || !runtime(option.runtime) || !Array.isArray(option.models) ||
@@ -189,12 +189,17 @@ export function ManagedAgentsCard() {
         signal: AbortSignal.timeout(15000) });
       if (!result.ok) {
         const body = await result.json().catch(() => null) as { code?: string } | null;
+        // Re-read the committed revision so a stale page can recover with a
+        // fresh expectedRevision instead of replaying the same conflict.
+        await check(null, { epoch: epochRef.current });
         setMessage(body?.code === "assistant_busy" ? "managedAgents.busy"
           : body?.code === "assistant_unavailable" ? "managedAgents.recoveryUnavailable"
-          : "managedAgents.recoveryRequired");
+          : "managedAgents.recoveryFailed");
         return;
       }
       await result.body?.cancel();
+      pendingRef.current = null; setPending(null);
+      try { sessionStorage.removeItem(storageKey(account)); } catch { /* The server is authoritative. */ }
       toast.success(t("managedAgents.recovered"), { accountId: account,
         returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined });
       void refresh().catch(() => {});
@@ -226,24 +231,35 @@ export function ManagedAgentsCard() {
   };
   if (role !== "admin") return null;
   const blocked = loading || resolving || !policy || Boolean(pending) || policy.recoveryRequired;
-  const retryable = policy?.recoveryReason === "execution" || policy?.recoveryReason === "manual"
+  const retryable = policy?.recoveryReason === "execution" || policy?.recoveryReason === "live" ||
+    policy?.recoveryReason === "manual"
     ? false : Boolean(pending) || !policy || policy.recoveryRequired;
-  const recoveryBlocked = loading || resolving || Boolean(pending) || !policy?.recoverable;
+  const recoveryBlocked = loading || resolving || !policy?.recoverable;
   const detail = message ? t(message) : null;
   return <Section title={t("runtime.platformSelect")} flush>
-    {policy?.recoveryRequired && <div role="status" className="px-4 pb-3 text-xs">
-      <p className="font-medium text-text">{t("managedAgents.recoveryTitle")}</p>
-      <p className="mt-1 text-muted">{t("managedAgents.recoveryHint", {
-        runtime: AGENTS.find(agent => agent.id === (policy.recoverable?.runtime ?? policy.activeRuntime))?.label ?? policy.activeRuntime,
-      })}</p>
-      {policy.recoverable && <p className="mt-1 text-muted">{t("managedAgents.recoverySession", { session: policy.recoverable.sessionId })}</p>}
-      {policy.recoveryReason === "execution" && policy.recoverable && <button type="button" disabled={recoveryBlocked}
-        className="mt-2 rounded-input border border-border px-3 py-2 text-text disabled:opacity-50"
-        onClick={() => setConfirming(true)}>
-        {recovering ? t("managedAgents.recovering") : t("managedAgents.recover")}
-      </button>}
-      {policy.recoveryReason === "manual" && <p className="mt-1 text-muted">{t("managedAgents.recoveryManual")}</p>}
-    </div>}
+    {policy?.recoveryRequired && policy.recoveryReason === "execution" && policy.recoverable &&
+      <div role="status" className="px-4 pb-3 text-xs">
+        <p className="font-medium text-text">{t("managedAgents.recoveryTitle")}</p>
+        <p className="mt-1 text-muted">{t("managedAgents.recoveryHint", {
+          runtime: AGENTS.find(agent => agent.id === policy.recoverable!.runtime)?.label ?? policy.activeRuntime,
+        })}</p>
+        <p className="mt-1 text-muted">{t("managedAgents.recoverySession", { session: policy.recoverable.sessionId })}</p>
+        <button type="button" disabled={recoveryBlocked}
+          className="mt-2 rounded-input border border-border px-3 py-2 text-text disabled:opacity-50"
+          onClick={() => setConfirming(true)}>
+          {recovering ? t("managedAgents.recovering") : t("managedAgents.recover")}
+        </button>
+      </div>}
+    {policy?.recoveryRequired && policy.recoveryReason === "live" &&
+      <div role="status" className="px-4 pb-3 text-xs">
+        <p className="font-medium text-text">{t("managedAgents.recoveryTitle")}</p>
+        <p className="mt-1 text-muted">{t("managedAgents.recoveryLive")}</p>
+      </div>}
+    {policy?.recoveryRequired && policy.recoveryReason === "manual" &&
+      <div role="status" className="px-4 pb-3 text-xs">
+        <p className="font-medium text-text">{t("managedAgents.recoveryTitle")}</p>
+        <p className="mt-1 text-muted">{t("managedAgents.recoveryManual")}</p>
+      </div>}
     <div role="radiogroup" aria-label={t("runtime.platformSelect")}>
       {AGENTS.map(({ id, label }) => {
         const option = policy?.available.find(candidate => candidate.runtime === id);

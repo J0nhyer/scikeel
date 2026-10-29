@@ -23,7 +23,9 @@
     "recovering": "Recuperando…",
     "recovered": "Turno interrumpido recuperado.",
     "recoveryManual": "Este despliegue requiere recuperación manual. Siga el runbook de recuperación del asistente.",
-    "recoveryUnavailable": "La cuenta del espacio de trabajo no está detenida de forma verificable. La recuperación no está disponible."
+    "recoveryUnavailable": "La cuenta del espacio de trabajo no está detenida de forma verificable. La recuperación no está disponible.",
+    "recoveryLive": "El turno interrumpido aún lo retiene este proceso de la plataforma. Reinicie la plataforma y luego recupere. Los archivos y el historial se conservan.",
+    "recoveryFailed": "No se pudo recuperar el turno interrumpido. Compruebe el estado del espacio de trabajo e inténtelo de nuevo."
   },
   "nav": {
     "back": "Volver a la app",

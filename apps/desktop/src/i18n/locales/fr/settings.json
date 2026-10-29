@@ -23,7 +23,9 @@
     "recovering": "Récupération…",
     "recovered": "Tour interrompu récupéré.",
     "recoveryManual": "Ce déploiement nécessite une récupération manuelle. Suivez le runbook de récupération de l'assistant.",
-    "recoveryUnavailable": "Le compte de l'espace de travail n'est pas arrêté de manière vérifiable. La récupération est indisponible."
+    "recoveryUnavailable": "Le compte de l'espace de travail n'est pas arrêté de manière vérifiable. La récupération est indisponible.",
+    "recoveryLive": "Le tour interrompu est encore retenu par ce processus de la plateforme. Redémarrez la plateforme, puis récupérez. Les fichiers et l'historique sont conservés.",
+    "recoveryFailed": "Le tour interrompu n'a pas pu être récupéré. Vérifiez l'état de l'espace de travail et réessayez."
   },
   "nav": {
     "back": "Retour à l'app",

@@ -386,7 +386,9 @@ test("a global unknown execution is reported as a recovery fence with one identi
   assert.equal(restarted.assistantPolicy.committedSnapshot().recoveryRequired, false,
     "Read-only duplicate-receipt replay remains available while the deployment fence is set");
   const user = await restarted.freshDescribe("owner_b");
-  assert.equal(user.available.every(option => option.enabled === false), true);
+  assert.equal(user.recoveryRequired, true);
+  assert.equal(user.available.some(option => option.enabled), true,
+    "Another user's catalog stays available; admit() fences only the owner");
   await assert.rejects(restarted.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "fenced" }),
     { code: "assistant_recovery_required" });
 });
@@ -404,14 +406,19 @@ test("the manager recovers one unknown execution through its ownership callback"
     assert.deepEqual(captured, identity);
     return { cleanupVerified: true };
   });
-  assert.deepEqual(result, { activeRuntime: "opencode", revision: 1, recovered: true });
+  assert.deepEqual({ activeRuntime: result.activeRuntime, revision: result.revision, recovered: result.recovered },
+    { activeRuntime: "opencode", revision: 1, recovered: true });
+  assert.match(result.executionId, /^[a-f0-9-]{36}$/);
   assert.equal(reconciled, 1);
   assert.equal(restarted.adminDescribe().recoveryRequired, false);
   assert.equal(restarted.adminDescribe().recoverable, null);
   let replayed = 0;
-  assert.deepEqual(await restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async () => {
+  const replay = await restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async () => {
     replayed++; return { cleanupVerified: true };
-  }), { activeRuntime: "opencode", revision: 1, recovered: true });
+  });
+  assert.deepEqual({ activeRuntime: replay.activeRuntime, revision: replay.revision, recovered: replay.recovered },
+    { activeRuntime: "opencode", revision: 1, recovered: true });
+  assert.equal(replay.executionId, undefined);
   assert.equal(replayed, 1);
   assert.deepEqual(await restarted.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "after-recovery" }),
     { activeRuntime: "codex", revision: 2, operationId: "after-recovery" });
@@ -436,7 +443,60 @@ test("manager recovery refuses a stale revision, a foreign effect and invalid pr
   await assert.rejects(restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async () => ({ cleanupVerified: false })),
     { code: "assistant_recovery_required" });
   assert.equal(restarted.adminDescribe().recoveryRequired, true);
-  assert.deepEqual(await restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async () => ({ cleanupVerified: true })),
+  const recovered = await restarted.recoverAssistantExecution({ identity, expectedRevision: 1 }, async () => ({ cleanupVerified: true }));
+  assert.deepEqual({ activeRuntime: recovered.activeRuntime, revision: recovered.revision, recovered: recovered.recovered },
     { activeRuntime: "opencode", revision: 1, recovered: true });
+  assert.match(recovered.executionId, /^[a-f0-9-]{36}$/);
   assert.equal(restarted.adminDescribe().recoveryRequired, false);
+});
+
+test("an unknown execution fences its owner but not another user's prompts or model", async t => {
+  const f = await fixture(t);
+  await f.manager.selectAssistant({ runtime: "codex", expectedRevision: 1, operationId: "fence-codex" });
+  const identity = { userId: "owner_a", instanceId: "instance_a", generation: 1,
+    conversationId: "conversation_a", execution: 1, requestId: "request_a",
+    policyRevision: 2, runtime: "codex" };
+  const lease = await f.manager.assistantPolicy.admit(identity, async () => ({}));
+  await lease.settle({ cleanupVerified: false });
+  const restarted = await f.restart();
+  await restarted.setUserModel("owner_b", "codex", "gpt-6.1-sol");
+  const stored = JSON.parse(await readFile(join(f.rootDir, "runtime.json"), "utf8"));
+  assert.equal(stored.userModels.owner_b.codex, "gpt-6.1-sol");
+  const session = await restarted.createSession({ userId: "owner_b", workspaceDir: f.rootDir, directory: f.rootDir });
+  const turn = await restarted.reservePrompt({ userId: "owner_b", sessionId: session.id, text: "Continue" });
+  assert.equal(turn.userId, "owner_b");
+  const ownerSession = await restarted.createSession({ userId: "owner_a", workspaceDir: f.rootDir, directory: f.rootDir });
+  await assert.rejects(restarted.reservePrompt({ userId: "owner_a", sessionId: ownerSession.id, text: "Fenced" }),
+    { code: "assistant_recovery_required" });
+});
+
+test("recovery refuses when more than one unknown execution exists", async t => {
+  const f = await fixture(t);
+  const identities = ["a", "b"].map(tag => ({ userId: "owner_a", instanceId: "instance_a", generation: 1,
+    conversationId: `conversation_${tag}`, execution: 1, requestId: `request_${tag}`,
+    policyRevision: 1, runtime: "opencode" }));
+  for (const identity of identities) await f.manager.assistantPolicy.admit(identity, async () => ({}));
+  const restarted = await f.restart();
+  await assert.rejects(restarted.recoverAssistantExecution({ identity: identities[0], expectedRevision: 1 },
+    async () => ({ cleanupVerified: true })), { code: "assistant_recovery_required" });
+  assert.equal(restarted.assistantSnapshot("owner_a").recoveryRequired, true);
+  assert.equal(restarted.adminDescribe().recoverable, null);
+  assert.equal(restarted.adminDescribe().recoveryReason, "manual");
+});
+
+test("a live unknown execution is fenced but not offered for recovery", async t => {
+  const f = await fixture(t);
+  const identity = { userId: "owner_a", instanceId: "instance_a", generation: 1,
+    conversationId: "conversation_a", execution: 1, requestId: "request_a",
+    policyRevision: 1, runtime: "opencode" };
+  const lease = await f.manager.assistantPolicy.admit(identity, async () => ({}));
+  await lease.settle({ cleanupVerified: false });
+  const live = await f.manager.freshAdminDescribe();
+  assert.equal(live.recoveryRequired, true);
+  assert.equal(live.recoveryReason, "live");
+  assert.equal(live.recoverable, null);
+  const restarted = await f.restart();
+  const recovered = await restarted.freshAdminDescribe();
+  assert.equal(recovered.recoveryReason, "execution");
+  assert.deepEqual(recovered.recoverable.identity, identity);
 });

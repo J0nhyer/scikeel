@@ -31,7 +31,7 @@ async function fixture(t) {
     logger: event => logs.push(event) });
   const revertCalls = [];
   server.conversationRevert = {
-    discard: async (owner, input) => { revertCalls.push({ owner, input }); },
+    discard: async (owner, input, options) => { revertCalls.push({ owner, input, options }); },
   };
   workerManager.retiredGeneration = async () => true;
   const restartRuntime = async () => {
@@ -57,7 +57,7 @@ async function fixture(t) {
     headers: { accept: "application/json", "content-type": "application/json", ...(cookie ? { cookie } : {}), ...(body ? { origin: base } : {}), ...extraHeaders },
     ...(body ? { body: JSON.stringify(body) } : {}) });
   return { base, request, admin, student, workerRequests: () => workerRequests,
-    cliRuntime, conversations: server.conversations, workerManager, revertCalls, server, logs, restartRuntime };
+    cliRuntime, conversations: server.conversations, workerManager, revertCalls, server, logs, restartRuntime, tenantPolicy };
 }
 
 async function unknownTurn(f) {
@@ -74,6 +74,10 @@ async function unknownTurn(f) {
       runtime: "codex", generation: 1, model: "gpt-6.1-sol", identityRevision: "fixture-codex-identity" } });
   await admission.settle({ cleanupVerified: false });
   await f.restartRuntime();
+  // The launcher has advanced and stopped the account; the live tenant
+  // authority no longer accepts the retired generation.
+  f.tenantPolicy.registerAccount({ instanceId: owner.instanceId, userId: owner.userId,
+    generation: 2, workspaceDir: owner.workspaceDir });
   return { owner, sessionId: conversationId, requestId: "recovery-turn", identity: admission.identity };
 }
 
@@ -219,13 +223,20 @@ test("an interrupted accepted turn is recovered through one explicit Admin reque
   const response = await f.request("/api/admin/runtime/recover", f.admin,
     { identity: turn.identity, expectedRevision: policy.revision });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { activeRuntime: policy.activeRuntime,
-    revision: policy.revision, recovered: true });
-  assert.equal((await f.conversations.open(turn.owner, turn.sessionId)).turns[turn.requestId].state, "settled");
-  assert.equal((await f.conversations.open(turn.owner, turn.sessionId)).turns[turn.requestId].cleanupVerified, true);
+  const recovered = await response.json();
+  assert.equal(recovered.activeRuntime, policy.activeRuntime);
+  assert.equal(recovered.revision, policy.revision);
+  assert.equal(recovered.recovered, true);
+  assert.equal(recovered.executionId, policy.recoverable.executionId);
+  const currentOwner = { ...turn.owner, generation: 2 };
+  assert.equal((await f.conversations.open(currentOwner, turn.sessionId)).turns[turn.requestId].state, "settled");
+  assert.equal((await f.conversations.open(currentOwner, turn.sessionId)).turns[turn.requestId].cleanupVerified, true);
   assert.equal(f.revertCalls.length, 1);
+  assert.equal(f.revertCalls[0].options.recovery, true);
   assert.equal((await (await f.request("/api/admin/runtime", f.admin)).json()).recoveryRequired, false);
-  assert(f.logs.some(event => event.type === "assistant.recovery" && event.outcome === "committed"));
+  const recoveryLog = f.logs.find(event => event.type === "assistant.recovery");
+  assert.equal(recoveryLog.outcome, "committed");
+  assert.equal(recoveryLog.executionId, policy.recoverable.executionId);
 });
 
 test("recovery is authenticated, same-origin, revisioned and idempotent", async t => {
@@ -236,8 +247,10 @@ test("recovery is authenticated, same-origin, revisioned and idempotent", async 
   assert.equal((await f.request("/api/admin/runtime/recover", f.student, body)).status, 403);
   assert.equal((await f.request("/api/admin/runtime/recover", f.admin, body,
     { origin: "http://elsewhere.invalid" })).status, 403);
-  assert.equal((await f.request("/api/admin/runtime/recover", f.admin,
-    { ...body, expectedRevision: 1 })).status, 409);
+  const stale = await f.request("/api/admin/runtime/recover", f.admin,
+    { ...body, expectedRevision: 1 });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.headers.get("x-scikeel-assistant-revision"), "2");
   assert.equal((await f.request("/api/admin/runtime/recover", f.admin, { identity: turn.identity })).status, 400);
   assert.equal((await f.request("/api/admin/runtime/recover", f.admin, body)).status, 200);
   assert.equal((await f.request("/api/admin/runtime/recover", f.admin, body)).status, 200);
@@ -261,10 +274,13 @@ test("recovery fails closed when the revert receipt holds accepted effects", asy
 test("recovery refuses while the launcher account is not verifiably retired", async t => {
   const f = await fixture(t);
   const turn = await unknownTurn(f);
+  const policy = await (await f.request("/api/admin/runtime", f.admin)).json();
   f.workerManager.retiredGeneration = async () => false;
   const response = await f.request("/api/admin/runtime/recover", f.admin,
     { identity: turn.identity, expectedRevision: 2 });
   assert.equal(response.status, 503);
   assert.equal((await response.json()).code, "assistant_unavailable");
   assert.equal((await (await f.request("/api/admin/runtime", f.admin)).json()).recoveryRequired, true);
+  const recoveryLog = f.logs.find(event => event.type === "assistant.recovery");
+  assert.equal(recoveryLog.executionId, policy.recoverable.executionId);
 });

@@ -53,16 +53,17 @@ const originKey=(binding,event)=>digest([binding,event.nativeEventId]);
 /** Versioned owned references and delivery metadata; native transcripts stay in their existing stores. */
 export class ConversationState {
  #queues=new Map();
- constructor({rootDir,authorize,beforeCommit=async()=>{},maxStateBytes=8*1024**2}) {
-  if(!path(rootDir) || typeof authorize!=='function' || !Number.isSafeInteger(maxStateBytes) || maxStateBytes<1)throw invalid();
-  Object.assign(this,{rootDir,authorize,beforeCommit,maxStateBytes});
+ constructor({rootDir,authorize,authorizeRecovery,beforeCommit=async()=>{},maxStateBytes=8*1024**2}) {
+  if(!path(rootDir) || typeof authorize!=='function' || authorizeRecovery!==undefined && typeof authorizeRecovery!=='function' ||
+     !Number.isSafeInteger(maxStateBytes) || maxStateBytes<1)throw invalid();
+  Object.assign(this,{rootDir,authorize,authorizeRecovery:authorizeRecovery??authorize,beforeCommit,maxStateBytes});
  }
- async #owner(owner) {
+ async #owner(owner,authorize=this.authorize) {
   const value=ownerInput(owner);
   if(owner.generation!==undefined) {
    if(!Number.isSafeInteger(owner.generation) || owner.generation<1)throw invalid();value.generation=owner.generation;
   }
-  await this.authorize(value);return value;
+  await authorize(value);return value;
  }
  async #directory(pathname) {
   const stat=await lstat(pathname,{bigint:true});if(!privateEntry(stat,true))throw storage();return stat;
@@ -166,7 +167,7 @@ export class ConversationState {
    return this.#validate(data,userId);
   }catch(error) {if(error.code==='ENOENT')return {schema:CONVERSATION_STORAGE_SCHEMA,userId,conversations:{},catalogRevision:0,catalogOutbox:[]};throw storage();}
  }
- async #save(data,owner,{project=true}={}) {
+ async #save(data,owner,{project=true,authorize=this.authorize}={}) {
   if(project){
    const previous=await this.#load(data.userId);
    for(const value of Object.values(data.conversations))if(value.revision!==previous.conversations[value.id]?.revision)value.updatedAt=Date.now();
@@ -181,12 +182,12 @@ export class ConversationState {
    const file=await filesystem.open(temporary,'wx',0o600);
    try {await file.writeFile(bytes);await file.sync();}finally{await file.close();}
    await this.beforeCommit();
-   await this.authorize(owner);
+   await authorize(owner);
    await rename(temporary,join(folder,'conversations.json'));
    const parent=await filesystem.open(folder,constants.O_RDONLY|(constants.O_DIRECTORY??0)|(constants.O_NOFOLLOW??0));
    try {await parent.sync();}finally{await parent.close();}
   }finally{await rm(temporary,{force:true});}
-  if(project)await projectEnvelope(this.catalog,data,()=>this.#save(data,owner,{project:false}));
+  if(project)await projectEnvelope(this.catalog,data,()=>this.#save(data,owner,{project:false,authorize}));
  }
  pendingCatalogChanges(userId){return this.#serialized(userId,async()=>[...(await this.#load(userId)).catalogOutbox]);}
  async catalogDirectories(userId){return Object.values((await this.#load(userId)).conversations).map(row=>row.directory);}
@@ -206,15 +207,17 @@ export class ConversationState {
   });this.#queues.set(userId,next);
   return next.finally(()=>{if(this.#queues.get(userId)===next)this.#queues.delete(userId);});
  }
- async #owned(data,owner,id) {
+ async #owned(data,owner,id,authorize=this.authorize) {
   if(!name(id))throw invalid();
   const value=data.conversations[id];if(!value)throw fail('conversation_not_found',404);
   if(value.instanceId!==owner.instanceId || value.workspaceDir!==owner.workspaceDir)throw fail('conversation_denied',403);
-  await this.authorize({...owner,directory:value.directory});return value;
+  await authorize({...owner,directory:value.directory});return value;
  }
- async open(owner,id) {
-  owner=await this.#owner(owner);
-  return this.#serialized(owner.userId,async()=>structuredClone(await this.#owned(await this.#load(owner.userId),owner,id)));
+ async open(owner,id,{recovery=false}={}) {
+  if(typeof recovery!=='boolean')throw invalid();
+  const authorize=recovery?this.authorizeRecovery:this.authorize;
+  owner=await this.#owner(owner,authorize);
+  return this.#serialized(owner.userId,async()=>structuredClone(await this.#owned(await this.#load(owner.userId),owner,id,authorize)));
  }
  async list(owner,{includeTrashed=false}={}) {
   owner=await this.#owner(owner);
@@ -466,13 +469,15 @@ export class ConversationState {
    value.revision++;await this.#save(data,owner);return structuredClone(turn);
   });
  }
- async advanceTurn(owner,id,input) {
-  owner=await this.#owner(owner);
+ async advanceTurn(owner,id,input,{recovery=false}={}) {
+  if(typeof recovery!=='boolean')throw invalid();
+  const authorize=recovery?this.authorizeRecovery:this.authorize;
+  owner=await this.#owner(owner,authorize);
   if(!record(input) || Object.keys(input).some(key=>!['requestId','expectedRevision','state','cleanupVerified','nativeAcceptance'].includes(key)) ||
       !name(input.requestId) || !integer(input.expectedRevision) || !['submitted','accepted','settled','unknown','prepared'].includes(input.state) ||
       input.cleanupVerified!==undefined && typeof input.cleanupVerified!=='boolean')throw invalid();
   return this.#serialized(owner.userId,async()=>{
-   const data=await this.#load(owner.userId),value=await this.#owned(data,owner,id),turn=value.turns[input.requestId];
+   const data=await this.#load(owner.userId),value=await this.#owned(data,owner,id,authorize),turn=value.turns[input.requestId];
    if(!turn)throw fail('conversation_request_not_found',404);
    if(value.revision!==input.expectedRevision)throw fail('conversation_revision_conflict');
    if(input.state==='settled' && input.cleanupVerified!==true)throw fail('conversation_cleanup_unverified',503);
@@ -485,7 +490,7 @@ export class ConversationState {
     turn.nativeAcceptance=structuredClone(input.nativeAcceptance);
    }else if(input.nativeAcceptance!==undefined)throw fail('invalid_conversation_transition');
    turn.state=input.state;turn.cleanupVerified=input.state==='settled';
-   value.revision++;await this.#save(data,owner);return structuredClone(turn);
+   value.revision++;await this.#save(data,owner,{authorize});return structuredClone(turn);
   });
  }
 }
