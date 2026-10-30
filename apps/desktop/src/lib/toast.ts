@@ -29,6 +29,9 @@ interface ToastState {
   dismissIssue: (id: string) => void;
 }
 let nextId = 1;
+// getRandomValues works on plain-HTTP origins; randomUUID requires a secure context.
+const newEventId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
+  byte => byte.toString(16).padStart(2, "0")).join("");
 type Clock = { normal?: ReturnType<typeof setTimeout>; hard: ReturnType<typeof setTimeout>; remaining: number; paused: boolean };
 const clocks = new Map<number, Clock>();
 function clearClock(id: number) {
@@ -42,7 +45,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
     const state = get();
     if (options.accountId !== undefined && options.accountId !== state.accountId) return;
     const id = nextId++;
-    const eventId = options.eventId ?? crypto.randomUUID();
+    const eventId = options.eventId ?? newEventId();
     const identity = JSON.stringify([state.accountId, options.sessionId ?? null, eventId]);
     if (state.consumed.includes(identity)) return;
     const consumed = appendConsumed(state.consumed, identity);

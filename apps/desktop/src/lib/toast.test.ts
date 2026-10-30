@@ -3,7 +3,14 @@ import { toast, useToastStore } from "./toast";
 
 describe("notification lifecycle", () => {
   beforeEach(() => { vi.useFakeTimers(); sessionStorage.clear(); useToastStore.getState().reset(); vi.clearAllTimers(); });
-  afterEach(() => { useToastStore.getState().reset(); vi.useRealTimers(); });
+  afterEach(() => { useToastStore.getState().reset(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+  it("creates an event identity without randomUUID on an HTTP origin", () => {
+    const realCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: realCrypto.getRandomValues.bind(realCrypto) });
+    toast.success("Saved");
+    expect(useToastStore.getState().toasts).toHaveLength(1);
+    expect(useToastStore.getState().toasts[0].eventId).toMatch(/^[0-9a-f]{32}$/);
+  });
   it("expires success at five seconds and errors at ten", () => {
     toast.success("Saved"); toast.error("Failed");
     vi.advanceTimersByTime(4999); expect(useToastStore.getState().toasts).toHaveLength(2);
