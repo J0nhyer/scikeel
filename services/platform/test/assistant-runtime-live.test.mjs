@@ -19,7 +19,7 @@ test('a forbidden Admin selection cannot dispatch inference or manufacture nativ
 });
 
 function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed',fileRevertFailure,
- model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex'}={}) {
+ historyConflictsAfterPrompt=0,model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex'}={}) {
  const calls=[],files=new Map(),history=[],questions=[],selections=[];
  let revision=1,runtime='opencode',currentPhase,checkpointAnswered=false,disabled=false,aborted=false,warm=false,settling=0;
  let reverted=null,restorePoint;
@@ -84,6 +84,10 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
   if(path==='/session/ses_legacy/abort'){aborted=true;return Response.json(true);}
   if(path==='/session/ses_legacy/message') {
    if(method==='POST'){assert.equal(body.noReply,true);history.push({info:{id:'msg_seed',role:'user'},parts:body.parts});}
+   if(method==='GET'&&currentPhase&&historyConflictsAfterPrompt>0){
+    historyConflictsAfterPrompt--;
+    return Response.json({error:'Conversation changed',code:'conversation_revision_conflict'},{status:409});
+   }
    return Response.json(history);
   }
   if(path==='/session/ses_legacy/prompt_async') {
@@ -210,4 +214,21 @@ test('an answered question requires the actual selected answer to reach the assi
  const fixture=gateway({lostQuestionAnswer:true});
  await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1}),/question answer/i);
  assert.equal(fixture.snapshot().disabled,true);
+});
+
+test('a transient history read conflict is retried instead of failing the selected-assistant gate',async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({historyConflictsAfterPrompt:2});
+ const proof=await runSelectedAssistantAcceptance({...fixture,target,timeoutMs:5000,pollMs:1,stopGraceMs:1});
+ assert.equal(proof.status,'passed');assert.equal(proof.capabilities.legacy_handover,'passed');
+ assert.equal(fixture.snapshot().disabled,true);
+ assert(fixture.calls.filter(call=>call.path==='/session/ses_legacy/message'&&call.method==='GET').length>=3);
+});
+
+test('a persistent history read conflict still fails the selected-assistant gate after bounded retries',async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({historyConflictsAfterPrompt:20});
+ await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:5000,pollMs:1,stopGraceMs:1}),/409/);
+ assert.equal(fixture.snapshot().disabled,true);
+ assert(fixture.calls.filter(call=>call.path==='/session/ses_legacy/message'&&call.method==='GET').length>=4);
 });

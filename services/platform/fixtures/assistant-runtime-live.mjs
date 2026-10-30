@@ -23,11 +23,19 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
   ...(generation===undefined?{}:{'x-scikeel-runtime-generation':String(generation)}),
   ...(policyRevision===undefined?{}:{'x-scikeel-assistant-revision':String(policyRevision)})});
  const send=async(path,{body,headers=authHeaders(),allowMissing=false,method=body===undefined?'GET':'POST'}={})=>{
+  const pathname=path.split('?')[0],historyRead=method==='GET'&&/^\/session\/[^/]+\/message$/.test(pathname);
   let response;
-  try{response=await request(origin+path,{method,headers,...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(60000)});}
-  catch{throw Error(`Acceptance gateway request failed: ${method} ${path.split('?')[0]}`);}
+  // An active native turn can briefly conflict with its own history index; a
+  // polling reader retries the optimistic-concurrency answer, not a real error.
+  for(let attempt=0;attempt<4;attempt++){
+   try{response=await request(origin+path,{method,headers,...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(60000)});}
+   catch{throw Error(`Acceptance gateway request failed: ${method} ${pathname}`);}
+   if(!historyRead||response.status!==409||attempt===3)break;
+   await response.body?.cancel();
+   await delay(150*(attempt+1));
+  }
   if(allowMissing&&response.status===404)return null;
-  ensure(response.ok,`Acceptance gateway rejected ${method} ${path.split('?')[0]} (${response.status})`);
+  ensure(response.ok,`Acceptance gateway rejected ${method} ${pathname} (${response.status})`);
   const raw=await response.text();
   let value;try{value=raw?JSON.parse(raw):null;}catch{throw Error('Acceptance gateway returned invalid JSON');}
   return {value,response};
