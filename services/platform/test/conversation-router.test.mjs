@@ -221,3 +221,25 @@ test('the catalog may narrow a conversation read but never denies one the source
  router.catalog={conversation:async()=>({runtime:'codex',lifecycle:'trashed'})};
  await assert.rejects(router.read(owner,'local'),{code:'conversation_not_found'});
 });
+test('a handed-over conversation keeps its OpenCode archival source when the catalog names the new runtime',async t=>{
+ const rootDir=await mkdtemp(join(tmpdir(),'conversation-router-handover-'));t.after(()=>rm(rootDir,{recursive:true,force:true}));
+ const {router}=fixture();
+ router.conversations=new ConversationState({rootDir,authorize:router.authorize});
+ const seeded=await router.index(owner,'old-opencode');
+ assert.equal(seeded.historicalSource.runtime,'opencode');
+ const cliRow={...row('ses_cli_codex'),runtime:'codex',nativeSessionId:'native-codex',identityRevision:'profile-codex',
+  publicConversationId:seeded.id,lifecycle:'active'};
+ router.cliRuntime.readHistoricalSessions=async()=>[cliRow];
+ router.cliRuntime.readHistoricalMessages=async({sessionId})=>({session:row(sessionId),messages:[
+  {info:{id:'message-codex',role:'assistant',time:{completed:1}},parts:[{type:'text',text:'Codex continuation'}]}],nextCursor:null});
+ const bound=await router.conversations.bind(owner,seeded.id,{expectedRevision:seeded.revision,
+  binding:{runtime:'codex',nativeSessionId:'native-codex',identityRevision:'profile-codex',representedSequence:seeded.sequence}});
+ assert.equal(bound.currentBindingId,bound.bindings[0].id);
+ router.catalog={conversation:async()=>({runtime:'codex',lifecycle:'active'})};
+ const history=await router.messages(owner,seeded.id,{synchronize:true});
+ assert.equal(history.length,2);
+ assert.equal(history[0].info.id,'message-oc');
+ assert.equal(history[1].info.role,'assistant');
+ assert.equal(history[1].parts[0].text,'Codex continuation');
+ assert.notEqual(history[1].info.id,'message-oc');
+});

@@ -26,11 +26,18 @@ export class ConversationRouter {
  }
  async #snapshot(owner,{includeTrashed=false,nativeOnly=false}={}) {
   await this.authorize(owner);
+  const readNative=()=>this.listOpenCode?this.listOpenCode(owner):this.readOpenCode(owner,'/experimental/session?limit=10000');
   const [canonical,cli,native]=await Promise.all([
    this.conversations.list(owner,{includeTrashed}),this.cliRuntime.readHistoricalSessions(owner),
-   nativeOnly?[]:this.listOpenCode?this.listOpenCode(owner):this.readOpenCode(owner,'/experimental/session?limit=10000'),
+   nativeOnly?[]:readNative(),
   ]);
-  if(!Array.isArray(cli)||!Array.isArray(native)||!Array.isArray(canonical)||cli.length+native.length+canonical.length>30000)
+  // The catalog names the current runtime, but a handed-over conversation keeps
+  // archival origins in the OpenCode inventory. A purely native account keeps
+  // the narrowed read; any OpenCode origin requires the full inventory.
+  const nativeRows=nativeOnly&&Array.isArray(canonical)&&canonical.some(value=>
+   value?.historicalSource?.runtime==='opencode'||Array.isArray(value?.bindings)&&value.bindings.some(binding=>binding?.runtime==='opencode'))
+   ?await readNative():native;
+  if(!Array.isArray(cli)||!Array.isArray(nativeRows)||!Array.isArray(canonical)||cli.length+nativeRows.length+canonical.length>30000)
    throw fail('conversation_history_invalid');
   const sources=new Map(),hidden=new Set();
   for(const row of cli) {
@@ -41,7 +48,7 @@ export class ConversationRouter {
    if(sources.has(row.id))throw fail('conversation_origin_conflict');
    sources.set(row.id,{row,runtime:row.runtime,sourceId:row.id});
   }
-  for(const row of native) {
+  for(const row of nativeRows) {
    try {await this.#row(owner,row,{includeTrashed});}catch(error){if(error.code==='project_trashed')continue;throw error;}
    if(sources.has(row.id))throw fail('conversation_origin_conflict');
    sources.set(row.id,{row,runtime:'opencode',sourceId:row.id});
