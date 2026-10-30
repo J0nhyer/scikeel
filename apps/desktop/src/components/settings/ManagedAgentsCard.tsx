@@ -23,6 +23,9 @@ const RECOVERY_DIALOG_TONE = "default" as const;
 const runtime = (value: unknown): value is GatewayRuntimeId => AGENTS.some(agent => agent.id === value);
 const positive = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 const storageKey = (account: string) => `scikeel.assistant-selection.v1:${account}`;
+// getRandomValues works on plain-HTTP origins; randomUUID requires a secure context.
+const newOperationId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
+  byte => byte.toString(16).padStart(2, "0")).join("");
 
 function storedSelection(account: string): Selection | null {
   try {
@@ -224,7 +227,7 @@ export function ManagedAgentsCard() {
 
   const save = (id: GatewayRuntimeId, returnFocus?: HTMLElement) => {
     if (!account || !policy || loading || resolvingRef.current || pendingRef.current || policy.recoveryRequired || id === policy.activeRuntime) return;
-    const selection = { runtime: id, expectedRevision: policy.revision, operationId: crypto.randomUUID() };
+    const selection = { runtime: id, expectedRevision: policy.revision, operationId: newOperationId() };
     try { sessionStorage.setItem(storageKey(account), JSON.stringify(selection)); }
     catch { setMessage("managedAgents.failed"); return; }
     pendingRef.current = selection; setPending(selection);

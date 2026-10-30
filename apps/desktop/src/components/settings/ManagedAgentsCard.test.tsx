@@ -92,6 +92,26 @@ describe("ManagedAgentsCard deployment selection", () => {
     expect(methods).toEqual(["GET", "POST", "receipt", "receipt", "POST", "receipt"]);
   });
 
+  it("selects an assistant on an insecure HTTP origin without crypto.randomUUID", async () => {
+    const realCrypto = globalThis.crypto;
+    // Safari on a plain-HTTP origin exposes getRandomValues but not randomUUID.
+    vi.stubGlobal("crypto", { getRandomValues: realCrypto.getRandomValues.bind(realCrypto) });
+    let operationId = "";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        operationId = JSON.parse(String(init.body)).operationId;
+        return response({ activeRuntime: "codex", revision: 2, operationId });
+      }
+      return response(String(input).includes("operationId=") ? committed(operationId) : snapshot);
+    });
+    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
+    await userEvent.click(codex);
+    await waitFor(() => expect(codex).toBeChecked());
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true);
+    expect(operationId).toMatch(/^[0-9a-f]{32}$/);
+  });
+
   it("recovers the stored operation after refresh using GET only", async () => {
     sessionStorage.setItem(storageKey, JSON.stringify(selection));
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => response(committed(selection.operationId))); vi.stubGlobal("fetch", fetchMock);
