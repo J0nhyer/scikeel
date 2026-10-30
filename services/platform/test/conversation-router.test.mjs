@@ -19,6 +19,7 @@ function fixture(options={}) {
    if(path==='/session/old-opencode')return row('old-opencode');
    if(path==='/session/old-opencode/message')return[{info:{id:'message-oc',sessionID:'old-opencode',role:'assistant'},parts:[]}];
    throw Object.assign(Error('not found'),{statusCode:404});},
+  ...(options.listOpenCode?{listOpenCode:options.listOpenCode}:{}),
  });return {router,calls};
 }
 test('reads merged owned history independently of selected assistant without a model or native process',async()=>{
@@ -223,7 +224,8 @@ test('the catalog may narrow a conversation read but never denies one the source
 });
 test('a handed-over conversation keeps its OpenCode archival source when the catalog names the new runtime',async t=>{
  const rootDir=await mkdtemp(join(tmpdir(),'conversation-router-handover-'));t.after(()=>rm(rootDir,{recursive:true,force:true}));
- const {router}=fixture();
+ let inventoryReads=0;
+ const {router}=fixture({listOpenCode:async()=>{inventoryReads++;return[row('old-opencode')];}});
  router.conversations=new ConversationState({rootDir,authorize:router.authorize});
  const seeded=await router.index(owner,'old-opencode');
  assert.equal(seeded.historicalSource.runtime,'opencode');
@@ -235,11 +237,25 @@ test('a handed-over conversation keeps its OpenCode archival source when the cat
  const bound=await router.conversations.bind(owner,seeded.id,{expectedRevision:seeded.revision,
   binding:{runtime:'codex',nativeSessionId:'native-codex',identityRevision:'profile-codex',representedSequence:seeded.sequence}});
  assert.equal(bound.currentBindingId,bound.bindings[0].id);
+ inventoryReads=0;
  router.catalog={conversation:async()=>({runtime:'codex',lifecycle:'active'})};
  const history=await router.messages(owner,seeded.id,{synchronize:true});
+ assert.equal(inventoryReads>0,true);
  assert.equal(history.length,2);
  assert.equal(history[0].info.id,'message-oc');
  assert.equal(history[1].info.role,'assistant');
  assert.equal(history[1].parts[0].text,'Codex continuation');
  assert.notEqual(history[1].info.id,'message-oc');
+});
+test('a native-only conversation does not depend on another conversation\'s OpenCode archive',async()=>{
+ const native={id:'native-only',title:'Native',directory:owner.directory,parentId:null,lifecycle:'active',
+  currentBindingId:'binding-native',bindings:[{id:'binding-native',runtime:'codex',nativeSessionId:'native-codex'}]};
+ const handed={id:'handed',title:'Handed',directory:owner.directory,parentId:null,lifecycle:'active',
+  currentBindingId:null,bindings:[],historicalSource:{runtime:'opencode',sessionId:'old-opencode'}};
+ let inventoryReads=0;
+ const {router}=fixture({conversations:{list:async()=>[native,handed]},listOpenCode:async()=>{
+  inventoryReads++;throw Object.assign(Error('inventory unavailable'),{code:'session_inventory_unavailable',statusCode:503});}});
+ router.catalog={conversation:async()=>({runtime:'codex',lifecycle:'active'})};
+ assert.equal((await router.read(owner,'native-only')).id,'native-only');
+ assert.equal(inventoryReads,0);
 });

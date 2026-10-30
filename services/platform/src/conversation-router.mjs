@@ -24,18 +24,19 @@ export class ConversationRouter {
   catch(error){if(!includeTrashed||error.code!=='project_trashed')throw error;row.lifecycle='trashed';}
   return row;
  }
- async #snapshot(owner,{includeTrashed=false,nativeOnly=false}={}) {
+ async #snapshot(owner,{includeTrashed=false,nativeOnly=false,conversationId=null}={}) {
   await this.authorize(owner);
   const readNative=()=>this.listOpenCode?this.listOpenCode(owner):this.readOpenCode(owner,'/experimental/session?limit=10000');
   const [canonical,cli,native]=await Promise.all([
    this.conversations.list(owner,{includeTrashed}),this.cliRuntime.readHistoricalSessions(owner),
    nativeOnly?[]:readNative(),
   ]);
-  // The catalog names the current runtime, but a handed-over conversation keeps
-  // archival origins in the OpenCode inventory. A purely native account keeps
-  // the narrowed read; any OpenCode origin requires the full inventory.
-  const nativeRows=nativeOnly&&Array.isArray(canonical)&&canonical.some(value=>
-   value?.historicalSource?.runtime==='opencode'||Array.isArray(value?.bindings)&&value.bindings.some(binding=>binding?.runtime==='opencode'))
+  // The catalog names the current runtime, but the requested handed-over
+  // conversation keeps archival origins in the OpenCode inventory. Other
+  // conversations in the account keep the narrowed read.
+  const nativeRows=nativeOnly&&Array.isArray(canonical)&&(conversationId===null||canonical.some(value=>
+   value?.id===conversationId&&(value.historicalSource?.runtime==='opencode'||
+    Array.isArray(value.bindings)&&value.bindings.some(binding=>binding?.runtime==='opencode'))))
    ?await readNative():native;
   if(!Array.isArray(cli)||!Array.isArray(nativeRows)||!Array.isArray(canonical)||cli.length+nativeRows.length+canonical.length>30000)
    throw fail('conversation_history_invalid');
@@ -117,7 +118,7 @@ export class ConversationRouter {
   // may narrow the read but never deny it.
   const indexed=this.catalog?await this.catalog.conversation(owner.userId,conversationId).catch(()=>null):null;
   if(indexed?.lifecycle==='trashed')throw fail('conversation_not_found',404);
-  const {rows,rawSources}=await this.#snapshot(owner,{nativeOnly:indexed!==null&&indexed.runtime!=='opencode'}),source=rows.get(conversationId);
+  const {rows,rawSources}=await this.#snapshot(owner,{nativeOnly:indexed!==null&&indexed.runtime!=='opencode',conversationId}),source=rows.get(conversationId);
   if(!source)throw fail('conversation_not_found',404);
   return {...source,rawSources};
  }
