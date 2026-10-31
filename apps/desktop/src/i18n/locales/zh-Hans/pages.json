@@ -157,6 +157,7 @@
   },
   "analytics": {
     "title": "智能体分析",
+    "description": "了解研究任务的执行情况，以及智能体在哪些环节需要帮助。",
     "overview": "概览",
     "runs": "任务执行",
     "capabilities": "工具与模型",

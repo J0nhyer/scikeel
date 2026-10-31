@@ -38,7 +38,7 @@ test.skipIf(!process.env.OSD_AGENT_ANALYTICS_ACCEPTANCE)('protected analytics us
         await loginPage.locator('#username').fill('fixture');
         await loginPage.locator('#password').fill('fixture-password');
         await loginPage.locator('button[type="submit"]').click();
-        await loginPage.getByRole('tab', { name: 'Task runs', exact: true }).waitFor();
+        await loginPage.getByRole('button', { name: 'Task runs', exact: true }).waitFor();
         expect(new URL(loginPage.url()).pathname).toBe('/admin/agent-analytics');
         expect(new URL(loginPage.url()).searchParams.get('view')).toBe('runs');
         expect(starts).toBe(0);
@@ -62,19 +62,19 @@ test.skipIf(!process.env.OSD_AGENT_ANALYTICS_ACCEPTANCE)('protected analytics us
                 page.on('request', req => requests.push(new URL(req.url()).pathname));
                 page.on('pageerror', e => errors.push(e.message));
                 await page.goto(`${origin}/admin/agent-analytics`);
-                await page.getByRole('tab', { name: 'Overview', exact: true }).waitFor();
+                await page.getByRole('button', { name: 'Overview', exact: true }).waitFor();
                 await page.getByText('Execution completion', { exact: true }).waitFor();
                 await page.screenshot({ path: join(screenshots, `${theme}-${width}-overview.png`) });
                 expect(await page.locator('body').evaluate(element => getComputedStyle(element).fontFamily)).toMatch(/Inter/i);
                 expect(await page.locator('html').getAttribute('data-theme')).toBe(theme);
                 for (const view of ['Task runs', 'Tools & models', 'Human interventions']) {
-                    await page.getByRole('tab', { name: view, exact: true }).click();
+                    await page.getByRole('button', { name: view, exact: true }).click();
                     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
                 }
-                await page.getByRole('tab', { name: 'Tools & models', exact: true }).click();
+                await page.getByRole('button', { name: 'Tools & models', exact: true }).click();
                 for (const tab of ['Tools', 'Skills', 'Models', 'Subagents'])
                     await page.getByRole('tab', { name: tab, exact: true }).click();
-                await page.getByRole('tab', { name: 'Task runs', exact: true }).click();
+                await page.getByRole('button', { name: 'Task runs', exact: true }).click();
                 await page.getByRole('button', { name: /Research execution/ }).click();
                 await page.getByRole('dialog').waitFor();
                 await page.screenshot({ path: join(screenshots, `${theme}-${width}.png`) });
@@ -95,10 +95,10 @@ test.skipIf(!process.env.OSD_AGENT_ANALYTICS_ACCEPTANCE)('protected analytics us
         await chinesePage.getByRole('heading', { name: '智能体分析', exact: true }).waitFor();
         await chinesePage.getByText('执行完成率', { exact: true }).waitFor();
         for (const name of ['概览', '任务执行', '工具与模型', '人工介入']) {
-            await chinesePage.getByRole('tab', { name, exact: true }).click();
+            await chinesePage.getByRole('button', { name, exact: true }).click();
             expect(await chinesePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         }
-        await chinesePage.getByRole('tab', { name: '任务执行', exact: true }).click();
+        await chinesePage.getByRole('button', { name: '任务执行', exact: true }).click();
         await chinesePage.getByRole('button', { name: /研究任务/ }).click();
         await chinesePage.getByRole('dialog').waitFor();
         await chinesePage.getByText('交付检查', { exact: true }).waitFor();
@@ -109,10 +109,10 @@ test.skipIf(!process.env.OSD_AGENT_ANALYTICS_ACCEPTANCE)('protected analytics us
         await context.addCookies([{ name: 'osd_session', value: session.token, url: origin }]);
         const page = await context.newPage();
         await page.goto(`${origin}/admin/agent-analytics`);
-        await page.getByRole('tab', { name: 'Overview', exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Overview', exact: true }).waitFor();
         await authStore.revokeSession(session.token);
         await page.reload();
-        expect(await page.getByRole('tab', { name: 'Overview', exact: true }).count()).toBe(0);
+        expect(await page.getByRole('button', { name: 'Overview', exact: true }).count()).toBe(0);
         await context.close();
         const revoked = await fetch(`${origin}/api/admin/agent-analytics/runs`, { headers: { cookie: `osd_session=${session.token}` } });
         expect(revoked.status).toBe(401);

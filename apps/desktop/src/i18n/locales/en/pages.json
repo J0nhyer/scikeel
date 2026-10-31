@@ -1,6 +1,7 @@
 {
   "analytics": {
     "title": "Agent analytics",
+    "description": "Understand how research runs, and where agents need help.",
     "overview": "Overview",
     "runs": "Task runs",
     "capabilities": "Tools & models",
