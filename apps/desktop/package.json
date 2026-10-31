@@ -11,7 +11,6 @@
     "test": "node ../../scripts/dev/safe-desktop-task.mjs test",
     "test:watch": "vitest",
     "lint": "node ../../scripts/dev/safe-desktop-task.mjs lint",
-    "tauri": "tauri",
     "web:build": "node ../../scripts/dev/safe-desktop-task.mjs web-build"
   },
   "dependencies": {
@@ -69,7 +68,6 @@
     "zustand": "^5.0.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.1.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.0.1",
     "@testing-library/user-event": "^14.5.2",
