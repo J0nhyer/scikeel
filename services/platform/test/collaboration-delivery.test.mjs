@@ -141,6 +141,20 @@ for (const [name, issue, setup] of [
   });
 }
 
+test("an invalid report decision reports a field-level error before a successful repair", async (t) => {
+  const f = await fixture(t); await f.prepare(); await f.outputs();
+  await f.report({ decisions: ["Approved. Use the arithmetic mean."] });
+  const failed = await f.verify();
+  assert.equal(failed.delivery.status, "failed");
+  assert.equal(failed.delivery.issue, "missing_progress");
+  assert.match(failed.delivery.reportError, /decisions\[0\].*object.*id.*question/i);
+  await f.report();
+  const completed = await f.verify();
+  assert.equal(completed.delivery.status, "completed");
+  assert.equal(completed.delivery.attempts, 2);
+  assert.equal(completed.delivery.reportError, undefined);
+});
+
 test("a failed delivery can be repaired with actual outputs", async (t) => {
   const f = await fixture(t); await f.prepare(); await f.report();
   assert.equal((await f.verify()).delivery.status, "failed");

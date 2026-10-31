@@ -6,6 +6,7 @@ const MODES = new Set(["guided", "collaborative", "delegated"]);
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/;
 const LEASE_MS = 45_000;
 const error = (message, status = 400) => Object.assign(new Error(message), { status });
+const invalidReport = (message) => Object.assign(error(message), { reportInvalid: true });
 const publicTask=task=>task?structuredClone(Object.fromEntries(Object.entries(task).filter(([key])=>!key.startsWith('analytics')))):task;
 const inside = (root, file) => {
   const rel = relative(root, file);
@@ -198,28 +199,51 @@ export class ResearchTasks {
   pending(task) {
     return (task.report?.decisions ?? []).filter((d) => !task.decisions.some((confirmed) => confirmed.id === d.id && confirmed.question === d.question));
   }
-  async readProgress(task) {
+  async inspectProgress(task) {
+    try { return { report: await this.parseProgress(task), error: null }; }
+    catch (cause) { return { report: null, error: cause?.reportInvalid ? cause.message : "Research report could not be validated" }; }
+  }
+  async readProgress(task) { return (await this.inspectProgress(task)).report; }
+  async parseProgress(task) {
+    let raw=null;
+    try {
+      if(this.workspace)raw=await this.workspace.readReport(task,task.reportPath);
+      else {const file=await safeFile(task.directory,task.reportPath);if(file && (await fs.stat(file)).size<=128*1024)raw=await fs.readFile(file,"utf8");}
+    } catch { throw invalidReport("Research report could not be read"); }
+    if(raw===null)return null;
     let report;
-    try {
-      let text;
-      if(this.workspace)text=await this.workspace.readReport(task,task.reportPath);
-      else {const file=await safeFile(task.directory,task.reportPath);if(!file || (await fs.stat(file)).size>128*1024)return null;
-        text=await fs.readFile(file,"utf8");}
-      if(text===null)return null;report=JSON.parse(text);
-    } catch {return null;}
-    if (report.version !== 1 || report.execution !== task.execution || !["running", "waiting_input", "completed", "failed"].includes(report.status)) return null;
-    try {
-      const decisions = (report.decisions ?? []).slice(0, 20).map((d) => ({ id: id(d.id), question: text(d.question) }));
-      if (new Set(decisions.map((d) => d.id)).size !== decisions.length) return null;
-      const steps = (report.steps ?? []).slice(0, 30).map((step) => ({ title: text(step.title, 500), status: ["pending", "running", "completed", "failed"].includes(step.status) ? step.status : "pending" }));
-      const artifacts = await Promise.all(paths(report.artifacts ?? []).map((p) => this.artifact(task, p)));
-      const checks = await Promise.all((report.checks ?? []).slice(0, 30).map(async (check) => ({
-        title: text(check.title, 500), status: ["passed", "failed", "pending"].includes(check.status) ? check.status : "pending",
-        evidence: check.evidence ? filePath(check.evidence) : null,
-        evidenceExists: Boolean(check.evidence && await this.evidence(task, check.evidence)),
-      })));
-      return { steps, decisions, artifacts, checks, status: report.status, limitations: typeof report.limitations === "string" ? report.limitations.slice(0, 4000) : "" };
-    } catch { return null; }
+    try { report=JSON.parse(raw); } catch { throw invalidReport("Research report is not valid JSON"); }
+    if (!report || typeof report !== "object" || Array.isArray(report)) throw invalidReport("Research report must be a JSON object");
+    if (report.version !== 1 || report.execution !== task.execution || !["running", "waiting_input", "completed", "failed"].includes(report.status))
+      throw invalidReport("Research report version, execution, or status is invalid");
+    if (!Array.isArray(report.decisions ?? []) || !Array.isArray(report.steps ?? []) || !Array.isArray(report.checks ?? []))
+      throw invalidReport("Research report decisions, steps, and checks must be arrays");
+    const decisions = (report.decisions ?? []).slice(0, 20).map((d, index) => {
+      try { return { id: id(d.id), question: text(d.question) }; }
+      catch { throw invalidReport(`Research report decisions[${index}] must be an object with id and question`); }
+    });
+    if (new Set(decisions.map((d) => d.id)).size !== decisions.length)
+      throw invalidReport("Research report decisions contain duplicate ids");
+    const steps = (report.steps ?? []).slice(0, 30).map((step, index) => {
+      try { return { title: text(step.title, 500), status: ["pending", "running", "completed", "failed"].includes(step.status) ? step.status : "pending" }; }
+      catch { throw invalidReport(`Research report steps[${index}] is invalid`); }
+    });
+    let artifactPaths;
+    try { artifactPaths = paths(report.artifacts ?? []); }
+    catch { throw invalidReport("Research report artifacts must be workspace-relative paths"); }
+    let artifacts;
+    try { artifacts = await Promise.all(artifactPaths.map((p) => this.artifact(task, p))); }
+    catch { throw invalidReport("Research report artifacts could not be read"); }
+    const checks = await Promise.all((report.checks ?? []).slice(0, 30).map(async (check, index) => {
+      try {
+        return {
+          title: text(check.title, 500), status: ["passed", "failed", "pending"].includes(check.status) ? check.status : "pending",
+          evidence: check.evidence ? filePath(check.evidence) : null,
+          evidenceExists: Boolean(check.evidence && await this.evidence(task, check.evidence)),
+        };
+      } catch { throw invalidReport(`Research report checks[${index}] is invalid`); }
+    }));
+    return { steps, decisions, artifacts, checks, status: report.status, limitations: typeof report.limitations === "string" ? report.limitations.slice(0, 4000) : "" };
   }
   async refreshUnlocked(task) {
     if (!task) return null;
