@@ -18,13 +18,12 @@ it("keeps login waiting until connection, conversations and model choice are rea
   current = { ...current, gatewayCatalogState: "ready", defaultModel: "provider/model" }; listener(current);
   expect(ready).toHaveBeenCalledOnce(); expect(unsubscribe).toHaveBeenCalledOnce(); stop();
 });
-it("signals capacity waiting without completing login or exposing a failure",()=>{
+it("keeps a normal wait invisible without a failure",()=>{
   const waiting=vi.fn();const failed=vi.fn();
   document.addEventListener("scikeel:login-waiting",waiting);document.addEventListener("scikeel:login-error",failed);
   const stop=installLoginPreparation(source);
-  current={...current,gatewayWorkspaceReport:{context:null,state:"capacity",activity:"unknown",canRestart:false,retryAfterMs:5000}};
   listener(current);listener(current);
-  expect(waiting).toHaveBeenCalledOnce();expect(failed).not.toHaveBeenCalled();expect(unsubscribe).not.toHaveBeenCalled();
+  expect(waiting).not.toHaveBeenCalled();expect(failed).not.toHaveBeenCalled();expect(unsubscribe).not.toHaveBeenCalled();
   stop();document.removeEventListener("scikeel:login-waiting",waiting);document.removeEventListener("scikeel:login-error",failed);
 });
 
@@ -96,13 +95,13 @@ it("coalesces return-to-login submissions and keeps preparation visible", async 
   document.removeEventListener("scikeel:login-ready", ready);
 });
 
-it("keeps structured workspace failure on the login recovery screen", () => {
+it("keeps a failed preparation on the login screen", () => {
   const recovery = vi.fn(); const ready = vi.fn(); const failure = vi.fn();
   document.addEventListener("scikeel:login-error", failure);
   document.addEventListener("scikeel:login-recovery", recovery);
   document.addEventListener("scikeel:login-ready", ready);
   const stop = installLoginPreparation(source);
-  current = { ...current, status: "error", gatewayWorkspaceReport: { context: { instanceId: "user-a", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 } };
+  current = { ...current, status: "error" };
   listener(current); listener(current);
   expect(recovery).not.toHaveBeenCalled(); expect(ready).not.toHaveBeenCalled();
   expect(failure).toHaveBeenCalledOnce();
@@ -115,12 +114,12 @@ it("keeps later failure reports in preparation and ignores reports during return
   const recovery = vi.fn(); document.addEventListener("scikeel:login-recovery", recovery);
   const stop = installLoginPreparation(source);
   current = { ...current, status: "error" }; listener(current);
-  current = { ...current, gatewayWorkspaceReport: { context: null, state: "unknown", activity: "unknown", canRestart: false, retryAfterMs: 0 } }; listener(current);
+  listener(current);
   expect(recovery).not.toHaveBeenCalled(); stop(); recovery.mockClear();
   current = initial(); const secondStop = installLoginPreparation(source, vi.fn(async () => {}));
   current = { ...current, status: "error" }; listener(current);
   document.dispatchEvent(new Event("scikeel:return-to-login"));
-  current = { ...current, status: "error", gatewayWorkspaceReport: { context: null, state: "unknown", activity: "unknown", canRestart: false, retryAfterMs: 0 } }; listener(current);
+  current = { ...current, status: "error" }; listener(current);
   expect(recovery).not.toHaveBeenCalled(); await Promise.resolve();
   secondStop(); document.removeEventListener("scikeel:login-recovery", recovery);
 });

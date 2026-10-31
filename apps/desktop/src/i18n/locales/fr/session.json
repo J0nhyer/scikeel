@@ -150,6 +150,10 @@
       "aria": "Arrêter",
       "title": "Interrompre ce tour (Échap)"
     },
+    "sending": {
+      "aria": "Envoi en cours",
+      "title": "Envoi du message…"
+    },
     "send": {
       "aria": "Envoyer"
     },
@@ -284,6 +288,10 @@
     }
   },
   "live": {
+    "boot": {
+      "busy": "Les ressources du service sont occupées. Veuillez réessayer dans un instant.",
+      "retry": "Réessayer"
+    },
     "recovery": {
       "title": "Connexion de l’espace de travail", "retry": "Réessayer la connexion", "restart": "Redémarrer l’espace de travail", "confirmRestart": "Confirmer le redémarrage", "cancel": "Annuler",
       "sharedImpact": "Cela affecte tous les appareils utilisant cet espace de travail.",

@@ -1,4 +1,5 @@
 import { loginAppearanceBootstrap, LOGIN_STYLES } from "./login-appearance.mjs";
+import { loadingSurface, LOADING_SURFACE_STYLES } from "./loading-surface.mjs";
 
 const copy = {
   "zh-Hans": {
@@ -42,7 +43,7 @@ ${invalidCredentials ? `<p class="error" id="login-error" role="alert" tabindex=
 <form method="post" action="/auth/login"><input type="hidden" name="next" value="${escapeHtml(next)}"><input type="hidden" name="lang" value="${locale}">
 <div class="field"><label for="username">${label("username")}</label><input id="username" name="username" value="${escapeHtml(username)}" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="${text.usernamePlaceholder}" data-placeholder="usernamePlaceholder" required${invalidCredentials ? ' aria-invalid="true" aria-describedby="login-error"' : ""}></div>
 <div class="field"><label for="password">${label("password")}</label><div class="password-wrap"><input id="password" name="password" type="password" autocomplete="current-password" placeholder="${text.passwordPlaceholder}" data-placeholder="passwordPlaceholder" required${invalidCredentials ? ' aria-invalid="true" aria-describedby="login-error"' : ""}><button class="password-toggle" type="button" aria-label="${text.showPassword}" aria-controls="password" aria-pressed="false" hidden>${eye}</button></div><p class="caps-lock" role="status" hidden>${label("capsLock")}</p></div>
-<button class="submit" type="submit">${label("submit")}<svg class="submit-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M12 3a9 9 0 0 1 9 9" stroke-linecap="round"/></svg></button></form></section></main>
+<button class="submit" type="submit">${label("submit")}</button></form></section></main>
 <script>
 (() => {
   const translations = ${JSON.stringify(copy)};
@@ -93,7 +94,6 @@ ${invalidCredentials ? `<p class="error" id="login-error" role="alert" tabindex=
     submit.disabled = true;
     submit.setAttribute('aria-busy', 'true');
     form.setAttribute('aria-busy', 'true');
-    submit.querySelector('[data-copy]').textContent = translations[locale].submitting;
   });
   window.addEventListener('pageshow', resetSubmission);
   if (${Boolean(invalidCredentials)}) document.getElementById('login-error').focus();
@@ -125,17 +125,12 @@ export function loginAssetPreloads(manifest) {
     : `<link rel="preload" as="style" href="${escapeHtml(path)}" crossorigin>`).join("");
 }
 
-/** Continue showing the same login design while the real app boots underneath.
+/** Continue showing one neutral loading surface while the real app boots.
  * A fresh login leaves a locale/timestamp marker, never credentials or tokens.
- * Shadow DOM keeps login styling separate from the application stylesheet. */
+ * Shadow DOM keeps its styles separate from the application stylesheet. */
 export function withLoginPreparation(html) {
-  const templates = Object.fromEntries(Object.keys(copy).map(locale => {
-    const page = loginPage({ locale });
-    const css = LOGIN_STYLES;
-    const body = page.match(/<body>([\s\S]*?)<script>/)[1];
-    return [locale, `<style>${css}:host{display:block;min-height:100vh;background:var(--login-bg);color:var(--login-text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.return-to-login{display:block;width:100%;min-height:44px;margin-top:12px;border:0;border-radius:6px;background:transparent;color:var(--login-text);font-size:14px}.return-to-login:hover{background:var(--login-border)}.return-to-login-error{margin-top:12px}</style>${body}`];
-  }));
-  const payload = JSON.stringify(templates).replaceAll("<", "\\u003c");
+  const surface = JSON.stringify(loadingSurface()).replaceAll("<", "\\u003c");
+  const styles = JSON.stringify(LOADING_SURFACE_STYLES).replaceAll("<", "\\u003c");
   const head = `<script>${loginAppearanceBootstrap({ followSystem: false })}</script><style id="scikeel-login-visibility">html[data-scikeel-login-preparing] #root{visibility:hidden}</style><script>
 try {
   const pending = JSON.parse(sessionStorage.getItem('scikeel.login.pending') || 'null');
@@ -148,56 +143,17 @@ try {
 (() => {
   const locale = document.documentElement.getAttribute('data-scikeel-login-preparing');
   if (!locale) return;
-  const templates = ${payload};
+  const surface = ${surface};
+  const styles = ${styles};
   const host = document.createElement('div');
   host.id = 'scikeel-login-preparation';
-  host.dataset.theme = 'light';
+  host.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
   host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;overflow:auto';
   const shadow = host.attachShadow({ mode: 'open' });
-  shadow.innerHTML = templates[locale];
+  shadow.innerHTML = '<style>' + styles + '</style>' + surface;
   document.body.append(host);
   const root = document.getElementById('root');
   if (root) root.inert = true;
-  const form = shadow.querySelector('form');
-  shadow.querySelectorAll('input, .password-toggle').forEach(input => { input.disabled = true; if (input.tagName === 'INPUT') input.value = ''; });
-  const submit = shadow.querySelector('.submit');
-  submit.disabled = true;
-  submit.setAttribute('aria-busy', 'true');
-  form.setAttribute('aria-busy', 'true');
-  submit.querySelector('[data-copy]').textContent = locale === 'en' ? 'Signing in…' : '正在登录…';
-  let failed = false;
-  document.addEventListener('scikeel:login-waiting', event => {
-    if (failed) return;
-    submit.querySelector('[data-copy]').textContent = event.detail?.waiting
-      ? (locale === 'en' ? 'Waiting for workspace…' : '正在等待工作区…')
-      : (locale === 'en' ? 'Signing in…' : '正在登录…');
-  });
-  const back = document.createElement('button');
-  back.type = 'button'; back.className = 'return-to-login'; back.hidden = true;
-  back.textContent = locale === 'en' ? 'Back to sign in' : '返回登录';
-  form.after(back);
-  const backError = document.createElement('p');
-  backError.className = 'error return-to-login-error'; backError.hidden = true;
-  backError.setAttribute('role', 'alert'); back.after(backError);
-  back.addEventListener('click', () => {
-    back.disabled = true; back.setAttribute('aria-busy', 'true');
-    backError.hidden = true;
-    submit.disabled = true;
-    document.dispatchEvent(new Event('scikeel:return-to-login'));
-  });
-  document.addEventListener('scikeel:return-to-login-failed', () => {
-    back.disabled = false; back.removeAttribute('aria-busy');
-    submit.disabled = false;
-    backError.textContent = locale === 'en' ? 'Could not return to sign in. Please retry.' : '暂时无法返回登录，请重试。';
-    backError.hidden = false;
-  });
-  form.addEventListener('submit', event => {
-    event.preventDefault();
-    if (failed) {
-      try { sessionStorage.setItem('scikeel.login.pending', JSON.stringify({ locale, startedAt: Date.now() })); } catch {}
-      location.reload();
-    }
-  });
   const handoff = () => {
     host.remove();
     if (root) root.inert = false;
@@ -206,16 +162,16 @@ try {
   };
   document.addEventListener('scikeel:login-ready', handoff, { once: true });
   document.addEventListener('scikeel:login-error', () => {
-    failed = true;
-    back.hidden = false;
-    submit.disabled = false;
-    submit.removeAttribute('aria-busy');
-    form.removeAttribute('aria-busy');
-    submit.querySelector('[data-copy]').textContent = locale === 'en' ? 'Retry' : '重试';
-    const error = document.createElement('p');
-    error.className = 'error'; error.setAttribute('role', 'alert');
-    error.textContent = locale === 'en' ? 'Your workspace could not be prepared. Please retry.' : '工作区暂时无法准备完成，请重试。';
-    form.before(error);
+    shadow.innerHTML = '<style>' + styles + '</style><div class="scikeel-loading"><div class="scikeel-loading-error" role="alert"><p>' +
+      (locale === 'en' ? 'Service resources are busy. Please try again shortly.' : '当前服务资源紧张，请稍后重试。') +
+      '</p><button class="scikeel-loading-retry" type="button">' +
+      (locale === 'en' ? 'Retry' : '重试') + '</button></div></div>';
+    const retry = shadow.querySelector('.scikeel-loading-retry');
+    retry.addEventListener('click', () => {
+      retry.disabled = true;
+      try { sessionStorage.setItem('scikeel.login.pending', JSON.stringify({ locale, startedAt: Date.now() })); } catch {}
+      location.reload();
+    });
   }, { once: true });
 })();
 </script>`;

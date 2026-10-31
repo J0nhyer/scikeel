@@ -150,6 +150,10 @@
       "aria": "중지",
       "title": "이 턴 중단 (Esc)"
     },
+    "sending": {
+      "aria": "보내는 중",
+      "title": "메시지를 보내는 중…"
+    },
     "send": {
       "aria": "전송"
     },
@@ -284,6 +288,10 @@
     }
   },
   "live": {
+    "boot": {
+      "busy": "서비스 리소스가 혼잡합니다. 잠시 후 다시 시도하세요.",
+      "retry": "다시 시도"
+    },
     "recovery": {
       "title": "작업 공간 연결", "retry": "연결 재시도", "restart": "작업 공간 다시 시작", "confirmRestart": "다시 시작 확인", "cancel": "취소",
       "sharedImpact": "이 작업 공간을 사용하는 모든 기기에 영향을 줍니다.",

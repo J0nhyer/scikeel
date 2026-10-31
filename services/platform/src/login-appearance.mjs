@@ -43,8 +43,6 @@ input::placeholder{color:var(--login-muted)}input[aria-invalid="true"]{border-co
 .password-toggle:hover{background:#f3f6fb}.password-toggle svg{width:18px;height:18px}
 .caps-lock{font-size:12px;color:var(--login-warn);margin:8px 0 0}
 .submit{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:46px;margin-top:24px;padding:0 15px;border:0;border-radius:8px;background:var(--login-accent);color:#fff;font-size:14px;font-weight:600}
-.submit:hover{background:#254b80}.submit-spinner{display:none;width:17px;height:17px}
-.submit[aria-busy="true"] .submit-spinner{display:block;animation:spin 1s linear infinite}
+.submit:hover{background:#254b80}
 .error{margin:0 0 20px;padding:12px 14px;border:1px solid #bc555d55;border-radius:8px;background:#fff9f9;color:var(--login-error);font-size:13px;line-height:1.6}
-@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.submit-spinner{animation:none!important}}
 `;

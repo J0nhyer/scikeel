@@ -150,6 +150,10 @@
       "aria": "Stopp",
       "title": "Diesen Zug unterbrechen (Esc)"
     },
+    "sending": {
+      "aria": "Wird gesendet",
+      "title": "Nachricht wird gesendet…"
+    },
     "send": {
       "aria": "Senden"
     },
@@ -284,6 +288,10 @@
     }
   },
   "live": {
+    "boot": {
+      "busy": "Die Dienstressourcen sind ausgelastet. Bitte versuchen Sie es gleich noch einmal.",
+      "retry": "Erneut versuchen"
+    },
     "recovery": {
       "title": "Arbeitsbereichsverbindung", "retry": "Verbindung erneut versuchen", "restart": "Arbeitsbereich neu starten", "confirmRestart": "Neustart bestätigen", "cancel": "Abbrechen",
       "sharedImpact": "Dies betrifft alle Geräte, die diesen Arbeitsbereich verwenden.",

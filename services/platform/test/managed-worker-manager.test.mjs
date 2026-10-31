@@ -30,7 +30,7 @@ function fixture(options = {}) {
   const manager = new ManagedWorkerManager({ rootDir, imageDigest: digest, client, tenantPolicy: policy,
     fetchImpl: async () => ({ ok: true, json: async () => ({}) }), ...options });
   const close = manager.close.bind(manager);
-  manager.close = async () => { try { await close(); } finally { rmSync(rootDir, { recursive: true, force: true }); } };
+  manager.close = async (...args) => { try { await close(...args); } finally { rmSync(rootDir, { recursive: true, force: true }); } };
   return { manager, calls, policy, records };
 }
 test("quota tenant directories remain separate from writable platform metadata", async (t) => {
@@ -40,18 +40,85 @@ test("quota tenant directories remain separate from writable platform metadata",
   assert.equal(worker.workspaceDir, "/var/lib/scikeel/tenant-data/instances/user-a/workspace");
   assert.ok(manager.rootDir.includes("scikeel-manager-"));
 });
-test('two bounded resident environments remain available until the third account needs capacity',async t=>{
- const {manager,calls}=fixture({maxResidents:2});t.after(()=>manager.close());
- await manager.ensureWorker({instanceId:'user-a',userId:'a'});
- await manager.ensureWorker({instanceId:'user-b',userId:'b'});
- assert.equal(manager.getWorker('user-a').status,'running');
- assert.equal(manager.getWorker('user-b').status,'running');
- assert.equal(calls.filter(([operation])=>operation==='stop').length,0);
- const active=manager.retainWorker('user-a');
- await manager.ensureWorker({instanceId:'user-c',userId:'c'});
- assert.equal(manager.getWorker('user-a').status,'running');
- assert.equal(manager.getWorker('user-b').status,'stopped');
- active.release();
+test('the resident count follows starting and running records only', async t => {
+ const f=fixture(); t.after(()=>f.manager.close());
+ assert.equal(f.manager.residentCount(),0);
+ await f.manager.ensureWorker({instanceId:'user-a',userId:'a'});
+ assert.equal(f.manager.residentCount(),1);
+ await f.manager.stopWorker('user-a');
+ assert.equal(f.manager.residentCount(),0);
+});
+test('a full resident set rejects a new start without handing off', async t => {
+ const f=fixture(); t.after(()=>f.manager.close());
+ await f.manager.ensureWorker({instanceId:'user-a',userId:'a'});
+ await assert.rejects(f.manager.ensureWorker({instanceId:'user-b',userId:'b'}),
+   error=>error.code==='workspace_slot_busy');
+ assert.equal(f.manager.getWorker('user-a').status,'running');
+ assert.equal(f.calls.filter(([operation])=>operation==='stop').length,0);
+});
+test('close has no retain mode and always stops workers', async () => {
+ const f=fixture();
+ await f.manager.ensureWorker({instanceId:'user-a',userId:'a'});
+ await f.manager.close({stopWorkers:false});
+ assert.equal(f.calls.filter(([operation])=>operation==='stop').length,1);
+});
+test('resident limit is validated to one or two', () => {
+ assert.throws(()=>fixture({maxResidents:3}),/invalid managed worker configuration/);
+});
+test('requests for the same user coalesce startup', async t => {
+ const {manager,calls}=fixture();t.after(()=>manager.close());
+ await Promise.all([manager.ensureWorker({instanceId:'user-a',userId:'a'}),manager.ensureWorker({instanceId:'user-a',userId:'a'})]);
+ assert.equal(calls.filter(([operation])=>operation==='start').length,1);
+});
+test('startup stages are timed without credentials', async t => {
+ const events=[];const f=fixture({logger:event=>events.push(event)});t.after(()=>f.manager.close());
+ await f.manager.ensureWorker({instanceId:'user-a',userId:'a'});
+ const stages=events.filter(event=>event.type==='workspace.startup_stage');
+ assert.ok(stages.some(event=>event.stage==='sandbox_start'));
+ assert.ok(stages.some(event=>event.stage==='health'));
+ const serialized=JSON.stringify(stages);
+ assert.equal(serialized.includes('b'.repeat(64)),false);
+ assert.equal(serialized.includes('http://172.31.240.2:4790'),false);
+ assert.equal(serialized.includes('user-a'),false);
+});
+test('idle reclaim refuses a workspace with an active lease', async t => {
+ const f=fixture();t.after(()=>f.manager.close());
+ await f.manager.ensureWorker({instanceId:'user-a',userId:'a'});
+ const lease=f.manager.retainWorker('user-a');
+ try {
+  await assert.rejects(f.manager.stopWorkerIfIdle('user-a'), error=>error.code==='workspace_slot_busy');
+  assert.equal(f.manager.getWorker('user-a').status,'running');
+ } finally { lease.release(); }
+ await f.manager.stopWorkerIfIdle('user-a');
+ assert.equal(f.manager.getWorker('user-a').status,'stopped');
+});
+test('a stopping workspace rejects a new lease', async t => {
+ const f=fixture();t.after(()=>f.manager.close());
+ await f.manager.ensureWorker({instanceId:'user-a',userId:'a'});
+ let releaseStop;const gate=new Promise(resolve=>{releaseStop=resolve;});
+ const stop=f.manager.client.stop;
+ f.manager.client.stop=async args=>{await gate;return stop(args);};
+ let stopping;
+ try {
+  stopping=f.manager.stopWorkerIfIdle('user-a');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.throws(()=>f.manager.retainWorker('user-a'),/stopping/);
+ } finally {
+  releaseStop();
+  f.manager.client.stop=stop;
+ }
+ await stopping;
+ assert.equal(f.manager.getWorker('user-a').status,'stopped');
+});
+test('idle reclaim disconnects workspace transports before the launcher stop', async t => {
+ const f=fixture();t.after(()=>f.manager.close());
+ await f.manager.ensureWorker({instanceId:'user-a',userId:'a'});
+ const order=[];
+ const stop=f.manager.client.stop;
+ f.manager.client.stop=async args=>{order.push('stop');return stop(args);};
+ f.manager.beforeStop=async context=>{order.push(['disconnect',context.instanceId,context.generation]);};
+ await f.manager.stopWorkerIfIdle('user-a');
+ assert.deepEqual(order,[['disconnect','user-a',1],'stop']);
 });
 test('passive analytics registration follows verified lifecycle without extra starts or authority',async(t)=>{
   const {manager,calls,policy}=fixture();t.after(()=>manager.close());const observed=[];
@@ -112,6 +179,10 @@ test("native workspace health and inventory never start OpenCode",async t=>{
  const context={instanceId:"user-a",userId:"a",generation:1};
  await f.manager.ensureWorker(context);
  assert.equal((await f.manager.workspaceStatus(context)).state,"healthy");
+ assert.equal(await f.manager.isIdle(context),true);
+ const lease=f.manager.retainWorker("user-a");
+ assert.equal(await f.manager.isIdle(context),false);
+ lease.release();
  assert.equal(await f.manager.isIdle(context),true);
  assert.deepEqual(await f.manager.assistantInventory(),{activeExecutions:[],uncertainEffects:[]});
  f.manager.inspectNative=async()=>({busy:true,starting:true,jobs:[]});
@@ -218,15 +289,6 @@ test("failed managed startup performs launcher cleanup without spawning a host f
   await assert.rejects(manager.ensureWorker({ instanceId: "user-a", userId: "a" }), /launcher/);
   assert.equal(calls.filter(([op]) => op === "stop").length, 1); assert.equal(manager.getWorker("user-a").status, "unavailable");
 });
-test("requests for the same user coalesce startup and active operations block eviction", async (t) => {
-  const { manager, calls } = fixture(); t.after(() => manager.close());
-  await Promise.all([manager.ensureWorker({ instanceId: "user-a", userId: "a" }), manager.ensureWorker({ instanceId: "user-a", userId: "a" })]);
-  assert.equal(calls.filter(([op]) => op === "start").length, 1);
-  const lease = manager.retainWorker("user-a");
-  await assert.rejects(manager.ensureWorker({ instanceId: "user-b", userId: "b" }), /capacity/);
-  lease.release();
-  await manager.ensureWorker({ instanceId: "user-b", userId: "b" }); assert.equal(manager.getWorker("user-a").status, "stopped");
-});
 test("resource admission precedes sandbox start and remains held until verified cleanup", async (t) => {
   const events = [];
   const { manager } = fixture({ admitWorker: async () => {
@@ -239,94 +301,6 @@ test("resource admission precedes sandbox start and remains held until verified 
   await manager.ensureWorker({ instanceId: "user-a", userId: "a" });
   assert.deepEqual(events, ["acquired", "start"]);
   await manager.stopWorker("user-a"); assert.deepEqual(events, ["acquired", "start", "stop", "released"]);
-});
-test("tenant handoff drains existing reads and fences new leases until the old generation stops", async t => {
-  const {manager,calls}=fixture(); t.after(()=>manager.close());
-  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
-  const first=manager.retainWorker("user-a",{readOnly:true});
-  const second=manager.retainWorker("user-a",{readOnly:true});
-  const pending=manager.ensureWorker({instanceId:"user-b",userId:"b"});
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.throws(()=>manager.retainWorker("user-a",{readOnly:true}),{code:"workspace_capacity_unavailable"});
-  assert.throws(()=>manager.retainWorker("user-a"),{code:"workspace_capacity_unavailable"});
-  await assert.rejects(manager.acquireMaintenance({instanceId:"user-a",userId:"a",generation:1}),/busy/);
-  const passive=manager.retainWorker("user-a",{readOnly:true,passive:true});
-  first.release(); first.release();
-  assert.equal(calls.filter(([op])=>op==="stop").length,0);
-  second.release(); await pending; passive.release();
-  assert.equal(manager.getWorker("user-a").status,"stopped");
-  assert.equal(calls.filter(([op])=>op==="start").length,2);
-});
-test("read drain timeout preserves the running generation and clears the handoff fence", async t => {
-  const events=[]; const {manager,calls}=fixture({logger:event=>events.push(event)}); t.after(()=>manager.close());
-  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
-  const lease=manager.retainWorker("user-a",{readOnly:true});
-  const started=Date.now();
-  await assert.rejects(manager.ensureWorker({instanceId:"user-b",userId:"b"}),error=>{
-    assert.equal(error.failure.retryAfterMs,5000);
-    assert.match(error.failure.correlationId,/^[a-f0-9-]{36}$/); return true;
-  });
-  assert.ok(Date.now()-started>=900);
-  assert.equal(calls.filter(([op])=>op==="stop").length,0);
-  const subsequent=manager.retainWorker("user-a",{readOnly:true}); subsequent.release(); lease.release();
-  assert.equal(events.at(-1).reason,"active_operations");
-  assert.equal(events.at(-1).activeMutations,0);
-  await manager.ensureWorker({instanceId:"user-b",userId:"b"});
-});
-test("old-generation background recovery cannot displace the new account, including already queued reads",async t=>{
-  const {manager,calls}=fixture();t.after(()=>manager.close());
-  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
-  const switching=manager.ensureWorker({instanceId:"user-b",userId:"b"});
-  const oldRead=assert.rejects(manager.ensureWorker({instanceId:"user-a",userId:"a",expectedGeneration:1}),{code:"workspace_capacity_unavailable"});
-  await switching;await oldRead;
-  await assert.rejects(manager.ensureWorker({instanceId:"user-a",userId:"a",expectedGeneration:1}),{code:"workspace_capacity_unavailable"});
-  assert.equal(calls.filter(([op])=>op==="start").length,2);
-  assert.equal(manager.getWorker("user-b").status,"running");
-  await manager.ensureWorker({instanceId:"user-c",userId:"c"});
-  await assert.rejects(manager.ensureWorker({instanceId:"user-a",userId:"a",expectedGeneration:1}),{code:"workspace_capacity_unavailable"});
-  await assert.rejects(manager.recoverWorker({instanceId:"user-a",userId:"a",action:"retry",expectedGeneration:1}),{code:"workspace_capacity_unavailable"});
-  assert.equal(manager.getWorker("user-c").status,"running");
-  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
-  assert.equal(manager.getWorker("user-a").status,"running");
-});
-test("a stopped account remains retryable when its explicit reacquisition meets active work",async t=>{
-  const {manager}=fixture();t.after(()=>manager.close());
-  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
-  await manager.ensureWorker({instanceId:"user-b",userId:"b"});
-  const lease=manager.retainWorker("user-b");
-  try {await assert.rejects(manager.ensureWorker({instanceId:"user-a",userId:"a"}),{code:"workspace_capacity_unavailable"});}
-  finally {lease.release();}
-  assert.equal(manager.getWorker("user-a").status,"stopped");
-  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
-  assert.equal(manager.getWorker("user-a").status,"running");
-});
-test("idle refusals identify safe probe categories while execution storage defects remain original errors",async t=>{
-  const events=[];let result={};let defective=false;
-  const {manager,calls}=fixture({logger:event=>events.push(event),fetchImpl:async url=>url.endsWith("/session/status")
-    ?{ok:true,json:async()=>result}:{ok:true}});t.after(()=>manager.close());
-  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
-  for(const [body,reason,category] of [[{session:{type:"busy"}},"execution_active","runtime_busy"],[[],"idle_unverified","malformed_status"]]) {
-    result=body;await assert.rejects(manager.ensureWorker({instanceId:"user-b",userId:"b"}),{code:"workspace_capacity_unavailable"});
-    assert.equal(events.at(-1).reason,reason);assert.equal(events.at(-1).category,category);assert.ok(events.at(-1).elapsedMs>=0);
-  }
-  result={};const defect=new Error("execution storage defect");
-  manager.setExecutionProbe(async()=>{if(defective)throw defect;return false;});defective=true;
-  await assert.rejects(manager.ensureWorker({instanceId:"user-b",userId:"b"}),error=>error===defect);
-  assert.equal(calls.filter(([op])=>op==="stop").length,0);
-});
-test("handoff probes cannot admit new work and uncertain status never stops the old worker", async t=>{
-  let probe; let checking=false;
-  const {manager,calls}=fixture({fetchImpl:async url=>{
-    if(checking && url.endsWith("/session/status"))return new Promise(resolve=>{probe=resolve;});
-    return {ok:true,json:async()=>({})};
-  }}); t.after(()=>manager.close());
-  await manager.ensureWorker({instanceId:"user-a",userId:"a"}); checking=true;
-  const pending=manager.ensureWorker({instanceId:"user-b",userId:"b"});
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.throws(()=>manager.retainWorker("user-a"),{code:"workspace_capacity_unavailable"});
-  probe({ok:false}); await assert.rejects(pending,{code:"workspace_capacity_unavailable"});
-  assert.equal(calls.filter(([op])=>op==="stop").length,0);
-  const lease=manager.retainWorker("user-a");lease.release();
 });
 test("rejected resource admission cannot invoke the launcher start operation", async (t) => {
   const { manager, calls } = fixture({ admitWorker: async () => { throw new Error("host capacity"); } });
@@ -351,24 +325,6 @@ test("maintenance atomically blocks new mutations while permitting event streams
   stream.release();maintenance.release();
   const job=manager.retainWorker("user-a");
   await assert.rejects(manager.acquireMaintenance(context),/busy/);job.release();
-});
-test("passive event subscriptions do not prevent idle tenant switching, while mutations do", async (t) => {
-  const {manager}=fixture();t.after(()=>manager.close());
-  await manager.ensureWorker({instanceId:"user-a",userId:"a"});
-  const stream=manager.retainWorker("user-a",{readOnly:true,passive:true});
-  await manager.ensureWorker({instanceId:"user-b",userId:"b"});
-  assert.equal(manager.getWorker("user-a").status,"stopped");stream.release();stream.release();
-  assert.throws(()=>manager.retainWorker("user-b",{passive:true}),/read.only/i);
-});
-
-test("a durable pending execution blocks eviction even when native status is idle",async t=>{
- const {manager,calls}=fixture();t.after(()=>manager.close());
- await manager.ensureWorker({instanceId:"user-a",userId:"a"});
- let pending=true;manager.setExecutionProbe(async context=>{assert.equal(context.userId,"a");return pending;});
- await assert.rejects(manager.ensureWorker({instanceId:"user-b",userId:"b"}),/capacity/);
- assert.equal(calls.filter(([operation])=>operation==="stop").length,0);
- pending=false;await manager.ensureWorker({instanceId:"user-b",userId:"b"});
- assert.equal(manager.getWorker("user-a").status,"stopped");
 });
 test("an uncertain mutation exposes confirmed recovery despite healthy native probes",async t=>{
  const {manager,calls}=fixture();t.after(()=>manager.close());

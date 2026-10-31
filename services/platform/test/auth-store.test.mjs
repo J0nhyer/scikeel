@@ -69,6 +69,36 @@ test("serializes concurrent account creation and rejects duplicate usernames", a
   assert.equal((await store.listUsers()).length, 2);
 });
 
+test("activeUserIds excludes expired and disabled users", async () => {
+  let timestamp = 1_800_000_000_000;
+  const store = await makeStore({
+    clock: () => timestamp,
+    sessionTtlMs: 100,
+    bootstrapAdmin: { username: "admin", password: "admin-password" },
+  });
+  const admin = await store.authenticate("admin", "admin-password");
+  const user = await store.createUser({ username: "student", password: "student-password" });
+  await store.createSession(admin.id);
+  await store.createSession(user.id);
+  assert.deepEqual(new Set(await store.activeUserIds()), new Set([admin.id, user.id]));
+  timestamp += 101;
+  assert.deepEqual(await store.activeUserIds(), []);
+  await store.createSession(user.id);
+  await store.disableUser(user.id);
+  assert.deepEqual(await store.activeUserIds(), []);
+});
+
+test("revoking one device does not end another login for the same user", async () => {
+  const store = await makeStore({ bootstrapAdmin: { username: "admin", password: "admin-password" } });
+  const user = await store.createUser({ username: "student", password: "student-password" });
+  const phone = await store.createSession(user.id);
+  const laptop = await store.createSession(user.id);
+  await store.revokeSession(phone.token);
+  assert.deepEqual(await store.activeUserIds(), [user.id]);
+  await store.revokeSession(laptop.token);
+  assert.deepEqual(await store.activeUserIds(), []);
+});
+
 test("changes a password and revokes the account's existing sessions", async () => {
   const store = await makeStore({ bootstrapAdmin: { username: "admin", password: "admin-password" } });
   const admin = await store.authenticate("admin", "admin-password");

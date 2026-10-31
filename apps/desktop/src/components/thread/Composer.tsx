@@ -47,7 +47,16 @@ import type { AcpConfigOption } from "@ai4s/sdk/acp";
 import { WorkspaceChip } from "@/components/thread/WorkspaceChip";
 import { AttachmentChip } from "@/components/thread/AttachmentChip";
 import { useUiStore } from "@/lib/store";
-import { parkDraft, unparkDraft } from "@/lib/composerStash";
+import {
+  failedPendingSend,
+  forgetPendingSend,
+  isPendingSend,
+  parkDraft,
+  settlePendingSend,
+  subscribePendingSend,
+  trackPendingSend,
+  unparkDraft,
+} from "@/lib/composerStash";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { useCompactWidth } from "@/lib/useCompactWidth";
@@ -145,6 +154,7 @@ export function Composer({
   commands = [],
   disabled,
   working,
+  sending,
   onStop,
   placeholder,
   approvalMode,
@@ -175,6 +185,11 @@ export function Composer({
   disabled?: boolean;
   /** A turn is running: the send button becomes Stop (wired to `onStop`). */
   working?: boolean;
+  /** A send is in flight before its turn starts (the Web composer already
+   *  echoed the message). Shows the starting indicator, not the send arrow.
+   *  Stop waits for `working`: aborting before the prompt is admitted would
+   *  race the POST that starts the turn. */
+  sending?: boolean;
   onStop?: () => void;
   /** Defaults to `t("composer.placeholder.default")` ("Ask anything"). */
   placeholder?: string;
@@ -252,11 +267,17 @@ export function Composer({
       description: t("composer.agent.plan.description"),
     },
   };
+  const attachmentAccount = useRuntimeStore((state) => isGatewayWeb ? state.gatewayUser?.id : undefined);
+  /** The pane key the pending-attachment queue uses. The first Web send can
+   *  remount this composer onto its created session, so an in-flight draft is
+   *  tracked by this key rather than by component state alone. */
+  const composerOwnerKey = `${attachmentAccount ?? "local"}:${draftKey ?? "web-composer"}`;
   // Reclaim whatever this pane had typed before it was last unmounted (a screen
   // switch tears panes down). Unparked once, on mount, so the two states below
-  // seed from the same draft.
+  // seed from the same draft. An in-flight send starts empty: its text waits in
+  // composerStash until the gateway answers.
   const [restored] = useState(() => (draftKey ? unparkDraft(draftKey) : null));
-  const [value, setValue] = useState(restored?.text ?? "");
+  const [value, setValue] = useState(() => (isPendingSend(composerOwnerKey) ? "" : restored?.text ?? ""));
   const [files, setFiles] = useState<string[]>(restored?.files ?? []);
   /** Of `files`, the ones this composer COPIED in — the only ones removing a
    *  chip may delete. See `addWorkspaceFile`. */
@@ -265,8 +286,7 @@ export function Composer({
   const [dragOver, setDragOver] = useState(false);
   const [webSubmitting, setWebSubmitting] = useState(false);
   const webFileInput = useRef<HTMLInputElement>(null);
-  const attachmentAccount = useRuntimeStore((state) => isGatewayWeb ? state.gatewayUser?.id : undefined);
-  const webAttachments = useComposerAttachments(`${attachmentAccount ?? "local"}:${draftKey ?? "web-composer"}`, currentSessionId);
+  const webAttachments = useComposerAttachments(composerOwnerKey, currentSessionId);
   /** Highlighted palette row; clamped to the current matches. */
   const [sel, setSel] = useState(0);
   /** Esc closed the palette for the current input; typing reopens it. */
@@ -332,6 +352,21 @@ export function Composer({
   useEffect(() => {
     if (draftKey) parkDraft(draftKey, { text: value, files });
   }, [draftKey, value, files]);
+
+  // A send can outlive this composer: the first Web message remounts the pane
+  // onto its created session before the prompt is accepted. If it was rejected,
+  // put the text back into the box mounted now; an accepted send leaves it
+  // empty. Text typed in the meantime wins.
+  useEffect(() => {
+    const restore = () => {
+      const text = failedPendingSend(composerOwnerKey);
+      if (text === undefined) return;
+      setValue((current) => (current === "" ? text : current));
+      forgetPendingSend(composerOwnerKey);
+    };
+    restore();
+    return subscribePendingSend(composerOwnerKey, restore);
+  }, [composerOwnerKey]);
 
   const shellMode = !!onRunShell && !command && value.startsWith("!");
   // The palette is open while the command NAME is being typed ("/na…"); the
@@ -497,18 +532,24 @@ export function Composer({
       if (!text) return;
       const submittedValue = value;
       const refs = [...refSessions];
+      // The thread echoes the message at once. Clear the box at the same
+      // instant so it stops looking "unsent" while the gateway admits the turn.
+      // The text waits in composerStash until the answer is known, so a rejected
+      // send — or a composer that remounted mid-send — can put it back.
+      trackPendingSend(composerOwnerKey, submittedValue);
       setWebSubmitting(true);
+      setValue("");
       void (async () => {
         try {
           const context = await webAttachments.prepareSend(text);
           const blocks = refs.length ? await buildReferences(refs) : "";
           const accepted = await onSend(blocks ? `${blocks}\n\n${text}` : text, undefined, context);
-          if (accepted === false) return;
+          if (accepted === false) { settlePendingSend(composerOwnerKey, false); return; }
           if (text) recordHistory(text);
-          setValue((current) => current === submittedValue ? "" : current);
+          settlePendingSend(composerOwnerKey, true);
           webAttachments.acceptSend(context.attachmentIds);
           setRefSessions((current) => current.filter((r) => !refs.some((sent) => sent.id === r.id)));
-        } catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
+        } catch (error) { settlePendingSend(composerOwnerKey, false); toast.error(error instanceof Error ? error.message : String(error)); }
         finally { setWebSubmitting(false); }
       })();
       return;
@@ -1201,6 +1242,19 @@ export function Composer({
             >
               <Square size={11} fill="currentColor" />
             </button>
+          ) : working || sending || webSubmitting ? (
+            // A send is in flight but no turn is running yet (or a first Web
+            // message is still creating its session). Stop would race the POST
+            // that starts the turn, so show that it is starting instead of an
+            // inert Send arrow.
+            <span
+              role="status"
+              aria-label={t("composer.sending.aria")}
+              title={t("composer.sending.title")}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input bg-accent/15 text-accent"
+            >
+              <Loader2 size={13} className="animate-spin" />
+            </span>
           ) : (
             <button
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input bg-accent text-accent-fg hover:opacity-90 disabled:opacity-40"

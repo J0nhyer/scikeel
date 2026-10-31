@@ -885,6 +885,8 @@ let connectRetryDepth = 0;
  *  reports it if the whole window is exhausted. */
 let lastConnectError: string | null = null;
 let lastConnectFailure: WorkspaceFailure | null = null;
+/** A full resident set is a final answer, not a slower start. */
+const terminalBootCodes = new Set(["workspace_slot_busy"]);
 /** The status the UI is allowed to see right now. */
 function visibleStatus(status: RuntimeStatus): RuntimeStatus {
   return connectRetryDepth > 0 && status !== "ready" ? "connecting" : status;
@@ -4643,6 +4645,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   // fail against a sidecar that is spawned but not yet listening, which used to
   // strobe the page connecting→error→connecting four times a second. The last
   // error is surfaced only if the whole retry window is exhausted.
+  // The boot path asks for the full Platform Web 90-second window explicitly;
+  // every mid-session reconnect keeps the short gateway window so a failure is
+  // visible instead of silently retrying while no boot gate covers it.
   connectRetry: (tries = isGatewayWeb ? 4 : 120) => {
     if (isPlatformWeb && platformBrowserSuspended) return Promise.resolve(false);
     if (isGatewayWeb && webRecovery?.context === webContextVersion) return webRecovery.promise;
@@ -4693,6 +4698,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         // an error in the store directly still counts (the store's `error` was
         // cleared above, so it can only be this loop's).
         lastError = lastConnectError ?? get().error ?? lastError;
+        if (isGatewayWeb && lastConnectFailure && terminalBootCodes.has(lastConnectFailure.code)) {
+          set({ status: "error", error: lastError });
+          return false;
+        }
         if (owner && await waitForCapacity(owner)) { i--; continue; }
         // A runtime that EXITS is not a runtime that is slow to listen, and only
         // the Rust side can tell them apart. Three deaths in one attempt means
@@ -4736,8 +4745,16 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         // reconnect finds it already listening); back off to 1 s for the long
         // tail (first boot blocked on macOS TCC can take minutes).
         if (i + 1 < tries) {
-          if (owner) await withSignal(sleep(250), owner.controller.signal).catch(() => {});
-          else await sleep(i < 8 ? 250 : 1000);
+          const backoff = isGatewayWeb
+            ? Math.min(1000, 250 * 2 ** Math.min(i, 2))
+            : i < 8 ? 250 : 1000;
+          const retryAfter = isGatewayWeb ? lastConnectFailure?.retryAfterMs : undefined;
+          const delay = Math.min(
+            typeof retryAfter === "number" && retryAfter > 0 ? retryAfter : backoff,
+            owner ? Math.max(0, owner.deadline - performance.now()) : Infinity,
+          );
+          if (owner) await withSignal(sleep(delay), owner.controller.signal).catch(() => {});
+          else await sleep(delay);
         }
       }
       if (owner?.controller.signal.aborted) return false;
@@ -4771,7 +4788,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // — just connect to the gateway (same origin), no Tauri runtime to start.
       if (isGatewayWeb) {
         set({ serverUrl: gatewayOrigin() });
-        await get().connectRetry();
+        await get().connectRetry(isPlatformWeb ? 360 : 4);
         return;
       }
       if (!isTauri) return;

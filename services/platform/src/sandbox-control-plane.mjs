@@ -142,7 +142,13 @@ export function managedNativeProfileResolver({ configuration, serviceProfile, br
     },
   };
 }
-export async function createSandboxControlPlane({ configuration, dataDir, config, logger = () => {} }) {
+export function validateCapacity({ maxResidents = 1 } = {}) {
+  if (!Number.isSafeInteger(maxResidents) || maxResidents < 1 || maxResidents > 2)
+    throw new Error("invalid managed capacity configuration");
+  return { maxResidents };
+}
+export async function createSandboxControlPlane({ configuration, dataDir, config, logger = () => {}, capacity = {} }) {
+  const { maxResidents } = validateCapacity(capacity);
   config = validateBrokerConfiguration(await resolveOpenCodeFreeCatalog(validateBrokerConfiguration(config ?? await readBrokerConfiguration())));
   let environments; let plane;
   const accounts = new Map(); const tenantPolicy = new TenantPolicy();
@@ -161,11 +167,11 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     authorize: (context, route, token) => packageGrants.authorize(context, route, token) });
   const client = new SandboxClient({ socketPath: configuration.socketPath });
   const admission = new HostAdmission();
-  const scheduler = new SandboxScheduler({maxSandboxes:2,maxJobs:1,pressure:hostPressure,admission:input=>admission.acquire({...input,shared:true})});
+  const scheduler = new SandboxScheduler({maxSandboxes:maxResidents,maxJobs:1,pressure:hostPressure,admission:input=>admission.acquire({...input,shared:true})});
   const manager = new ManagedWorkerManager({ rootDir: `${dataDir}/workers`, imageDigest: configuration.imageDigest, client, tenantPolicy,
     logger,
     instancesDir: configuration.roots?.instances,
-    maxResidents:2,
+    maxResidents,
     admitWorker: async () => {
       const pressure=await hostPressure();
       if(pressure.availableBytes<600*1024**2)throw capacityError('memory_reserve');
@@ -183,17 +189,28 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       // The tenant runner announces the runtime protocol it understands. An
       // installed image without it keeps the previous contract: the runner
       // selects the runtime itself and readiness follows its own endpoint.
-      const protocol=await runnerProtocol(access);
-      const response = await fetch(`${access.runnerUrl}/profile`, { method: "POST", headers: {
-        authorization: `Bearer ${access.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ instanceId: context.instanceId, generation: context.generation, profile, imageDigest:configuration.imageDigest,
-          ...(protocol.runtime?{runtime}:{}) }), signal: AbortSignal.timeout(15000) });
-      if (!response.ok) throw new Error("managed profile unavailable");
-      await waitManagedRuntime(access,{directory:context.workspaceDir,...(protocol.runtime?{runtime}:{})});
-      if(protocol.runtime){
-        const readiness=await fetch(`${access.runnerUrl}/readiness`,{headers:{authorization:`Bearer ${access.token}`},signal:AbortSignal.timeout(3000)});
-        const report=await readiness.json();
-        if(!readiness.ok||report.runtime!==runtime||report.configured!==true||report.gatewayReady!==true||runtime!=='opencode'&&report.jobsReady!==true)throw Error('managed runner unavailable');
+      const profileStarted = performance.now();
+      let protocol;
+      try {
+        protocol=await runnerProtocol(access);
+        const response = await fetch(`${access.runnerUrl}/profile`, { method: "POST", headers: {
+          authorization: `Bearer ${access.token}`, "content-type": "application/json" },
+          body: JSON.stringify({ instanceId: context.instanceId, generation: context.generation, profile, imageDigest:configuration.imageDigest,
+            ...(protocol.runtime?{runtime}:{}) }), signal: AbortSignal.timeout(15000) });
+        if (!response.ok) throw new Error("managed profile unavailable");
+      } finally {
+        logger({ type: "workspace.startup_stage", stage: "profile", generation: context.generation, elapsedMs: Math.round(performance.now() - profileStarted) });
+      }
+      const readinessStarted = performance.now();
+      try {
+        await waitManagedRuntime(access,{directory:context.workspaceDir,...(protocol.runtime?{runtime}:{})});
+        if(protocol.runtime){
+          const readiness=await fetch(`${access.runnerUrl}/readiness`,{headers:{authorization:`Bearer ${access.token}`},signal:AbortSignal.timeout(3000)});
+          const report=await readiness.json();
+          if(!readiness.ok||report.runtime!==runtime||report.configured!==true||report.gatewayReady!==true||runtime!=='opencode'&&report.jobsReady!==true)throw Error('managed runner unavailable');
+        }
+      } finally {
+        logger({ type: "workspace.startup_stage", stage: "readiness", generation: context.generation, elapsedMs: Math.round(performance.now() - readinessStarted) });
       }
       const timer = setInterval(() => {
         try { model.renew(token, context); }
@@ -225,6 +242,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   manager.inspectNative = context => nativeJobs.inspect(context);
   manager.runtimeForContext = context => plane?.assistantPolicy?.(context)?.activeRuntime??"opencode";
   plane = { manager, tenantPolicy, model, packages, packageGrants, egress, files, environments, searchProvider: config.searchProvider, nativeJobs, nativeProfileResolver,
+    capacity: { maxResidents },
     analyticsRegistry:{providers:new Set(Object.keys(config.providers)),models:new Set(Object.values(config.providers).flatMap(p=>p.enabledModels)),skills:new Set(['research-workflow'])},
     runtimeCatalog: createManagedModelCatalogReader({config}),
     saveRuntimeDefaultModel: (context, model) => saveManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId, model }),

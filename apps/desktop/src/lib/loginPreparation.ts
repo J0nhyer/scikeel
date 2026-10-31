@@ -1,11 +1,8 @@
-import type { WorkspaceReport } from "@ai4s/sdk";
-
 type PreparationState = {
   status: string;
   sessionListReady: boolean;
   gatewayCatalogState: string;
   defaultModel: string | null;
-  gatewayWorkspaceReport?: WorkspaceReport | null;
 };
 type PreparationSource = {
   getState: () => PreparationState;
@@ -21,7 +18,6 @@ export function installLoginPreparation(source: PreparationSource, signOut?: () 
   let disposed = false;
   let signingOut = false;
   let failureShown = false;
-  let waiting = false;
   let unsubscribe = () => {};
   const finish = (event: "scikeel:login-ready" | "scikeel:login-error") => {
     if (finished) return;
@@ -39,11 +35,6 @@ export function installLoginPreparation(source: PreparationSource, signOut?: () 
   const timer = setTimeout(() => finish("scikeel:login-error"), 90_000);
   const update = (state: PreparationState) => {
     if (finished || signingOut) return;
-    const capacityWaiting = state.status === "connecting" && state.gatewayWorkspaceReport?.state === "capacity";
-    if (capacityWaiting !== waiting) {
-      waiting = capacityWaiting;
-      document.dispatchEvent(new CustomEvent("scikeel:login-waiting", { detail: { waiting } }));
-    }
     if (state.status === "error" || (state.status === "ready" && state.sessionListReady && state.gatewayCatalogState === "unavailable")) finish("scikeel:login-error");
     // The assistant picks its own model when the deployment has no default
     // one, so a missing default model must not keep the login screen up.

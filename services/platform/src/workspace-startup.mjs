@@ -10,6 +10,6 @@ export async function prepareWorkspaceService({migrate,manager,authStore,platfor
   return {mode:'migrate'};
  }
  const result=await manager?.retireUnmanagedInstances?.()??{retired:[],blocked:[]};
- logger({type:'workspace.startup_cleanup',retired:result.retired.length,blocked:result.blocked.length});
+ logger({type:'workspace.startup_cleanup',adopted:0,retired:result.retired?.length??0,blocked:result.blocked?.length??0});
  return {mode:'serve'};
 }
