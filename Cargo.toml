@@ -1,21 +1,18 @@
 # Cargo workspace root.
 #
-# Three crates, and the split between them is the whole point:
+# Three crates serve the Web workbench and the headless `osd` command:
 #
 #   crates/osd-core  — the server: workspace paths, the OpenCode sidecar, the
 #                      opencode config, projects/runs, and the HTTP gateway.
-#                      Depends on NO Tauri, so it runs where there is no display.
-#   apps/desktop/src-tauri — the desktop shell: Tauri commands + the GUI-only
-#                      features (kernel, Jupyter, browser, ssh, ACP, dialogs).
 #   crates/osd-cli   — `osd`: the same server without a window, plus a client
-#                      for it (and for a running desktop's gateway).
+#                      for it and for a running gateway.
+#   crates/osd-sandbox-host — the sandbox host layer.
 #
-# A Tauri app cannot run headless — tao calls `gtk::init()` on Linux, which
-# needs a display, and webkit2gtk is not installed on a compute node. That is
-# why the core is its own crate rather than a feature flag on the desktop.
+# The retired Tauri desktop shell is not a workspace member. The server has no
+# GUI dependency, so it runs on a compute node with no display.
 [workspace]
 resolver = "2"
-members = ["apps/desktop/src-tauri", "crates/osd-core", "crates/osd-cli", "crates/osd-sandbox-host"]
+members = ["crates/osd-core", "crates/osd-cli", "crates/osd-sandbox-host"]
 
 [workspace.package]
 version = "0.5.2"
