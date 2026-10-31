@@ -10,7 +10,7 @@ const capabilities=['model_reply','file_write_read','question_answer','research_
 // Every proof below is obtained through the deployed gateway. No host CLI,
 // direct tenant filesystem access, or successful deterministic fixture is a live proof.
 export async function runSelectedAssistantAcceptance({target,admin,request=fetch,onSelection=async()=>{},
- timeoutMs=240000,pollMs=250,stopGraceMs=6500}={}) {
+ timeoutMs=240000,pollMs=250,stopGraceMs=6500,selectionTimeoutMs=60000}={}) {
  const providerID=target?.providerID??target?.runtime;
  ensure(['codex','opencode'].includes(target?.runtime)&&validManagedModelId(target.model)&&
   /^[A-Za-z0-9_-]{1,128}$/.test(providerID)&&(target.runtime!=='codex'||providerID==='codex'),
@@ -43,17 +43,38 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
  const json=async(path,options)=>(await send(path,options))?.value;
  const asAdmin=(path,body)=>json(path,{headers:{...admin.headers,origin,'content-type':'application/json'},...(body===undefined?{}:{body})});
  const select=async(runtime)=>{
-  const before=await asAdmin('/api/admin/runtime');
-  ensure(Number.isSafeInteger(before.revision)&&before.revision>0,'Assistant policy revision is unavailable');
-  const receipt=before.activeRuntime===runtime?before:await asAdmin('/api/admin/runtime',{
-   runtime,expectedRevision:before.revision,operationId:'release-acceptance-'+randomUUID()});
-  ensure(receipt.activeRuntime===runtime&&Number.isSafeInteger(receipt.revision)&&receipt.revision>=before.revision,
-   'Assistant selection did not commit');
-  // Persist ownership immediately, even if a later confirmation/read fails.
-  await onSelection({runtime,revision:receipt.revision});
-  const verified=await asAdmin('/api/admin/runtime');
-  ensure(verified.activeRuntime===runtime&&verified.revision===receipt.revision,'Assistant selection changed during acceptance');
-  return receipt.revision;
+  // A resident, idle workspace can take a moment to settle after the legacy
+  // seed. The policy refuses a cutover while that settlement is in flight
+  // with 409; retry the same intent against a fresh revision, bounded.
+  const deadline=Date.now()+selectionTimeoutMs;
+  for(;;){
+   const before=await asAdmin('/api/admin/runtime');
+   ensure(Number.isSafeInteger(before.revision)&&before.revision>0,'Assistant policy revision is unavailable');
+   if(before.activeRuntime===runtime){
+    await onSelection({runtime,revision:before.revision});
+    const verified=await asAdmin('/api/admin/runtime');
+    ensure(verified.activeRuntime===runtime&&verified.revision===before.revision,'Assistant selection changed during acceptance');
+    return before.revision;
+   }
+   const response=await request(origin+'/api/admin/runtime',{method:'POST',
+    headers:{...admin.headers,origin,'content-type':'application/json'},
+    body:JSON.stringify({runtime,expectedRevision:before.revision,operationId:'release-acceptance-'+randomUUID()}),
+    signal:AbortSignal.timeout(60000)});
+   if(response.status===409){
+    await response.text().catch(()=>{});
+    if(Date.now()>=deadline)throw Error('Assistant selection remained busy during acceptance');
+    await delay(500);continue;
+   }
+   ensure(response.ok,`Acceptance gateway rejected POST /api/admin/runtime (${response.status})`);
+   let receipt;try{receipt=await response.json();}catch{throw Error('Acceptance gateway returned invalid JSON');}
+   ensure(receipt.activeRuntime===runtime&&Number.isSafeInteger(receipt.revision)&&receipt.revision>=before.revision,
+    'Assistant selection did not commit');
+   // Persist ownership immediately, even if a later confirmation/read fails.
+   await onSelection({runtime,revision:receipt.revision});
+   const verified=await asAdmin('/api/admin/runtime');
+   ensure(verified.activeRuntime===runtime&&verified.revision===receipt.revision,'Assistant selection changed during acceptance');
+   return receipt.revision;
+  }
  };
  const runtimeContext=async(expected)=>{
   await json('/v1/whoami');

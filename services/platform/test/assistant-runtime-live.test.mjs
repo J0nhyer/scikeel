@@ -19,9 +19,10 @@ test('a forbidden Admin selection cannot dispatch inference or manufacture nativ
 });
 
 function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed',fileRevertFailure,
- historyConflictsAfterPrompt=0,model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex'}={}) {
+ historyConflictsAfterPrompt=0,selectionConflicts=0,model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex'}={}) {
  const calls=[],files=new Map(),history=[],questions=[],selections=[];
  let revision=1,runtime='opencode',currentPhase,checkpointAnswered=false,disabled=false,aborted=false,warm=false,settling=0;
+ let selectionConflictsRemaining=selectionConflicts;
  let reverted=null,restorePoint;
  const state={revision:1,phase:'idle',mode:'autonomous',execution:1,pending:null};
  const admin={origin:'http://127.0.0.1:4790',headers:{cookie:'admin-private'}};
@@ -30,7 +31,11 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
   const {pathname:path,searchParams}=new URL(url),body=options.body?JSON.parse(options.body):undefined;
   const method=options.method??'GET';calls.push({path,method,body,headers:options.headers});
   if(path==='/api/admin/runtime') {
-   if(method==='POST'){assert.equal(body.expectedRevision,revision);runtime=body.runtime;revision++;warm=false;}
+   if(method==='POST'){
+    assert.equal(body.expectedRevision,revision);
+    if(selectionConflictsRemaining>0){selectionConflictsRemaining--;return Response.json({error:'Assistant is settling',code:'assistant_busy'},{status:409});}
+    runtime=body.runtime;revision++;warm=false;
+   }
    return Response.json({activeRuntime:runtime,revision});
   }
   if(path==='/api/admin/users')return Response.json({user:{id:'acceptance-user'}},{status:201});
@@ -231,4 +236,21 @@ test('a persistent history read conflict still fails the selected-assistant gate
  await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:5000,pollMs:1,stopGraceMs:1}),/409/);
  assert.equal(fixture.snapshot().disabled,true);
  assert(fixture.calls.filter(call=>call.path==='/session/ses_legacy/message'&&call.method==='GET').length>=4);
+});
+
+test('a transient assistant selection conflict is retried instead of failing the selected-assistant gate',async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({selectionConflicts:2});
+ const proof=await runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1,selectionTimeoutMs:5000});
+ assert.equal(proof.status,'passed');
+ assert.equal(proof.capabilities.legacy_handover,'passed');
+ assert.equal(fixture.snapshot().disabled,true);
+ assert(fixture.calls.filter(call=>call.path==='/api/admin/runtime'&&call.method==='POST').length>=3);
+});
+
+test('a persistent assistant selection conflict still fails the selected-assistant gate after bounded retries',async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({selectionConflicts:1000});
+ await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1,selectionTimeoutMs:50}),/remained busy/i);
+ assert.equal(fixture.snapshot().disabled,true);
 });
