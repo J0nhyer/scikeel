@@ -3,12 +3,18 @@ import { describe, expect, it } from 'vitest'
 import { computerProviderUnavailableMessage } from '../../../../../runtime/computer/computer-provider-unavailable-message'
 
 describe('computerProviderUnavailableMessage', () => {
-  it('gives macOS developers the helper build and restart step', () => {
-    expect(computerProviderUnavailableMessage('darwin')).toContain(
-      'run scripts/dev/build-computer-use.sh and restart the app'
+  it('names the missing macOS provider without pointing at a deleted script', () => {
+    expect(computerProviderUnavailableMessage('darwin')).toBe(
+      'computer-use has no native provider for darwin in this build'
     )
-    expect(computerProviderUnavailableMessage('darwin')).toContain(
-      'Open Science Computer Use.app was not found or this macOS version is unsupported'
+  })
+
+  it('names the missing Linux and Windows providers', () => {
+    expect(computerProviderUnavailableMessage('linux')).toBe(
+      'computer-use has no native provider for linux in this build'
+    )
+    expect(computerProviderUnavailableMessage('win32')).toBe(
+      'computer-use has no native provider for win32 in this build'
     )
   })
 
