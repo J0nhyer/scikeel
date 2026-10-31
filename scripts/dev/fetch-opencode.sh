@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fetch the pinned OpenCode binary and place it as a Tauri sidecar
-# (apps/desktop/src-tauri/binaries/opencode-<target-triple>).
+# Fetch the pinned OpenCode binary for the headless osd package
+# (runtime/binaries/opencode-<target-triple>).
 # Runs per-platform locally and in CI so the binary never lives in git.
 set -euo pipefail
 
@@ -10,7 +10,7 @@ set -euo pipefail
 # "The messages do not match the ModelMessage[] schema" (issue #114).
 OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.32}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-OUT_DIR="$ROOT/apps/desktop/src-tauri/binaries"
+OUT_DIR="$ROOT/runtime/binaries"
 mkdir -p "$OUT_DIR"
 
 # Resolve the Rust target triple (arg 1 overrides; else host).

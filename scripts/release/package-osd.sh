@@ -5,8 +5,8 @@
 #
 # The result unpacks and runs on a machine with nothing else installed, which is
 # the whole point: a compute node has no desktop app to borrow resources from.
-# It carries the same sidecars and the same bundled resources the installer
-# ships, laid out the way `Env::headless` looks for them:
+# It carries the sidecars and bundled resources, laid out the way
+# `Env::headless` looks for them:
 #
 #   osd-<version>-<target>/
 #     osd                 the binary (web client compiled in)
@@ -27,7 +27,7 @@ out_dir="${2:-$root/dist-osd}"
 # when they are whole arguments — inside a JS string it reaches node unchanged
 # and `require` fails. Measured on Windows 11: the absolute form errors, the
 # relative form returns the version.
-version="$(cd "$root" && node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+version="$(cd "$root" && cargo metadata --no-deps --format-version 1 | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).packages.find(p=>p.name==="osd-cli").version')"
 
 ext=""
 case "$target" in *windows*) ext=".exe" ;; esac
@@ -41,9 +41,9 @@ cargo build --release --target "$target" --package osd-cli --manifest-path "$roo
 cp "$root/target/$target/release/osd$ext" "$stage/osd$ext"
 
 # The sidecars, under the plain names `sidecar_bin()` looks for next to the
-# executable (Tauri strips the target triple the same way when it bundles).
+# executable (the osd package strips the target triple the same way).
 for name in opencode uv agent-browser; do
-  src="$root/apps/desktop/src-tauri/binaries/$name-$target$ext"
+  src="$root/runtime/binaries/$name-$target$ext"
   if [ ! -e "$src" ]; then
     echo "Missing sidecar: $src (run scripts/dev/fetch-$name.sh $target)" >&2
     exit 1
@@ -81,13 +81,6 @@ copy_resource runtime/harness harness
 copy_resource runtime/acp-server acp-server
 copy_resource examples/climate-trends examples/climate-trends
 
-# The native computer-use providers, when this machine staged them. Optional on
-# purpose: a compute node has no desktop to drive, and the `computer` tool
-# already reports "no provider for this platform" rather than failing. The host
-# layer above is NOT optional — `tools/computer.ts` imports it.
-if [ -d "$root/apps/desktop/src-tauri/computer-use" ]; then
-  copy_resource apps/desktop/src-tauri/computer-use computer-use
-fi
 
 cat > "$stage/README.txt" <<'EOF'
 Open Science Desktop — headless (osd)

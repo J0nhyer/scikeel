@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Fetch the pinned uv binary as a Tauri sidecar
-# (apps/desktop/src-tauri/binaries/uv-<target-triple>). uv provisions the
-# isolated Jupyter environment for the Jupyter MCP integration on demand.
+# Fetch the pinned uv binary for the headless osd package
+# (runtime/binaries/uv-<target-triple>). uv provisions the isolated Jupyter
+# environment for the Jupyter MCP integration on demand.
 set -euo pipefail
 
 UV_VERSION="${UV_VERSION:-0.11.26}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-OUT_DIR="$ROOT/apps/desktop/src-tauri/binaries"
+OUT_DIR="$ROOT/runtime/binaries"
 mkdir -p "$OUT_DIR"
 
 TRIPLE="${1:-$(rustc -Vv | sed -n 's/host: //p')}"

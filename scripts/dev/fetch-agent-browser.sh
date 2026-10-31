@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Fetch the pinned agent-browser binary and its version-matched official skill.
-# The binary becomes a Tauri sidecar; the skill is bundled as an app resource.
+# The binary becomes an osd sidecar; the skill is bundled as an app resource.
 # Runs per-platform locally and in CI so the binary never lives in git.
 # agent-browser ships raw (unarchived) binaries per platform on its releases.
 set -euo pipefail
 
 AGENT_BROWSER_VERSION="${AGENT_BROWSER_VERSION:-0.32.1}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-OUT_DIR="$ROOT/apps/desktop/src-tauri/binaries"
+OUT_DIR="$ROOT/runtime/binaries"
 mkdir -p "$OUT_DIR"
 
 # Resolve the Rust target triple (arg 1 overrides; else host).
