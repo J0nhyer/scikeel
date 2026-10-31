@@ -465,7 +465,26 @@ body {
   }
 }
 .fade-in {
-  animation: fade-in 150ms ease-out 150ms backwards;
+  animation: fade-in 120ms ease-out;
+}
+
+/* Full-screen loading surface used by the client boot gate. The server login
+   handoff renders the same shape and safe-area padding in its ShadowRoot. */
+.loading-surface {
+  min-height: 100svh;
+  box-sizing: border-box;
+  padding: max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right))
+    max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin,
+  .animate-pulse {
+    animation: none !important;
+  }
+  .fade-in {
+    animation: none !important;
+  }
 }
 
 /* App chrome is not a document. Right-clicking a sidebar row or a Screen tab

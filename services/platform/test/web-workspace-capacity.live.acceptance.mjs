@@ -132,8 +132,10 @@ test("real account capacity recovery preserves work, isolates background reconne
       const waiting = await pageFor(identity, locale, true); waitingPages.push(waiting);
       waiting.requests = [];
       waiting.page.on("request", value => { if (new URL(value.url()).pathname === "/v1/whoami") waiting.requests.push(Date.now()); });
-      const label = locale === "en" ? "Waiting for workspace" : "正在等待工作区";
-      await until(async () => (await waiting.page.evaluate(() => document.getElementById("scikeel-login-preparation")?.shadowRoot?.textContent ?? "")).includes(label));
+      await waiting.page.waitForSelector("#scikeel-login-preparation");
+      const preparationText = await waiting.page.evaluate(() => document.getElementById("scikeel-login-preparation")?.shadowRoot?.textContent ?? "");
+      assert.equal(preparationText.includes("Waiting for workspace"), false);
+      assert.equal(preparationText.includes("正在等待工作区"), false);
       for (const width of [1280, 390, 320]) {
         await waiting.page.setViewportSize({ width, height: 900 }); await screenshot(waiting.page, `waiting-${locale}-${width}`);
       }

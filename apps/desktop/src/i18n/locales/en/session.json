@@ -150,6 +150,10 @@
       "aria": "Stop",
       "title": "Interrupt this turn (Esc)"
     },
+    "sending": {
+      "aria": "Sending",
+      "title": "Sending the message…"
+    },
     "send": {
       "aria": "Send"
     },
@@ -284,6 +288,10 @@
     }
   },
   "live": {
+    "boot": {
+      "busy": "Service resources are busy. Please try again shortly.",
+      "retry": "Retry"
+    },
     "recovery": {
       "title": "Workspace connection",
       "retry": "Retry connection",

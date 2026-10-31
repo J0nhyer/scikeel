@@ -19,7 +19,8 @@ export class GatewayWorkspaceError extends Error {
 const messages: Record<string, string> = {
   workspace_stopped: "Workspace is stopped", workspace_unreachable: "Workspace could not be reached",
   runtime_unresponsive: "Runtime is not responding", workspace_status_unknown: "Workspace status could not be verified",
-  workspace_capacity_unavailable: "Workspace capacity is unavailable", workspace_recovery_in_progress: "Workspace recovery is in progress",
+  workspace_capacity_unavailable: "Workspace capacity is unavailable", workspace_slot_busy: "Service resources are busy",
+  workspace_recovery_in_progress: "Workspace recovery is in progress",
   workspace_recovery_cooldown: "Workspace recovery is temporarily limited", workspace_recovery_required: "Workspace recovery is required",
   stale_workspace_context: "Workspace has changed", workspace_cleanup_unverified: "Workspace cleanup could not be verified",
 };

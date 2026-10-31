@@ -150,6 +150,10 @@
       "aria": "Detener",
       "title": "Interrumpir este turno (Esc)"
     },
+    "sending": {
+      "aria": "Enviando",
+      "title": "Enviando el mensaje…"
+    },
     "send": {
       "aria": "Enviar"
     },
@@ -284,6 +288,10 @@
     }
   },
   "live": {
+    "boot": {
+      "busy": "Los recursos del servicio están ocupados. Inténtalo de nuevo en breve.",
+      "retry": "Reintentar"
+    },
     "recovery": {
       "title": "Conexión del espacio de trabajo", "retry": "Reintentar conexión", "restart": "Reiniciar espacio de trabajo", "confirmRestart": "Confirmar reinicio", "cancel": "Cancelar",
       "sharedImpact": "Esto afecta a todos los dispositivos que usan este espacio de trabajo.",

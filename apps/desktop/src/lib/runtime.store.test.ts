@@ -653,6 +653,33 @@ describe("platform connection context", () => {
       expect(mocks.sendPromptSpy).not.toHaveBeenCalled();expect(mocks.abortSession).not.toHaveBeenCalled();
     } finally {useRuntimeStore.getState().suspendPlatformBrowser();await pending;vi.useRealTimers();}
   });
+  it("stops the boot retry loop on a terminal busy result", async () => {
+    vi.useFakeTimers({toFake:["setTimeout","clearTimeout","performance"]});
+    const fetchMock=vi.fn(async()=>new Response(JSON.stringify({
+      error:"Service resources are busy",code:"workspace_slot_busy",stage:"capacity",
+      retryable:false,action:"none",retryAfterMs:0,context:null,
+    }),{status:503,headers:{"content-type":"application/json"}}));
+    vi.stubGlobal("fetch",fetchMock);
+    try {
+      const pending=useRuntimeStore.getState().connectRetry();
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(await pending).toBe(false);
+      expect(useRuntimeStore.getState().status).toBe("error");
+      expect(fetchMock.mock.calls.length).toBeLessThan(5);
+    } finally {vi.useRealTimers();}
+  });
+  it("keeps the short retry window for mid-session Platform Web recovery", async () => {
+    vi.useFakeTimers({toFake:["setTimeout","clearTimeout","performance"]});
+    const fetchMock=vi.fn(async()=>new Response(JSON.stringify({error:"worker unavailable"}),
+      {status:502,headers:{"content-type":"application/json"}}));
+    vi.stubGlobal("fetch",fetchMock);
+    try {
+      const pending=useRuntimeStore.getState().connectRetry();
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(await pending).toBe(false);
+      expect(fetchMock.mock.calls.length).toBeLessThan(20);
+    } finally {vi.useRealTimers();}
+  });
   it.each(["deadline","signout"])("bounds capacity recovery and cancels future requests on %s",async ending=>{
     vi.useFakeTimers({toFake:["setTimeout","clearTimeout","performance"]});
     const fetchMock=vi.fn(async(input:RequestInfo|URL)=>String(input).endsWith("/v1/whoami")

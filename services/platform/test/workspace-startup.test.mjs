@@ -11,7 +11,7 @@ test('normal startup retires only verified unmanaged workers and does not import
   workspaceCatalog:{snapshot:async()=>calls.push('snapshot')},logger:event=>events.push(event)});
  assert.deepEqual(calls,['retire']);
  assert.deepEqual(result,{mode:'serve'});
- assert.deepEqual(events,[{type:'workspace.startup_cleanup',retired:1,blocked:1}]);
+ assert.deepEqual(events,[{type:'workspace.startup_cleanup',adopted:0,retired:1,blocked:1}]);
 });
 
 test('catalog migration imports incomplete account data before shutdown',async()=>{

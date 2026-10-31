@@ -186,7 +186,6 @@ export function SessionView({
   // SSE folds must not repaint this pane. The active thread is selected on its
   // own below (#34).
   const status = useRuntimeStore((s) => s.status);
-  const gatewayWorkspaceReport = useRuntimeStore((s) => s.gatewayWorkspaceReport);
   const switching = useRuntimeStore((s) => s.switching);
   const sessionListReady = useRuntimeStore((s) => s.sessionListReady);
   const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
@@ -214,7 +213,6 @@ export function SessionView({
   const questions = useRuntimeStore((s) => s.questions);
   const interactions = useRuntimeStore((s) => s.interactions);
   const interactionAccount = useRuntimeStore((s) => s.gatewayUser?.id);
-  const signingOut = useRuntimeStore((s) => s.gatewaySigningOut);
   const permissions = useRuntimeStore((s) => s.permissions);
   const sessionParents = useRuntimeStore((s) => s.sessionParents);
   const workspace = useRuntimeStore((s) => s.workspace);
@@ -869,8 +867,9 @@ export function SessionView({
               )}
             </>
           )}
-          {/* The green "ready" dot is noise per pane — only surface trouble. */}
-          {displayStatus !== "ready" && <ConnBadge status={displayStatus} />}
+          {/* The green "ready" dot is noise per pane — only surface trouble.
+              Platform Web owns the one loading surface, so no per-pane badge. */}
+          {!isPlatformWeb && displayStatus !== "ready" && <ConnBadge status={displayStatus} />}
           {!compactNotebooks && uniqueNotebooks.map((nb) => (
             <button
               key={nb.path}
@@ -938,7 +937,7 @@ export function SessionView({
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
           )}
-          {!connected && (
+          {!isPlatformWeb && !connected && (
             <button
               onClick={connect}
               disabled={connecting}
@@ -1001,8 +1000,6 @@ export function SessionView({
             style={zoom !== 1 ? { zoom } : undefined}
             className="relative z-10 mx-auto flex max-w-[760px] flex-col gap-4 px-8 pt-6"
           >
-            {!signingOut && !connected && (!connecting || gatewayWorkspaceReport?.state === "capacity") && isGatewayWeb && focused &&
-              <WorkspaceRecoveryActions report={gatewayWorkspaceReport} waiting={connecting && gatewayWorkspaceReport?.state === "capacity"} />}
             {!connected && !connecting && !isGatewayWeb && (
               <div className="rounded-card border border-border bg-surface p-5 shadow-card">
                 <div className="text-sm font-medium text-text">{t("live.runtime.title")}</div>
@@ -1017,7 +1014,7 @@ export function SessionView({
                 </div>
               </div>
             )}
-            {slowStart && focused && (
+            {slowStart && focused && !isPlatformWeb && (
               // Only for a start that is genuinely taking a while (see
               // useSlowStart) — a normal launch connects before this appears,
               // and nothing should be said about a wait the user never had.
@@ -1244,19 +1241,22 @@ export function SessionView({
               commands={composerCommands}
               disabled={!connected || (working && !collaboration.state.pending) || webReadOnly}
               working={running && !collaboration.state.pending}
+              sending={sending && !collaboration.state.pending}
               onStop={onStopResearch}
               placeholder={
                 webReadOnly
                   ? t("live.placeholder.readOnly")
                   : working
                     ? t("live.placeholder.waiting")
-                    : connecting
-                      ? t("live.placeholder.starting")
-                      : !connected
-                        ? t("live.placeholder.disconnected")
-                        : planAvailable && agentMode === "plan" && !(isGatewayWeb && isPlatformWeb && gatewayRuntime === "opencode")
-                          ? t("composer.placeholder.plan")
-                          : t("composer.placeholder.default")
+                    : isPlatformWeb && !connected
+                      ? t("composer.placeholder.default")
+                      : connecting
+                        ? t("live.placeholder.starting")
+                        : !connected
+                          ? t("live.placeholder.disconnected")
+                          : planAvailable && agentMode === "plan" && !(isGatewayWeb && isPlatformWeb && gatewayRuntime === "opencode")
+                            ? t("composer.placeholder.plan")
+                            : t("composer.placeholder.default")
               }
               // Approval mode belongs to OpenCode. ACP handles permissions on
               // its own terms, while a managed server CLI uses its fixed server
@@ -1367,7 +1367,7 @@ function ZoomMenu({ zoom, onPick }: { zoom: number; onPick: (z: number) => void 
 /** Loading placeholder mirroring the thread's real shapes. */
 function ThreadSkeleton() {
   return (
-    <div className="animate-pulse space-y-4" aria-hidden>
+    <div className="space-y-4" aria-hidden>
       <div className="h-11 rounded-card bg-surface-2" />
       <div className="space-y-2.5 px-1 pt-1">
         <div className="h-3.5 w-11/12 rounded bg-surface-2" />
@@ -1397,6 +1397,7 @@ function ConnBadge({ status }: { status: RuntimeStatus }) {
   const tone = status === "ready" ? "text-ok" : status === "error" ? "text-error" : "text-muted";
   return (
     <span
+      data-testid="conn-badge"
       className={cn("flex items-center gap-1.5 text-xs", tone)}
       title={t("live.connBadge.title", { status: t(`live.connBadge.status.${status}`) })}
     >
@@ -1411,4 +1412,3 @@ function ConnBadge({ status }: { status: RuntimeStatus }) {
     </span>
   );
 }
-import { WorkspaceRecoveryActions } from "./WorkspaceRecoveryActions";

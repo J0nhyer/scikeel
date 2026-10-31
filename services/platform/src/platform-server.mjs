@@ -314,6 +314,7 @@ export class PlatformServer {
     port = 0,
     authStore,
     workerManager,
+    workspaceOwners = null,
     cliRuntime = null,
     modelBroker = null,
     webRoot = null,
@@ -341,6 +342,8 @@ export class PlatformServer {
     this.port = port;
     this.authStore = authStore;
     this.workerManager = workerManager;
+    this.workspaceOwners = workspaceOwners;
+    this.workspaceConnections = new Set();
     this.cliRuntime = cliRuntime;
     this.analyticsRoutes = analyticsRoutes;
     this.analyticsCollector = analyticsCollector;
@@ -713,7 +716,19 @@ export class PlatformServer {
     return { host: address.address, port: address.port };
   }
 
+  disconnectWorkspace(context) {
+    const instanceId = context?.instanceId;
+    const generation = context?.generation;
+    if (typeof instanceId !== "string" || !Number.isSafeInteger(generation)) return;
+    for (const connection of [...this.workspaceConnections]) {
+      if (connection.instanceId !== instanceId || connection.generation !== generation) continue;
+      this.workspaceConnections.delete(connection);
+      try { connection.disconnect(); } catch { /* Transport closure is best-effort. */ }
+    }
+  }
+
   async close() {
+    await this.workspaceOwners?.close();
     clearInterval(this.researchTimer);
     clearInterval(this.attachmentTimer);
     await this.attachmentSweep;
@@ -987,8 +1002,10 @@ export class PlatformServer {
   async #ensureWorker(user, { allowRecovery = true, request } = {}) {
     const workerId = workerIdForUser(user.id);
     const header = request?.headers["x-scikeel-runtime-generation"];
-    await this.workerManager.ensureWorker({ instanceId: workerId, userId: user.id, allowRecovery,
-      ...(header === undefined ? {} : { expectedGeneration: Number(header) }) });
+    const ensureOptions = { instanceId: workerId, userId: user.id, allowRecovery,
+      ...(header === undefined ? {} : { expectedGeneration: Number(header) }) };
+    if (this.workspaceOwners) await this.workspaceOwners.claim(ensureOptions);
+    else await this.workerManager.ensureWorker(ensureOptions);
     return {
       workerId,
       worker: this.workerManager.getWorker(workerId),
@@ -1161,6 +1178,13 @@ export class PlatformServer {
   async #proxy(request, response, access, user, worker) {
     this.#requireWriteContext(request, user, worker);
     await this.#requireAssistantContext(request, response);
+    if ((request.url ?? "").split("?")[0] === "/event") {
+      const connection = { instanceId: worker.id, generation: worker.generation,
+        disconnect: () => { if (!response.destroyed) response.destroy(); if (!request.destroyed) request.destroy(); } };
+      this.workspaceConnections.add(connection);
+      const release = () => this.workspaceConnections.delete(connection);
+      response.once("finish", release); response.once("close", release);
+    }
     try {if(await this.#conversationRead(request,response,user,worker))return;}
     catch(error) {
       const status=[400,403,404,409,503].includes(error.statusCode??error.status)?(error.statusCode??error.status):503;
@@ -2754,8 +2778,14 @@ export class PlatformServer {
           if (!retry && !restart) { sendJson(response, 400, { error: "invalid recovery command" }); return; }
           if (restart && body.instanceId !== workerIdForUser(user.id)) { sendJson(response, 403, { error: "foreign workspace" }); return; }
           const generation = request.headers["x-scikeel-runtime-generation"];
-          sendJson(response, 200, await this.workerManager.recoverWorker({ ...body, userId: user.id, instanceId: workerIdForUser(user.id),
-            ...(retry && generation !== undefined ? { expectedGeneration: Number(generation) } : {}) }), { "cache-control": "no-store" });
+          const instanceId = workerIdForUser(user.id);
+          const report = retry && this.workspaceOwners
+            ? await this.workspaceOwners.claim({ userId: user.id, instanceId,
+                ...(generation === undefined ? {} : { expectedGeneration: Number(generation) }) })
+              .then(() => this.workerManager.workspaceStatus({ userId: user.id, instanceId }))
+            : await this.workerManager.recoverWorker({ ...body, userId: user.id, instanceId,
+                ...(retry && generation !== undefined ? { expectedGeneration: Number(generation) } : {}) });
+          sendJson(response, 200, report, { "cache-control": "no-store" });
           return;
         }
         if(this.workspaceRoutes && path.startsWith("/api/workspace/")) {
@@ -2949,6 +2979,11 @@ export class PlatformServer {
         if(request.aborted||response.destroyed||response.writableEnded)return;
         const lease=this.workerManager.retainWorker?.(worker.id,{readOnly:true,passive:true});
         if(lease){let released=false;const release=()=>{if(!released){released=true;lease.release();}};response.once('finish',release);response.once('close',release);}
+        const connection={instanceId:worker.id,generation:worker.generation,
+          disconnect:()=>{if(!response.destroyed)response.destroy();if(!request.destroyed)request.destroy();}};
+        this.workspaceConnections.add(connection);
+        const releaseConnection=()=>this.workspaceConnections.delete(connection);
+        response.once('finish',releaseConnection);response.once('close',releaseConnection);
         // Open the stream before the workspace announcement: the client has a
         // five second connect budget and the announcement waits for the health
         // probe of a workspace that may still be starting.

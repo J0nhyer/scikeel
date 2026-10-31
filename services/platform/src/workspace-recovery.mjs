@@ -14,6 +14,7 @@ const failures = {
   runtime_unresponsive: ["The workspace runtime is not responding", "runtime", "confirm_restart", 503],
   workspace_status_unknown: ["Workspace status could not be verified", "workspace", "retry", 503],
   workspace_capacity_unavailable: ["Workspace capacity is temporarily unavailable", "capacity", "wait", 503],
+  workspace_slot_busy: ["Service resources are busy", "capacity", "none", 503],
   workspace_recovery_in_progress: ["Workspace recovery is in progress", "recovery", "wait", 503],
   workspace_recovery_cooldown: ["Please wait before restarting the workspace again", "recovery", "wait", 503],
   workspace_recovery_required: ["Reconnect before making workspace changes", "recovery", "retry", 503],

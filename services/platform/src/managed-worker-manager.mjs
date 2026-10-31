@@ -18,11 +18,12 @@ async function inventoryStatus(response) {
   finally{reader.releaseLock();}
 }
 export class ManagedWorkerManager {
-  #workers = new Map(); #starting = new Map(); #queue = Promise.resolve(); #closed = false; #admissions = new Map(); #handoffs = new Map();
+  #workers = new Map(); #starting = new Map(); #queue = Promise.resolve(); #closed = false; #admissions = new Map(); #stopping = new Set();
   constructor({ rootDir, instancesDir = posix.join(rootDir ?? "", "instances"), imageDigest, client, tenantPolicy, fetchImpl = fetch, configureWorker, revokeWorker, admitWorker, refreshWorker, maxResidents=1, now = Date.now, logger = () => {} } = {}) {
     if (typeof rootDir !== "string" || !rootDir.startsWith("/") || rootDir === "/" || posix.normalize(rootDir) !== rootDir ||
         !instancesDir.startsWith("/") || instancesDir === "/" || posix.normalize(instancesDir) !== instancesDir ||
-        !/^sha256:[a-f0-9]{64}$/.test(imageDigest ?? "") || !client || !tenantPolicy || typeof fetchImpl !== "function"||![1,2].includes(maxResidents))
+        !/^sha256:[a-f0-9]{64}$/.test(imageDigest ?? "") || !client || !tenantPolicy || typeof fetchImpl !== "function" ||
+        !Number.isSafeInteger(maxResidents) || maxResidents < 1 || maxResidents > 2)
       throw new Error("invalid managed worker configuration");
     Object.assign(this, { rootDir, instancesDir, imageDigest, client, tenantPolicy, fetchImpl, configureWorker, revokeWorker, admitWorker, refreshWorker, maxResidents,now, logger });
     this.recovery = new WorkspaceRecovery({ rootDir, now, probe: (context, options) => this.#probe(context, options) });
@@ -224,12 +225,10 @@ export class ManagedWorkerManager {
     return recoveryError(code, { context: report.context, action: report.canRestart ? "confirm_restart" : "retry" });
   }
   #checkCapacityScope(record, expectedGeneration) {
-    if (this.#handoffs.has(record.id)) throw this.#capacity("workspace_reassigned", record, record, { category: "handoff" });
     if (expectedGeneration === undefined) return;
-    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1) throw recoveryError("stale_workspace_context", { context: this.#context(record) });
-    const residents=[...this.#workers.values()].filter(other=>other.id!==record.id && ["starting","running"].includes(other.status));
-    const replacement = record.status !== "running" && residents.length>=this.maxResidents&&residents[0];
-    if (replacement) throw this.#capacity("workspace_reassigned", record, replacement, { category: "generation_scope" });
+    if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1) {
+      throw recoveryError("stale_workspace_context", { context: this.#context(record) });
+    }
   }
   ensureWorker({ instanceId, userId, allowRecovery = true, expectedGeneration }) {
     let record;
@@ -266,19 +265,7 @@ export class ManagedWorkerManager {
   }
   async #start(record) {
       const { id: instanceId, userId } = record;
-      const residents=[...this.#workers.values()].filter(other=>other.id!==instanceId&&other.status==='running');
-      if(residents.length>=this.maxResidents){
-        if(this.maxResidents===1)await this.#handoff(residents[0],record);
-        else{
-          const candidates=residents.filter(other=>!other.activeMutations&&!other.maintenance&&!other.cleanupUnverified);
-          let evicted=false,lastError;
-          for(const candidate of candidates){
-            try{await this.#handoff(candidate,record);evicted=true;break;}
-            catch(error){if(!error.capacityReason)throw error;lastError=error;}
-          }
-          if(!evicted)throw lastError??this.#capacity('active_operations',record,residents[0]);
-        }
-      }
+      if (this.residentCount() >= this.maxResidents) throw recoveryError("workspace_slot_busy");
       const registered = await this.client.register({ instanceId, userId });
       record.generation = registered.generation; record.status = "starting";
       try {
@@ -291,11 +278,17 @@ export class ManagedWorkerManager {
         }
         if (admission) this.#admissions.set(instanceId, admission);
         delete record.stoppedGeneration;
-        const started = await this.client.start({ instanceId, generation: record.generation, imageDigest: this.imageDigest });
+        const sandboxStarted = performance.now();
+        let started;
+        try { started = await this.client.start({ instanceId, generation: record.generation, imageDigest: this.imageDigest }); }
+        finally { this.logger({ type: "workspace.startup_stage", stage: "sandbox_start", generation: record.generation, elapsedMs: Math.round(performance.now() - sandboxStarted) }); }
         if (!/^[a-f0-9]{64}$/.test(started.internalToken ?? "")) throw unavailable("managed worker authentication unavailable");
         record.url = started.endpoint; record.runnerUrl = started.runnerEndpoint; record.token = started.internalToken;
         await this.configureWorker?.({ context, access: { url: record.url, runnerUrl: record.runnerUrl, token: record.token } });
-        const response = await this.fetchImpl(`${record.url}/v1/health`, { headers: { authorization: `Bearer ${record.token}` }, signal: AbortSignal.timeout(5000) });
+        const healthStarted = performance.now();
+        let response;
+        try { response = await this.fetchImpl(`${record.url}/v1/health`, { headers: { authorization: `Bearer ${record.token}` }, signal: AbortSignal.timeout(5000) }); }
+        finally { this.logger({ type: "workspace.startup_stage", stage: "health", generation: record.generation, elapsedMs: Math.round(performance.now() - healthStarted) }); }
         if (!response.ok) throw unavailable("managed worker health unavailable");
         this.tenantPolicy.registerAccount(context); record.status = "running";
         try { this.onWorkerReady?.({ context, access: { url:record.url, token:record.token } }); } catch { /* Passive observation is optional. */ }
@@ -352,26 +345,6 @@ export class ManagedWorkerManager {
     return capacityError(reason, { context: this.#context(record), blockedContext: this.#context(blocked),
       activeOperations: blocked.activeOperations, activeMutations: blocked.activeMutations, maintenance: blocked.maintenance, logger: this.logger, ...details });
   }
-  async #handoff(other, requested) {
-    const generation = other.generation;
-    const startedAt = performance.now();
-    const rejected = (reason, details = {}) => this.#capacity(reason, requested, other, { ...details, elapsedMs: performance.now() - startedAt });
-    this.#handoffs.set(other.id, {});
-    try {
-      if (other.activeMutations || other.maintenance) throw rejected("active_operations");
-      if (other.activeOperations) {
-        await new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(rejected("active_operations")), 1000);
-          this.#handoffs.get(other.id).drained = () => { clearTimeout(timer); resolve(); };
-        });
-      }
-      const idle = await this.#idleState(other);
-      if (idle.state !== "idle") throw rejected(idle.state, { category: idle.category });
-      if (this.#closed || other.generation !== generation || other.status !== "running" || other.activeOperations || other.maintenance)
-        throw rejected("active_operations");
-      await this.#stop(other);
-    } finally { this.#handoffs.delete(other.id); }
-  }
   async #idleState(record) {
     const context=this.#context(record);
     if(this.#runtime(context)!=="opencode") {
@@ -400,13 +373,15 @@ export class ManagedWorkerManager {
   async #idle(record) { return (await this.#idleState(record)).state === "idle"; }
   isIdle(context) {
     const record=this.#workers.get(context?.instanceId);
-    if(!record || record.userId!==context.userId || record.generation!==context.generation || record.status!=="running")return Promise.resolve(false);
+    if(!record || record.userId!==context.userId || record.generation!==context.generation || record.status!=="running" ||
+        record.activeOperations || record.activeMutations || record.maintenance || record.cleanupUnverified)
+      return Promise.resolve(false);
     return this.#idle(record);
   }
   async acquireMaintenance(context) {
     const record = this.#workers.get(context?.instanceId);
     if (!record || record.userId !== context.userId || record.generation !== context.generation || record.status !== "running" ||
-        record.maintenance || record.activeMutations || this.#handoffs.has(record.id)) throw unavailable("workspace is busy");
+        record.maintenance || record.activeMutations) throw unavailable("workspace is busy");
     // Set before awaiting runtime status, so a new mutating request cannot race the check.
     record.maintenance = true; record.activeOperations++;
     let released = false;
@@ -418,14 +393,13 @@ export class ManagedWorkerManager {
   retainWorker(instanceId, { readOnly = false, maintenance = false, passive = false } = {}) {
     const record = this.#workers.get(instanceId);
     if (!record || record.status !== "running") throw unavailable("worker is not running");
+    if (this.#stopping.has(instanceId)) throw unavailable("workspace is stopping");
     if (record.maintenance && !readOnly && !maintenance) throw unavailable("workspace environment installation in progress");
     if (passive && !readOnly) throw new Error("passive leases must be read-only");
-    if (!passive && this.#handoffs.has(instanceId)) throw this.#capacity("workspace_reassigned", record, record, { category: "handoff" });
     if (!passive) record.activeOperations++; if (!readOnly) record.activeMutations++; let released = false;
     const generation = record.generation;
     return Object.freeze({ generation, release: () => { if (!released) { released = true; if (record.generation === generation) {
       if (!passive) record.activeOperations--; if (!readOnly) record.activeMutations--;
-      if (!record.activeOperations) this.#handoffs.get(instanceId)?.drained?.();
     } } } });
   }
   /** Live launcher accounts this process does not manage. A cheap check of
@@ -506,41 +480,64 @@ export class ManagedWorkerManager {
   async #stop(record) {
     if (record.generation === null || record.status === "stopped" || record.stoppedGeneration === record.generation) return;
     if (record.maintenance) throw unavailable("workspace environment installation in progress");
-    const context = { userId: record.userId, instanceId: record.id, generation: record.generation };
-    await this.client.stop({ instanceId: record.id, generation: record.generation, reason: "managed-stop" });
-    const registered = await this.client.register({ instanceId: record.id, userId: record.userId });
-    if (!Number.isSafeInteger(registered.generation) || registered.generation <= context.generation) {
-      // The launcher handed out no new generation, so the account may still be
-      // alive. The launcher's own state decides: a retired instance is a
-      // verified cleanup, a live one is not and must stay latched.
-      if (await this.#retired(record.id)) {
-        // The instance is gone, but its authority and its admission slot are
-        // not: both must be released before the account counts as retired.
-        await this.#admissions.get(record.id)?.release(); this.#admissions.delete(record.id);
-        await this.revokeWorker?.(context);
-        try { this.onWorkerRevoked?.(context); } catch { /* Observation cannot block revocation. */ }
-        this.recovery.invalidate(context);
-        record.status = "stopped"; record.cleanupUnverified = false; record.generation = null;
-        record.activeOperations = 0; record.activeMutations = 0;
-        delete record.token; delete record.url; delete record.runnerUrl; delete record.stoppedGeneration;
-        return;
+    this.#stopping.add(record.id);
+    try {
+      const context = { userId: record.userId, instanceId: record.id, generation: record.generation };
+      try { await this.beforeStop?.(context); }
+      catch (error) { this.logger({ type: "workspace.stop_disconnect_failed", reason: error?.code ?? "disconnect_failed" }); }
+      await this.client.stop({ instanceId: record.id, generation: record.generation, reason: "managed-stop" });
+      const registered = await this.client.register({ instanceId: record.id, userId: record.userId });
+      if (!Number.isSafeInteger(registered.generation) || registered.generation <= context.generation) {
+        // The launcher handed out no new generation, so the account may still be
+        // alive. The launcher's own state decides: a retired instance is a
+        // verified cleanup, a live one is not and must stay latched.
+        if (await this.#retired(record.id)) {
+          // The instance is gone, but its authority and its admission slot are
+          // not: both must be released before the account counts as retired.
+          await this.#admissions.get(record.id)?.release(); this.#admissions.delete(record.id);
+          await this.revokeWorker?.(context);
+          try { this.onWorkerRevoked?.(context); } catch { /* Observation cannot block revocation. */ }
+          this.recovery.invalidate(context);
+          record.status = "stopped"; record.cleanupUnverified = false; record.generation = null;
+          record.activeOperations = 0; record.activeMutations = 0;
+          delete record.token; delete record.url; delete record.runnerUrl; delete record.stoppedGeneration;
+          return;
+        }
+        throw recoveryError("workspace_cleanup_unverified", { context });
       }
-      throw recoveryError("workspace_cleanup_unverified", { context });
+      await this.#admissions.get(record.id)?.release(); this.#admissions.delete(record.id);
+      this.tenantPolicy.registerAccount({ ...context, generation: registered.generation, workspaceDir: record.workspaceDir });
+      await this.revokeWorker?.(context);
+      try { this.onWorkerRevoked?.(context); } catch { /* Observation cannot block revocation. */ }
+      this.recovery.invalidate(context);
+      record.generation = registered.generation; record.status = "stopped"; record.cleanupUnverified = false;
+      record.stoppedGeneration = registered.generation;
+      record.activeOperations = 0; record.activeMutations = 0;
+      delete record.token; delete record.url; delete record.runnerUrl;
+    } finally {
+      this.#stopping.delete(record.id);
     }
-    await this.#admissions.get(record.id)?.release(); this.#admissions.delete(record.id);
-    this.tenantPolicy.registerAccount({ ...context, generation: registered.generation, workspaceDir: record.workspaceDir });
-    await this.revokeWorker?.(context);
-    try { this.onWorkerRevoked?.(context); } catch { /* Observation cannot block revocation. */ }
-    this.recovery.invalidate(context);
-    record.generation = registered.generation; record.status = "stopped"; record.cleanupUnverified = false;
-    record.stoppedGeneration = registered.generation;
-    record.activeOperations = 0; record.activeMutations = 0;
-    delete record.token; delete record.url; delete record.runnerUrl;
   }
   stopWorker(instanceId, { expectedGeneration } = {}) {
     return this.#serialized(async () => {
       const record = this.#workers.get(instanceId); if (!record) throw new Error("unknown worker");
       if (expectedGeneration !== undefined && record.generation !== expectedGeneration) throw recoveryError("stale_workspace_context", { context: this.#context(record) });
+      await this.#stop(record); return this.getWorker(instanceId);
+    });
+  }
+  stopWorkerIfIdle(instanceId, { expectedGeneration } = {}) {
+    return this.#serialized(async () => {
+      const record = this.#workers.get(instanceId); if (!record) throw new Error("unknown worker");
+      if (expectedGeneration !== undefined && record.generation !== expectedGeneration)
+        throw recoveryError("stale_workspace_context", { context: this.#context(record) });
+      const busy = () => recoveryError("workspace_slot_busy", { action: "none" });
+      if (record.status !== "running" || record.activeOperations || record.activeMutations ||
+          record.maintenance || record.cleanupUnverified) throw busy();
+      if (!await this.#idle(record)) throw busy();
+      // A lease may have been taken during the idle probe; re-check immediately
+      // before the stop so owner admission never kills admitted work.
+      if (record.status !== "running" || record.activeOperations || record.activeMutations ||
+          record.maintenance || record.cleanupUnverified) throw busy();
       await this.#stop(record); return this.getWorker(instanceId);
     });
   }
@@ -555,6 +552,9 @@ export class ManagedWorkerManager {
     return { ...safe };
   }
   listWorkers() { return [...this.#workers.keys()].map((id) => this.getWorker(id)); }
+  residentCount() {
+    return [...this.#workers.values()].filter(record => ["starting", "running"].includes(record.status)).length;
+  }
   getWorkerAccess(instanceId) {
     const record = this.#workers.get(instanceId); if (!record || record.status !== "running") throw unavailable("worker is not running");
     return { url: record.url, runnerUrl: record.runnerUrl, token: record.token };

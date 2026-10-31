@@ -1,8 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateBrokerConfiguration, brokerProfile, runnerProtocol, waitManagedRuntime } from "../src/sandbox-control-plane.mjs";
+import { validateBrokerConfiguration, brokerProfile, runnerProtocol, waitManagedRuntime, validateCapacity } from "../src/sandbox-control-plane.mjs";
 
 const context = { userId: "a", instanceId: "user-a", generation: 1 };
+test("workspace capacity is one by default and supports only the one/two experiment", () => {
+  assert.deepEqual(validateCapacity(), { maxResidents: 1 });
+  assert.deepEqual(validateCapacity({ maxResidents: 2 }), { maxResidents: 2 });
+  for (const value of [{ maxResidents: 0 }, { maxResidents: 3 }, { maxResidents: 4 }, { maxResidents: 1.5 }])
+    assert.throws(() => validateCapacity(value), /invalid managed capacity/);
+});
 test('native readiness verifies the gateway API without querying OpenCode',async()=>{
   const calls=[];
   await waitManagedRuntime({url:'http://worker',token:'a'.repeat(64)},{runtime:'codex',directory:'/tenant/workspace',timeoutMs:100,

@@ -146,6 +146,20 @@ async function login(client, username, password) {
   return json(response);
 }
 
+test("owner reclaim disconnects only the matching workspace generation", async () => {
+  const f = await makeFixture();
+  const calls = [];
+  f.server.workspaceConnections = new Set([
+    { instanceId: "user-a", generation: 1, disconnect: () => calls.push("a1") },
+    { instanceId: "user-a", generation: 2, disconnect: () => calls.push("a2") },
+    { instanceId: "user-b", generation: 1, disconnect: () => calls.push("b1") },
+  ]);
+  f.server.disconnectWorkspace({ userId: "a", instanceId: "user-a", generation: 1 });
+  assert.deepEqual(calls, ["a1"]);
+  assert.equal(f.server.workspaceConnections.size, 2);
+  await f.server.close();
+});
+
 test("workspace status is authenticated and never starts a worker or reads a catalog", async () => {
   const f = await makeFixture({ tenantPolicy: new TenantPolicy() });
   assert.equal((await fetch(f.base + "/api/workspace/status", { headers: { accept: "application/json" } })).status, 401);
@@ -190,6 +204,32 @@ test("workspace recovery denies foreign origin/account and malformed restart wit
   assert.equal(calls.length, 0);
   assert.equal((await submit({ action: "retry" })).status, 200);
   assert.deepEqual(calls[0], { userId: user.id, instanceId: `user-${user.id}`, action: "retry", expectedGeneration: 1 });
+});
+test("workspace recovery retry goes through the owner registry", async () => {
+  const events = [];
+  const f = await makeFixture({ tenantPolicy: new TenantPolicy(), logger: event => events.push(event) });
+  const client = makeClient(f.base);
+  const { user } = await login(client, "admin", "admin-password");
+  const calls = [];
+  f.server.workspaceOwners = {
+    claim: async input => calls.push(["claim", input]),
+    close: async () => {},
+  };
+  f.manager.recoverWorker = async () => { throw new Error("direct recovery must not run"); };
+  f.manager.workspaceStatus = async input => {
+    calls.push(["status", input]);
+    return { context: { instanceId: input.instanceId, generation: 2 }, state: "healthy", activity: "unknown", canRestart: false, retryAfterMs: 0 };
+  };
+  const response = await client.request("/api/workspace/recover", { method: "POST",
+    headers: { origin: f.base, "content-type": "application/json", accept: "application/json",
+      "x-scikeel-runtime-generation": "1" }, body: JSON.stringify({ action: "retry" }) });
+  const body = await response.text();
+  assert.equal(response.status, 200, `${body} ${JSON.stringify(events)}`);
+  assert.equal(JSON.parse(body).state, "healthy");
+  assert.deepEqual(calls, [
+    ["claim", { userId: user.id, instanceId: `user-${user.id}`, expectedGeneration: 1 }],
+    ["status", { userId: user.id, instanceId: `user-${user.id}` }],
+  ]);
 });
 test("capacity responses retain correlation and delay without exposing internal causes, including scoped event reads",async()=>{
   const f=await makeFixture({tenantPolicy:new TenantPolicy()});const client=makeClient(f.base);
@@ -1060,15 +1100,21 @@ test("login preloads public client assets without starting a workspace, and the 
   assert.equal(app.status, 200);
   const prepared = await app.text();
   assert.match(prepared, /scikeel:login-ready/);
-  assert.match(prepared, /scikeel:return-to-login/);
-  assert.match(prepared, /scikeel:return-to-login-failed/);
-  assert.match(prepared, /back\.hidden = true/);
+  assert.match(prepared, /data-scikeel-boot-gate/);
+  assert.match(prepared, /scikeel-loading/);
+  assert.doesNotMatch(prepared, /scikeel:return-to-login/);
+  assert.doesNotMatch(prepared, /back\.hidden/);
 });
 
 test("logout revokes only its independent login session without touching an unavailable workspace", async () => {
   const f = await makeFixture();
   const a = makeClient(f.base); const b = makeClient(f.base);
   await login(a, "admin", "admin-password"); await login(b, "admin", "admin-password");
+  const ownerCalls = [];
+  f.server.workspaceOwners = {
+    claim: async input => ownerCalls.push(["claim", input]),
+    close: async () => ownerCalls.push(["close"]),
+  };
   let workerCalls = 0;
   const forbidden = async () => { workerCalls++; throw new Error("logout must not touch workspace"); };
   f.manager.ensureWorker = forbidden;
@@ -1081,6 +1127,7 @@ test("logout revokes only its independent login session without touching an unav
     assert.equal((await a.request("/api/me", { headers: { accept: "application/json" } })).status, 401);
     assert.equal((await b.request("/api/me", { headers: { accept: "application/json" } })).status, 200);
     assert.equal(workerCalls, 0);
+    assert.deepEqual(ownerCalls, []);
   } finally { f.manager.stopWorker = originalStop; }
 });
 

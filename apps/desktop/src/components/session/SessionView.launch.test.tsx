@@ -78,30 +78,41 @@ describe("a session pane using an administrator-managed CLI", () => {
 });
 
 describe("Web workspace loading messages", () => {
-  it("stops the loading message and offers reconnection after Web loading fails", async () => {
+  it("stops the loading message and does not duplicate reconnection after Web loading fails", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     webMode.enabled = true;
     useRuntimeStore.setState({ status: "error", sessionListReady: false, error: "Could not load your conversations.", bootstrap: vi.fn(async () => {}) });
     renderAt("/live");
     await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
-    expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
     expect(screen.queryByText("Connecting to your workspace…")).not.toBeInTheDocument();
     expect(screen.queryByText("Loading conversations…")).not.toBeInTheDocument();
     expect(screen.queryByText("OpenCode runtime")).not.toBeInTheDocument();
   });
 
-  it.each([
-    ["connecting", "Connecting to your workspace…"],
-    ["ready", "Loading conversations…"],
-  ] as const)("explains %s without desktop runtime terminology", async (status, title) => {
+  it("shows no duplicate connection indicator or starting placeholder on Gateway Web", () => {
+    webMode.enabled = true;
+    useRuntimeStore.setState({ status: "connecting", sessionListReady: false, bootstrap: vi.fn(async () => {}) });
+    const view = renderAt("/live");
+    expect(screen.queryByTestId("conn-badge")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /connect/i })).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Starting the runtime…")).not.toBeInTheDocument();
+    expect(screen.queryByText(/connecting to your workspace/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/starting the runtime/i)).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it.each(["connecting", "ready"] as const)("does not narrate the managed workspace while %s", async status => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     webMode.enabled = true;
     useRuntimeStore.setState({ status, sessionListReady: false, error: null, bootstrap: vi.fn(async () => {}) });
-    renderAt("/live");
+    const view = renderAt("/live");
     await act(async () => { await vi.advanceTimersByTimeAsync(6100); });
-    expect(screen.getByText(title)).toBeInTheDocument();
+    expect(screen.queryByText("Connecting to your workspace…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading conversations…")).not.toBeInTheDocument();
     expect(screen.queryByText("Starting the local runtime…")).not.toBeInTheDocument();
     expect(screen.queryByText(/macOS may ask/)).not.toBeInTheDocument();
+    view.unmount();
   });
 });
 

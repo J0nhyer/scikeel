@@ -14,6 +14,8 @@ import {configureNativeEffects} from './native-effects.mjs';
 import {createAssistantRuntimeAuthority} from './assistant-runtime-authority.mjs';
 import {WorkspaceCatalog,catalogCursorKey} from './workspace-catalog.mjs';
 import {prepareWorkspaceService} from './workspace-startup.mjs';
+import {ActiveOwnerStore} from './active-owner-store.mjs';
+import {ActiveWorkspaceOwners} from './active-workspace-owners.mjs';
 
 function env(name, fallback = "") {
   return process.env[name] ?? fallback;
@@ -41,7 +43,9 @@ function boolEnv(name, fallback) {
 }
 
 function numberEnv(name, fallback) {
-  const value = Number(env(name));
+  const raw = env(name);
+  if (raw === "") return fallback;
+  const value = Number(raw);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
@@ -52,6 +56,9 @@ function optionalPath(name, fallback) {
 
 const dataDir = resolve(env("PLATFORM_DATA_DIR", "/srv/osd/platform"));
 const sandbox = await loadSandboxImageConfiguration(sandboxConfiguration(process.env, dataDir));
+const workspaceCapacity = {
+  maxResidents: numberEnv("PLATFORM_MAX_RESIDENTS", 1),
+};
 const adminUsername = env("PLATFORM_ADMIN_USERNAME", "admin");
 const adminPassword = env("PLATFORM_ADMIN_PASSWORD");
 const authStore = new AuthStore({
@@ -59,7 +66,19 @@ const authStore = new AuthStore({
   bootstrapAdmin: adminPassword ? { username: adminUsername, password: adminPassword } : null,
 });
 const controlPlane = sandbox?.enabled ? await createSandboxControlPlane({ configuration: sandbox, dataDir,
-  logger: event => console.error(JSON.stringify(event)) }) : null;
+  capacity: workspaceCapacity, logger: event => console.error(JSON.stringify(event)) }) : null;
+const ownerStore = controlPlane ? new ActiveOwnerStore({
+  filePath: join(dataDir, "workers", "active-owners.json"),
+  maxOwners: workspaceCapacity.maxResidents,
+  logger: event => console.error(JSON.stringify(event)),
+}) : null;
+const workspaceOwners = controlPlane ? new ActiveWorkspaceOwners({
+  manager: controlPlane.manager,
+  store: ownerStore,
+  maxResidents: workspaceCapacity.maxResidents,
+  instanceIdForUser: userId => `user-${userId}`,
+  logger: event => console.error(JSON.stringify(event)),
+}) : null;
 let analyticsStore=null;
 if(boolEnv('PLATFORM_AGENT_ANALYTICS',true)){
   try{analyticsStore=createAnalyticsStore({path:join(dataDir,'agent-analytics','metadata.sqlite')});}
@@ -104,6 +123,7 @@ const platform = new PlatformServer({
   port: numberEnv("PLATFORM_PORT", 4790),
   authStore,
   workerManager,
+  workspaceOwners,
   analyticsCollector,
   analyticsRoutes:analyticsStore?createAnalyticsRoutes({store:analyticsStore,authStore}):null,
   cliRuntime,
@@ -130,6 +150,7 @@ if(controlPlane) {
     if(cliRuntime.runtimeForUser(context.userId)==='opencode')analyticsCollector?.workerReady({scope:scope(context),access});
   };
   controlPlane.manager.onWorkerRevoked=context=>analyticsCollector?.workerRevoked(scope(context));
+  controlPlane.manager.beforeStop=context=>platform.disconnectWorkspace(context);
   controlPlane.model.onAnalyticsAttempt=(context,fact)=>analyticsCollector?.recordAttempt(context?scope(context):null,fact);
   controlPlane.nativeJobs.logger=event=>console.error(JSON.stringify(event));
   cliRuntime.assistantAuthority = createAssistantRuntimeAuthority({configuration:sandbox,controlPlane,platform});
@@ -189,6 +210,11 @@ try {
     port: address.port,
     dataDir,
   }));
+  if (workspaceOwners) {
+    const activeUserIds = await authStore.activeUserIds();
+    void workspaceOwners.prewarm({ activeUserIds })
+      .catch(error => console.error(JSON.stringify({ type: "workspace.prewarm_failed", code: error?.code })));
+  }
   }
 } catch (error) {
   console.error(error?.stack ?? error);

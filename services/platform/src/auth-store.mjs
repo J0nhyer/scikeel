@@ -303,6 +303,14 @@ export class AuthStore {
     });
   }
 
+  async activeUserIds({ now = this.clock() } = {}) {
+    await this.init();
+    const disabled = new Set(this.data.users.filter((user) => user.disabled).map((user) => user.id));
+    return [...new Set(this.data.sessions
+      .filter((session) => session.expiresAt > now && !disabled.has(session.userId))
+      .map((session) => session.userId))];
+  }
+
   async getUser(userId) {
     await this.init();
     return publicUser(this.data.users.find((user) => user.id === userId));
