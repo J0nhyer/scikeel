@@ -7,12 +7,14 @@ export function ResearchDecisionCard({
   busy,
   onAnswer,
   onPause,
+  onDiscard,
 }: {
   decision: ResearchDecision;
   paused: boolean;
   busy: boolean;
   onAnswer: (answer: string) => unknown | Promise<unknown>;
   onPause: () => unknown | Promise<unknown>;
+  onDiscard?: () => unknown | Promise<unknown>;
 }) {
   const { t } = useTranslation("session");
   const [answer, setAnswer] = useState("");
@@ -67,6 +69,18 @@ export function ResearchDecisionCard({
         >
           {t("collaboration.pause")}
         </button>
+        {onDiscard && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              if (window.confirm(t("collaboration.discardConfirm"))) void onDiscard();
+            }}
+            className="rounded-input border border-border px-3 py-2 text-sm text-text disabled:opacity-50"
+          >
+            {t("collaboration.discard")}
+          </button>
+        )}
       </div>
     </section>
   );

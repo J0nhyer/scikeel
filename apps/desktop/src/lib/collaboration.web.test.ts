@@ -1,9 +1,58 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useCollaboration, defaultCollaboration, prepareCollaborationSend } from "./collaboration";
+import { collaborationPollingEnabled, useCollaboration, defaultCollaboration, prepareCollaborationSend } from "./collaboration";
 vi.mock("./webMode", () => ({ isGatewayWeb: true, isPlatformWeb: false, gatewayOrigin: () => "" }));
 afterEach(() => vi.restoreAllMocks());
 describe("conversation collaboration", () => {
+  it("enables collaboration polling for platform Web independently of the selected runtime", () => {
+    expect(collaborationPollingEnabled({ isGatewayWeb: true, isPlatformWeb: true, connected: true })).toBe(true);
+    expect(collaborationPollingEnabled({ isGatewayWeb: true, isPlatformWeb: true, connected: false })).toBe(false);
+    expect(collaborationPollingEnabled({ isGatewayWeb: true, isPlatformWeb: false, connected: true })).toBe(false);
+    expect(collaborationPollingEnabled({ isGatewayWeb: false, isPlatformWeb: true, connected: true })).toBe(false);
+  });
+
+  it("fences pause to the visible execution and revision", async () => {
+    const state = {
+      ...defaultCollaboration,
+      phase: "waiting_input" as const,
+      revision: 7,
+      execution: 3,
+      pending: { id: "d", execution: 3, kind: "method" as const, question: "Method?", suggestedAnswer: "A" },
+    };
+    const bodies: unknown[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (body.action === "pause") bodies.push(body);
+      return new Response(JSON.stringify({ state, available: true }), { status: 200 });
+    });
+    const view = renderHook(() => useCollaboration("ses_test", true));
+    await waitFor(() => expect(view.result.current.state.pending?.id).toBe("d"));
+    await act(() => view.result.current.pause());
+    expect(bodies).toContainEqual({ action: "pause", execution: 3, revision: 7 });
+    view.unmount();
+  });
+
+  it("discards the visible decision with its execution and revision", async () => {
+    const state = {
+      ...defaultCollaboration,
+      phase: "waiting_input" as const,
+      revision: 9,
+      execution: 4,
+      pending: { id: "d2", execution: 4, kind: "method" as const, question: "Method?", suggestedAnswer: "A" },
+    };
+    const bodies: unknown[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (body.action === "discard") bodies.push(body);
+      return new Response(JSON.stringify({ state, available: true }), { status: 200 });
+    });
+    const view = renderHook(() => useCollaboration("ses_test", true));
+    await waitFor(() => expect(view.result.current.state.pending?.id).toBe("d2"));
+    await act(() => view.result.current.discard());
+    expect(bodies).toContainEqual({ action: "discard", id: "d2", execution: 4, revision: 9 });
+    view.unmount();
+  });
+
   it("restores a pending decision without starting work and does not lose it after an answer failure", async () => {
     const state = {
       ...defaultCollaboration,

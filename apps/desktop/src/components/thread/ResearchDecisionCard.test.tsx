@@ -55,4 +55,20 @@ describe("durable research decisions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     expect(pause).toHaveBeenCalledOnce();
   });
+  it("offers an explicit discard action for an obsolete decision", () => {
+    const discard = vi.fn();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <ResearchDecisionCard
+        decision={{ ...decision, suggestedAnswer: "" }}
+        paused={true}
+        busy={false}
+        onAnswer={vi.fn()}
+        onPause={vi.fn()}
+        onDiscard={discard}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Discard decision" }));
+    expect(discard).toHaveBeenCalledOnce();
+  });
 });

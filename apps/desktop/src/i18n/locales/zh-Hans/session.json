@@ -773,6 +773,8 @@
     "submit": "确认答复",
     "pause": "暂停",
     "paused": "执行已暂停。保存答复不会自动重启任务。",
+    "discard": "放弃决定",
+    "discardConfirm": "放弃这个研究决定？当前回合会停止。",
     "retry": "重试",
     "savedDecisions": "已确认的科研决策",
     "suggestion": "建议",

@@ -84,6 +84,18 @@ export async function prepareCollaborationSend(sessionId: string, draftMode?: Co
   if (!ready.available) throw new Error("Collaboration runtime is not ready. Reload and retry.");
   return ready.state.revision;
 }
+/** Visibility is a platform capability, not a property of the selected assistant. */
+export function collaborationPollingEnabled({
+  isGatewayWeb,
+  isPlatformWeb,
+  connected,
+}: {
+  isGatewayWeb: boolean;
+  isPlatformWeb: boolean;
+  connected: boolean;
+}): boolean {
+  return isGatewayWeb && isPlatformWeb && connected;
+}
 const pageUsers = new Map<string, number>();
 /** Read-only loading never begins or resumes a model turn. */
 export function useCollaboration(sessionId: string | null, enabled: boolean) {
@@ -232,6 +244,16 @@ export function useCollaboration(sessionId: string | null, enabled: boolean) {
             answer,
           })
         : Promise.resolve(false),
-    pause: () => action({ action: "pause" }),
+    pause: () =>
+      action({ action: "pause", execution: result.state.execution, revision: result.state.revision }),
+    discard: () =>
+      result.state.pending
+        ? action({
+            action: "discard",
+            id: result.state.pending.id,
+            execution: result.state.pending.execution,
+            revision: result.state.revision,
+          })
+        : Promise.resolve(false),
   };
 }
