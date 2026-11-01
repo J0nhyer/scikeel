@@ -2029,12 +2029,17 @@ export class PlatformServer {
     // The plugin registers while configureWorker is still awaiting runtime readiness.
     if(body.action==="capability"&&["starting","running"].includes(worker.status)){this.collaborationCapabilities.set(context.userId,context.generation);return {ready:true};}
     if(worker.status!=="running")throw new Error("Collaboration worker unavailable");
-    if(body.action==="checkpoint"&&(!Number.isSafeInteger(body.execution)||body.execution<1))throw new Error("Research execution changed");
+    if(body.action==="checkpoint"&&body.execution!==undefined&&(!Number.isSafeInteger(body.execution)||body.execution<1))throw new Error("Research execution changed");
     const access=this.workerManager.getWorkerAccess(context.instanceId);
     // Native roots and descendants are owned by the native session store; the
     // OpenCode authority remains responsible for OpenCode sessions only.
     if(this.tenantPolicy && !this.cliRuntime?.isManaged(context.userId))await this.sessionAuthority.ensure(context,body.sessionId);
     const owner=await this.#collaborationOwner({id:context.userId},body.sessionId,access,worker);
+    if(body.action==="checkpoint"&&body.execution===undefined){
+      // The installed OpenCode plugin predates the explicit execution fence.
+      // Native effects always send it; this keeps the older plugin compatible.
+      body={...body,execution:(await this.collaboration.get(owner)).execution};
+    }
     if(body.action==="checkpoint")return {state:await this.collaboration.checkpoint(owner,body)};
     if(body.action==="state")return {state:await this.collaboration.get(owner)};
     if(body.action==="delivery") {

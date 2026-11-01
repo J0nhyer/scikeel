@@ -20,7 +20,7 @@ for(const mode of ["answered","pending","stale","stop","reply-failure","suspende
   tool_input:{nativeTool,nativeInput,canonicalInput:nativeInput}});
  let transport,batch=0,resumed=false,blockedBeforeAnswer=false,current=true,released=0,aborted=0,replied=0;
  const command=()=>transport.authorizeEffect({...context,turnIdentity:identity},hook("after-answer","exec_command",{cmd:"printf approved"}));
- transport=new ManagedNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),delayMs:1,
+ transport=new ManagedNativeJobs({tenantPolicy:new TenantPolicy({accounts:[context]}),delayMs:1,checkpointHoldMs:20,
   issueNativeGrant:async()=>({identityRevision:"owned-profile",configuration:{model:"approved"},renew(){},async revoke(){}}),
   workerManager:{ensureWorker:async()=>({generation:1}),retainWorker:()=>({generation:1,release(){released++;}})},
   files:{job:async(_owner,request)=>{
@@ -38,11 +38,14 @@ for(const mode of ["answered","pending","stale","stop","reply-failure","suspende
    return {jobId:request.jobId,status:"completed",...acceptance,events:[]};
   }}});
  transport.configureEffects({prepare:async()=>({researchExecution:7}),permissions:{authorize:async()=>({allowed:true}),assertCurrent:async()=>current},
-  callTool:async()=>{
+  callTool:async({signal})=>{
    if(mode==="pending"){await assert.rejects(command());blockedBeforeAnswer=true;}
    if(mode==="stale")current=false;
    if(mode==="stop")controller.abort();
-   if(mode==="suspended")throw new ToolOutcomeError(makeToolOutcome("research_checkpoint_suspended",{source:"collaboration",correlationId:"checkpoint"}));
+   if(mode==="suspended")await new Promise((_,reject)=>{
+    if(signal.aborted)reject(signal.reason);
+    else signal.addEventListener("abort",()=>reject(signal.reason),{once:true});
+   });
    return JSON.stringify({decision:"approved-checkpoint",userAnswer:"Approved"});
   }});
  const running=transport.run({userId:"a",session,model:"approved",text:"Research",turnIdentity:identity,identityRevision:"owned-profile",signal:controller.signal,emit:async()=>{}});

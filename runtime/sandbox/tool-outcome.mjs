@@ -14,7 +14,6 @@ const rows = [
   ["edit_ambiguous_match", "input", "The replacement matches more than one location.", "Read the file and supply unique surrounding text.", "repair_input"],
   ["edit_no_change", "input", "The replacement would make no change.", "Verify whether the requested content already exists.", "repair_input"],
   ["tool_unavailable", "input", "The selected tool is unavailable.", "Use the current available-tool list.", "never"],
-  ["research_checkpoint_suspended", "interrupted", "Waiting for the user's research decision.", "Answer the decision, then send a new message to continue.", "never"],
   ["execution_cancelled", "cancelled", "The execution was cancelled.", "Review any partial effects before continuing.", "never"],
   ["execution_interrupted", "interrupted", "The execution was interrupted.", "Check its effect before starting another call.", "never"],
   ["tool_internal_error", "internal", "The tool could not complete.", "Use its correlation identifier to inspect the failure.", "never"]

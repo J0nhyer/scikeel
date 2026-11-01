@@ -1,7 +1,7 @@
 import {posix} from "node:path";
 import {effectRequest,effectDigest,validateNativeTool} from '../../../runtime/sandbox/native-tools.mjs';
 import {networkStepRequest} from '../../../runtime/sandbox/native-network.mjs';
-import {readToolError} from '../../../packages/sdk/src/tool-outcome.mjs';
+import {makeToolOutcome,readToolError} from '../../../packages/sdk/src/tool-outcome.mjs';
 
 const sameIdentity=(left,right)=>left&&right&&Object.keys(left).length===8&&Object.keys(right).length===8&&
   Object.keys(left).every(key=>left[key]===right[key]);
@@ -23,11 +23,13 @@ const failureCodes=new Set(['historical_source_unavailable','historical_source_c
 // the long-lived worker lease; it never spawns a model process on the platform.
 export class SandboxNativeJobs {
   #turns=new Map(); #effects;
-  constructor({files,workerManager,tenantPolicy,issueNativeGrant=null,delayMs=250,logger=()=>{}}) {
+  constructor({files,workerManager,tenantPolicy,issueNativeGrant=null,delayMs=250,logger=()=>{},checkpointHoldMs=300000}) {
     if(!files || !workerManager || !tenantPolicy || !Number.isSafeInteger(delayMs) || delayMs<1 || delayMs>5000)
       throw new Error("invalid native job transport");
-    if(issueNativeGrant!==null&&typeof issueNativeGrant!=='function'||typeof logger!=='function')throw new Error('invalid native grant authority');
-    Object.assign(this,{files,workerManager,tenantPolicy,issueNativeGrant,delayMs,logger});
+    if(issueNativeGrant!==null&&typeof issueNativeGrant!=='function'||typeof logger!=='function'||
+      !Number.isSafeInteger(checkpointHoldMs)||checkpointHoldMs<1||checkpointHoldMs>600000)
+      throw new Error('invalid native grant authority');
+    Object.assign(this,{files,workerManager,tenantPolicy,issueNativeGrant,delayMs,logger,checkpointHoldMs});
   }
   #recordFailure(error,operation,identity,jobId){
     const reason=failureCodes.has(error?.code)?error.code:failureMessages.has(error?.message)?
@@ -110,20 +112,28 @@ export class SandboxNativeJobs {
     record.used=true;
     signal.throwIfAborted();
     turn.activeTool={type:'tool',callID:event.callId,tool:event.tool,state:{status:'running',input}};turn.activeToolId=event.id;
+    let checkpointTimer,checkpointExpired=false;
+    const checkpointController=event.tool==='research_checkpoint'?new AbortController():null;
+    if(checkpointController)checkpointTimer=setTimeout(()=>{
+      checkpointExpired=true;
+      checkpointController.abort(new Error('checkpoint hold expired'));
+    },this.checkpointHoldMs);
     try{
       await emit({...structuredClone(turn.activeTool),...event,type:'tool',state:structuredClone(turn.activeTool.state)});
       signal.throwIfAborted();
       if(!this.executionScope(turn.identity)||turn.barrier&&turn.barrier!==event.callId)throw Error('Native tool authorization changed');
       let text,outcome;
+      const callSignal=checkpointController?AbortSignal.any([signal,checkpointController.signal]):signal;
       try{text=await this.#effects.callTool({context,identity:structuredClone(turn.identity),sessionId:turn.session.id,callId:event.callId,
-        tool:event.tool,input,signal});}
+        tool:event.tool,input,signal:callSignal});}
       catch(error){
-        outcome=readToolError(JSON.stringify({error:error?.outcome}));
-        if(!outcome||outcome.correlationId!==event.callId)throw error;
-        if(outcome.code==='research_checkpoint_suspended'){
+        if(checkpointExpired){
+          outcome=makeToolOutcome('execution_interrupted',{source:'collaboration',correlationId:event.callId});
           await emit({...event,type:'tool',callID:event.callId,state:{status:'error',input,error:JSON.stringify({error:outcome}),metadata:{scikeelOutcome:outcome}}});
           throw new Error('native checkpoint suspended');
         }
+        outcome=readToolError(JSON.stringify({error:error?.outcome}));
+        if(!outcome||outcome.correlationId!==event.callId)throw error;
         text=JSON.stringify({error:outcome});
       }
       signal.throwIfAborted();
@@ -140,7 +150,10 @@ export class SandboxNativeJobs {
       if(reply?.replied!==true)throw Error('Native tool result unavailable');
       await emit({...event,type:'tool',callID:event.callId,state:outcome?{status:'error',input,error:text,metadata:{scikeelOutcome:outcome}}:
         {status:'completed',input,output:text}});
-    }finally{turn.activeTool=null;turn.activeToolId=null;}
+    }finally{
+      if(checkpointTimer)clearTimeout(checkpointTimer);
+      turn.activeTool=null;turn.activeToolId=null;
+    }
   }
   async inspect(context) {
     this.tenantPolicy.account(context);

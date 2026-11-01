@@ -4,8 +4,7 @@ import {makeToolOutcome,ToolOutcomeError} from '../../../packages/sdk/src/tool-o
 import {runNativeNetwork} from './native-network.mjs';
 
 // Native transport shares platform research/permission authorities, not a second policy engine.
-export function configureNativeEffects({nativeJobs,cliRuntime,platform,workerManager,tenantPolicy,networkTool=null,checkpointHoldMs=300000}){
- if(!Number.isSafeInteger(checkpointHoldMs)||checkpointHoldMs<1||checkpointHoldMs>600000)throw new Error('invalid checkpoint hold');
+export function configureNativeEffects({nativeJobs,cliRuntime,platform,workerManager,tenantPolicy,networkTool=null}){
  const current=identity=>{
   const scope=nativeJobs.executionScope(identity),worker=scope&&workerManager.getWorker(scope.context.instanceId);
   return Boolean(scope&&worker?.userId===identity.userId&&worker.generation===identity.generation&&worker.status==='running'&&
@@ -60,7 +59,7 @@ export function configureNativeEffects({nativeJobs,cliRuntime,platform,workerMan
    };
    if(['research_checkpoint','research_delivery'].includes(tool)){
     // The callback is in-process; this placeholder is never transmitted or used as authority.
-    const hooks=collaborationHooks({token:'0'.repeat(64),request,checkpointHoldMs:tool==='research_checkpoint'?checkpointHoldMs:undefined});
+    const hooks=collaborationHooks({token:'0'.repeat(64),request});
     try{return await hooks.tool[tool].execute(input,{sessionID:sessionId,callID:callId,abort:signal});}
     catch(error){
      if(['delivery_missing_input','delivery_mode_mismatch','delivery_execution_paused'].includes(error.code))
