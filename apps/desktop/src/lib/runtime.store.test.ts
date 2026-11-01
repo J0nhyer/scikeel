@@ -1449,6 +1449,38 @@ describe("gateway runtime selection", () => {
         expect(useRuntimeStore.getState().defaultModel).toBe("codex/gpt-deep");
       });
 
+      it("keeps a ready catalog usable while its background refresh is in flight", async () => {
+        let answer!: (response: Response) => void;
+        vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { answer = resolve; })));
+        useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready", currentId: "ses_a",
+          gatewayRuntimes: [codexCatalog(["gpt-deep"], "gpt-deep")], defaultModel: "codex/gpt-deep",
+          sessionModels: { ses_a: "codex/gpt-deep" } });
+        const refresh = useRuntimeStore.getState().refreshGatewayRuntimes();
+        expect(useRuntimeStore.getState().gatewayCatalogState).toBe("ready");
+        await useRuntimeStore.getState().sendPrompt("research", "ses_a");
+        expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_a", "research", undefined, "codex/gpt-deep", undefined);
+        answer(new Response(JSON.stringify({ runtime: "codex", available: [codexCatalog(["gpt-deep"], "gpt-deep")] }), { status: 200 }));
+        await refresh;
+      });
+
+      it("sends the reconciled model when a refresh changes the catalog during draft creation", async () => {
+        vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ runtime: "codex",
+          available: [codexCatalog(["gpt-new"], "gpt-new")] }), { status: 200 })));
+        let release!: () => void;
+        mocks.createGate = new Promise<void>((resolve) => { release = resolve; });
+        useRuntimeStore.setState({ gatewayRuntime: "codex", gatewayCatalogState: "ready", currentId: null,
+          gatewayRuntimes: [codexCatalog(["gpt-old"], "gpt-old")], defaultModel: "codex/gpt-old",
+          gatewayWorkspace: "/ws/base", workspace: "/ws/base", sessionModels: { "draft:catalog": "codex/gpt-old" } });
+        const send = useRuntimeStore.getState().sendPrompt("research", undefined, "draft:catalog");
+        await vi.waitFor(() => expect(mocks.createSessionSpy).toHaveBeenCalledOnce());
+        await useRuntimeStore.getState().refreshGatewayRuntimes();
+        expect(useRuntimeStore.getState().sessionModels["draft:catalog"]).toBeUndefined();
+        release();
+        await send;
+        expect(mocks.sendPromptFullSpy).toHaveBeenLastCalledWith("ses_new", "research", undefined, "codex/gpt-new", undefined);
+        expect(useRuntimeStore.getState().error).toBeNull();
+      });
+
       it("shows the effort control for a managed assistant and sends the level the user chose", async () => {
         await loadWithManagedAssistant();
         render(createElement(WebModelPicker, { sessionId: "ses_a" }));

@@ -4,14 +4,17 @@ import { useToastStore } from "@/lib/toast";
 import { StateNotice } from "./StateNotice";
 describe("persistent state explanations", () => {
   beforeEach(() => useToastStore.getState().reset());
-  it("closes only explanation and preserves recovery through remount", () => {
+  it("closes the whole notice and keeps it closed through remount", () => {
     const run = vi.fn();
     const props = { issueId: "load-1", summary: "Unavailable", detail: "Network error", action: { label: "Retry", run } };
     const view = render(<StateNotice {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: "Close details" }));
-    expect(screen.getByText("Network error")).not.toBeVisible(); expect(run).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Close notification" }));
+    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText("Network error")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(run).not.toHaveBeenCalled();
     view.unmount(); render(<StateNotice {...props} />);
-    expect(screen.getByText("Network error")).not.toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" })); expect(run).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText("Network error")).not.toBeInTheDocument();
   });
 });

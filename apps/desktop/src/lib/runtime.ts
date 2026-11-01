@@ -3909,7 +3909,16 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     const observedContext = get().gatewayContext;
     const observedClient = opencodeClient;
     const observedRevision = get().gatewayPolicyRevision;
-    set({ gatewayCatalogState: "loading" });
+    // A periodic/focus refresh must not take a working catalog away from the
+    // composer: mark loading only when there is no usable catalog to keep.
+    // Otherwise a send that begins during the refresh is rejected by the
+    // send-time catalog fence even though the catalog it already has is fine.
+    const before = get();
+    const usable = !!selected &&
+      (before.gatewayCatalogState === "ready" || before.gatewayCatalogState === "limited") &&
+      before.gatewayRuntimes.some((option) => option.runtime === selected && option.enabled) &&
+      webModelChoices(selected, before.providers, before.gatewayRuntimes).length > 0;
+    if (!usable) set({ gatewayCatalogState: "loading" });
     try {
       const signal = AbortSignal.timeout(15000);
       const readMetadata = async () => {
@@ -5390,9 +5399,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     const mode = isGatewayWeb && isPlatformWeb && s.gatewayRuntime === "opencode" ? undefined : s.sessionAgents[key];
     const agent =
       mode === "plan" && s.agents.some((a) => a.name === "plan") ? "plan" : undefined;
+    const runtime = s.gatewayRuntime;
     // This pane's own model + effort (falling back to the global default),
     // captured now so a draft's later graft still sends the pane's choice.
-    const { model, variant } = modelForSession(s, key);
+    let { model, variant } = modelForSession(s, key);
     let researchCreated = false;
     return performTurn(
       set,
@@ -5411,10 +5421,27 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
               i18n.t("session:composer.error.imageNotSent", { names: dropped.join(", ") }),
             );
           }
-          const latest = get();
+          let latest = get();
+          // A catalog refresh that was already running when the send began must
+          // settle before the turn is posted. The assistant identity changing
+          // is a real fence; a model disappearing is not — reconciliation has
+          // already moved this session to the catalog's current choice, so the
+          // turn must use that choice instead of asking the reader to start over.
+          if (isGatewayWeb && latest.gatewayCatalogState === "loading" && !latest.gatewayRuntimeSwitching) {
+            await get().refreshGatewayRuntimes();
+            latest = get();
+          }
           if (isGatewayWeb && (latest.gatewayCatalogState === "loading" || latest.gatewayCatalogState === "unavailable" ||
-            latest.gatewayRuntimeSwitching || (latest.gatewayRuntime && !webModelChoices(latest.gatewayRuntime, latest.providers, latest.gatewayRuntimes).some((item) => item.key === model)))) {
-            throw new Error("AI assistant model catalog changed. Refresh and select a model again.");
+            latest.gatewayRuntimeSwitching || latest.gatewayRuntime !== runtime)) {
+            throw new Error("AI assistant changed. Refresh and try again.");
+          }
+          if (isGatewayWeb && latest.gatewayRuntime) {
+            const current = modelForSession(latest, sid);
+            if (!webModelChoices(latest.gatewayRuntime, latest.providers, latest.gatewayRuntimes).some((item) => item.key === current.model)) {
+              throw new Error("Select an available model before sending.");
+            }
+            model = current.model;
+            variant = current.variant;
           }
           if (isGatewayWeb && researchBrief && !researchCreated) {
             await createResearchTask(sid, researchBrief);
