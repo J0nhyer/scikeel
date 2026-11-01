@@ -16,8 +16,15 @@ export function StateNotice({ issueId, summary, detail, action }: StateNoticePro
   const identity = JSON.stringify([account, issueId]);
   const dismissed = useToastStore(s => s.dismissedIssues.includes(identity));
   const dismiss = useToastStore(s => s.dismissIssue);
-  if (dismissed) return null;
-  return <div className="min-w-0 text-xs text-muted">
+  if (dismissed) {
+    // Keep a recovery control that has no other home on the page (a failed
+    // directory listing, a failed assistant selection); a notice with no
+    // action is feedback only and goes away entirely.
+    return action
+      ? <button type="button" className="min-h-11 min-w-11 text-xs text-accent underline" onClick={() => { void action.run(); }}>{action.label}</button>
+      : null;
+  }
+  return <div data-state-notice className="min-w-0 text-xs text-muted">
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <span className="min-w-0 break-words">{summary}</span>
       {action && <button type="button" className="min-h-11 min-w-11 text-accent underline" onClick={() => { void action.run(); }}>{action.label}</button>}

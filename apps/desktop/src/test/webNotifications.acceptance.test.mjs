@@ -101,8 +101,9 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
         await page.locator('input[type="file"]').first().setInputFiles({ name: 'notification-fixture.csv', mimeType: 'text/csv', buffer: Buffer.from('value\n1\n') });
         await page.getByText(longFailure, { exact: true }).waitFor();
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
-        await page.getByRole('button', { name: 'Close details', exact: true }).click();
-        expect(await page.getByText(longFailure, { exact: true }).isVisible()).toBe(false);
+        const notice = page.locator('[data-state-notice]', { hasText: longFailure });
+        await notice.getByRole('button', { name: 'Close notification', exact: true }).click();
+        expect(await notice.count()).toBe(0);
         expect(await page.getByRole('button', { name: 'Retry notification-fixture.csv', exact: true }).isEnabled()).toBe(true);
         await page.getByRole('button', { name: 'Remove notification-fixture.csv', exact: true }).click();
         await page.goto(`${origin}/settings/models`);
