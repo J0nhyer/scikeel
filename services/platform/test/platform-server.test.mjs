@@ -1158,6 +1158,7 @@ for(const mode of ["collaborative","guided","delegated"]) test(`managed ${mode} 
  const guarded=await f.server.runtimeCollaboration(account,{action:'guard',sessionId:'owned'});assert.ok(guarded.policy.includes('mode: '+mode));
  const waiting=await f.server.runtimeCollaboration(account,{action:'checkpoint',sessionId:'owned',execution:guarded.state.execution,kind:mode==='guided'?'step':'method',question:'Which method?',suggestedAnswer:'Method A'});
  assert.equal((await f.server.runtimeCollaboration(account,{action:'guard',sessionId:'owned'})).blocked,true);
+ assert.equal((await post('/api/collaboration/owned',{action:'pause'})).status,409);
  const nativeFetch=globalThis.fetch;
  const access=f.manager.getWorkerAccess(instanceId);
  globalThis.fetch=async(input,options)=>{
@@ -1553,6 +1554,26 @@ test("collaboration API resolves a child session to its owned root decision", as
   assert.equal(rootState.decisions.at(-1).answer, "Root answer");
 });
 
+test("a native checkpoint whose turn ends without an answer settles to paused", async t => {
+  let f;
+  f = await nativeHttpFixture(t, async args => {
+    const current = await f.server.collaboration.get(f.researchOwner);
+    await f.server.collaboration.checkpoint(f.researchOwner, {
+      kind: "method",
+      question: "Hold decision?",
+      execution: current.execution,
+    });
+    await args.onAccepted({ nativeSessionId: "hold-native", turnId: "hold-turn" });
+    await args.onCleanup({ cleanupVerified: true });
+    return { nativeSessionId: "hold-native" };
+  });
+  const response = await f.send("hold-prompt");
+  assert.equal(response.status, 202, await response.text());
+  await until(async () => (await f.server.collaboration.get(f.researchOwner)).phase === "paused");
+  const state = await f.server.collaboration.get(f.researchOwner);
+  assert.equal(state.pending.question, "Hold decision?");
+});
+
 async function nativeHttpFixture(t,run,options={}){
  const root=await mkdtemp(join(tmpdir(),'scikeel-native-http-research-'));
  const cliRuntime=new CliRuntimeManager({rootDir:join(root,'native'),sandboxJobs:{run},
@@ -1853,7 +1874,8 @@ test('pausing an adopted canonical root cancels its native child without losing 
  const rootSession=(await f.cliRuntime.getOwnedSession(f.user.id,root.id)).session;
  assert.deepEqual(rootSession.permission,[deny]);
  const children=await f.cliRuntime.researchRequest({userId:f.user.id,directory:f.owner.directory,path:`/session/${root.id}/children`});assert.equal(children[0].id,child.id);
- const paused=await f.client.request(`/api/collaboration/${root.id}`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},body:JSON.stringify({action:'pause'})});
+ const current=await json(await f.client.request(`/api/collaboration/${root.id}`));
+ const paused=await f.client.request(`/api/collaboration/${root.id}`,{method:'POST',headers:{'content-type':'application/json','x-scikeel-assistant-revision':'2'},body:JSON.stringify({action:'pause',execution:current.state.execution,revision:current.state.revision})});
  assert.equal(paused.status,200,await paused.text());assert.equal(signal.aborted,true);
  await until(()=>f.cliRuntime.activeTurns.size===0);
  assert.equal((await f.server.conversations.open(f.owner,child.id)).turns['child-continuation'].cleanupVerified,true);

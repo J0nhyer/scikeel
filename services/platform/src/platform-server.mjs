@@ -2076,7 +2076,11 @@ export class PlatformServer {
         const body=await this.#readPayload(request,response);if(!body)return;
         if(body.action==="mode")state=await this.collaboration.setMode(owner,body.mode,body.revision);
         else if(body.action==="answer")state=await this.collaboration.answer(owner,body);
-        else if(body.action==="pause")state=await this.collaboration.pause(owner,body.execution,false,body.revision);
+        else if(body.action==="pause"){
+          if(!Number.isSafeInteger(body.execution)||!Number.isSafeInteger(body.revision))
+            throw Object.assign(new Error("Collaboration changed; reload and retry"),{status:409});
+          state=await this.collaboration.pause(owner,body.execution,false,body.revision);
+        }
         else if(body.action==="discard")state=await this.collaboration.discard(owner,body);
         else if(body.action==="heartbeat")state=await this.collaboration.heartbeat(owner,body.pageId);
         else if(body.action==="release")state=await this.collaboration.release(owner,body.pageId);
