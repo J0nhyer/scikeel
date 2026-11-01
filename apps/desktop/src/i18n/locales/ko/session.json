@@ -765,6 +765,8 @@
     "submit": "Confirm answer",
     "pause": "Pause",
     "paused": "Execution is paused. Saving an answer does not restart it.",
+    "discard": "Discard decision",
+    "discardConfirm": "Discard this research decision? The current turn will stop.",
     "retry": "Retry",
     "savedDecisions": "Confirmed research decisions",
     "suggestion": "Suggestion",
