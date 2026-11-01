@@ -12,7 +12,7 @@ import {makeToolOutcome,ToolOutcomeError} from '../../../packages/sdk/src/tool-o
 const context={userId:"a",instanceId:"user-a",generation:1,workspaceDir:"/tenant/workspace"};
 const session={id:"owned",runtime:"codex",directory:"/tenant/workspace/project"};
 const acceptance={nativeSessionId:"native-owned",turnId:"turn-owned"};
-for(const mode of ["answered","pending","stale","stop","reply-failure"])test(`checkpoint result boundary ${mode} preserves current effect authority`,async()=>{
+for(const mode of ["answered","pending","stale","stop","reply-failure","suspended"])test(`checkpoint result boundary ${mode} preserves current effect authority`,async()=>{
  const identity={userId:"a",instanceId:"user-a",generation:1,conversationId:"owned",execution:1,requestId:"checkpoint-reply",policyRevision:1,runtime:"codex"};
  const input={kind:"method",question:"Release method decision"},controller=new AbortController();
  const hook=(callId,nativeTool,nativeInput)=>({session_id:acceptance.nativeSessionId,turn_id:acceptance.turnId,tool_use_id:callId,cwd:session.directory,
@@ -42,13 +42,14 @@ for(const mode of ["answered","pending","stale","stop","reply-failure"])test(`ch
    if(mode==="pending"){await assert.rejects(command());blockedBeforeAnswer=true;}
    if(mode==="stale")current=false;
    if(mode==="stop")controller.abort();
+   if(mode==="suspended")throw new ToolOutcomeError(makeToolOutcome("research_checkpoint_suspended",{source:"collaboration",correlationId:"checkpoint"}));
    return JSON.stringify({decision:"approved-checkpoint",userAnswer:"Approved"});
   }});
  const running=transport.run({userId:"a",session,model:"approved",text:"Research",turnIdentity:identity,identityRevision:"owned-profile",signal:controller.signal,emit:async()=>{}});
- if(["stale","stop","reply-failure"].includes(mode)){await assert.rejects(running);assert.equal(aborted,1);}
+ if(["stale","stop","reply-failure","suspended"].includes(mode)){await assert.rejects(running);assert.equal(aborted,1);}
  else {await running;assert.equal(resumed,true);}
  if(mode==="pending")assert.equal(blockedBeforeAnswer,true);
- assert.equal(replied,["stop","stale"].includes(mode)?0:1);assert.equal(released,1);
+ assert.equal(replied,["stop","stale","suspended"].includes(mode)?0:1);assert.equal(released,1);
  await assert.rejects(command());
 });
 test("native transport records only fixed failure reasons and still drains the failed job",async()=>{

@@ -13,6 +13,7 @@ const failureMessages=new Set([
   'Unbound native effect observation','invalid native event batch','foreign native event','native turn failed',
   'native turn cancelled','native worker generation changed','native execution identity changed','invalid native runner reply',
   'Native tool result denied','Native tool result unavailable','native automatic permission unavailable',
+  'native checkpoint suspended',
 ]);
 const failureCodes=new Set(['historical_source_unavailable','historical_source_conflict','conversation_history_unavailable',
   'conversation_history_invalid','conversation_history_changed','conversation_history_index_required','conversation_origin_conflict',
@@ -119,6 +120,10 @@ export class SandboxNativeJobs {
       catch(error){
         outcome=readToolError(JSON.stringify({error:error?.outcome}));
         if(!outcome||outcome.correlationId!==event.callId)throw error;
+        if(outcome.code==='research_checkpoint_suspended'){
+          await emit({...event,type:'tool',callID:event.callId,state:{status:'error',input,error:JSON.stringify({error:outcome}),metadata:{scikeelOutcome:outcome}}});
+          throw new Error('native checkpoint suspended');
+        }
         text=JSON.stringify({error:outcome});
       }
       signal.throwIfAborted();

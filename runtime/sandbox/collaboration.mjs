@@ -1,8 +1,11 @@
-import { readToolError, ToolOutcomeError } from "./tool-outcome.mjs";
+import { makeToolOutcome, readToolError, ToolOutcomeError } from "./tool-outcome.mjs";
 /** Trusted plugin options carry only the existing scoped broker token. */
-export function collaborationHooks({ token, request: provided }) {
+export function collaborationHooks({ token, request: provided, checkpointHoldMs }) {
   if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token))
     throw new Error("Invalid collaboration bridge");
+  if (checkpointHoldMs !== undefined &&
+      (!Number.isSafeInteger(checkpointHoldMs) || checkpointHoldMs < 1 || checkpointHoldMs > 600000))
+    throw new Error("Invalid checkpoint hold");
   const request =
     provided ??
     (async (sessionId, body, signal) => {
@@ -95,8 +98,15 @@ export function collaborationHooks({ token, request: provided }) {
         ));
       registrations.delete(key);
       const pending = first.state.pending;
+      const startedAt = Date.now();
       for (;;) {
         context.abort?.throwIfAborted();
+        if (checkpointHoldMs !== undefined && Date.now() - startedAt >= checkpointHoldMs) {
+          throw new ToolOutcomeError(makeToolOutcome("research_checkpoint_suspended", {
+            source: "collaboration",
+            correlationId: context.callID,
+          }));
+        }
         const { state } = await request(
           context.sessionID,
           { action: "state" },
@@ -112,6 +122,9 @@ export function collaborationHooks({ token, request: provided }) {
             decision: pending.id,
             userAnswer: answer.answer,
           });
+        const remaining = checkpointHoldMs === undefined
+          ? 1000
+          : Math.max(1, Math.min(1000, checkpointHoldMs - (Date.now() - startedAt)));
         await new Promise((resolve, reject) => {
           const signal = context.abort;
           const onAbort = () => {
@@ -121,7 +134,7 @@ export function collaborationHooks({ token, request: provided }) {
           const timer = setTimeout(() => {
             signal?.removeEventListener("abort", onAbort);
             resolve();
-          }, 1000);
+          }, remaining);
           signal?.addEventListener("abort", onAbort, { once: true });
           if (signal?.aborted) onAbort();
         });

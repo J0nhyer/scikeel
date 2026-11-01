@@ -1,6 +1,33 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { collaborationHooks } from "../../../runtime/sandbox/collaboration.mjs";
+test("a native checkpoint hold expires with a correlated suspension outcome", async () => {
+  const state = {
+    phase: "waiting_input",
+    execution: 1,
+    pending: { id: "pending-1", execution: 1, kind: "missing_input", question: "Need input" },
+    decisions: [],
+  };
+  const hooks = collaborationHooks({
+    token: "a".repeat(64),
+    checkpointHoldMs: 30,
+    request: async (_sessionId, body) => {
+      if (body.action === "checkpoint") return { state };
+      return { state };
+    },
+  });
+  await assert.rejects(
+    Promise.race([
+      hooks.tool.research_checkpoint.execute(
+        { kind: "missing_input", question: "Need input" },
+        { sessionID: "ses_a", callID: "call_checkpoint" },
+      ),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("checkpoint hold did not expire")), 1000)),
+    ]),
+    (error) => error.outcome?.code === "research_checkpoint_suspended" &&
+      error.outcome.correlationId === "call_checkpoint",
+  );
+});
 const chain = {
   min() {
     return this;
