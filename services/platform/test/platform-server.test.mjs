@@ -1962,7 +1962,11 @@ test('native HTTP Stop during attachment preparation prevents late dispatch and 
  const stopped=await f.client.request(`/session/${f.session.id}/abort`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
  assert.equal(stopped.status,200);resume();assert.equal((await pending).status,409);
  await until(async()=>(await f.server.conversations.open(f.owner,f.session.id)).turns['preparation-stop'].state==='settled');
- assert.deepEqual(await f.server.collaboration.get(f.researchOwner),waiting);assert.equal(starts,0);
+ const stoppedState=await f.server.collaboration.get(f.researchOwner);
+ assert.equal(stoppedState.phase,'paused');
+ assert.equal(stoppedState.pending.id,waiting.pending.id);
+ assert.equal(stoppedState.pending.execution,running.execution);
+ assert.equal(starts,0);
 });
 
 test('managed runtime mutation policy admission precedes the workspace queue and Admin selection bypasses its own tenant queue',async()=>{

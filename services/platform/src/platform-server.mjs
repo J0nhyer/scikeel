@@ -1137,6 +1137,13 @@ export class PlatformServer {
     };
     const settle=executionAdmission.settle.bind(executionAdmission),submitted=executionAdmission.submitted.bind(executionAdmission);
     executionAdmission.settle=async options=>{
+      if(admission.root) {
+        try {
+          await this.collaboration.suspendPending(admission.root.owner, admission.root.execution);
+        } catch {
+          this.logger({ type: "collaboration.suspend_failed", sessionId: admission.root.owner.sessionId });
+        }
+      }
       if(options?.cleanupVerified===true){
         const root=admission.root,other=root&&this.#nativeResearchHeld(root.owner,root.execution,held.map(item=>item.record));
         // A root's own cleanup does not release accepted descendant work.
@@ -2042,7 +2049,8 @@ export class PlatformServer {
         const body=await this.#readPayload(request,response);if(!body)return;
         if(body.action==="mode")state=await this.collaboration.setMode(owner,body.mode,body.revision);
         else if(body.action==="answer")state=await this.collaboration.answer(owner,body);
-        else if(body.action==="pause")state=await this.collaboration.pause(owner);
+        else if(body.action==="pause")state=await this.collaboration.pause(owner,body.execution,false,body.revision);
+        else if(body.action==="discard")state=await this.collaboration.discard(owner,body);
         else if(body.action==="heartbeat")state=await this.collaboration.heartbeat(owner,body.pageId);
         else if(body.action==="release")state=await this.collaboration.release(owner,body.pageId);
         else throw Object.assign(new Error("Invalid collaboration action"),{status:400});

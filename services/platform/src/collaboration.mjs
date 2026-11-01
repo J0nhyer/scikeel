@@ -330,12 +330,14 @@ export class CollaborationStore {
       };
     });
   }
-  pause(o, execution, abandoned = false) {
+  pause(o, execution, abandoned = false, revision) {
     // Presence expiry is never authority to cancel an accepted execution.
     if(abandoned)return this.get(o);
     return this.locked(o, async () => {
       const s = await this.load(o);
-      if (execution !== undefined && s.execution !== execution) return structuredClone(s);
+      if (revision !== undefined) this.revision(s, revision);
+      if (execution !== undefined && s.execution !== execution)
+        throw fail("Research execution changed");
       if (s.phase === "paused") {
         await this.cancel({...o,cancelReason:o.cancelReason ?? "explicit_pause"});
         return structuredClone(s);
@@ -345,6 +347,30 @@ export class CollaborationStore {
       await this.save(s);
       await this.cancel({...o,cancelReason:o.cancelReason ?? "explicit_pause"});
       return structuredClone(s);
+    });
+  }
+  suspendPending(o, execution) {
+    return this.locked(o, async () => {
+      const s = await this.load(o);
+      if (!s.pending || !["running", "waiting_input"].includes(s.phase) ||
+          (execution !== undefined && s.execution !== execution)) return structuredClone(s);
+      s.phase = "paused";
+      s.revision++;
+      return this.save(s);
+    });
+  }
+  discard(o, value) {
+    return this.locked(o, async () => {
+      const s = await this.load(o);
+      this.revision(s, value.revision);
+      if (!s.pending || s.pending.id !== value.id || s.pending.execution !== value.execution)
+        throw fail("Research decision changed");
+      s.pending = null;
+      s.phase = "paused";
+      s.revision++;
+      const saved = await this.save(s);
+      await this.cancel({ ...o, cancelReason: "decision_discarded" });
+      return saved;
     });
   }
   assertAdmission(o,execution) {
@@ -367,8 +393,9 @@ export class CollaborationStore {
   settled(o, execution) {
     return this.locked(o, async () => {
       const s = await this.load(o);
-      if (s.phase === "running" && (execution === undefined || s.execution === execution)) {
-        s.phase = "idle";
+      if (["running", "waiting_input"].includes(s.phase) &&
+          (execution === undefined || s.execution === execution)) {
+        s.phase = s.pending ? "paused" : "idle";
         s.revision++;
         return this.save(s);
       }
