@@ -223,7 +223,8 @@ export class CollaborationStore {
       if (s.phase !== "running" || s.execution < 1)
         throw fail("Research execution is paused");
       if (s.pending) throw fail("Research decision requires an answer");
-      if (value.execution !== undefined && value.execution !== s.execution)
+      if (value.execution !== undefined &&
+          (!Number.isSafeInteger(value.execution) || value.execution !== s.execution))
         throw fail("Research execution changed");
       if (!["plan", "step", "method", "missing_input"].includes(value.kind))
         throw fail("Invalid research decision", 400);

@@ -135,6 +135,19 @@ test("an answer and a suspension race never loses the decision", async () => {
   }
 });
 
+test("checkpoint rejects a stale execution", async () => {
+  const f = await fixture();
+  try {
+    await f.store.begin(f.owner, 0);
+    await assert.rejects(
+      f.store.checkpoint(f.owner, { kind: "method", question: "Use A?", execution: 2 }),
+      /Research execution changed/,
+    );
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test("a paused pending decision is not an active or uncertain assistant execution", async () => {
   const root = await mkdtemp(join(tmpdir(), "scikeel-collaboration-inventory-"));
   try {

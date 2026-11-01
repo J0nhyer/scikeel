@@ -50,8 +50,12 @@ export function configureNativeEffects({nativeJobs,cliRuntime,platform,workerMan
    const assert=()=>{signal.throwIfAborted();if(!current(identity))throw Error('Native execution authority unavailable');};
    assert();
    const request=async(id,body)=>{
-    assert();const result=await platform.runtimeCollaboration(context,{sessionId:id,...body});assert();
-    if(result.state&&result.state.execution!==nativeJobs.executionScope(identity)?.researchExecution)throw Error('Native research execution changed');
+    assert();
+    const scope=nativeJobs.executionScope(identity);
+    if(!scope)throw Error('Native execution authority unavailable');
+    const next=body.action==='checkpoint'?{...body,execution:scope.researchExecution}:body;
+    const result=await platform.runtimeCollaboration(context,{sessionId:id,...next});assert();
+    if(result.state&&result.state.execution!==scope.researchExecution)throw Error('Native research execution changed');
     return result;
    };
    if(['research_checkpoint','research_delivery'].includes(tool)){

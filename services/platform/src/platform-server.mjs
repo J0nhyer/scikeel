@@ -1865,7 +1865,21 @@ export class PlatformServer {
   async #collaborationOwner(user,sessionId,access,worker) {
     let owner=await this.#researchOwner(user,sessionId,access,worker);
     for(let depth=0;depth<20;depth++) {
-      const info=await this.#workerResearchRequest(owner,`/session/${encodeURIComponent(owner.sessionId)}`);
+      let info;
+      try {
+        info=await this.#workerResearchRequest(owner,`/session/${encodeURIComponent(owner.sessionId)}`);
+      }catch(error){
+        if(error?.status!==404&&error?.statusCode!==404)throw error;
+        // Adopted canonical conversations are not in the native session store.
+        // Resolve their parent from the canonical record before treating them as a root.
+        if(this.conversations){
+          try{
+            const conversation=await this.conversations.open(owner,owner.sessionId);
+            if(conversation?.parentId){owner=await this.#researchOwner(user,conversation.parentId,access,worker);continue;}
+          }catch{/* An adopted root has no canonical parent record. */}
+        }
+        return owner;
+      }
       if(!info.parentID)return owner;
       owner=await this.#researchOwner(user,info.parentID,access,worker);
     }
@@ -1979,7 +1993,14 @@ export class PlatformServer {
     }
     throw new Error("Network action denied");
   }
-  collaborationAvailable(userId,generation){return this.collaborationCapabilities.has(userId)&&this.collaborationCapabilities.get(userId)===generation;}
+  collaborationAvailable(userId,generation){
+    const worker=this.workerManager.getWorker(workerIdForUser(userId));
+    if(!worker||worker.generation!==generation)return false;
+    try{
+      if(this.cliRuntime?.isManaged(userId)&&this.cliRuntime.runtimeForUser(userId)==="codex")return true;
+    }catch{return false;}
+    return this.collaborationCapabilities.has(userId)&&this.collaborationCapabilities.get(userId)===generation;
+  }
   async answerAutomaticToolPermissions() {
     if (!this.automaticToolPermissions) return;
     const users = new Set([...this.collaboration.records.values()].filter(state => state.phase === "running" && state.execution > 0).map(state => state.userId));
@@ -2008,6 +2029,7 @@ export class PlatformServer {
     // The plugin registers while configureWorker is still awaiting runtime readiness.
     if(body.action==="capability"&&["starting","running"].includes(worker.status)){this.collaborationCapabilities.set(context.userId,context.generation);return {ready:true};}
     if(worker.status!=="running")throw new Error("Collaboration worker unavailable");
+    if(body.action==="checkpoint"&&(!Number.isSafeInteger(body.execution)||body.execution<1))throw new Error("Research execution changed");
     const access=this.workerManager.getWorkerAccess(context.instanceId);
     // Native roots and descendants are owned by the native session store; the
     // OpenCode authority remains responsible for OpenCode sessions only.
@@ -2041,7 +2063,7 @@ export class PlatformServer {
       if(request.method==="POST"&&request.headers["sec-fetch-site"]==="cross-site"){sendJson(response,403,{error:"Foreign origin"});return;}
       if(request.method==="POST"&&request.headers.origin&&new URL(request.headers.origin).host!==request.headers.host){sendJson(response,403,{error:"Foreign origin"});return;}
       const {access,worker}=await this.#ensureWorker(user, { allowRecovery: request.method === "GET", request });
-      const owner=await this.#researchOwner(user,sessionId,access,worker);
+      const owner=await this.#collaborationOwner(user,sessionId,access,worker);
       this.#requireWriteContext(request, user, worker);
       let state;
       if(request.method==="GET")state=await this.collaboration.get(owner);
@@ -2078,7 +2100,9 @@ export class PlatformServer {
         const owner = await this.#researchOwner(user, sessionId, access, worker);
         this.#requireWriteContext(request, user, worker);
         const preference=await this.collaboration.get(owner);
-        task = await this.researchTasks.create(owner, this.collaborationAvailable(user.id,worker.generation)?{...body,mode:preference.mode}:body);
+        const usePreference=body.mode===undefined&&this.collaborationAvailable(user.id,worker.generation);
+        const preferredMode=preference.mode==="autonomous"?"delegated":preference.mode;
+        task = await this.researchTasks.create(owner, usePreference?{...body,mode:preferredMode}:body);
       } else if (body.action === "heartbeat") task = await this.researchTasks.heartbeat(user.id, sessionId, body.pageId);
       else if (body.action === "release") task = await this.researchTasks.release(user.id, sessionId, body.pageId);
       else task = await this.researchTasks.action(user.id, sessionId, body);

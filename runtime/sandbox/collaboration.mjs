@@ -68,6 +68,7 @@ export function collaborationHooks({ token, request: provided, checkpointHoldMs 
           const registered = await request(key, {
             action: "checkpoint",
             ...output.args, callId: input.callID,
+            execution: result.state.execution,
           });
           registrations.set(`${key}/${input.callID}`, registered);
         }

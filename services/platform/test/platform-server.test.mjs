@@ -1156,7 +1156,7 @@ for(const mode of ["collaborative","guided","delegated"]) test(`managed ${mode} 
  const prompt={parts:[{type:'text',text:'Research'}],system:'Retain this context'};
  assert.equal((await post('/session/owned/prompt_async',prompt)).status,202);
  const guarded=await f.server.runtimeCollaboration(account,{action:'guard',sessionId:'owned'});assert.ok(guarded.policy.includes('mode: '+mode));
- const waiting=await f.server.runtimeCollaboration(account,{action:'checkpoint',sessionId:'owned',kind:mode==='guided'?'step':'method',question:'Which method?',suggestedAnswer:'Method A'});
+ const waiting=await f.server.runtimeCollaboration(account,{action:'checkpoint',sessionId:'owned',execution:guarded.state.execution,kind:mode==='guided'?'step':'method',question:'Which method?',suggestedAnswer:'Method A'});
  assert.equal((await f.server.runtimeCollaboration(account,{action:'guard',sessionId:'owned'})).blocked,true);
  const nativeFetch=globalThis.fetch;
  const access=f.manager.getWorkerAccess(instanceId);
@@ -1506,6 +1506,51 @@ test('native collaboration resolves owned child ancestry without querying the Op
  unregistered.parentId=foreign.id;
  await assert.rejects(f.server.runtimeCollaboration(context,{action:'state',sessionId:unregistered.id}));
  assert.throws(()=>policy.session(context,unregistered.id));assert.equal(workerReads,0);
+});
+
+test("managed Codex collaboration availability is runtime-derived, not plugin-derived", () => {
+  const server = Object.create(PlatformServer.prototype);
+  server.workerManager = { getWorker: () => ({ id: "user-usr_a", generation: 7, status: "running" }) };
+  server.cliRuntime = { isManaged: () => true, runtimeForUser: () => "codex" };
+  server.collaborationCapabilities = new Map();
+  assert.equal(server.collaborationAvailable("usr_a", 7), true);
+
+  server.cliRuntime = { isManaged: () => true, runtimeForUser: () => "opencode" };
+  assert.equal(server.collaborationAvailable("usr_a", 7), false);
+  server.collaborationCapabilities.set("usr_a", 7);
+  assert.equal(server.collaborationAvailable("usr_a", 7), true);
+});
+
+test("collaboration API resolves a child session to its owned root decision", async t => {
+  const f = await nativeHttpFixture(t, async () => { throw Error("Unexpected inference"); });
+  const child = await f.create(f.session.id);
+  const started = await f.server.collaboration.begin(f.researchOwner, 0);
+  const pending = await f.server.collaboration.checkpoint(f.researchOwner, {
+    kind: "method",
+    question: "Root decision?",
+    execution: started.execution,
+  });
+  const read = await f.client.request(`/api/collaboration/${child.id}`);
+  const readText = await read.text();
+  assert.equal(read.status, 200, readText);
+  const body = JSON.parse(readText);
+  assert.equal(body.state.sessionId, f.session.id);
+  assert.equal(body.state.pending.id, pending.pending.id);
+  const answered = await f.client.request(`/api/collaboration/${child.id}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      action: "answer",
+      id: pending.pending.id,
+      execution: pending.pending.execution,
+      revision: pending.revision,
+      answer: "Root answer",
+    }),
+  });
+  assert.equal(answered.status, 200, await answered.text());
+  const rootState = await f.server.collaboration.get(f.researchOwner);
+  assert.equal(rootState.pending, null);
+  assert.equal(rootState.decisions.at(-1).answer, "Root answer");
 });
 
 async function nativeHttpFixture(t,run,options={}){
