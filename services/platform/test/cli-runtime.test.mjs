@@ -887,3 +887,22 @@ test('native research reads and permission patches use owned native state and pr
   assert.deepEqual((await restarted.researchRequest({userId:'research-user',directory,path:`/session/${session.id}`})).permission,repeated.permission);
   await restarted.close();
 });
+
+test("reservation persists the user message and turn before native start", async () => {
+  const { root, manager } = await makeManager("codex");
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  const turn = await manager.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "hello" });
+  const stored = JSON.parse(await readFile(manager.userPaths("usr_a").sessionsPath, "utf8"));
+  const saved = stored.sessions.find((item) => item.id === session.id);
+  assert.equal(saved.history.length, 1);
+  assert.equal(saved.history.at(-1).info.role, "user");
+  assert.equal(saved.history.at(-1).parts[0].text, "hello");
+  assert.equal(saved.turn.userMessageID, saved.history.at(-1).info.id);
+  assert.equal(saved.turn.phase, "reserved");
+  assert.equal(turn.userMessageID, saved.turn.userMessageID);
+  await manager.close();
+});

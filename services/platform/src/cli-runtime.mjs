@@ -1474,9 +1474,29 @@ export class CliRuntimeManager {
     if(executionAdmission && (executionAdmission.identityRevision!==profile.identityRevision || executionAdmission.model!==chosen))
       throw issue("assistant_identity_conflict","The admitted model profile changed",409);
     if (turn.cancelled) throw issue("turn_cancelled", "turn was cancelled", 409);
+    const startedAt = now();
+    const userMessageID = attachmentInput?.turn?.messageID ?? `msg_cli_user_${randomUUID()}`;
+    const userMessage = {
+      info: { id: userMessageID, role: "user", sessionID: session.id,
+        time: { created: startedAt, completed: startedAt } },
+      ...(attachmentInput ? { attachments: attachmentInput.metadata } : {}),
+      parts: [textPart(displayText ?? text, userMessageID, session.id)],
+    };
+    session.history.push(userMessage);
+    turn.id = `turn_${randomUUID()}`;
+    turn.userMessage = userMessage;
+    turn.userMessageID = userMessageID;
+    turn.startedAt = startedAt;
+    turn.hadToolCalls = false;
+    session.turn = { id: turn.id, userMessageID, startedAt, phase: "reserved",
+      dispatched: false, hadToolCalls: false };
+    session.status = "running";
+    session.updatedAt = startedAt;
+    await this.persistUser(state);
     return Object.assign(turn, { profile, chosen, chosenVariant });
     } catch (error) {
       if (this.turnReservations.get(session.id) === turn) this.turnReservations.delete(session.id);
+      delete session.turn;
       session.status = "idle";
       throw error;
     }
@@ -1515,6 +1535,7 @@ export class CliRuntimeManager {
         delete session._error;
         delete session._turnFailed;
         delete session._redact;
+        delete session.turn;
         session.status = "idle";
         this.turnReservations.delete(session.id);
         this.emit(userId, { type: "session.error", properties: { sessionID: session.id, error: failure } });
@@ -1530,11 +1551,13 @@ export class CliRuntimeManager {
     if(session.runtime!=="codex")throw issue("runtime_unavailable","sandbox native runtime unavailable",503);
     const controller=new AbortController();this.processes.set(session.id,controller);
     if(turn.cancelled)controller.abort();
-    const timestamp=now(),userMessageId=attachmentInput?.turn?.messageID??`msg_cli_user_${randomUUID()}`;
-    const userMessage={info:{id:userMessageId,role:"user",sessionID:session.id,
-      time:{created:timestamp,completed:timestamp}},parts:[textPart(displayText??text,userMessageId,session.id)],
-      ...(attachmentInput?{attachments:attachmentInput.metadata}:{})};
-    session.history.push(userMessage);await this.persistUser(state);
+    const timestamp=now();
+    const userMessage=turn.userMessage;
+    const userMessageId=turn.userMessageID;
+    if(!userMessage||!userMessageId)throw issue("turn_state_missing","Turn state is unavailable",503);
+    if(session.turn)session.turn.phase="preparing";
+    session.updatedAt=timestamp;
+    await this.persistUser(state);
     const assistant={info:{id:`msg_cli_${randomUUID()}`,role:"assistant",sessionID:session.id,parentID:userMessageId,
       providerID:session.runtime,modelID:chosen,time:{created:timestamp}},parts:[]};
     const stale=Boolean(session.nativeSessionId && session.identityRevision!==profile.identityRevision);
@@ -1620,6 +1643,7 @@ export class CliRuntimeManager {
           else if(!acceptedNativeSessionId)await this.conversationRevert.discard(revertOwner,revertInput);
         }
       }finally{
+        delete session.turn;
         session.status="idle";this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
         this.emit(userId,{type:"session.idle",properties:{sessionID:session.id}});
       }
@@ -1651,18 +1675,11 @@ export class CliRuntimeManager {
     // ordinary answers and tool results must remain complete and keep cited URLs.
     const diagnostic = (value) => redact(value).slice(0, 2000);
     session._redact = redact;
-    const timestamp = now(),userMessageId=attachmentInput?.turn?.messageID ?? `msg_cli_${randomUUID()}`;
-    const userMessage = {
-      info: {
-        id: userMessageId,
-        role: "user",
-        sessionID: session.id,
-        time: { created: timestamp, completed: timestamp },
-      },
-      ...(attachmentInput ? { attachments: attachmentInput.metadata } : {}),
-      parts: [textPart(displayText ?? text, userMessageId, session.id)],
-    };
-    session.history.push(userMessage);
+    const timestamp = now();
+    const userMessage = turn.userMessage;
+    const userMessageId = turn.userMessageID;
+    if (!userMessage || !userMessageId) throw issue("turn_state_missing", "Turn state is unavailable", 503);
+    if (session.turn) session.turn.phase = "preparing";
     session.status = "running";
     session.updatedAt = timestamp;
     await this.persistUser(state);
@@ -1695,6 +1712,7 @@ export class CliRuntimeManager {
       assistantMessage.info.time.completed = completed;
       assistantMessage.info.error = { name: "CliRuntimeError", data: { message } };
       session.history.push(assistantMessage);
+      delete session.turn;
       session.status = "idle";
       this.turnReservations.delete(session.id);
       session.updatedAt = completed;
@@ -1750,6 +1768,7 @@ export class CliRuntimeManager {
       }
       delete session._pendingNativeSessionId;
       delete session._redact;
+      delete session.turn;
       session.status = "idle";
       this.turnReservations.delete(session.id);
       session.updatedAt = completed;
