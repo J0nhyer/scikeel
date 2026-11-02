@@ -299,6 +299,13 @@ function textPart(text, messageId, sessionId, partId = `prt_cli_${randomUUID()}`
   };
 }
 
+function historyHasToolParts(session, userMessageID) {
+  const index = session.history.findIndex((message) => message.info?.id === userMessageID);
+  if (index < 0) return false;
+  return session.history.slice(index + 1).some((message) => message.info?.role === "assistant" &&
+    (message.parts ?? []).some((part) => part.type === "tool"));
+}
+
 function toolPart({ sessionId, messageId, callId, title, status, input, output }) {
   return {
     id: `prt_cli_${callId}`,
@@ -385,6 +392,7 @@ export class CliRuntimeManager {
     this.configPersistQueue = Promise.resolve();
     this.initialized = false;
     this.closed = false;
+    this.draining = false;
   }
 
   async init() {
@@ -1287,10 +1295,10 @@ export class CliRuntimeManager {
   async researchRequest({ userId, directory, path, method = "GET", body }) {
     if (!this.isManaged(userId) || typeof directory !== "string" || resolve(directory) !== directory)
       throw issue("invalid_research_context", "Native research context is unavailable", 403);
-    const match = typeof path === "string" && path.match(/^\/session\/([A-Za-z0-9_-]+)(?:\/(message|children|abort))?$/);
+    const match = typeof path === "string" && path.match(/^\/session\/([A-Za-z0-9_-]+)(?:\/(message|children|abort|interruptions))?$/);
     if (!match) throw issue("invalid_research_operation", "Unsupported native research operation", 400);
     const sessionId = match[1], operation = match[2] ?? "session";
-    if (!(method === "GET" && ["session", "message", "children"].includes(operation) ||
+    if (!(method === "GET" && ["session", "message", "children", "interruptions"].includes(operation) ||
       method === "PATCH" && operation === "session" || method === "POST" && operation === "abort"))
       throw issue("invalid_research_operation", "Unsupported native research operation", 400);
     const input = body === undefined ? undefined : structuredClone(body);
@@ -1430,6 +1438,7 @@ export class CliRuntimeManager {
   async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput, workspaceContext, executionAdmission }) {
     await this.init();
     if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
+    if (this.draining) throw issue("platform_maintenance", "The service is preparing for maintenance", 503);
     if (this.#policyOperation || this.#policyStorageUncertain ||
         this.assistantPolicy.committedSnapshot().recoveryRequired || this.assistantSnapshot(userId).recoveryRequired)
       throw issue("assistant_recovery_required", "Assistant selection requires reconciliation", 503);
@@ -1507,6 +1516,10 @@ export class CliRuntimeManager {
   }
 
   async runReservedPrompt(turn) {
+    if (this.closed) {
+      await this.#recordInterruption(turn, turn.interruptReason ?? "service_restart");
+      return;
+    }
     const pending=this.executeReservedPrompt(turn);this.activeTurns.add(pending);
     try{return await pending;}
     finally{
@@ -1527,7 +1540,9 @@ export class CliRuntimeManager {
       await this.startReservedPrompt(turn);
     } catch (error) {
       const { userId, state, session } = turn;
-      if (this.turnReservations.get(session.id) === turn) {
+      if (turn.interruptReason || this.closed) {
+        await this.#recordInterruption(turn, turn.interruptReason ?? "service_restart");
+      } else if (this.turnReservations.get(session.id) === turn) {
         const message = error.code === "turn_cancelled" ? "Turn was cancelled."
           : "AI assistant could not start this turn. Retry with the current model catalog.";
         const failure = { name: "CliRuntimeError", data: { message } };
@@ -1643,9 +1658,13 @@ export class CliRuntimeManager {
           else if(!acceptedNativeSessionId)await this.conversationRevert.discard(revertOwner,revertInput);
         }
       }finally{
-        delete session.turn;
-        session.status="idle";this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
-        this.emit(userId,{type:"session.idle",properties:{sessionID:session.id}});
+        if (turn.interruptReason || this.closed) {
+          await this.#recordInterruption(turn, turn.interruptReason ?? "service_restart");
+        } else {
+          delete session.turn;
+          session.status="idle";this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
+          this.emit(userId,{type:"session.idle",properties:{sessionID:session.id}});
+        }
       }
     }
   }
@@ -1704,6 +1723,10 @@ export class CliRuntimeManager {
       });
     } catch (error) {
       const completed = now();
+      if (turn.interruptReason || this.closed) {
+        await this.#recordInterruption(turn, turn.interruptReason ?? "service_restart");
+        return;
+      }
       const message = diagnostic(error instanceof Error ? error.message : String(error));
       delete session._redact;
       delete session._pendingNativeSessionId;
@@ -1768,12 +1791,16 @@ export class CliRuntimeManager {
       }
       delete session._pendingNativeSessionId;
       delete session._redact;
-      delete session.turn;
-      session.status = "idle";
-      this.turnReservations.delete(session.id);
-      session.updatedAt = completed;
-      await this.persistUser(state);
-      this.emit(userId, { type: "session.idle", properties: { sessionID: session.id } });
+      if (turn.interruptReason || this.closed) {
+        await this.#recordInterruption(turn, turn.interruptReason ?? "service_restart");
+      } else {
+        delete session.turn;
+        session.status = "idle";
+        this.turnReservations.delete(session.id);
+        session.updatedAt = completed;
+        await this.persistUser(state);
+        this.emit(userId, { type: "session.idle", properties: { sessionID: session.id } });
+      }
       this.logger({ type: "cli.turn.finished", userId, sessionId: session.id, runtime: session.runtime, code, signal });
     };
     const parseLine = (line) => {
@@ -1995,7 +2022,10 @@ export class CliRuntimeManager {
       }
       const route = match[2] ?? "";
       try {
-        if (route === "message" && request.method === "GET") {
+        if (route === "interruptions" && request.method === "GET") {
+          const { session } = await this.getOwnedSession(userId, sessionId);
+          sendJson(response, 200, { interruptions: structuredClone(session.interruptions ?? []) });
+        } else if (route === "message" && request.method === "GET") {
           const { session } = await this.getOwnedSession(userId, sessionId);
           sendJson(response, 200, session.history);
         } else if (!route && request.method === "GET") {
@@ -2195,9 +2225,116 @@ export class CliRuntimeManager {
     return visible;
   }
 
-  async close() {
+  async interruptionsForSession(userId, sessionId) {
+    const { session } = await this.getOwnedSession(userId, sessionId);
+    return structuredClone(session.interruptions ?? []);
+  }
+
+  async #recordInterruption(turn, reason) {
+    if (!turn || turn.interruptionRecorded || !turn.userMessageID) return;
+    turn.interruptionRecorded = true;
+    const { state, session, userId } = turn;
+    if (!state || !session) return;
+    const hadToolCalls = turn.hadToolCalls === true || historyHasToolParts(session, turn.userMessageID);
+    const record = {
+      turnId: turn.id ?? `turn_${turn.userMessageID}`,
+      userMessageID: turn.userMessageID,
+      reason,
+      at: now(),
+      hadToolCalls,
+      retryable: true,
+    };
+    const existing = session.interruptions ?? [];
+    if (!existing.some((item) => item.turnId === record.turnId)) {
+      session.interruptions = [...existing, record].slice(-50);
+    }
+    delete session.turn;
+    if (this.turnReservations.get(session.id) === turn) this.turnReservations.delete(session.id);
+    session.status = "idle";
+    session.updatedAt = record.at;
+    await this.persistUser(state);
+    const publicId = session.publicConversationId ?? session.id;
+    this.emit(userId, {
+      type: "session.error",
+      properties: {
+        sessionID: publicId,
+        userMessageID: turn.userMessageID,
+        error: { name: "CliRuntimeError", data: {
+          code: reason,
+          message: reason === "service_restart"
+            ? "The service restarted before this turn finished. Your message is saved."
+            : "The service stopped unexpectedly before this turn finished. Your message is saved.",
+          retryable: true,
+          hadToolCalls,
+        } },
+      },
+    });
+    this.emit(userId, { type: "session.idle", properties: { sessionID: publicId } });
+  }
+
+  async reconcileInterruptedSessions() {
+    const base = this.sandboxJobs ? join(this.rootDir, "metadata") : join(this.rootDir, "users");
+    let entries;
+    try {
+      entries = await fs.readdir(base, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !USER_ID.test(entry.name)) continue;
+      const state = await this.ensureUser(entry.name);
+      for (const session of state.sessions.values()) {
+        if (session.turn) {
+          await this.#recordInterruption({
+            userId: state.userId,
+            state,
+            session,
+            id: session.turn.id,
+            userMessageID: session.turn.userMessageID,
+            hadToolCalls: session.turn.hadToolCalls === true,
+          }, "unexpected_restart");
+        } else {
+          await this.#reconcileLegacySession(state, session);
+        }
+      }
+    }
+  }
+
+  async #reconcileLegacySession(state, session) {
+    const last = session.history.at(-1);
+    if (!last) return;
+    const incompleteAssistant = last.info?.role === "assistant" &&
+      !last.info?.time?.completed && !last.info?.error;
+    const unansweredUser = last.info?.role === "user";
+    if (!incompleteAssistant && !unansweredUser) return;
+    const userMessage = unansweredUser
+      ? last
+      : session.history.slice().reverse().find((message) => message.info?.role === "user");
+    const userMessageID = userMessage?.info?.id;
+    if (!userMessageID) return;
+    if ((session.interruptions ?? []).some((item) => item.userMessageID === userMessageID)) return;
+    const text = (userMessage.parts ?? []).filter((part) => part.type === "text")
+      .map((part) => part.text ?? "").join("");
+    if (/^\[Auto review\]/i.test(text) || text.includes("<goal_command_arguments>")) return;
+    await this.#recordInterruption({
+      userId: state.userId,
+      state,
+      session,
+      id: `turn_legacy_${userMessageID}`,
+      userMessageID,
+      hadToolCalls: historyHasToolParts(session, userMessageID),
+    }, "unexpected_restart");
+  }
+
+  async close({ reason = "service_restart", deadlineMs = 5000 } = {}) {
     if (this.closed) return;
     this.closed = true;
+    this.draining = true;
+    for (const turn of this.turnReservations.values()) {
+      turn.interruptReason = reason;
+      turn.cancelled = true;
+    }
     for (const child of this.processes.values()) {
       try {
         this.terminate(child);
@@ -2205,7 +2342,13 @@ export class CliRuntimeManager {
         // Already exited.
       }
     }
-    await Promise.allSettled([...this.activeTurns]);
+    await Promise.race([
+      Promise.allSettled([...this.activeTurns]),
+      new Promise((resolve) => setTimeout(resolve, deadlineMs)),
+    ]);
+    for (const turn of [...this.turnReservations.values()]) {
+      await this.#recordInterruption(turn, turn.interruptReason ?? reason);
+    }
     this.processes.clear();
     for (const set of this.subscribers.values()) {
       for (const subscription of set) subscription.response.end();

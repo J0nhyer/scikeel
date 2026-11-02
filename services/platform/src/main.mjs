@@ -197,6 +197,8 @@ try {
     );
   }
   await platform.init();
+  await cliRuntime.init();
+  await cliRuntime.reconcileInterruptedSessions();
   const migrate=boolEnv('PLATFORM_CATALOG_MIGRATE',false);
   const startup=await prepareWorkspaceService({migrate,manager:controlPlane?.manager,authStore,platform,workspaceCatalog,
     logger:event=>console.log(JSON.stringify(event))});

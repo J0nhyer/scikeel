@@ -906,3 +906,60 @@ test("reservation persists the user message and turn before native start", async
   assert.equal(turn.userMessageID, saved.turn.userMessageID);
   await manager.close();
 });
+
+test("shutdown records one service_restart interruption and clears turn", async () => {
+  const { root, manager } = await makeManager("codex");
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  await manager.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "hello" });
+  await manager.close({ reason: "service_restart", deadlineMs: 500 });
+  const { session: saved } = await manager.getOwnedSession("usr_a", session.id);
+  assert.equal(saved.turn, undefined);
+  assert.equal(saved.interruptions.length, 1);
+  assert.equal(saved.interruptions[0].reason, "service_restart");
+  assert.equal(saved.interruptions[0].userMessageID, saved.history.at(-1).info.id);
+  assert.equal(saved.interruptions[0].retryable, true);
+});
+
+test("startup reconciliation is idempotent for a persisted turn", async () => {
+  const { root, options } = await makeManager("codex");
+  const first = new CliRuntimeManager(options);
+  await first.init();
+  await first.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await first.createSession({ userId: "usr_a", workspaceDir: workspace });
+  await first.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "hello" });
+  const second = new CliRuntimeManager(options);
+  await second.init();
+  await second.reconcileInterruptedSessions();
+  await second.reconcileInterruptedSessions();
+  const { session: saved } = await second.getOwnedSession("usr_a", session.id);
+  assert.equal(saved.interruptions.filter((item) => item.reason === "unexpected_restart").length, 1);
+  assert.equal(saved.turn, undefined);
+  await second.close();
+});
+
+test("legacy history ending in a user message is reconciled once", async () => {
+  const { root, manager } = await makeManager("codex");
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  const state = await manager.ensureUser("usr_a");
+  const target = state.sessions.get(session.id);
+  target.history = [{ info: { id: "msg_old", role: "user", sessionID: session.id,
+    time: { created: 1, completed: 1 } }, parts: [{ type: "text", text: "old" }] }];
+  await manager.persistUser(state);
+  await manager.reconcileInterruptedSessions();
+  await manager.reconcileInterruptedSessions();
+  const { session: saved } = await manager.getOwnedSession("usr_a", session.id);
+  assert.equal(saved.interruptions.length, 1);
+  assert.equal(saved.interruptions[0].reason, "unexpected_restart");
+  assert.equal(saved.interruptions[0].userMessageID, "msg_old");
+  await manager.close();
+});
