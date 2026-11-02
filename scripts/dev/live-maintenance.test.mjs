@@ -91,6 +91,19 @@ test("reports a start failure and retries once", async () => {
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("accepts a synchronous start operation", async () => {
+  const dir = await fixture({});
+  const calls = [];
+  try {
+    await withLiveMaintenance(async () => {}, {
+      dataDir: dir, lockDir: dir, waitMs: 20, interrupt: false, healthTimeoutMs: 20,
+      ops: { stop: () => calls.push("stop"), start: () => calls.push("start"),
+        healthy: async () => true, wait: async () => {} },
+    });
+    assert.deepEqual(calls, ["stop", "start"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("writes an audit line", async () => {
   const dir = await fixture({});
   try {

@@ -74,7 +74,7 @@ export function defaultOps({ port = 4790 } = {}) {
 }
 
 export async function startPlatformWithHealthCheck({ ops = defaultOps(), timeoutMs = 60000, attempt = 0 } = {}) {
-  await ops.start().catch(() => {});
+  try { await ops.start(); } catch { /* Retry after the health window. */ }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await ops.healthy()) return;
