@@ -1257,6 +1257,37 @@ export class CliRuntimeManager {
     return { state, session };
   }
 
+  async #ownedSessionTree(userId, sessionId) {
+    const state = await this.ensureUser(userId);
+    if(typeof sessionId!=="string"||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(sessionId))throw issue("invalid_session","invalid session id",400);
+    const matches=[...state.sessions.values()].filter(session=>(session.publicConversationId??session.id)===sessionId);
+    if(!matches.length)throw issue("unknown_session", "session not found in the selected runtime", 404);
+    const tree=[],seen=new Set(),queue=[...matches];
+    while(queue.length){
+      const session=queue.shift();
+      if(seen.has(session.id))continue;
+      seen.add(session.id);tree.push(session);
+      for(const child of state.sessions.values())if(child.parentId===session.id)queue.push(child);
+    }
+    for(const session of tree)await this.workspaceAccess?.(userId,session.directory);
+    return {state,tree};
+  }
+
+  async ownedSessionTree(userId, sessionId) {
+    const {tree}=await this.#ownedSessionTree(userId,sessionId);
+    return tree.map(session=>({id:session.id,publicConversationId:session.publicConversationId??null,
+      directory:session.directory,runtime:session.runtime,parentId:session.parentId??null}));
+  }
+
+  async removeOwnedSessionTree(userId, sessionId) {
+    const {state,tree}=await this.#ownedSessionTree(userId,sessionId);
+    for(const session of tree)await this.abortSession(userId,session.id,true);
+    for(const session of tree)state.sessions.delete(session.id);
+    await this.persistUser(state);
+    return tree.map(session=>({id:session.id,publicConversationId:session.publicConversationId??null,
+      directory:session.directory,runtime:session.runtime,parentId:session.parentId??null}));
+  }
+
   async ensureNativeConversation(input) {
     const userId=input.owner.userId,previous=this.nativeConversationQueues.get(userId)??Promise.resolve();
     const next=previous.catch(()=>{}).then(()=>this.#ensureNativeConversation(input));

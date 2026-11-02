@@ -73,8 +73,8 @@ test('the pending receipt endpoint parses only its bounded cursor and limit quer
  await routes.handle(request('/api/workspace/operations?limit=20&cursor=patch-003'),response,f.context);assert.equal(response.status,200);assert.deepEqual(calls[0],[f.context,{limit:20,cursor:'patch-003'}]);
  const bad={};await routes.handle(request('/api/workspace/operations?limit=20&limit=30'),bad,f.context);assert.equal(bad.status,400);assert.equal(calls.length,1);
 });
-test('project trash refuses pending file mutations rather than hiding their recovery scope',async t=>{
+test('project removal refuses pending file mutations rather than hiding their recovery scope',async t=>{
  const f=await fixture(t);await f.prepare();const project=(await f.management.listProjects(f.context))[0];
- await assert.rejects(f.management.trashProject(f.context,project.id,{operationId:'trash-a',expectedRevision:project.revision}),{code:'operation_pending'});
- assert.deepEqual(await f.management.listTrash(f.context),[]);
+ await assert.rejects(f.management.removeProject(f.context,project.id,{operationId:'remove-a',expectedRevision:project.revision}),{code:'operation_pending'});
+ assert.equal((await f.management.listProjects(f.context)).length,1);
 });

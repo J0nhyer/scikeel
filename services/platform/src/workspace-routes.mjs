@@ -1,6 +1,6 @@
 import {workspaceError} from './workspace-state.mjs';
 import {WORKSPACE_UPLOAD_CHUNK} from './workspace-uploads.mjs';
-import {workspacePage,workspacePageQuery} from './workspace-pages.mjs';
+import {workspacePageQuery} from './workspace-pages.mjs';
 async function readUploadChunk(request){
   if(request.headers['content-type']!=='application/octet-stream')throw workspaceError('invalid_content_type',415);
   const declared=request.headers['content-length'];
@@ -30,9 +30,7 @@ export function createWorkspaceRoutes({management,files,uploads,readJson,sendJso
       if(body===null)return true;
       if(!body || typeof body!=='object' || Array.isArray(body))throw workspaceError('invalid_input',400);
       let result;
-      const project=path.match(/^\/api\/workspace\/projects\/([a-f0-9]{16})(?:\/(trash))?$/);
-      const restore=path.match(/^\/api\/workspace\/trash\/([a-f0-9]{16}|[a-f0-9]{32})\/restore$/);
-      const session=path.match(/^\/api\/workspace\/sessions\/([A-Za-z0-9_-]{1,128})\/state$/);
+      const project=path.match(/^\/api\/workspace\/projects\/([a-f0-9]{16})(?:\/(remove))?$/);
       const receipt=path.match(/^\/api\/workspace\/operations\/([A-Za-z0-9_-]{1,128})$/);
       const history=path.match(/^\/api\/workspace\/operations\/([A-Za-z0-9_-]{1,128})\/history$/);
       const resume=path.match(/^\/api\/workspace\/operations\/([A-Za-z0-9_-]{1,128})\/resume$/);
@@ -41,9 +39,7 @@ export function createWorkspaceRoutes({management,files,uploads,readJson,sendJso
       else if(uploads && method==='GET' && upload && !upload[2])result=await uploads.inspect(context,upload[1]);
       else if(uploads && method==='POST' && upload?.[2]==='commit')result=await uploads.commit(context,upload[1],body);
       else if(uploads && method==='DELETE' && upload && !upload[2]){if(Object.keys(body).length)throw workspaceError('invalid_input',400);result=await uploads.cancel(context,upload[1]);}
-      else if(method==='GET' && session)result=await management.sessionState(context,session[1]);
       else if(method==='GET' && path==='/api/workspace/projects')result=await management.listProjects(context);
-      else if(method==='GET' && path==='/api/workspace/trash')result=workspacePage([...await management.listTrash(context),...(files?await files.trash(context):[])],workspacePageQuery(url),{userId:context.userId,kind:'trash'},entry=>entry.id);
       else if(method==='GET' && receipt)result=files?await files.receipt(context,receipt[1]):await management.state.receipt(context.userId,receipt[1]);
       else if(method==='GET' && path==='/api/workspace/operations' && files){
         for(const key of url.searchParams.keys())if(!['limit','cursor'].includes(key) || url.searchParams.getAll(key).length!==1)throw workspaceError('invalid_input',400);
@@ -67,8 +63,7 @@ export function createWorkspaceRoutes({management,files,uploads,readJson,sendJso
         if(Object.keys(body).some(key=>!['name','pinned','operationId'].includes(key)))throw workspaceError('invalid_input',400);
         result=await management.patchProject(context,project[1],body);
       }
-      else if(method==='POST' && project?.[2])result=await management.trashProject(context,project[1],body);
-      else if(method==='POST' && restore)result=restore[1].length===32 && files?await files.restore(context,restore[1],body):await management.restore(context,restore[1],body);
+      else if(method==='POST' && project?.[2]==='remove')result=await management.removeProject(context,project[1],body);
       else throw workspaceError('not_found',404);
       sendJson(response,200,result);
     }catch(error){sendJson(response,error.statusCode??503,{error:error.statusCode?error.message:'Workspace management unavailable',code:error.code??'workspace_unavailable'});}

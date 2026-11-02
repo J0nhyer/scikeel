@@ -152,18 +152,18 @@ test('unconfirmed transport dispatch retries only the original staged chunk',asy
  await assert.rejects(f.uploads.chunk(f.context,upload.id,0,Buffer.from('bad')),{code:'offset_conflict'});f.native.call=call;
  assert.equal((await f.uploads.chunk(f.context,upload.id,0,Buffer.from('abc'))).offset,3);assert.equal(f.writes(),1);
 });
-test('an upload destination ancestor cannot be trashed or moved until staging is resolved',async t=>{
+test('an upload destination ancestor cannot be deleted or moved until staging is resolved',async t=>{
  const f=await fixture(t);f.payloads.set('reports',{identity:'folder',revision:'a'.repeat(64),bytes:Buffer.alloc(0)});
  const call=f.native.call;f.native.call=async(...args)=>args[1].operation==='stat' && args[1].path==='reports'?{identity:'folder',revision:'a'.repeat(64),isDir:true,size:0}:call(...args);
  await f.begin('begin-a',3,'reports/data.bin');
- await assert.rejects(f.files.operate(f.context,{scope:{kind:'account'},operationId:'trash-parent',operation:{kind:'trash',path:'reports',expectedRevision:'a'.repeat(64)}}),{code:'upload_pending'});assert.equal(f.moves(),0);
+ await assert.rejects(f.files.operate(f.context,{scope:{kind:'account'},operationId:'delete-parent',operation:{kind:'delete',path:'reports',expectedRevision:'a'.repeat(64)}}),{code:'upload_pending'});assert.equal(f.moves(),0);
 });
-test('project trash cannot strand an active project-scoped upload',async t=>{
+test('project removal cannot strand an active project-scoped upload',async t=>{
  const f=await fixture(t),project={id:'123456789abcdef0',path:'/owned/a/projects/study',name:'Study'};
  f.management.gateway=async()=>[project];const listed=(await f.management.listProjects(f.context))[0];
  await f.state.update('a',data=>{data.uploads={owned:{state:'active',destination:'projects/study/data.bin'}};});
- await assert.rejects(f.management.trashProject(f.context,project.id,{operationId:'trash-project',expectedRevision:listed.revision}),{code:'upload_pending'});
- assert.deepEqual(await f.management.listTrash(f.context),[]);
+ await assert.rejects(f.management.removeProject(f.context,project.id,{operationId:'remove-project',expectedRevision:listed.revision}),{code:'upload_pending'});
+ assert.equal((await f.management.listProjects(f.context)).length,1);
 });
 test('lost collision replies become proven failed receipts and staging remains cancellable',async t=>{
  const f=await fixture(t),upload=await f.begin();await f.uploads.chunk(f.context,upload.id,0,Buffer.from('abc'));const call=f.native.call;

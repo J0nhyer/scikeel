@@ -14,6 +14,12 @@ test('public tickets bind owner generation path and live project state',async()=
   trashed=false;generation=2;await assert.rejects(tickets.redeem('a',result.ticket,{}));
   await assert.rejects(tickets.redeem('a','private-worker-ticket',{}));
 });
+test('private staging paths cannot obtain legacy preview tickets',async()=>{
+  const tickets=new WorkspaceTickets({resolveContext:async()=>({generation:1}),assertAccessible:async()=>{},issueWorkerTicket:async()=>({ticket:'private'}),streamWorkerFile:async()=>{}});
+  for(const target of [{directory:'/a/.scikeel',path:'payload'},{directory:'/a',path:'.scikeel/workspace-management/uploads/x/payload'},{directory:'/a/.openscience',path:'provenance.jsonl'},{directory:'/a',path:'.git/config'}]){
+    await assert.rejects(tickets.issue('a',target),{code:'protected_path',statusCode:403});
+  }
+});
 test('tickets expire and logout revokes them',async()=>{
   let clock=0;
   const tickets=new WorkspaceTickets({clock:()=>clock,resolveContext:async()=>({generation:1}),assertAccessible:async()=>{},issueWorkerTicket:async()=>({ticket:'private'}),streamWorkerFile:async()=>{}});

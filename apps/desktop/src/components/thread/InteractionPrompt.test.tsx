@@ -100,6 +100,13 @@ describe("InteractionPrompt — question", () => {
     await userEvent.click(screen.getByText("Skip"));
     expect(onReject).toHaveBeenCalledWith("que_1");
   });
+
+  it("closes a question from the header by rejecting it", async () => {
+    const onReject = vi.fn();
+    render(<InteractionPrompt question={singleQ} onAnswer={noop} onReject={onReject} onPermission={noop} />);
+    await userEvent.click(screen.getByRole("button", { name: "Skip and close the question" }));
+    expect(onReject).toHaveBeenCalledWith("que_1");
+  });
 });
 
 describe("InteractionPrompt — permission", () => {
@@ -121,6 +128,13 @@ describe("InteractionPrompt — permission", () => {
     await userEvent.click(screen.getByRole("button", { name: "Always allow" }));
     expect(onPermission).toHaveBeenCalledWith("per_1", "always");
     await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+    expect(onPermission).toHaveBeenCalledWith("per_1", "reject");
+  });
+
+  it("closes a permission request from the header by rejecting it", async () => {
+    const onPermission = vi.fn();
+    render(<InteractionPrompt permission={perm} onAnswer={noop} onReject={noop} onPermission={onPermission} />);
+    await userEvent.click(screen.getByRole("button", { name: "Reject and close the request" }));
     expect(onPermission).toHaveBeenCalledWith("per_1", "reject");
   });
 });

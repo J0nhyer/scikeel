@@ -311,6 +311,10 @@ export class AuthStore {
       .map((session) => session.userId))];
   }
 
+  async hasActiveSession(userId) {
+    return (await this.activeUserIds()).includes(userId);
+  }
+
   async getUser(userId) {
     await this.init();
     return publicUser(this.data.users.find((user) => user.id === userId));

@@ -305,7 +305,12 @@
         "capacityWaiting": "작업 공간 리소스를 기다리는 중입니다. 자동으로 다시 연결합니다."
       }
     },
-    "account": { "signOutFailed": "로그아웃하지 못했습니다. 다시 시도해 주세요." },
+    "account": {
+      "signOutFailed": "로그아웃하지 못했습니다. 다시 시도해 주세요.",
+      "signOutConfirmTitle": "로그아웃하고 워크스페이스를 중지할까요?",
+      "signOutConfirmBody": "이것이 마지막 로그인 세션이면 워크스페이스가 중지됩니다. 실행 중인 연구가 중단될 수 있으며, 대화 기록과 워크스페이스 파일은 유지됩니다.",
+      "signOutConfirmAction": "로그아웃하고 중지"
+    },
     "starting": {
       "titleWeb": "작업 공간에 연결하는 중…",
       "titleSessionsWeb": "대화를 불러오는 중…",
@@ -535,8 +540,10 @@
     },
     "askedBy": "{{origin}}의 요청",
     "skip": "건너뛰기",
+    "closeQuestion": "질문을 건너뛰고 닫기",
     "submit": "제출",
     "reject": "거부",
+    "closePermission": "요청을 거부하고 닫기",
     "alwaysAllow": "항상 허용",
     "allowOnce": "한 번만 허용",
     "state": {
@@ -768,7 +775,7 @@
     "discard": "Discard decision",
     "discardConfirm": "Discard this research decision? The current turn will stop.",
     "retry": "Retry",
-    "savedDecisions": "Confirmed research decisions",
+    "syncFailed": "Collaboration status sync failed",
     "suggestion": "Suggestion",
     "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
     "delegatedDescription": "승인된 작업을 계속 수행하고, 미승인된 중요한 선택은 확인합니다.",

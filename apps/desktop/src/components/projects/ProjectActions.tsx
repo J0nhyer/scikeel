@@ -5,10 +5,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {MoreHorizontal} from 'lucide-react';
 import type {ProjectInfo} from '@/lib/tauri';
 import {useRuntimeStore} from '@/lib/runtime';
-import {leaves,useLayoutStore} from '@/lib/layout';
-import {hasParkedDraft} from '@/lib/composerStash';
-import {hasPendingComposerAttachments} from '@/components/thread/useComposerAttachments';
-import {listWorkspaceProjects,patchWorkspaceProject,trashWorkspaceProject,workspaceOperationId,WorkspaceRequestError} from '@/lib/workspaceManagement';
+import {listWorkspaceProjects,patchWorkspaceProject,removeWorkspaceProject,workspaceOperationId,WorkspaceRequestError} from '@/lib/workspaceManagement';
 import {NameProjectDialog} from './NameProjectDialog';
 import {ManagementDialog} from '@/components/ui/ManagementDialog';
 import {hasWorkspaceDraftInDirectory} from '@/lib/workspaceDrafts';
@@ -16,14 +13,14 @@ import {hasWorkspaceDraftInDirectory} from '@/lib/workspaceDrafts';
 export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNewSession?:()=>void}) {
   const {t}=useTranslation(['nav','common']);const navigate=useNavigate();
   const readOnly=useRuntimeStore(state=>state.webReadOnly);
-  const [dialog,setDialog]=useState<'rename'|'trash'|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
+  const [dialog,setDialog]=useState<'rename'|'remove'|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
   const [uncertain,setUncertain]=useState(false);
   const mounted=useRef(true),locked=useRef(false),operation=useRef(workspaceOperationId()),lastName=useRef<string|null>(null);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const trigger=useRef<HTMLButtonElement>(null),cancel=useRef<HTMLButtonElement>(null),openingDialog=useRef(false);
-  const begin=(kind:'rename'|'trash')=>{openingDialog.current=true;operation.current=workspaceOperationId();lastName.current=null;setUncertain(false);setError(null);setDialog(kind);};
+  const begin=(kind:'rename'|'remove')=>{openingDialog.current=true;operation.current=workspaceOperationId();lastName.current=null;setUncertain(false);setError(null);setDialog(kind);};
   const openRename=()=>begin('rename');
-  const openTrash=()=>begin('trash');
+  const openRemove=()=>begin('remove');
   const run=async(action:()=>Promise<unknown>,after?:()=>void)=>{
     if(locked.current || useRuntimeStore.getState().webReadOnly)return;
     locked.current=true;setBusy(true);setError(null);const account=useRuntimeStore.getState().gatewayUser?.id;
@@ -38,23 +35,12 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
     if(lastName.current!==null && lastName.current!==name){if(uncertain)return;operation.current=workspaceOperationId();}
     lastName.current=name;void run(()=>patchWorkspaceProject(project.id,{name},operation.current));
   };
-  const trash=async()=>{
+  const remove=async()=>{
     if(hasWorkspaceDraftInDirectory(project.path))throw new Error(t('fileManagement.finishDraft'));
-    const state=useRuntimeStore.getState();
-    const belongs=(directory?:string)=>directory===project.path || directory?.startsWith(project.path+'/');
-    const sessionIds=new Set(state.sessions.filter(session=>belongs(session.directory)).map(session=>session.id));
-    const affected=useLayoutStore.getState().groups.flatMap(group=>group.tree?leaves(group.tree):[]).filter(leaf=>leaf.sessionId && sessionIds.has(leaf.sessionId) || !leaf.sessionId && belongs(state.draftWorkspaces[`draft:${leaf.id}`]));
-    for(const leaf of affected){
-      const key=`draft:${leaf.id}`,queue=`${state.gatewayUser?.id??'local'}:${key}`;
-      if(hasParkedDraft(key) || hasPendingComposerAttachments(queue,leaf.sessionId))throw new Error(t('projects.finishDraftBeforeTrash'));
-    }
     const current=(await listWorkspaceProjects()).find(item=>item.id===project.id);
     if(!current)throw new Error(t('projects.unavailable'));
-    await trashWorkspaceProject(project.id,current.revision,operation.current);
-    if(state.gatewayUser?.id!==useRuntimeStore.getState().gatewayUser?.id || !mounted.current)return;
-    const removedDrafts=new Set(affected.filter(leaf=>!leaf.sessionId).map(leaf=>leaf.id));
-    useLayoutStore.getState().pruneSessions(new Set([...state.sessions.map(session=>session.id),...useLayoutStore.getState().groups.flatMap(group=>group.tree?leaves(group.tree):[]).map(leaf=>leaf.sessionId).filter((id):id is string=>!!id)].filter(id=>!sessionIds.has(id))),removedDrafts);
-    useRuntimeStore.setState(latest=>({sessions:latest.sessions.filter(session=>!sessionIds.has(session.id)),draftWorkspaces:Object.fromEntries(Object.entries(latest.draftWorkspaces).filter(([,directory])=>!belongs(directory)))}));
+    await removeWorkspaceProject(project.id,current.revision,operation.current);
+    if(!mounted.current)return;
     navigate('/projects');
   };
   const item='cursor-pointer rounded-input px-3 py-2 text-sm outline-none data-[highlighted]:bg-surface-2 data-[disabled]:opacity-40';
@@ -66,13 +52,13 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
         <DropdownMenu.Item className={item} onSelect={()=>navigate('/files?project='+encodeURIComponent(project.id))}>{t('projects.openFiles')}</DropdownMenu.Item>
         <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={openRename}>{t('projects.rename')}</DropdownMenu.Item>
         <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={()=>void run(()=>patchWorkspaceProject(project.id,{pinned:!project.pinned}))}>{t(project.pinned?'projects.unpin':'projects.pin')}</DropdownMenu.Item>
-        <DropdownMenu.Item className={item+' text-error'} disabled={readOnly||busy} onSelect={openTrash}>{t('projects.trash')}</DropdownMenu.Item>
+        <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={openRemove}>{t('projects.remove')}</DropdownMenu.Item>
       </DropdownMenu.Content></DropdownMenu.Portal>
     </DropdownMenu.Root>
     {dialog==='rename' && <NameProjectDialog returnFocusRef={trigger} defaultName={project.name} title={t('projects.rename')} subtitle={t('projects.nameSubtitle')} busy={busy} inputDisabled={uncertain} cancelDisabled={uncertain} error={error??undefined} onCancel={()=>{if(!busy && !uncertain)setDialog(null);}} onSave={rename}/>}
-    {dialog==='trash' && <ManagementDialog role="alertdialog" title={t('projects.trashTitle',{name:project.name})} description={t('projects.trashBody')} onClose={()=>setDialog(null)} dismissible={!busy} initialFocusRef={cancel} returnFocusRef={trigger} className="w-[360px]">
+    {dialog==='remove' && <ManagementDialog role="alertdialog" title={t('projects.removeTitle',{name:project.name})} description={t('projects.removeBody')} onClose={()=>setDialog(null)} dismissible={!busy} initialFocusRef={cancel} returnFocusRef={trigger} className="w-[360px]">
       {error && <p role="alert" className="mt-2 text-sm text-error">{error}</p>}
-      <div className="mt-4 flex justify-end gap-2"><button ref={cancel} disabled={busy} onClick={()=>setDialog(null)} className="rounded border border-border px-3 py-2 text-sm">{t('common:actions.cancel')}</button><button disabled={busy||readOnly} onClick={()=>void run(trash)} className="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">{t('projects.trash')}</button></div>
+      <div className="mt-4 flex justify-end gap-2"><button ref={cancel} disabled={busy} onClick={()=>setDialog(null)} className="rounded border border-border px-3 py-2 text-sm">{t('common:actions.cancel')}</button><button disabled={busy||readOnly} onClick={()=>void run(remove)} className="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">{t('projects.remove')}</button></div>
     </ManagementDialog>}
     {error && dialog===null && <p role="alert" className="text-xs text-error">{error}</p>}
   </>;

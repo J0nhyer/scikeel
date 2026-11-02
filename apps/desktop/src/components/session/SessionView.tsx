@@ -53,7 +53,7 @@ import { baseName } from "@/components/thread/WorkspaceChip";
 import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
 import { EmptySessionDecoration } from "./EmptySessionDecoration";
 import { collaborationPollingEnabled, useCollaboration } from "@/lib/collaboration";
-import { ResearchDecisionCard } from "../thread/ResearchDecisionCard";
+import { ComposerNotices } from "./ComposerNotices";
 import { ResearchDeliveryStatus } from "../thread/ResearchDeliveryStatus";
 import { researchRequest } from "@/lib/research";
 import { SplitMenu } from "@/components/session/SplitMenu";
@@ -1222,11 +1222,21 @@ export function SessionView({
             className="pointer-events-auto relative mx-auto w-full max-w-[760px] space-y-3 px-8"
           >
             {error && focused && <StateNotice issueId={`runtime:${eid ?? key}:${error}`} summary={t("common:notification.problem")} detail={error} />}
-            {decisionInputError && <p role="alert" className="text-xs text-danger">{decisionInputError}</p>}
-            {collaboration.error && <StateNotice issueId={`collaboration:${eid}:${collaboration.error}`} summary={t("collaboration.retry")} detail={collaboration.error} action={{ label: t("collaboration.retry"), run: collaboration.refresh }} />}
-            {collaboration.state.decisions.length>0 && <details className="text-xs text-muted"><summary>{t("collaboration.savedDecisions")}</summary><ul className="mt-2 space-y-2">{collaboration.state.decisions.map(d=><li key={d.id}><p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{d.question}</p><p className="whitespace-pre-wrap text-text [overflow-wrap:anywhere]">{d.answer}</p></li>)}</ul></details>}
-            {collaboration.state.pending && <ResearchDecisionCard key={collaboration.state.pending.id} decision={collaboration.state.pending} paused={collaboration.state.phase==="paused"} busy={collaboration.saving} onAnswer={collaboration.answer} onPause={collaboration.pause} onDiscard={collaboration.discard}/>}
-            {!collaboration.state.pending && collaboration.state.phase === "paused" && <p className="text-xs text-muted">{t("collaboration.paused")}</p>}
+            <ComposerNotices
+              decisionInputError={decisionInputError}
+              collaborationError={collaboration.error}
+              collaborationErrorScope={`${eid ?? key}`}
+              pendingDecision={collaboration.state.pending}
+              paused={collaboration.state.phase === "paused"}
+              pausedKey={`${eid ?? key}:${collaboration.state.execution}`}
+              busy={collaboration.saving}
+              onDismissDecisionInputError={() => setDecisionInputError(null)}
+              onRetryCollaboration={collaboration.refresh}
+              onAnswerDecision={collaboration.answer}
+              onPauseDecision={collaboration.pause}
+              onDiscardDecision={collaboration.discard}
+            />
+
             {activeRequest && (
               <InteractionPrompt
                 question={activeQuestion}

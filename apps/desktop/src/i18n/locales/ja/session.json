@@ -305,7 +305,12 @@
         "capacityWaiting": "ワークスペースのリソースを待機しています。自動的に再接続します。"
       }
     },
-    "account": { "signOutFailed": "ログアウトできませんでした。もう一度お試しください。" },
+    "account": {
+      "signOutFailed": "ログアウトできませんでした。もう一度お試しください。",
+      "signOutConfirmTitle": "サインアウトしてワークスペースを停止しますか？",
+      "signOutConfirmBody": "これが最後のサインインセッションの場合、ワークスペースは停止します。実行中の研究は中断される可能性がありますが、会話履歴とワークスペースのファイルは保持されます。",
+      "signOutConfirmAction": "サインアウトして停止"
+    },
     "starting": {
       "titleWeb": "ワークスペースに接続しています…",
       "titleSessionsWeb": "会話を読み込んでいます…",
@@ -535,8 +540,10 @@
     },
     "askedBy": "{{origin}} からの依頼",
     "skip": "スキップ",
+    "closeQuestion": "質問をスキップして閉じる",
     "submit": "送信",
     "reject": "拒否",
+    "closePermission": "リクエストを拒否して閉じる",
     "alwaysAllow": "常に許可",
     "allowOnce": "今回のみ許可",
     "state": {
@@ -768,7 +775,7 @@
     "discard": "Discard decision",
     "discardConfirm": "Discard this research decision? The current turn will stop.",
     "retry": "Retry",
-    "savedDecisions": "Confirmed research decisions",
+    "syncFailed": "Collaboration status sync failed",
     "suggestion": "Suggestion",
     "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
     "delegatedDescription": "承認済みの作業を継続し、未承認の重要な選択は確認します。",

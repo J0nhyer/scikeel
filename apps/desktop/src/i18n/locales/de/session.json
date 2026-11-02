@@ -305,7 +305,12 @@
         "capacityWaiting": "Warten auf Arbeitsbereichsressourcen. Die Verbindung wird automatisch wiederhergestellt."
       }
     },
-    "account": { "signOutFailed": "Abmeldung fehlgeschlagen. Bitte erneut versuchen." },
+    "account": {
+      "signOutFailed": "Abmeldung fehlgeschlagen. Bitte erneut versuchen.",
+      "signOutConfirmTitle": "Abmelden und Arbeitsbereich stoppen?",
+      "signOutConfirmBody": "Wenn dies die letzte angemeldete Sitzung ist, wird der Arbeitsbereich gestoppt. Laufende Forschung kann unterbrochen werden; Gesprächsverlauf und Arbeitsbereichsdateien bleiben erhalten.",
+      "signOutConfirmAction": "Abmelden und stoppen"
+    },
     "starting": {
       "titleWeb": "Verbindung zum Arbeitsbereich wird hergestellt…",
       "titleSessionsWeb": "Gespräche werden geladen…",
@@ -543,8 +548,10 @@
     },
     "askedBy": "Gefragt von {{origin}}",
     "skip": "Überspringen",
+    "closeQuestion": "Frage überspringen und schließen",
     "submit": "Absenden",
     "reject": "Ablehnen",
+    "closePermission": "Anfrage ablehnen und schließen",
     "alwaysAllow": "Immer erlauben",
     "allowOnce": "Einmal erlauben",
     "state": {
@@ -779,7 +786,7 @@
     "discard": "Discard decision",
     "discardConfirm": "Discard this research decision? The current turn will stop.",
     "retry": "Retry",
-    "savedDecisions": "Confirmed research decisions",
+    "syncFailed": "Collaboration status sync failed",
     "suggestion": "Suggestion",
     "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
     "delegatedDescription": "Autorisierte Arbeit abschließen; bei nicht genehmigten wichtigen Entscheidungen nachfragen.",

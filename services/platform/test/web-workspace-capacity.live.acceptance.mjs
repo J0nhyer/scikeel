@@ -191,9 +191,8 @@ test("real account capacity recovery preserves work, isolates background reconne
     const written = await scoped(b, textPath("capacity.txt")); assert.equal(written.text, content);
     await scoped(b, "/api/workspace/operations", { body: { scope, operationId: "capacity-" + randomUUID(), operation: { kind: "rename", path: "capacity.txt", destinationPath: "retained.txt", expectedRevision: written.revision } } });
     const current = (await scoped(b, "/api/workspace/projects")).find(value => value.id === project.id);
-    await scoped(b, `/api/workspace/projects/${project.id}/trash`, { body: { operationId: "capacity-" + randomUUID(), expectedRevision: current.revision } });
-    assert(!(await scoped(b, "/api/workspace/projects")).some(value => value.id === project.id));
-    await scoped(b, `/api/workspace/trash/${project.id}/restore`, { body: { operationId: "capacity-" + randomUUID() } });
+    assert.equal(current.name, "Capacity retained project");
+    assert.equal((await scoped(b, textPath("retained.txt"))).text, content);
     for (const locale of ["en", "zh-Hans"]) {
       const ready = await pageFor(b, locale); await ready.page.getByRole("button", { name: /^Model:|^模型/ }).first().waitFor({ timeout: 30000 });
       for (const width of [1280, 390, 320]) { await ready.page.setViewportSize({ width, height: 900 }); await screenshot(ready.page, `ready-${locale}-${width}`); }
@@ -201,7 +200,7 @@ test("real account capacity recovery preserves work, isolates background reconne
       await ready.context.close(); contexts.delete(ready.context);
     }
     assert.equal((await scoped(b, "/api/workspace/projects")).find(value => value.id === project.id).name, "Capacity retained project");
-    evidence.cases.push("project_rename_file_rename_trash_restore_reload");
+    evidence.cases.push("project_rename_file_rename_reload");
     await initialize(a); assert.equal((await scoped(a, `/session/${session.id}`)).id, session.id);
     assert((await scoped(a, `/session/${session.id}/message`)).some(message => message.info.role === "assistant" && message.info.time?.completed && message.parts?.some(part => part.type === "text" && part.text.includes("CAPACITY_WORK_PRESERVED"))));
     const lines = execFileSync("journalctl", ["-u", "osd-platform.service", "--since", startedAt, "--no-pager", "-o", "cat"], { encoding: "utf8", maxBuffer: 8 * 1024 ** 2 }).split("\n");

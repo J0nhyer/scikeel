@@ -477,6 +477,27 @@ export class ManagedWorkerManager {
     }
     return { retired, blocked };
   }
+  /** Stop this account's launcher-side instances even when this process has no
+   *  record for them. A platform restart can leave a busy instance live and
+   *  unmanaged; a last-session logout must still free that resident slot. */
+  async stopUnmanagedAccount(userId) {
+    let accounts;
+    try { ({ accounts } = await this.client.inventory({ timeoutMs: 3000 })); }
+    catch { return { stopped: false, code: "inventory_unavailable" }; }
+    if (!Array.isArray(accounts)) return { stopped: false, code: "inventory_unavailable" };
+    let stopped = false;
+    for (const account of accounts) {
+      if (!account || account.userId !== userId || !identifier(account.instanceId) ||
+          !Number.isSafeInteger(account.generation) || account.generation < 1 ||
+          !["starting", "ready", "unavailable"].includes(account.status)) continue;
+      const record = this.#workers.get(account.instanceId);
+      if (record && record.status === "running" && record.generation === account.generation) continue;
+      try { await this.client.stop({ instanceId: account.instanceId, generation: account.generation, reason: "logout-release" }); }
+      catch { continue; }
+      if (await this.#retired(account.instanceId)) stopped = true;
+    }
+    return { stopped };
+  }
   async #stop(record) {
     if (record.generation === null || record.status === "stopped" || record.stoppedGeneration === record.generation) return;
     if (record.maintenance) throw unavailable("workspace environment installation in progress");

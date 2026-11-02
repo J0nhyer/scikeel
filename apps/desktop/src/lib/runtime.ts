@@ -627,7 +627,7 @@ interface RuntimeState {
    *  turn is actually over (idle was missed — SSE reconnect windows, the
    *  directory-scoped event stream), reload the missed history and unlock. */
   reconcileRunning: () => Promise<void>;
-  deleteSession: (id: string) => Promise<void>;
+  deleteSession: (id: string) => Promise<boolean>;
   /** Retitle a session. Resolves false when the runtime rejected the rename
    *  (the old title stays); the caller shows nothing else. */
   renameSession: (id: string, title: string) => Promise<boolean>;
@@ -5778,7 +5778,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         await client.deleteSession(id);
       } catch (err) {
         set({ error: err instanceof Error ? err.message : String(err) });
-        if (isGatewayWeb) return;
+        if (isGatewayWeb) return false;
       }
     }
     // A queued review for a session that no longer exists would send into a
@@ -5809,12 +5809,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         currentId: s.currentId === id ? null : s.currentId,
       };
     });
+    return true;
   },
 
   renameSession: async (id, title) => {
     const trimmed = title.trim();
-    const current = get().sessions.find((s) => s.id === id);
-    if (!client || !trimmed || !current) return false;
+    if (!client || !trimmed) return false;
     try {
       await client.renameSession(id, trimmed);
     } catch (err) {

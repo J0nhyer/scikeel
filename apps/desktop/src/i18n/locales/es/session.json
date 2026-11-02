@@ -305,7 +305,12 @@
         "capacityWaiting": "Esperando recursos para el espacio de trabajo. Reconectando automáticamente."
       }
     },
-    "account": { "signOutFailed": "No se pudo cerrar la sesión. Inténtalo de nuevo." },
+    "account": {
+      "signOutFailed": "No se pudo cerrar la sesión. Inténtalo de nuevo.",
+      "signOutConfirmTitle": "¿Cerrar sesión y detener el espacio de trabajo?",
+      "signOutConfirmBody": "Si esta es la última sesión iniciada, el espacio de trabajo se detendrá. La investigación en curso puede interrumpirse; el historial de conversaciones y los archivos del espacio de trabajo se conservan.",
+      "signOutConfirmAction": "Cerrar sesión y detener"
+    },
     "starting": {
       "titleWeb": "Conectando con tu espacio de trabajo…",
       "titleSessionsWeb": "Cargando conversaciones…",
@@ -543,8 +548,10 @@
     },
     "askedBy": "Solicitado por {{origin}}",
     "skip": "Omitir",
+    "closeQuestion": "Omitir y cerrar la pregunta",
     "submit": "Enviar",
     "reject": "Rechazar",
+    "closePermission": "Rechazar y cerrar la solicitud",
     "alwaysAllow": "Permitir siempre",
     "allowOnce": "Permitir una vez",
     "state": {
@@ -779,7 +786,7 @@
     "discard": "Discard decision",
     "discardConfirm": "Discard this research decision? The current turn will stop.",
     "retry": "Retry",
-    "savedDecisions": "Confirmed research decisions",
+    "syncFailed": "Collaboration status sync failed",
     "suggestion": "Suggestion",
     "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
     "delegatedDescription": "Completar el trabajo autorizado; consultar decisiones importantes no aprobadas.",

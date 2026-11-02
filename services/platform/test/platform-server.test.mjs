@@ -17,6 +17,7 @@ import { WorkspaceRpc } from "../src/workspace-rpc.mjs";
 import { recoveryError } from "../src/workspace-recovery.mjs";
 import { capacityError } from "../src/workspace-capacity.mjs";
 import { WorkspaceAdmission } from "../src/workspace-admission.mjs";
+import { ActiveWorkspaceOwners } from "../src/active-workspace-owners.mjs";
 import {localRevertFiles} from '../fixtures/conversation-revert-files.mjs';
 import {createManagedModelCatalogReader} from '../src/managed-model-catalog.mjs';
 import {createAnalyticsCollector} from '../src/agent-analytics-collector.mjs';
@@ -1111,8 +1112,10 @@ test("logout revokes only its independent login session without touching an unav
   const a = makeClient(f.base); const b = makeClient(f.base);
   await login(a, "admin", "admin-password"); await login(b, "admin", "admin-password");
   const ownerCalls = [];
+  let releaseCalls = 0;
   f.server.workspaceOwners = {
     claim: async input => ownerCalls.push(["claim", input]),
+    release: async userId => { releaseCalls++; ownerCalls.push(["release", userId]); },
     close: async () => ownerCalls.push(["close"]),
   };
   let workerCalls = 0;
@@ -1127,8 +1130,87 @@ test("logout revokes only its independent login session without touching an unav
     assert.equal((await a.request("/api/me", { headers: { accept: "application/json" } })).status, 401);
     assert.equal((await b.request("/api/me", { headers: { accept: "application/json" } })).status, 200);
     assert.equal(workerCalls, 0);
+    assert.equal(releaseCalls, 0);
     assert.deepEqual(ownerCalls, []);
   } finally { f.manager.stopWorker = originalStop; }
+});
+
+test("the last logout force-releases the account workspace without failing logout", async () => {
+  const f = await makeFixture();
+  const a = makeClient(f.base);
+  const { user } = await login(a, "admin", "admin-password");
+  const releases = [];
+  f.server.workspaceOwners = {
+    claim: async () => {},
+    release: async userId => { releases.push(userId); return { released: true, stopped: true }; },
+    close: async () => {},
+  };
+  const logout = await a.request("/auth/logout", { method: "POST", headers: { accept: "application/json" } });
+  assert.equal(logout.status, 200); assert.deepEqual(await logout.json(), { ok: true });
+  assert.deepEqual(releases, [user.id]);
+  assert.equal((await a.request("/api/me", { headers: { accept: "application/json" } })).status, 401);
+});
+
+test("the last logout stops the resident worker through the owner registry", async () => {
+  const f = await makeFixture();
+  const a = makeClient(f.base);
+  const { user } = await login(a, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  const owners = new ActiveWorkspaceOwners({
+    manager: f.manager,
+    store: {
+      async read() { return []; },
+      async remember() {},
+      async forget() { return true; },
+    },
+  });
+  await owners.claim({ userId: user.id, instanceId });
+  f.server.workspaceOwners = owners;
+  assert.equal(f.manager.getWorker(instanceId).status, "running");
+  assert.equal((await a.request("/api/me", { headers: { accept: "application/json" } })).status, 200);
+  const logout = await a.request("/auth/logout", { method: "POST", headers: { accept: "application/json" } });
+  assert.equal(logout.status, 200); assert.deepEqual(await logout.json(), { ok: true });
+  assert.equal((await a.request("/api/me", { headers: { accept: "application/json" } })).status, 401);
+  assert.equal(await f.authStore.hasActiveSession(user.id), false);
+  assert.equal(f.manager.getWorker(instanceId).status, "stopped");
+});
+
+test("last logout interrupts and releases native work for the stopped workspace", async () => {
+  const calls = [];
+  const cliRuntime = {
+    init: async () => {},
+    isManaged: () => false,
+    close: async () => {},
+    sandboxJobs: {
+      interruptGeneration: context => { calls.push(["interrupt", context.userId]); },
+      releaseGeneration: async context => { calls.push(["release", context.userId]); },
+    },
+  };
+  const f = await makeFixture({ cliRuntime });
+  const a = makeClient(f.base);
+  const { user } = await login(a, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  await f.manager.ensureWorker({ instanceId, userId: user.id });
+  const logout = await a.request("/auth/logout", { method: "POST", headers: { accept: "application/json" } });
+  assert.equal(logout.status, 200); assert.deepEqual(await logout.json(), { ok: true });
+  assert.deepEqual(calls, [["interrupt", user.id], ["release", user.id]]);
+  assert.equal(f.manager.getWorker(instanceId).status, "stopped");
+});
+
+test("a failed forced release is logged and never fails logout", async () => {
+  const events = [];
+  const f = await makeFixture({ logger: event => events.push(event) });
+  const a = makeClient(f.base);
+  const { user } = await login(a, "admin", "admin-password");
+  f.server.workspaceOwners = {
+    claim: async () => {},
+    release: async () => { throw Object.assign(new Error("stop failed"), { code: "release_failed" }); },
+    close: async () => {},
+  };
+  const logout = await a.request("/auth/logout", { method: "POST", headers: { accept: "application/json" } });
+  assert.equal(logout.status, 200); assert.deepEqual(await logout.json(), { ok: true });
+  assert.equal((await a.request("/api/me", { headers: { accept: "application/json" } })).status, 401);
+  assert.ok(events.some(event => event.type === "workspace.logout_release_failed" && event.userId === user.id));
 });
 
 test('conversation collaboration defaults are owned, unavailable without runtime, and proposals cannot approve',async()=>{
@@ -1633,6 +1715,107 @@ test('canonical native rename survives owned read, history refresh and platform 
  assert.equal((await f.server.conversationRouter.read(f.owner,f.session.id)).title,title);
  const restarted=new ConversationState({rootDir:f.server.conversations.rootDir,authorize:async()=>true});
  assert.equal((await restarted.open(f.owner,f.session.id)).title,title);
+});
+test('deleting a viewed native conversation removes its canonical row and catalog entry',async t=>{
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');});
+ const listed=async()=>(await (await f.client.request('/experimental/session?limit=200')).json()).map(row=>row.id);
+ assert.ok((await listed()).includes(f.session.id));
+ assert.equal((await f.client.request(`/session/${f.session.id}`)).status,200);
+ const removed=await f.client.request(`/session/${f.session.id}`,{method:'DELETE',
+  headers:{'x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}});
+ assert.equal(removed.status,200,await removed.text());
+ assert.ok(!(await listed()).includes(f.session.id));
+ await assert.rejects(f.server.conversations.open(f.owner,f.session.id),{code:'conversation_not_found'});
+ const changes=await f.server.conversations.pendingCatalogChanges(f.user.id);
+ assert.ok(changes.some(change=>change.conversationTombstones.includes(f.session.id)));
+});
+test('deleting a canonical-only row succeeds after an old partial delete and stale attachment tombstone',async t=>{
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');});
+ const {state,session}=await f.cliRuntime.getOwnedSession(f.user.id,f.session.id);
+ state.sessions.delete(session.id);await f.cliRuntime.persistUser(state);
+ await f.server.attachments.deleteSession(f.user.id,f.session.id);
+ const removed=await f.client.request(`/session/${f.session.id}`,{method:'DELETE',
+  headers:{'x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}});
+ assert.equal(removed.status,200,await removed.text());
+ const listed=await (await f.client.request('/experimental/session?limit=200')).json();
+ assert.ok(!listed.some(row=>row.id===f.session.id));
+ await assert.rejects(f.server.conversations.open(f.owner,f.session.id),{code:'conversation_not_found'});
+});
+test('deleting a native-only historical conversation works while Codex is selected',async t=>{
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');});
+ const access=f.manager.getWorkerAccess(f.owner.instanceId);
+ const headers={authorization:`Basic ${Buffer.from(`opencode:${access.token}`).toString('base64')}`};
+ const created=await (await fetch(new URL(`/session?directory=${encodeURIComponent(f.owner.workspaceDir)}`,access.url),{method:'POST',
+  headers:{...headers,'content-type':'application/json'},body:JSON.stringify({title:'Historical OpenCode'})})).json();
+ const nativeIds=async()=>(await (await fetch(new URL('/experimental/session',access.url),{headers})).json()).map(row=>row.id);
+ f.server.conversationRouter.listOpenCode=async()=>await (await fetch(new URL('/experimental/session',access.url),{headers})).json();
+ const listed=async()=>(await (await f.client.request('/experimental/session?limit=200')).json()).map(row=>row.id);
+ assert.ok((await listed()).includes(created.id));
+ const removed=await f.client.request(`/session/${created.id}`,{method:'DELETE',
+  headers:{'x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}});
+ assert.equal(removed.status,200,await removed.text());
+ assert.ok(!(await listed()).includes(created.id));
+ assert.ok(!(await nativeIds()).includes(created.id));
+});
+test('deleting a canonical historical OpenCode conversation removes both the canonical and native records',async t=>{
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');});
+ const access=f.manager.getWorkerAccess(f.owner.instanceId);
+ const headers={authorization:`Basic ${Buffer.from(`opencode:${access.token}`).toString('base64')}`};
+ const created=await (await fetch(new URL(`/session?directory=${encodeURIComponent(f.owner.workspaceDir)}`,access.url),{method:'POST',
+  headers:{...headers,'content-type':'application/json'},body:JSON.stringify({title:'Canonical OpenCode'})})).json();
+ await f.server.conversations.importHistorical(f.owner,{conversationId:created.id,expectedRevision:0,title:'Canonical OpenCode',
+  parentId:null,lifecycle:'active',source:{runtime:'opencode',sessionId:created.id},events:[],cursor:null});
+ f.server.conversationRouter.listOpenCode=async()=>await (await fetch(new URL('/experimental/session',access.url),{headers})).json();
+ const listed=async()=>(await (await f.client.request('/experimental/session?limit=200')).json()).map(row=>row.id);
+ assert.ok((await listed()).includes(created.id));
+ const removed=await f.client.request(`/session/${created.id}`,{method:'DELETE',
+  headers:{'x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}});
+ assert.equal(removed.status,200,await removed.text());
+ assert.ok(!(await listed()).includes(created.id));
+ const native=await (await fetch(new URL('/experimental/session',access.url),{headers})).json();
+ assert.ok(!native.some(row=>row.id===created.id));
+ await assert.rejects(f.server.conversations.open(f.owner,created.id),{code:'conversation_not_found'});
+});
+test('deleting an aliased CLI conversation removes its internal session and canonical row',async t=>{
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');});
+ const publicId='conv_alias_fixture';
+ const session=await f.cliRuntime.createSession({userId:f.user.id,workspaceDir:f.owner.workspaceDir});
+ session.publicConversationId=publicId;
+ await f.cliRuntime.persistUser(await f.cliRuntime.ensureUser(f.user.id));
+ await f.server.conversations.create(f.owner,{conversationId:publicId,title:'Alias fixture',parentId:null,lifecycle:'active'});
+ assert.equal((await f.client.request(`/session/${publicId}`,{method:'DELETE',
+  headers:{'x-scikeel-assistant-revision':'2'}})).status,403);
+ assert.equal((await f.client.request(`/session/${publicId}`,{method:'DELETE',
+  headers:{origin:'https://foreign.invalid','x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}})).status,403);
+ const removed=await f.client.request(`/session/${publicId}`,{method:'DELETE',
+  headers:{'x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}});
+ assert.equal(removed.status,200,await removed.text());
+ await assert.rejects(f.cliRuntime.ownedSessionTree(f.user.id,publicId),{code:'unknown_session'});
+ await assert.rejects(f.server.conversations.open(f.owner,publicId),{code:'conversation_not_found'});
+});
+test('deleting a conversation cascades hidden CLI and canonical child sessions',async t=>{
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');});
+ const child=await f.cliRuntime.createSession({userId:f.user.id,workspaceDir:f.owner.workspaceDir});
+ child.parentId=f.session.id;
+ await f.cliRuntime.persistUser(await f.cliRuntime.ensureUser(f.user.id));
+ await f.server.conversations.create(f.owner,{conversationId:child.id,title:'Child fixture',parentId:f.session.id,lifecycle:'active'});
+ const removed=await f.client.request(`/session/${f.session.id}`,{method:'DELETE',
+  headers:{'x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}});
+ assert.equal(removed.status,200,await removed.text());
+ await assert.rejects(f.cliRuntime.ownedSessionTree(f.user.id,f.session.id),{code:'unknown_session'});
+ await assert.rejects(f.cliRuntime.ownedSessionTree(f.user.id,child.id),{code:'unknown_session'});
+ await assert.rejects(f.server.conversations.open(f.owner,f.session.id),{code:'conversation_not_found'});
+ await assert.rejects(f.server.conversations.open(f.owner,child.id),{code:'conversation_not_found'});
+});
+test('deleting a historical CLI conversation is not limited to the selected assistant runtime',async t=>{
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');});
+ const session=await f.cliRuntime.createSession({userId:f.user.id,workspaceDir:f.owner.workspaceDir});
+ session.runtime='claude';
+ await f.cliRuntime.persistUser(await f.cliRuntime.ensureUser(f.user.id));
+ const removed=await f.client.request(`/session/${session.id}`,{method:'DELETE',
+  headers:{'x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}});
+ assert.equal(removed.status,200,await removed.text());
+ await assert.rejects(f.cliRuntime.ownedSessionTree(f.user.id,session.id),{code:'unknown_session'});
 });
 test('native HTTP history remains readable when a real turn completes between indexing and rendering',async t=>{
  let finish,accepted=false;const completed=new Promise(resolve=>{finish=resolve;});

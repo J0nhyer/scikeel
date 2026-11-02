@@ -1,11 +1,9 @@
-import { useTranslation } from "react-i18next";
-import { workspaceSessionState, WorkspaceRequestError } from "@/lib/workspaceManagement";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useRuntimeStore } from "@/lib/runtime";
 import { findLeaf, leaves, recentScreens, useLayoutStore } from "@/lib/layout";
 import { useIsMobile } from "@/lib/useIsMobile";
-import { isGatewayWeb, isPlatformWeb } from "@/lib/webMode";
+import { isGatewayWeb } from "@/lib/webMode";
 import { cn } from "@/lib/cn";
 import { SessionView } from "@/components/session/SessionView";
 import { PaneTree } from "@/components/session/PaneTree";
@@ -20,11 +18,6 @@ import { PresentedArtifactPane } from "@/components/session/PresentedArtifactPan
  *  accumulates. Rebuilding loses nothing that matters: unsent text, scroll
  *  positions, threads and running turns all live outside the components. */
 const MOUNTED_SCREENS = 10;
-
-/** How long the page waits for a workspace that cannot answer before it
- *  reports the state as unknown. A wait without an end is the "checking
- *  project status" surface the user must never be stuck on. */
-const LIFECYCLE_WAIT_MS = 10000;
 
 /** How many of those keep their LAYOUT (see the render below). Measured on a
  *  real workbench, this is the difference between a switch that costs ~3ms of
@@ -83,7 +76,6 @@ export function screenVisibility(
 }
 
 export function LiveSessionPage() {
-  const {t}=useTranslation(["nav","common"]);
   const params = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -151,35 +143,16 @@ export function LiveSessionPage() {
     ? missingSessionId(status, sessionListComplete, [urlId, focusedSid], sessions)
     : null;
 
-  const accountId=useRuntimeStore(state=>state.gatewayUser?.id);
-  const [lifecycle,setLifecycle]=useState<{id:string;state:string;accountId:string|undefined}|null>(null);
-  const [lifecycleAttempt,retryLifecycle]=useState(0);
-  const needsLifecycle=isPlatformWeb && !!unavailableId;
-  const waitingForLifecycle=needsLifecycle && (lifecycle?.id!==unavailableId || lifecycle?.accountId!==accountId);
-  const lifecycleUnavailable=needsLifecycle && !waitingForLifecycle && lifecycle?.state==="unknown";
-  const projectTrashed=needsLifecycle && !waitingForLifecycle && lifecycle?.state==="trashed";
-  useEffect(()=>{
-    if(!needsLifecycle || !unavailableId)return;
-    let cancelled=false;
-    // A workspace that cannot answer must not hold the surface in a waiting
-    // state forever: the deadline turns it into the explicit unknown state,
-    // which the page offers to retry.
-    const deadline=setTimeout(()=>{if(!cancelled)setLifecycle({id:unavailableId,state:"unknown",accountId});},LIFECYCLE_WAIT_MS);
-    void workspaceSessionState(unavailableId).then(result=>{if(!cancelled)setLifecycle({id:unavailableId,state:result.state,accountId});})
-      .catch(error=>{if(!cancelled)setLifecycle({id:unavailableId,state:error instanceof WorkspaceRequestError && [403,404].includes(error.status)?"missing":"unknown",accountId});});
-    return()=>{cancelled=true;clearTimeout(deadline);};
-  },[needsLifecycle,unavailableId,accountId,lifecycleAttempt]);
-
   // A URL or persisted layout can point at a session from another account, a
   // deleted session, or the CLI selected before this one. Do not send even one
   // history/prompt request to that id: replace it with a clean draft and keep
   // the user on the chat surface.
   useEffect(() => {
-    if (!unavailableId || waitingForLifecycle || projectTrashed || lifecycleUnavailable) return;
+    if (!unavailableId) return;
     useLayoutStore.getState().reset(null);
     resetDraftView();
     navigate("/live", { replace: true });
-  }, [unavailableId, waitingForLifecycle, projectTrashed, lifecycleUnavailable, navigate, resetDraftView]);
+  }, [unavailableId, navigate, resetDraftView]);
 
   useEffect(() => {
     if (waitingForWebSessions || unavailableId) return;
@@ -301,9 +274,6 @@ export function LiveSessionPage() {
   const warm = useMemo(() => new Set(live.slice(0, WARM_SCREENS)), [live]);
   // Web / phone: no tiling — show the focused pane alone (its own titlebar), or
   // the onboarding if the group is somehow empty.
-  if(waitingForLifecycle)return <div className="p-6 text-sm text-muted">{t("projects.checkingState")}</div>;
-  if(lifecycleUnavailable)return <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center"><p role="alert">{t("projects.unavailable")}</p><button className="rounded border border-border px-3 py-2 text-sm" onClick={()=>{setLifecycle(null);retryLifecycle(value=>value+1);}}>{t("common:notification.retry")}</button></div>;
-  if(projectTrashed)return <div className="flex h-full min-w-0 flex-col items-center justify-center gap-4 p-6 text-center"><p className="text-sm text-text">{t("projects.trashedConversation")}</p><div className="flex flex-wrap justify-center gap-2"><button onClick={()=>navigate("/files?view=trash")} className="rounded border border-border px-3 py-2 text-sm">{t("projects.restore")}</button><button onClick={()=>navigate("/projects")} className="rounded border border-border px-3 py-2 text-sm">{t("projects.heading")}</button></div></div>;
   if (webOrMobile) {
     return focusedLeaf ? (
       focusedLeaf.artifact && focusedLeaf.sessionId ? (

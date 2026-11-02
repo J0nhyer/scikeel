@@ -67,6 +67,10 @@ export class WorkspaceCatalog {
   const result=await this.#request('apply',{change});
   this.onChanged?.(change.userId,result.revision);return result;
  }
+ async removeConversations(userId,ids){
+  const result=await this.#request('removeConversations',{userId,ids});
+  if(result.removed)this.onChanged?.(userId,result.revision);return result;
+ }
  bindDirectories(userId,directories){return this.#request('directories',{userId,directories});}
  verify(userId,sourceDigest){return this.#request('verify',{userId,sourceDigest});}
  checkpoint(userId,source,payload){return this.#request('checkpoint',{userId,source,payload});}

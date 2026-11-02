@@ -1,5 +1,10 @@
 import {randomBytes} from 'node:crypto';
 import {workspaceError} from './workspace-state.mjs';
+const reserved=new Set(['.git','.openscience','.scikeel']);
+function assertPublicTarget(target){
+  const parts=[...String(target?.directory??'').split('/'),...String(target?.path??'').split('/')];
+  if(parts.some(part=>reserved.has(part.toLowerCase())) || parts.some(part=>part==='..'))throw workspaceError('protected_path',403);
+}
 export class WorkspaceTickets {
   #tickets=new Map();
   constructor({clock=Date.now,resolveContext,assertAccessible,issueWorkerTicket,streamWorkerFile}) {Object.assign(this,{clock,resolveContext,assertAccessible,issueWorkerTicket,streamWorkerFile});}
@@ -7,6 +12,7 @@ export class WorkspaceTickets {
   async issue(userId,target) {
     for(const [key,value] of this.#tickets)if(value.expiresAt<=this.clock())this.#tickets.delete(key);
     if([...this.#tickets.values()].filter(value=>value.userId===userId).length>=256)throw workspaceError('preview_capacity',503);
+    assertPublicTarget(target);
     const context=await this.resolveContext(userId);await this.assertAccessible(context,target.directory+'/'+target.path);
     const worker=await this.issueWorkerTicket(context,target);
     if(typeof worker?.ticket!=='string')throw workspaceError('preview_unavailable',503);
@@ -17,6 +23,7 @@ export class WorkspaceTickets {
   async redeem(userId,ticket,response,download){
     const entry=this.#tickets.get(ticket);
     if(!entry || entry.userId!==userId || entry.expiresAt<=this.clock())throw workspaceError('preview_expired',404);
+    assertPublicTarget(entry.target);
     const context=await this.resolveContext(userId);
     if(context.generation!==entry.generation){this.#tickets.delete(ticket);throw workspaceError('preview_expired',404);}
     await this.assertAccessible(context,entry.target.directory+'/'+entry.target.path);

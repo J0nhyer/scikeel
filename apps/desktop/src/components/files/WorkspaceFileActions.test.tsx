@@ -7,7 +7,7 @@ vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof i
 import {WorkspaceRequestError} from '@/lib/workspaceManagement';
 const {WorkspaceFileActions,WorkspaceFileControls}=await import('./WorkspaceFileActions');
 const scope={kind:'project' as const,projectId:'123456789abcdef0'};
-const entry={name:'result.txt',path:'reports/result.txt',size:8,modified:1,isDir:false,revision:'a'.repeat(64),capabilities:['rename','move','trash']};
+const entry={name:'result.txt',path:'reports/result.txt',size:8,modified:1,isDir:false,revision:'a'.repeat(64),capabilities:['rename','move','delete']};
 beforeEach(()=>{vi.clearAllMocks();useRuntimeStore.setState({webReadOnly:false});});afterEach(cleanup);
 it('focuses rename from the file menu and dismisses with Escape without changing files',async()=>{
  render(<WorkspaceFileActions scope={scope} entry={entry} onChanged={()=>{}}/>);
@@ -17,18 +17,27 @@ it('focuses rename from the file menu and dismisses with Escape without changing
  await userEvent.keyboard('{Escape}');expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
  await waitFor(()=>expect(trigger).toHaveFocus());expect(operate).not.toHaveBeenCalled();
 });
-it('portals move and trash dialogs and focuses their safe controls',async()=>{
+it('portals move and delete dialogs and focuses their safe controls',async()=>{
  entries.mockResolvedValue({entries:[],nextCursor:null});
  const view=render(<div style={{transform:'translateY(-50%)'}}><WorkspaceFileActions scope={scope} entry={entry} onChanged={()=>{}}/></div>);
  const trigger=screen.getByRole('button',{name:'File actions: result.txt'});
  await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Move'}));
  expect(view.container).not.toContainElement(screen.getByRole('dialog',{name:'Move'}));
  await userEvent.keyboard('{Escape}');expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
- await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Move to trash'}));
+ await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Delete'}));
  await waitFor(()=>expect(screen.getByRole('button',{name:'Cancel'})).toHaveFocus());
- expect(view.container).not.toContainElement(screen.getByRole('alertdialog'));
+ const dialog=screen.getByRole('alertdialog');expect(view.container).not.toContainElement(dialog);
+ expect(within(dialog).getByRole('button',{name:'Delete'})).toBeInTheDocument();
  await userEvent.keyboard('{Escape}');expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
  expect(operate).not.toHaveBeenCalled();
+});
+it('deletes with the listed revision and does not open a restore flow',async()=>{
+ operate.mockResolvedValue({state:'committed'});
+ render(<WorkspaceFileActions scope={scope} entry={entry} onChanged={()=>{}}/>);
+ await userEvent.click(screen.getByRole('button',{name:'File actions: result.txt'}));
+ await userEvent.click(screen.getByRole('menuitem',{name:'Delete'}));
+ await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button',{name:'Delete'}));
+ expect(operate.mock.calls[0][1]).toEqual({kind:'delete',path:entry.path,expectedRevision:entry.revision});
 });
 it('renames relative to its selected scope and retains a rejected name',async()=>{
  operate.mockRejectedValueOnce(new Error('Name already exists')).mockResolvedValueOnce({state:'committed'});

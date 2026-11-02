@@ -305,7 +305,12 @@
         "capacityWaiting": "En attente de ressources pour l’espace de travail. Reconnexion automatique."
       }
     },
-    "account": { "signOutFailed": "Impossible de se déconnecter. Réessayez." },
+    "account": {
+      "signOutFailed": "Impossible de se déconnecter. Réessayez.",
+      "signOutConfirmTitle": "Se déconnecter et arrêter l’espace de travail ?",
+      "signOutConfirmBody": "S’il s’agit de la dernière session connectée, l’espace de travail s’arrêtera. La recherche en cours peut être interrompue ; l’historique des conversations et les fichiers de l’espace de travail sont conservés.",
+      "signOutConfirmAction": "Se déconnecter et arrêter"
+    },
     "starting": {
       "titleWeb": "Connexion à votre espace de travail…",
       "titleSessionsWeb": "Chargement des conversations…",
@@ -543,8 +548,10 @@
     },
     "askedBy": "Demandé par {{origin}}",
     "skip": "Passer",
+    "closeQuestion": "Passer et fermer la question",
     "submit": "Envoyer",
     "reject": "Rejeter",
+    "closePermission": "Rejeter et fermer la demande",
     "alwaysAllow": "Toujours autoriser",
     "allowOnce": "Autoriser une fois",
     "state": {
@@ -779,7 +786,7 @@
     "discard": "Discard decision",
     "discardConfirm": "Discard this research decision? The current turn will stop.",
     "retry": "Retry",
-    "savedDecisions": "Confirmed research decisions",
+    "syncFailed": "Collaboration status sync failed",
     "suggestion": "Suggestion",
     "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
     "delegatedDescription": "Terminer le travail autorisé ; demander les choix importants non approuvés.",

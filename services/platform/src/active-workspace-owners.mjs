@@ -66,6 +66,47 @@ export class ActiveWorkspaceOwners {
     });
   }
 
+  /** Release one account's resident workspace after its last login ends.
+   *  Unlike owner reclamation, this is an explicit forced stop: the caller has
+   *  already revoked every session, so running work may be interrupted and the
+   *  account's slot must not stay occupied. A failed stop keeps the owner
+   *  registered so the instance cannot become an unaccounted resident. */
+  release(userId) {
+    if (!identifier(userId)) return Promise.reject(new Error("invalid owner identity"));
+    return this.#serialized(async () => {
+      const owner = this.#owners.get(userId);
+      const instanceId = owner?.instanceId ?? this.instanceIdForUser(userId);
+      const record = this.manager.getWorker(instanceId);
+      let stopped = false;
+      if (record && record.status !== "stopped") {
+        try {
+          await this.manager.stopWorker(instanceId,
+            Number.isSafeInteger(record.generation) ? { expectedGeneration: record.generation } : undefined);
+          stopped = true;
+        } catch (error) {
+          const code = error?.code ?? "release_failed";
+          this.logger({ type: "workspace.release_failed", userId, code });
+          return { released: false, stopped: false, code };
+        }
+      } else if (!record && typeof this.manager.stopUnmanagedAccount === "function") {
+        try {
+          stopped = (await this.manager.stopUnmanagedAccount(userId))?.stopped === true;
+        } catch (error) {
+          const code = error?.code ?? "release_failed";
+          this.logger({ type: "workspace.release_failed", userId, code });
+          return { released: false, stopped: false, code };
+        }
+      }
+      this.#owners.delete(userId);
+      try {
+        await this.store.forget?.(userId);
+      } catch (error) {
+        this.logger({ type: "workspace.release_forget_failed", userId, code: error?.code ?? "forget_failed" });
+      }
+      return { released: true, stopped };
+    });
+  }
+
   async prewarm({ activeUserIds = [] } = {}) {
     if (this.#closed) return;
     const valid = new Set(activeUserIds);

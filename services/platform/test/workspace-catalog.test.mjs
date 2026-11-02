@@ -37,6 +37,20 @@ test('durable catalog isolates owners, pages tied timestamps and rejects stale o
  assert.match((await catalog.queryPlans()).join(' '),/conversations_directory_recent/);
 });
 
+test('explicit user deletion removes owned catalog rows and advances the catalog revision',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'catalog-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const catalog=await WorkspaceCatalog.open({path:join(root,'catalog.sqlite'),cursorKey:'e'.repeat(64)});t.after(()=>catalog.close());
+ const rows=['one','two'].map((id,index)=>({id,projectId:null,directoryRef:'dir_owned',title:id,parentId:null,runtime:'opencode',
+  lifecycle:'active',updatedAt:index+1,sourceRef:`ref_${id}`,sourceRevision:1}));
+ await catalog.apply({changeId:'remove-fixture',userId:'alice',source:'canonical',sourceKey:'canonical',sourceRevision:1,
+  projectUpserts:[],conversationUpserts:rows,projectTombstones:[],conversationTombstones:[]});
+ await catalog.verify('alice','f'.repeat(64));
+ assert.equal((await catalog.snapshot('alice',{limit:50})).conversations.items.length,2);
+ const removed=await catalog.removeConversations('alice',['one']);
+ assert.deepEqual(removed,{removed:1,revision:2});
+ assert.deepEqual((await catalog.snapshot('alice',{limit:50})).conversations.items.map(row=>row.id),['two']);
+ await assert.rejects(catalog.removeConversations('alice',[]),{code:'invalid_catalog_query'});
+});
 test('unverified accounts and conflicting source revisions fail explicitly',async t=>{
  const root=await mkdtemp(join(tmpdir(),'catalog-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const catalog=await WorkspaceCatalog.open({path:join(root,'catalog.sqlite'),cursorKey:'d'.repeat(64)});t.after(()=>catalog.close());

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {access,lstat,mkdir,mkdtemp,readdir,rename,rm,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {WorkspaceState} from '../src/workspace-state.mjs';
@@ -12,7 +12,7 @@ async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'workspace-files-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const context={userId:'a',instanceId:'user-a',generation:1};const policy=new TenantPolicy();policy.registerAccount({...context,workspaceDir:'/owned/a'});
  const project={id:'123456789abcdef0',path:'/owned/a/projects/study',name:'Study'};
- const state=new WorkspaceState({dataDir:root});let busy=false,failAfterMove=false,moves=0;
+ const state=new WorkspaceState({dataDir:root});let busy=false,failAfterMove=false,moves=0,purges=0,purgeError=null;
  const admission=new WorkspaceAdmission({resolveExecution:async()=>busy});
  const management=new WorkspaceManagement({state,tenantPolicy:policy,admission,gateway:async(_context,path)=>{
   if(path==='/v1/projects')return [project];
@@ -34,50 +34,141 @@ async function fixture(t){
   if(request.operation==='moveNoReplace'){
    if(!entry)throw error('entry_not_found',404);if(payloads.has(request.destinationPath))throw error('name_conflict',409);
    if(entry.revision!==request.expectedRevision)throw error('revision_conflict',409);
-   moves++;payloads.delete(request.path);entry.revision='b'.repeat(64);payloads.set(request.destinationPath,entry);
+   moves++;payloads.delete(request.path);
+   for(const key of [...payloads.keys()])if(key.startsWith(request.path+'/')){const nested=payloads.get(key);payloads.delete(key);payloads.set(request.destinationPath+key.slice(request.path.length),nested);}
+   entry.revision='b'.repeat(64);payloads.set(request.destinationPath,entry);
    if(failAfterMove){failAfterMove=false;throw new Error('lost native reply');}return structuredClone(entry);
   }
   throw new Error('unexpected native operation: '+request.operation);
  }};
- const files=new WorkspaceFiles({management,native,state,tenantPolicy:policy,admission});
- return {files,management,native,state,context,payloads,scope:{kind:'project',projectId:project.id},busy:value=>busy=value,loseReply:()=>failAfterMove=true,moves:()=>moves};
+ const removePayload=async({relativePath})=>{
+  if(purgeError){const error=purgeError;purgeError=null;throw error;}
+  purges++;
+  for(const key of [...payloads.keys()])if(key===relativePath||key.startsWith(relativePath+'/'))payloads.delete(key);
+ };
+ const files=new WorkspaceFiles({management,native,state,tenantPolicy:policy,admission,removePayload});
+ return {files,management,native,state,context,payloads,scope:{kind:'project',projectId:project.id},busy:value=>busy=value,loseReply:()=>failAfterMove=true,moves:()=>moves,purges:()=>purges,failPurge:()=>{purgeError=new Error('purge failed');},removePayload};
 }
-test('file trash and restore retain payload identity and never replay a lost native move',async t=>{
- const f=await fixture(t);f.loseReply();
- const input={scope:f.scope,operationId:'trash-a',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}};
- await assert.rejects(f.files.operate(f.context,input));
- const restarted=new WorkspaceFiles({management:f.management,native:f.native,state:new WorkspaceState({dataDir:f.state.dataDir}),tenantPolicy:f.management.tenantPolicy,admission:f.management.admission});
- const receipt=await restarted.receipt(f.context,'trash-a');assert.equal(receipt.state,'committed');assert.equal(f.moves(),1);
+test('delete permanently removes the file and never exposes a trash entry',async t=>{
+ const f=await fixture(t);
+ const receipt=await f.files.operate(f.context,{scope:f.scope,operationId:'delete-a',operation:{kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)}});
+ assert.equal(receipt.state,'committed');
  assert.equal(f.payloads.has('projects/study/result.txt'),false);
- const [entry]=await restarted.trash(f.context);assert.equal(entry.id,receipt.result.trashId);
- await restarted.restore(f.context,entry.id,{operationId:'restore-a'});
- assert.equal(f.payloads.get('projects/study/result.txt').text,'original');assert.equal(f.moves(),2);
- assert.equal(f.payloads.get('projects/study/result.txt').identity,'inode-owned');
- assert.deepEqual(await restarted.trash(f.context),[]);
+ assert.equal([...f.payloads.keys()].some(path=>path.includes('/trash/')),false);
+ assert.equal(f.purges(),1);
+ assert.deepEqual((await f.state.open('a')).files??{}, {});
 });
-test('collisions, stale revisions, reserved paths and busy runtimes cannot move files',async t=>{
- const f=await fixture(t);f.payloads.set('projects/study/keep.txt',{identity:'other',revision:'c'.repeat(64),text:'keep'});
+test('the default purge removes the private payload from the real tenant workspace',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'workspace-delete-fs-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const workspace=join(root,'workspace'),projectPath=join(workspace,'projects/study');
+ await mkdir(projectPath,{recursive:true});await writeFile(join(projectPath,'result.txt'),'original');
+ const context={userId:'a',instanceId:'user-a',generation:1},policy=new TenantPolicy();policy.registerAccount({...context,workspaceDir:workspace});
+ const project={id:'123456789abcdef0',path:projectPath,name:'Study'},state=new WorkspaceState({dataDir:join(root,'state')});
+ const admission=new WorkspaceAdmission({resolveExecution:async()=>false});
+ const management=new WorkspaceManagement({state,tenantPolicy:policy,admission,gateway:async(_context,path)=>path==='/v1/projects'?[project]:[]});
+ const native={call:async(_context,request)=>{
+  const absolute=join(workspace,request.path),failure=()=>Object.assign(new Error('missing'),{code:'entry_not_found',statusCode:404});
+  if(request.operation==='mkdirAll'){await mkdir(absolute,{recursive:true});return {created:true};}
+  if(request.operation==='stat'){try{const s=await lstat(absolute);return {identity:'inode',revision:'a'.repeat(64),isDir:s.isDirectory(),size:s.size};}catch{throw failure();}}
+  if(request.operation==='moveNoReplace'){await rename(absolute,join(workspace,request.destinationPath));return {identity:'inode',revision:'b'.repeat(64),isDir:false,size:8};}
+  throw failure();
+ }};
+ const files=new WorkspaceFiles({management,native,state,tenantPolicy:policy,admission});
+ const receipt=await files.operate(context,{scope:{kind:'project',projectId:project.id},operationId:'delete-real',operation:{kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)}});
+ assert.equal(receipt.state,'committed');
+ await assert.rejects(access(join(projectPath,'result.txt')));
+ assert.deepEqual(await readdir(join(workspace,'.scikeel/workspace-management/trash')),[]);
+});
+test('legacy trash at the workspace root restores without trying to create dot',async t=>{
+ const f=await fixture(t),id='c'.repeat(32),payload=`.scikeel/workspace-management/trash/${id}/payload`;
+ f.payloads.set(payload,{identity:'root-inode',revision:'a'.repeat(64),isDir:false,text:'root',size:4});
+ await f.state.update('a',data=>{data.files={[id]:{id,kind:'file',scope:{kind:'account'},path:'root-note.txt',directory:'/owned/a',isDir:false,state:'trashed',deletedAt:1,payload,identity:'root-inode'}};});
+ const call=f.native.call;f.native.call=async(...args)=>{if(args[1].operation==='mkdirAll' && args[1].path==='.')throw new Error('dot denied');return call(...args);};
+ await f.files.text(f.context,f.scope,'result.txt');
+ assert.equal(f.payloads.get('root-note.txt').text,'root');
+ assert.deepEqual((await f.state.open('a')).files,{});
+});
+test('legacy fallback restoration is idempotent after a crash',async t=>{
+ const f=await fixture(t),id='d'.repeat(32),payload=`.scikeel/workspace-management/trash/${id}/payload`;
+ f.payloads.delete('projects/study/result.txt');
+ f.payloads.set(`Recovered/${id}/result.txt`,{identity:'restored-inode',revision:'a'.repeat(64),isDir:false,text:'restored',size:8});
+ await f.state.update('a',data=>{data.files={[id]:{id,kind:'file',scope:f.scope,path:'result.txt',directory:'/owned/a/projects/study',isDir:false,state:'trashed',deletedAt:1,payload,identity:'restored-inode'}};});
+ await f.files.entries(f.context,f.scope,'');
+ assert.deepEqual((await f.state.open('a')).files,{});
+});
+test('delete resumes after the private payload parent creation fails',async t=>{
+ const f=await fixture(t),call=f.native.call;let fail=true;
+ f.native.call=async(...args)=>{
+  if(fail && args[1].operation==='mkdirAll' && args[1].path.startsWith('.scikeel/')){fail=false;throw new Error('mkdir failed');}
+  return call(...args);
+ };
+ const input={scope:f.scope,operationId:'delete-resume',operation:{kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)}};
+ await assert.rejects(f.files.operate(f.context,input));
+ const receipt=await f.files.operate(f.context,input);
+ assert.equal(receipt.state,'committed');assert.equal(f.moves(),1);assert.equal(f.purges(),1);
+});
+test('a provable delete conflict becomes a failed receipt instead of a pending lock',async t=>{
+ const f=await fixture(t),call=f.native.call;
+ f.native.call=async(...args)=>{if(args[1].operation==='moveNoReplace')throw Object.assign(new Error('revision_conflict'),{code:'revision_conflict',statusCode:409});return call(...args);};
+ await assert.rejects(f.files.operate(f.context,{scope:f.scope,operationId:'delete-conflict',operation:{kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)}}),{code:'revision_conflict'});
+ assert.equal((await f.state.receipt('a','delete-conflict')).state,'failed');
+ assert.equal(f.payloads.get('projects/study/result.txt').text,'original');
+});
+test('legacy file trash is restored to its original path before browsing',async t=>{
+ const f=await fixture(t),id='a'.repeat(32),payload=`.scikeel/workspace-management/trash/${id}/payload`;
+ f.payloads.delete('projects/study/result.txt');
+ f.payloads.set(payload,{identity:'inode-owned',revision:'a'.repeat(64),isDir:false,text:'original',size:8});
+ await f.state.update('a',data=>{data.files={[id]:{id,kind:'file',scope:f.scope,path:'result.txt',directory:'/owned/a/projects/study',isDir:false,state:'trashed',deletedAt:1,payload,identity:'inode-owned'}};});
+ const result=await f.files.entries(f.context,f.scope,'');
+ assert.equal(f.payloads.get('projects/study/result.txt').text,'original');
+ assert.equal(f.payloads.has(payload),false);
+ assert.deepEqual((await f.state.open('a')).files,{});
+ assert.equal(result.entries.length,1);
+});
+test('delete reconciles a lost native reply and purges the private payload once',async t=>{
+ const f=await fixture(t);f.loseReply();
+ const input={scope:f.scope,operationId:'delete-a',operation:{kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)}};
+ await assert.rejects(f.files.operate(f.context,input));
+ const restarted=new WorkspaceFiles({management:f.management,native:f.native,state:new WorkspaceState({dataDir:f.state.dataDir}),tenantPolicy:f.management.tenantPolicy,admission:f.management.admission,removePayload:f.removePayload});
+ const receipt=await restarted.receipt(f.context,'delete-a');
+ assert.equal(receipt.state,'committed');assert.equal(f.moves(),1);assert.equal(f.purges(),1);
+ assert.equal(f.payloads.has('projects/study/result.txt'),false);
+ assert.equal([...f.payloads.keys()].some(path=>path.includes('/trash/')),false);
+});
+test('delete rejects stale revisions, reserved paths and busy runtimes without moving anything',async t=>{
+ const f=await fixture(t);
  const operate=(operation,operationId)=>f.files.operate(f.context,{scope:f.scope,operation,operationId});
- await assert.rejects(operate({kind:'move',path:'result.txt',destinationPath:'keep.txt',expectedRevision:'a'.repeat(64)},'collision'),{code:'name_conflict'});
- await assert.rejects(operate({kind:'trash',path:'result.txt',expectedRevision:'d'.repeat(64)},'stale'),{code:'revision_conflict'});
- for(const path of ['', '.git/config','.openscience/project.json','../other'])await assert.rejects(operate({kind:'trash',path,expectedRevision:'a'.repeat(64)},'protected-'+path.length));
- f.busy(true);await assert.rejects(operate({kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)},'busy'),{code:'workspace_busy'});
- assert.equal(f.moves(),0);assert.equal(f.payloads.get('projects/study/result.txt').text,'original');
+ await assert.rejects(operate({kind:'delete',path:'result.txt',expectedRevision:'d'.repeat(64)},'stale'),{code:'revision_conflict'});
+ for(const path of ['', '.git/config','.openscience/project.json','../other'])await assert.rejects(operate({kind:'delete',path,expectedRevision:'a'.repeat(64)},'protected-'+path.length));
+ f.busy(true);await assert.rejects(operate({kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)},'busy'),{code:'workspace_busy'});
+ assert.equal(f.moves(),0);assert.equal(f.purges(),0);assert.equal(f.payloads.get('projects/study/result.txt').text,'original');
 });
-test('trashed projects and other accounts cannot restore a file receipt',async t=>{
- const f=await fixture(t);const result=await f.files.operate(f.context,{scope:f.scope,operationId:'trash-a',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}});
- const [p]=await f.management.listProjects(f.context);await f.management.trashProject(f.context,p.id,{operationId:'project-trash',expectedRevision:p.revision});
- await assert.rejects(f.files.restore(f.context,result.result.trashId,{operationId:'restore-a'}),{code:'project_trashed'});
- await assert.rejects(f.files.restore({...f.context,userId:'b'},result.result.trashId,{operationId:'restore-b'}));
- assert.equal(f.moves(),1);
+test('a failed private purge restores the original file instead of hiding it',async t=>{
+ const f=await fixture(t);f.failPurge();
+ await assert.rejects(f.files.operate(f.context,{scope:f.scope,operationId:'delete-a',operation:{kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)}}),{code:'delete_failed'});
+ assert.equal(f.payloads.get('projects/study/result.txt').text,'original');
+ assert.equal([...f.payloads.keys()].some(path=>path.includes('/trash/')),false);
+ assert.equal((await f.state.receipt('a','delete-a')).state,'failed');
 });
-test('restore collisions leave the retained payload available for an alternate name',async t=>{
- const f=await fixture(t);const receipt=await f.files.operate(f.context,{scope:f.scope,operationId:'trash-a',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}});
- f.payloads.set('projects/study/result.txt',{identity:'replacement',text:'do not overwrite',revision:'c'.repeat(64)});
- await assert.rejects(f.files.restore(f.context,receipt.result.trashId,{operationId:'restore-a'}),{code:'name_conflict'});
- await f.files.restore(f.context,receipt.result.trashId,{operationId:'restore-b',destinationPath:'restored.txt'});
- assert.equal(f.payloads.get('projects/study/result.txt').text,'do not overwrite');
- assert.equal(f.payloads.get('projects/study/restored.txt').text,'original');
+test('delete removes a directory tree from the workspace and private payload',async t=>{
+ const f=await fixture(t);
+ f.payloads.set('projects/study/reports',{identity:'reports-inode',revision:'a'.repeat(64),isDir:true,size:0});
+ f.payloads.set('projects/study/reports/result.txt',{identity:'nested-inode',revision:'b'.repeat(64),isDir:false,text:'nested',size:6});
+ const receipt=await f.files.operate(f.context,{scope:f.scope,operationId:'delete-dir',operation:{kind:'delete',path:'reports',expectedRevision:'a'.repeat(64)}});
+ assert.equal(receipt.state,'committed');
+ assert.equal([...f.payloads.keys()].some(path=>path.startsWith('projects/study/reports')),false);
+ assert.equal(f.purges(),1);
+});
+test('legacy trash restores to a visible recovery folder when the original name is occupied',async t=>{
+ const f=await fixture(t),id='b'.repeat(32),payload=`.scikeel/workspace-management/trash/${id}/payload`;
+ f.payloads.set('projects/study/result.txt',{identity:'replacement',revision:'c'.repeat(64),isDir:false,text:'replacement',size:11});
+ f.payloads.set(payload,{identity:'inode-owned',revision:'a'.repeat(64),isDir:false,text:'original',size:8});
+ await f.state.update('a',data=>{data.files={[id]:{id,kind:'file',scope:f.scope,path:'result.txt',directory:'/owned/a/projects/study',isDir:false,state:'trashed',deletedAt:1,payload,identity:'inode-owned'}};});
+ await f.files.entries(f.context,f.scope,'');
+ assert.equal(f.payloads.get('Recovered/'+id+'/result.txt').text,'original');
+ assert.equal(f.payloads.get('projects/study/result.txt').text,'replacement');
+ assert.equal(f.payloads.has(payload),false);
+ assert.deepEqual((await f.state.open('a')).files,{});
 });
 test('new text and folders are staged, published without replacement and idempotent',async t=>{
  const f=await fixture(t);
@@ -95,14 +186,14 @@ test('metadata failure before preparation cannot create a staging payload',async
  assert.equal(f.payloads.size,2);assert.equal(f.moves(),0);
 });
 test('recovery preparation reserves enough metadata for the committed receipt',async t=>{
- const f=await fixture(t);const result=await f.files.operate(f.context,{scope:f.scope,operationId:'trash-a',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}});
- const record=(await f.state.open('a')).operations['trash-a'];
+ const f=await fixture(t);const result=await f.files.operate(f.context,{scope:f.scope,operationId:'delete-a',operation:{kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)}});
+ const record=(await f.state.open('a')).operations['delete-a'];
  assert.equal(result.state,'committed');assert.equal(record.reservedBytes,0);
 });
 test('scoped entries expose native revisions and file mutation capabilities',async t=>{
  const f=await fixture(t);const result=await f.files.entries(f.context,f.scope,'');
  assert.equal(result.directory,'/owned/a/projects/study');assert.equal(result.entries[0].revision,'a'.repeat(64));
- assert.ok(result.entries[0].capabilities.includes('trash'));assert.equal(result.capabilities.create,true);
+ assert.ok(result.entries[0].capabilities.includes('delete'));assert.equal(result.capabilities.create,true);
 });
 test('rename is limited to its parent and rejects non-portable or oversized names before preparation',async t=>{
  const f=await fixture(t);
@@ -145,19 +236,19 @@ test('reconciliation obeys the runner single-file-RPC admission contract',async 
   if(running)throw Object.assign(new Error('Runner busy'),{statusCode:429});running=true;
   try{await new Promise(done=>setImmediate(done));return await call(...args);}finally{running=false;}
  };
- const receipt=await f.files.operate(f.context,{scope:f.scope,operationId:'trash-a',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}});
+ const receipt=await f.files.operate(f.context,{scope:f.scope,operationId:'delete-a',operation:{kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)}});
  assert.equal(receipt.state,'committed');assert.equal(f.moves(),1);
 });
-test('an ancestor of a registered session root cannot be moved through account browsing',async t=>{
+test('an ancestor of a registered session root cannot be deleted through account browsing',async t=>{
  const f=await fixture(t);f.management.tenantPolicy.registerSession(f.context,{id:'ses-owned',directory:'/owned/a/notes/experiment'});
  f.payloads.set('notes',{identity:'notes',revision:'a'.repeat(64),isDir:true});
- await assert.rejects(f.files.operate(f.context,{scope:{kind:'account'},operationId:'trash-notes',operation:{kind:'trash',path:'notes',expectedRevision:'a'.repeat(64)}}),{code:'protected_path'});
+ await assert.rejects(f.files.operate(f.context,{scope:{kind:'account'},operationId:'delete-notes',operation:{kind:'delete',path:'notes',expectedRevision:'a'.repeat(64)}}),{code:'protected_path'});
  assert.equal(f.moves(),0);
 });
 test('a prepared but unconfirmed native move blocks new execution until its original receipt commits',async t=>{
  const f=await fixture(t),call=f.native.call;
  f.native.call=async(...args)=>{if(args[1].operation==='moveNoReplace')throw new Error('Transport failed before dispatch');return call(...args);};
- const input={scope:f.scope,operationId:'trash-a',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}};
+ const input={scope:f.scope,operationId:'delete-a',operation:{kind:'delete',path:'result.txt',expectedRevision:'a'.repeat(64)}};
  await assert.rejects(f.files.operate(f.context,input));
  await assert.rejects(f.files.confirmPending(f.context),{code:'operation_pending'});
  f.native.call=call;await f.files.operate(f.context,input);await f.files.confirmPending(f.context);
@@ -185,20 +276,6 @@ test('staged create recovery retains the payload on busy, collision or changed s
   await assert.rejects(f.files.resumeText(f.context,id),{code:scenario==='busy'?'workspace_busy':scenario==='collision'?'name_conflict':'operation_uncertain'});
   assert.ok(f.payloads.has(source));assert.equal(f.moves(),0);
  });
-});
-test('missing restore parent retains the payload and does not prepare an unusable receipt',async t=>{
- const f=await fixture(t);const receipt=await f.files.operate(f.context,{scope:f.scope,operationId:'trash-a',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}});
- await assert.rejects(f.files.restore(f.context,receipt.result.trashId,{operationId:'restore-missing',destinationPath:'missing/result.txt'}),{code:'parent_missing',statusCode:409});
- assert.equal(await f.state.receipt('a','restore-missing'),null);assert.equal((await f.files.trash(f.context)).length,1);
-});
-test('alternate restoration stays in the original scope and preserves a colliding replacement',async t=>{
- const f=await fixture(t),receipt=await f.files.operate(f.context,{scope:f.scope,operationId:'trash-alternate',operation:{kind:'trash',path:'result.txt',expectedRevision:'a'.repeat(64)}}),id=receipt.result.trashId;
- f.payloads.set('projects/study/result.txt',{identity:'new-ai-file',revision:'c'.repeat(64),isDir:false,size:7,text:'AI edit'});
- await assert.rejects(f.files.restore(f.context,id,{operationId:'original-collision'}),{code:'name_conflict'});
- await assert.rejects(f.files.restore(f.context,id,{operationId:'cross-scope',destinationPath:'../../foreign/result.txt'}));
- f.payloads.set('projects/study/reports',{identity:'existing-folder',revision:'d'.repeat(64),isDir:true,size:0});
- const restored=await f.files.restore(f.context,id,{operationId:'restore-alternate',destinationPath:'reports/copy.txt'});
- assert.equal(restored.state,'committed');assert.equal(restored.result.path,'reports/copy.txt');assert.equal(f.payloads.get('projects/study/reports/copy.txt').text,'original');assert.equal(f.payloads.get('projects/study/reports/copy.txt').identity,'inode-owned');assert.equal(f.payloads.get('projects/study/result.txt').text,'AI edit');
 });
 test('move receipts publish the confirmed identity and revision after a lost response',async t=>{
  const f=await fixture(t);f.loseReply();
