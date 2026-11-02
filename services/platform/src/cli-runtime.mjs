@@ -351,6 +351,7 @@ export class CliRuntimeManager {
     sandboxJobs = null,
     assistantAuthority = null,
     onAnalyticsFact = null,
+    liveState = null,
   } = {}) {
     if (!rootDir) throw new Error("rootDir is required");
     this.rootDir = resolve(rootDir);
@@ -378,6 +379,7 @@ export class CliRuntimeManager {
     this.sandboxJobs = sandboxJobs;
     this.assistantAuthority = assistantAuthority;
     this.onAnalyticsFact = onAnalyticsFact;
+    this.liveState = liveState;
     this.nativeApprovals = new Map();
     this.nativeQuestions = new Map();
     this.logger = logger;
@@ -1438,7 +1440,8 @@ export class CliRuntimeManager {
   async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput, workspaceContext, executionAdmission }) {
     await this.init();
     if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
-    if (this.draining) throw issue("platform_maintenance", "The service is preparing for maintenance", 503);
+    if (this.draining || (this.liveState && await this.liveState.maintenanceRequested()))
+      throw issue("platform_maintenance", "The service is preparing for maintenance", 503);
     if (this.#policyOperation || this.#policyStorageUncertain ||
         this.assistantPolicy.committedSnapshot().recoveryRequired || this.assistantSnapshot(userId).recoveryRequired)
       throw issue("assistant_recovery_required", "Assistant selection requires reconciliation", 503);
@@ -1502,11 +1505,13 @@ export class CliRuntimeManager {
     session.status = "running";
     session.updatedAt = startedAt;
     await this.persistUser(state);
+    await this.#publishLiveState();
     return Object.assign(turn, { profile, chosen, chosenVariant });
     } catch (error) {
       if (this.turnReservations.get(session.id) === turn) this.turnReservations.delete(session.id);
       delete session.turn;
       session.status = "idle";
+      await this.#publishLiveState();
       throw error;
     }
   }
@@ -1556,6 +1561,7 @@ export class CliRuntimeManager {
         this.emit(userId, { type: "session.error", properties: { sessionID: session.id, error: failure } });
         this.emit(userId, { type: "session.idle", properties: { sessionID: session.id } });
         await this.persistUser(state);
+        await this.#publishLiveState();
       }
       throw error;
     }
@@ -1663,6 +1669,7 @@ export class CliRuntimeManager {
         } else {
           delete session.turn;
           session.status="idle";this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
+          await this.#publishLiveState();
           this.emit(userId,{type:"session.idle",properties:{sessionID:session.id}});
         }
       }
@@ -1740,6 +1747,7 @@ export class CliRuntimeManager {
       this.turnReservations.delete(session.id);
       session.updatedAt = completed;
       await this.persistUser(state);
+      await this.#publishLiveState();
       this.emit(userId, {
         type: "session.error",
         properties: { sessionID: session.id, error: assistantMessage.info.error },
@@ -1799,6 +1807,7 @@ export class CliRuntimeManager {
         this.turnReservations.delete(session.id);
         session.updatedAt = completed;
         await this.persistUser(state);
+        await this.#publishLiveState();
         this.emit(userId, { type: "session.idle", properties: { sessionID: session.id } });
       }
       this.logger({ type: "cli.turn.finished", userId, sessionId: session.id, runtime: session.runtime, code, signal });
@@ -2230,6 +2239,21 @@ export class CliRuntimeManager {
     return structuredClone(session.interruptions ?? []);
   }
 
+  async #publishLiveState(draining = this.draining === true) {
+    if (!this.liveState) return;
+    const turns = [...this.turnReservations.entries()].map(([sessionId, turn]) => ({
+      sessionId,
+      userId: turn.userId,
+      startedAt: turn.startedAt ?? turn.session?.turn?.startedAt ?? null,
+      hadToolCalls: turn.hadToolCalls === true,
+    }));
+    try {
+      await this.liveState.publish({ activeTurns: this.turnReservations.size, turns, draining });
+    } catch (error) {
+      this.logger({ type: "live_state.error", error: error?.message ?? String(error) });
+    }
+  }
+
   async #recordInterruption(turn, reason) {
     if (!turn || turn.interruptionRecorded || !turn.userMessageID) return;
     turn.interruptionRecorded = true;
@@ -2253,6 +2277,7 @@ export class CliRuntimeManager {
     session.status = "idle";
     session.updatedAt = record.at;
     await this.persistUser(state);
+    await this.#publishLiveState();
     const publicId = session.publicConversationId ?? session.id;
     this.emit(userId, {
       type: "session.error",
@@ -2349,6 +2374,7 @@ export class CliRuntimeManager {
     for (const turn of [...this.turnReservations.values()]) {
       await this.#recordInterruption(turn, turn.interruptReason ?? reason);
     }
+    await this.#publishLiveState(true);
     this.processes.clear();
     for (const set of this.subscribers.values()) {
       for (const subscription of set) subscription.response.end();

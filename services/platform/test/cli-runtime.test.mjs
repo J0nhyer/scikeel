@@ -1003,3 +1003,35 @@ test("a new prompt during draining is rejected as platform_maintenance", async (
   );
   await manager.close();
 });
+
+test("a maintenance request blocks a new reservation", async () => {
+  const { root, manager } = await makeManager("codex");
+  manager.liveState = { maintenanceRequested: async () => true, publish: async () => {} };
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  await assert.rejects(
+    () => manager.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "hello" }),
+    (error) => error.status === 503 && error.code === "platform_maintenance",
+  );
+  await manager.close();
+});
+
+test("publishes the active turn count and drains it on close", async () => {
+  const { root, manager } = await makeManager("codex");
+  const publishes = [];
+  manager.liveState = { maintenanceRequested: async () => false,
+    publish: async (value) => publishes.push(value) };
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  await manager.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "hello" });
+  assert.equal(publishes.at(-1).activeTurns, 1);
+  await manager.close({ reason: "service_restart", deadlineMs: 500 });
+  assert.equal(publishes.at(-1).activeTurns, 0);
+  assert.equal(publishes.at(-1).draining, true);
+});

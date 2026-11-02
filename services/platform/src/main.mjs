@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 
 import { AuthStore } from "./auth-store.mjs";
 import { CliRuntimeManager } from "./cli-runtime.mjs";
+import { LiveState } from "./live-state.mjs";
 import { PlatformServer } from "./platform-server.mjs";
 import { sandboxConfiguration, loadSandboxImageConfiguration } from "./sandbox-manifest.mjs";
 import { createSandboxControlPlane } from "./sandbox-control-plane.mjs";
@@ -55,6 +56,9 @@ function optionalPath(name, fallback) {
 }
 
 const dataDir = resolve(env("PLATFORM_DATA_DIR", "/srv/osd/platform"));
+const liveState = new LiveState({ dataDir,
+  logger: event => console.error(JSON.stringify(event)) });
+await liveState.cleanupStaleRequest();
 const sandbox = await loadSandboxImageConfiguration(sandboxConfiguration(process.env, dataDir));
 const workspaceCapacity = {
   maxResidents: numberEnv("PLATFORM_MAX_RESIDENTS", 1),
@@ -104,6 +108,7 @@ const cliRuntime = new CliRuntimeManager({
   sandboxJobs:controlPlane?.nativeJobs,
   profileResolver:controlPlane?.nativeProfileResolver,
   resourcesDir: env("OSD_RESOURCES") || null,
+  liveState,
   // Only a durable administrator selection may change the deployment assistant.
   // A first installation retains OpenCode until all target gates are verified.
   runtime: "opencode",
@@ -199,6 +204,7 @@ try {
   await platform.init();
   await cliRuntime.init();
   await cliRuntime.reconcileInterruptedSessions();
+  await liveState.publish({ activeTurns: 0, turns: [], draining: false });
   const migrate=boolEnv('PLATFORM_CATALOG_MIGRATE',false);
   const startup=await prepareWorkspaceService({migrate,manager:controlPlane?.manager,authStore,platform,workspaceCatalog,
     logger:event=>console.log(JSON.stringify(event))});
