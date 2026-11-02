@@ -229,6 +229,15 @@ test("a live launcher account the platform does not manage can be retired withou
   assert.equal(f.calls.filter(([op]) => op === "register").length, 0);
   assert.deepEqual((await f.manager.assistantInventory()).uncertainEffects, []);
 });
+test("a forced logout stops a live unmanaged account even while it is busy", async t => {
+  const f = inventoryFixture(t);
+  f.records.set("user-legacy", { instanceId: "user-legacy", userId: "legacy", generation: 4, status: "ready" });
+  f.manager.fetchImpl = async () => ({ ok: true, json: async () => ({ owned: { type: "busy" } }) });
+  assert.deepEqual(await f.manager.stopUnmanagedAccount("legacy"), { stopped: true });
+  assert.equal(f.records.get("user-legacy").status, "stopped");
+  assert.deepEqual(f.calls.filter(([op]) => op === "stop").map(([, args]) => args),
+    [{ instanceId: "user-legacy", generation: 4, reason: "logout-release" }]);
+});
 test("a live account that is executing work is not retired", async t => {
   const f = inventoryFixture(t);
   f.records.set("user-busy", { instanceId: "user-busy", userId: "busy", generation: 7, status: "ready" });

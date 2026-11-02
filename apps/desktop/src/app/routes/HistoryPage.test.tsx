@@ -48,11 +48,12 @@ vi.mock("@/lib/runtime", async (importOriginal) => {
 const setSessionArchived = vi.fn(async () => true);
 const renameSession = vi.fn(async () => true);
 const moveSessionToWorkspace = vi.fn(async () => true);
+const deleteSession = vi.fn(async () => true);
 
 beforeEach(() => {
   vi.setSystemTime(NOW);
   queries_seen.length = 0;
-  [querySessions, getMessages, setSessionArchived, renameSession, moveSessionToWorkspace].forEach(
+  [querySessions, getMessages, setSessionArchived, renameSession, moveSessionToWorkspace, deleteSession].forEach(
     (m) => m.mockClear(),
   );
   useRuntimeStore.setState({
@@ -60,6 +61,7 @@ beforeEach(() => {
     setSessionArchived,
     renameSession,
     moveSessionToWorkspace,
+    deleteSession,
     projects: [
       {
         id: "p1",
@@ -166,5 +168,72 @@ describe("HistoryPage", () => {
     await userEvent.click(within(submenu).getByText("BCI trends"));
 
     expect(moveSessionToWorkspace).toHaveBeenCalledWith("s2", "/work/projects/bci");
+  });
+
+  it("deletes the selected conversations in one confirmed batch", async () => {
+    const page = await openHistory();
+    await userEvent.click(page.getByRole("button", { name: "Select" }));
+    await userEvent.click(page.getByRole("checkbox", { name: "today's analysis" }));
+    await userEvent.click(page.getByRole("checkbox", { name: "yesterday's debugging" }));
+    expect(page.getByText("2 selected")).toBeInTheDocument();
+
+    await userEvent.click(page.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Delete 2 sessions?")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteSession).toHaveBeenNthCalledWith(1, "s1"));
+    expect(deleteSession).toHaveBeenNthCalledWith(2, "s2");
+    await waitFor(() => expect(page.queryByText("today's analysis")).not.toBeInTheDocument());
+    expect(page.queryByText("yesterday's debugging")).not.toBeInTheDocument();
+    expect(page.getByRole("button", { name: "Select" })).toBeInTheDocument();
+  });
+
+  it("selects every loaded conversation and clears the selection when the filter changes", async () => {
+    const page = await openHistory();
+    await userEvent.click(page.getByRole("button", { name: "Select" }));
+    await userEvent.click(page.getByRole("checkbox", { name: "Select loaded" }));
+    expect(page.getByText("3 selected")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("Show archived"));
+    await waitFor(() => expect(page.queryByText("3 selected")).not.toBeInTheDocument());
+    expect(page.getByRole("button", { name: "Select" })).toBeInTheDocument();
+  });
+
+  it("leaves selection mode without deleting when cancelled", async () => {
+    const page = await openHistory();
+    await userEvent.click(page.getByRole("button", { name: "Select" }));
+    await userEvent.click(page.getByRole("checkbox", { name: "today's analysis" }));
+    await userEvent.click(page.getByRole("button", { name: "Cancel" }));
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(page.getByRole("button", { name: "Actions for today's analysis" })).toBeInTheDocument();
+  });
+
+  it("keeps a conversation visible when the runtime refuses to delete it", async () => {
+    deleteSession.mockResolvedValueOnce(false);
+    useRuntimeStore.setState({ error: "Offline" });
+    const page = await openHistory();
+    await userEvent.click(page.getByRole("button", { name: "Actions for today's analysis" }));
+    await userEvent.click(await screen.findByText("Delete"));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteSession).toHaveBeenCalledWith("s1"));
+    expect(page.getByText("today's analysis")).toBeInTheDocument();
+  });
+
+  it("keeps the old title when a rename is rejected", async () => {
+    renameSession.mockResolvedValueOnce(false);
+    useRuntimeStore.setState({ error: "Offline" });
+    const page = await openHistory();
+    await userEvent.click(page.getByRole("button", { name: "Actions for today's analysis" }));
+    await userEvent.click(await screen.findByText("Rename"));
+    const input = await page.findByDisplayValue("today's analysis");
+    await userEvent.clear(input);
+    await userEvent.type(input, "Spike sorting{Enter}");
+
+    await waitFor(() => expect(renameSession).toHaveBeenCalledWith("s1", "Spike sorting"));
+    expect(page.getByText("today's analysis")).toBeInTheDocument();
+    expect(page.queryByText("Spike sorting")).not.toBeInTheDocument();
   });
 });

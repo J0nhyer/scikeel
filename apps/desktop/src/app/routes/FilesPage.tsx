@@ -1,7 +1,6 @@
 import { useInRouterContext, useSearchParams } from "react-router-dom";
 import { workspaceEntries, type WorkspaceScope } from "@/lib/workspaceManagement";
 import { confirmWorkspaceDraftLeave, hasWorkspaceDrafts } from "@/lib/workspaceDrafts";
-import { WorkspaceTrashView } from "@/components/files/WorkspaceTrashView";
 import { WorkspaceFileActions, WorkspaceFileControls } from "@/components/files/WorkspaceFileActions";
 import { StateNotice } from "@/components/ui/StateNotice";
 import { useCallback, useMemo, useRef, useEffect, useState } from "react";
@@ -133,7 +132,6 @@ function RoutedFilesPage(props:FilesPageProps) {
   const [query]=useSearchParams();
   const project=query.get("project");
   const scope=useMemo(()=>props.scope??(isGatewayWeb && project?{kind:"project" as const,projectId:project}:isPlatformWeb?ACCOUNT_SCOPE:undefined),[props.scope,project]);
-  if(isGatewayWeb && query.get("view")==="trash")return <WorkspaceTrashView/>;
   return <FilesExplorer key={scope?JSON.stringify(scope):"base"} {...props} scope={scope}/>;
 }
 function FilesExplorer({
@@ -175,9 +173,10 @@ function FilesExplorer({
   const loadGeneration = useRef(0);
   const load = useCallback(async (rel: string) => {
     const generation = ++loadGeneration.current;
+    pageLock.current = false;
+    setLoadingMore(false);
     setEntries(null);
     setError(null);
-    setCanCreate(false);
     setNextCursor(null);
     try {
       const managed=isGatewayWeb && scope?await workspaceEntries(scope,rel):null;
@@ -218,6 +217,7 @@ function FilesExplorer({
   },[scope,dir,load]);
 
   const open = (entry: DirEntry) => {
+    if(scope && selected?.path === entry.path && !entry.isDir)return;
     if(scope && selected && !confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope,selected.path))return;
     if (entry.isDir) {
       setSelected(null);
@@ -425,10 +425,9 @@ function SessionFilesExplorer({
 
   useEffect(() => {
     let cancelled = false;
-    listingGeneration.current++;setNextCursor(null);
+    listingGeneration.current++;pageLock.current=false;setLoadingMore(false);setNextCursor(null);
     setEntries(null);
     setError(null);
-    setCanCreate(false);
     const listing=isPlatformWeb?workspaceEntries(scope,dir).then(result=>{
       if(!cancelled){setManagedDirectory(result.directory);setCanCreate(result.capabilities?.create===true);setNextCursor(result.nextCursor??null);}return result.entries;
     }):listDir(dir, "workspace", sessionDir);

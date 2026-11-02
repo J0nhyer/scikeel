@@ -91,6 +91,15 @@ const operations={
   return {conversations:db.prepare('SELECT id FROM conversations WHERE user_id=?').all(userId).map(row=>row.id),
    projects:db.prepare('SELECT id FROM projects WHERE user_id=?').all(userId).map(row=>row.id)};},
  conversation:({userId,id})=>{revision(userId);if(!identifier(id))throw catalogError('invalid_catalog_query',400);const row=db.prepare('SELECT payload FROM conversations WHERE user_id=? AND id=?').get(userId,id);return row?JSON.parse(row.payload):null;},
+ removeConversations:db.transaction(({userId,ids})=>{
+  if(!account(userId))throw catalogError('catalog_recovering');
+  if(!Array.isArray(ids)||ids.length<1||ids.length>256||new Set(ids).size!==ids.length||ids.some(value=>!identifier(value)))
+   throw catalogError('invalid_catalog_query',400);
+  const remove=db.prepare('DELETE FROM conversations WHERE user_id=? AND id=?');
+  let removed=0;for(const id of ids)removed+=remove.run(userId,id).changes;
+  if(removed)db.prepare('UPDATE accounts SET catalog_revision=catalog_revision+1 WHERE user_id=?').run(userId);
+  return {removed,revision:account(userId).catalog_revision};
+ }),
  snapshot:db.transaction(args=>({projects:page('projects',{...args,limit:100}),conversations:page('conversations',args),revision:revision(args.userId)})),
  queryPlans:()=>[
   ...db.prepare("EXPLAIN QUERY PLAN SELECT payload FROM conversations WHERE user_id='a' AND lifecycle='active' ORDER BY updated_at DESC,id DESC LIMIT 50").all(),

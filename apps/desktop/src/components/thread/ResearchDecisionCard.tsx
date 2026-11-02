@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 import type { ResearchDecision } from "@/lib/collaboration";
 export function ResearchDecisionCard({
   decision,
@@ -26,9 +27,25 @@ export function ResearchDecisionCard({
       className="min-w-0 rounded-card border border-accent/40 bg-surface p-4"
       aria-label={label}
     >
-      <p className="text-sm font-medium text-text">
-        {label}
-      </p>
+      <div className="flex min-w-0 items-start gap-2">
+        <p className="min-w-0 flex-1 text-sm font-medium text-text">
+          {label}
+        </p>
+        {onDiscard && (
+          <button
+            type="button"
+            disabled={busy}
+            aria-label={t("collaboration.discard")}
+            title={t("collaboration.discard")}
+            onClick={() => {
+              if (window.confirm(t("collaboration.discardConfirm"))) void onDiscard();
+            }}
+            className="grid min-h-11 min-w-11 shrink-0 place-items-center rounded text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
       <div className="max-h-[35dvh] overflow-y-auto [overflow-wrap:anywhere]">
       <p className="my-2 whitespace-pre-wrap text-sm text-text">
         {decision.question}
@@ -69,18 +86,6 @@ export function ResearchDecisionCard({
         >
           {t("collaboration.pause")}
         </button>
-        {onDiscard && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              if (window.confirm(t("collaboration.discardConfirm"))) void onDiscard();
-            }}
-            className="rounded-input border border-border px-3 py-2 text-sm text-text disabled:opacity-50"
-          >
-            {t("collaboration.discard")}
-          </button>
-        )}
       </div>
     </section>
   );

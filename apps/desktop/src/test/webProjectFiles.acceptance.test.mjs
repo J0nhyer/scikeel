@@ -78,7 +78,7 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE && !process.env.OSD_PROJEC
   client:{inspect:async()=>({instanceId:worker.id,generation:worker.generation,status:'ready',quota:{enforced:true,byteLimit:128*1024**2,inodeLimit:1024,bytes:0,inodes:0}})},
   ensureWorker:async({userId})=>{worker={id:'user-'+userId,userId,generation:1,status:'running',workspaceDir:root+'/workspace'};policy.registerAccount({...worker,instanceId:worker.id});},
   retainWorker:()=>({release(){}})};
- const platform=new PlatformServer({authStore,workerManager:manager,tenantPolicy:policy,workspaceFiles:native,enableWorkspaceManagement:true,webRoot,
+ const platform=new PlatformServer({authStore,workerManager:manager,tenantPolicy:policy,workspaceFiles:native,workspaceRemovePayload:async({relativePath})=>{for(const key of [...payloads.keys()])if(key===relativePath||key.startsWith(relativePath+'/'))payloads.delete(key);},enableWorkspaceManagement:true,webRoot,
   cliRuntime:new CliRuntimeManager({rootDir:join(root,'cli'),codexHome:join(root,'codex'),claudeConfigDir:join(root,'claude'),
    assistantAuthority:{inventory:async()=>({activeExecutions:[],uncertainEffects:[]})}}),
   runtimeCatalog:async()=>({providers:[{id:'fixture',name:'Fixture',models:{model:{id:'model',providerID:'fixture',name:'Fixture'}}}],connected:['fixture'],default:{fixture:'model'},model:'fixture/model'})});
@@ -159,12 +159,10 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE && !process.env.OSD_PROJEC
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1)).toBe(true);
     const fileEvidence=resolve('../../.deploy/verification/web-project-management');await mkdir(fileEvidence,{recursive:true});
     await page.screenshot({path:join(fileEvidence,`files-${width}.png`),fullPage:true});
-    await page.getByRole('button',{name:'File actions: renamed.txt',exact:true}).click();await page.getByRole('menuitem',{name:'Move to trash',exact:true}).click();
-    await page.getByRole('alertdialog').getByRole('button',{name:'Move to trash',exact:true}).click();await page.getByRole('alertdialog').waitFor({state:'hidden'});
-    await page.goto(origin+'/files?view=trash');await page.getByText('reports/renamed.txt',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'Restore',exact:true}).click();await page.getByText('No deleted items.',{exact:true}).waitFor();
-    await page.goto(fileView);await page.getByRole('button',{name:'File actions: renamed.txt',exact:true}).waitFor();
-    expect(payloads.get('projects/a/reports/renamed.txt')?.text).toBe('');expect(payloads.get('projects/a/result.txt')?.text).toBe('retained');
+    await page.getByRole('button',{name:'File actions: renamed.txt',exact:true}).click();await page.getByRole('menuitem',{name:'Delete',exact:true}).click();
+    await page.getByRole('alertdialog').getByRole('button',{name:'Delete',exact:true}).click();await page.getByRole('alertdialog').waitFor({state:'hidden'});
+    await page.getByRole('button',{name:'File actions: renamed.txt',exact:true}).waitFor({state:'detached'});
+    expect(payloads.has('projects/a/reports/renamed.txt')).toBe(false);expect(payloads.get('projects/a/result.txt')?.text).toBe('retained');
     const textPath='projects/a/text.txt',manual='manual UTF-8 \u4e2d\u6587 '+width;
     payloads.set(textPath,{identity:'fixture-text',revision:nextRevision(),isDir:false,size:8,text:'original'});
     await page.getByRole('button',{name:'a',exact:true}).click();await page.getByRole('button',{name:/^text.txt/}).click();
@@ -189,25 +187,16 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE && !process.env.OSD_PROJEC
     await page.getByRole('button',{name:/^text.txt/}).click();await page.getByRole('button',{name:'Edit this file',exact:true}).click();await editor.waitFor();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1)).toBe(true);await page.screenshot({path:join(fileEvidence,`text-${width}.png`),fullPage:true});
     await page.getByRole('button',{name:'Close inspector',exact:true}).click();
-    await page.getByRole('button',{name:'File actions: copy.txt',exact:true}).click();await page.getByRole('menuitem',{name:'Move to trash',exact:true}).click();await page.getByRole('alertdialog').getByRole('button',{name:'Move to trash',exact:true}).click();await page.getByRole('alertdialog').waitFor({state:'hidden'});
-    payloads.set('projects/a/copy.txt',{identity:'new-ai-copy',revision:nextRevision(),isDir:false,size:11,text:'AI new file'});
-    await page.goto(origin+'/files?view=trash');await page.getByText('copy.txt',{exact:true}).waitFor();await page.getByRole('button',{name:'Restore',exact:true}).click();await page.getByRole('alert').waitFor();
-    expect(payloads.get('projects/a/copy.txt').text).toBe('AI new file');await page.getByRole('button',{name:'Restore elsewhere',exact:true}).click();const restoration=page.getByRole('dialog',{name:'Restore file or folder',exact:true});
-    await restoration.getByRole('combobox',{name:'Destination',exact:true}).selectOption('reports');await restoration.getByRole('textbox',{name:'Name',exact:true}).fill('restored-copy.txt');
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1)).toBe(true);expect(await restoration.evaluate(element=>element.scrollWidth<=element.clientWidth+1)).toBe(true);await page.screenshot({path:join(fileEvidence,`restore-${width}.png`),fullPage:true});
-    await restoration.getByRole('button',{name:'Restore',exact:true}).click();await restoration.waitFor({state:'hidden'});await page.getByText('No deleted items.',{exact:true}).waitFor();
-    expect(payloads.get('projects/a/reports/restored-copy.txt').text).toBe('my conflicting draft');expect(payloads.get('projects/a/copy.txt').text).toBe('AI new file');
+    await page.getByRole('button',{name:'File actions: copy.txt',exact:true}).click();await page.getByRole('menuitem',{name:'Delete',exact:true}).click();await page.getByRole('alertdialog').getByRole('button',{name:'Delete',exact:true}).click();await page.getByRole('alertdialog').waitFor({state:'hidden'});
+    await page.getByRole('button',{name:'File actions: copy.txt',exact:true}).waitFor({state:'detached'});
+    expect(payloads.has('projects/a/copy.txt')).toBe(false);
     for(let index=0;index<105;index++)payloads.set('projects/a/zzz-page-'+String(index).padStart(3,'0')+'.txt',{identity:'page-'+index,revision:nextRevision(),isDir:false,size:0,text:''});
     await page.goto(fileView);await page.getByRole('button',{name:'a',exact:true}).click();await page.getByRole('button',{name:'Load more',exact:true}).click();
     await page.getByRole('button',{name:'File actions: zzz-page-104.txt',exact:true}).waitFor();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1)).toBe(true);
-    await page.goto(origin+'/projects');await menu().click();await page.getByRole('menuitem',{name:'Move to trash',exact:true}).click();
-    await page.getByRole('alertdialog').getByRole('button',{name:'Cancel',exact:true}).click();expect((await (await context.request.get(origin+'/api/workspace/trash')).json()).items.length).toBe(0);
-    await menu().click();await page.getByRole('menuitem',{name:'Move to trash',exact:true}).click();
-    if(width===1280){busy=true;await page.getByRole('alertdialog').getByRole('button',{name:'Move to trash',exact:true}).click();await page.getByRole('alertdialog').getByRole('alert').waitFor();busy=false;}
-    await page.getByRole('alertdialog').getByRole('button',{name:'Move to trash',exact:true}).click();await page.getByRole('alertdialog').waitFor({state:'hidden'});
-    expect((await (await context.request.get(origin+'/v1/projects')).json()).length).toBe(0);
-    await page.getByRole('button',{name:'Trash',exact:true}).click();await page.getByText(renamed,{exact:true}).waitFor();
-    await page.getByRole('button',{name:'Restore',exact:true}).click();await page.getByText('No deleted items.',{exact:true}).waitFor();
+    await page.goto(origin+'/projects');await menu().click();await page.getByRole('menuitem',{name:'Remove',exact:true}).click();
+    await page.getByRole('alertdialog').getByRole('button',{name:'Cancel',exact:true}).click();
+    expect(projects.length).toBe(1);
+    expect(await page.getByRole('button',{name:'Trash',exact:true}).count()).toBe(0);
     await page.goto(origin+'/projects');await menu().waitFor();
     const evidence=resolve('../../.deploy/verification/web-project-management');
     await mkdir(evidence,{recursive:true});

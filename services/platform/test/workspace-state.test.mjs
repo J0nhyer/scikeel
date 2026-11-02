@@ -23,48 +23,37 @@ test('a dispatched legacy mutation survives platform restart until completion or
   assert.equal(await restarted.runtimeMutation({...context,generation:2}),null);
   assert.equal(await restarted.runtimeMutation({...context,userId:'user-b'}),null);
 });
-test('project trash preserves identity across restart and isolates users',async t=>{
-  const {state,dataDir}=await fixture(t);
-  const project={id:'project-a',path:'/owned/a/project',name:'A'};
-  await state.project('user-a','operation-a',{kind:'trash',project});
-  assert.equal((await state.open('user-a')).projects['project-a'].state,'trashed');
-  assert.deepEqual((await state.open('user-b')).projects,{});
-  const restarted=new WorkspaceState({dataDir});
-  assert.equal((await restarted.open('user-a')).projects['project-a'].project.path,project.path);
-  await restarted.project('user-a','operation-b',{kind:'restore',project});
-  assert.equal((await restarted.open('user-a')).projects['project-a'].state,'active');
-});
 test('operation IDs replay one result and reject different input',async t=>{
   const {state}=await fixture(t);
-  const input={kind:'trash',project:{id:'a',path:'/a',name:'A'}};
-  const first=await state.project('user-a','operation-a',input);
-  assert.deepEqual(await state.project('user-a','operation-a',input),first);
-  await assert.rejects(state.project('user-a','operation-a',{...input,kind:'restore'}),{code:'operation_conflict'});
+  const input={kind:'file',scope:{kind:'account'},operation:{kind:'delete',path:'x',expectedRevision:'a'.repeat(64)}};
+  const first=await state.prepare('user-a','operation-a',input);
+  assert.deepEqual(await state.prepare('user-a','operation-a',input),first);
+  await assert.rejects(state.prepare('user-a','operation-a',{...input,operation:{...input.operation,path:'y'}}),{code:'operation_conflict'});
   assert.equal((await state.receipt('user-b','operation-a')),null);
 });
-test('persistence failure cannot expose a committed tombstone',async t=>{
+test('persistence failure cannot expose a prepared operation',async t=>{
   const {state}=await fixture(t);
   await state.open('user-a');
   const broken=new WorkspaceState({dataDir:state.dataDir,beforeCommit:()=>{throw new Error('disk failed');}});
-  await assert.rejects(broken.project('user-a','operation-a',{kind:'trash',project:{id:'a',path:'/a'}}));
-  assert.deepEqual((await state.open('user-a')).projects,{});
+  await assert.rejects(broken.prepare('user-a','operation-a',{kind:'file'}));
+  assert.deepEqual((await state.open('user-a')).operations,{});
 });
 test('unsafe account and operation IDs never become paths',async t=>{
   const {state}=await fixture(t);
   await assert.rejects(state.open('../user-b'));
-  await assert.rejects(state.project('user-a','../op',{kind:'trash',project:{id:'a'}}));
+  await assert.rejects(state.prepare('user-a','../op',{kind:'file'}));
 });
 test('reserved object keys cannot be operation identities',async t=>{
  const {state}=await fixture(t);
- for(const id of ['__proto__','constructor','prototype'])await assert.rejects(state.project('user-a',id,{kind:'trash',project:{id:'a',path:'/a'}}),{code:'invalid_identifier'});
+ for(const id of ['__proto__','constructor','prototype'])await assert.rejects(state.prepare('user-a',id,{kind:'file'}),{code:'invalid_identifier'});
 });
 
-test('receipt capacity fails before a new tombstone and existing receipts remain readable',async t=>{
+test('receipt capacity fails before a new operation and existing receipts remain readable',async t=>{
  const {dataDir}=await fixture(t);const state=new WorkspaceState({dataDir,maxOperations:1});
- const input={kind:'trash',project:{id:'a',path:'/a',name:'A'}};await state.project('user-a','op-a',input);
- await assert.rejects(state.project('user-a','op-b',{kind:'trash',project:{id:'b',path:'/b'}}),{code:'workspace_metadata_full',statusCode:507});
+ await state.prepare('user-a','op-a',{kind:'file'});await state.advance('user-a','op-a',{done:true});
+ await assert.rejects(state.prepare('user-a','op-b',{kind:'file'}),{code:'workspace_metadata_full',statusCode:507});
  assert.equal((await state.receipt('user-a','op-a')).state,'committed');
- assert.equal((await state.open('user-a')).projects.b,undefined);
+ assert.equal((await state.open('user-a')).operations['op-b'],undefined);
 });
 
 test('assistant inventory reads durable mutation fences from every account without loading user workspaces',async t=>{

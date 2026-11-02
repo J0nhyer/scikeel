@@ -31,14 +31,6 @@ test('directory cursor is bound to its account, scope and path, never a host pat
  await assert.rejects(f.files.entries({userId:'b',instanceId:'user-b',generation:1},{kind:'account'},'',{cursor:first.nextCursor}),{code:'invalid_cursor'});
  await assert.rejects(f.files.entries(f.context,{kind:'account'},'',{limit:101}),{statusCode:400});
 });
-test('trash pages combine projects and files without returning private payload identities',async t=>{
- const f=await fixture(t);await f.state.update('a',data=>{data.files={};for(let i=0;i<103;i++){const id=String(i).padStart(32,'0');data.files[id]={id,kind:'file',scope:{kind:'account'},path:'file-'+i,state:'trashed',deletedAt:i,payload:'.scikeel/private/'+id,identity:'private-inode'};}});
- const routes=createWorkspaceRoutes({management:f.management,files:f.files,readJson:async()=>({}),sendJson:(response,status,body)=>Object.assign(response,{status,body})});
- const request=url=>({url,method:'GET',headers:{host:'local'}}),first={};await routes.handle(request('/api/workspace/trash?limit=100'),first,f.context);
- assert.equal(first.status,200);assert.equal(first.body.items?.length,100);assert.ok(first.body.nextCursor);
- const second={};await routes.handle(request('/api/workspace/trash?cursor='+encodeURIComponent(first.body.nextCursor)),second,f.context);assert.equal(second.body.items.length,3);assert.equal(second.body.nextCursor,null);
- assert.equal(JSON.stringify(first.body).includes('.scikeel/private'),false);assert.equal(JSON.stringify(first.body).includes('private-inode'),false);
-});
 test('entry routes reject duplicate pagination parameters and preserve bounded cursors',async t=>{
  const f=await fixture(t),calls=[];const routes=createWorkspaceRoutes({management:f.management,files:{entries:async(...args)=>{calls.push(args);return {entries:[]};}},readJson:async()=>({}),sendJson:(response,status,body)=>Object.assign(response,{status,body})});
  const prefix='/api/workspace/entries?scope='+encodeURIComponent(JSON.stringify({kind:'account'})),response={};await routes.handle({url:prefix+'&limit=20&cursor=cursor-a',method:'GET',headers:{host:'local'}},response,f.context);

@@ -29,11 +29,6 @@ export class WorkspaceManagement {
     this.tenantPolicy.directory(context,directory);
     const root=this.tenantPolicy.account(context).workspaceDir+'/.scikeel/workspace-management';
     if(directory===root || directory.startsWith(root+'/'))throw workspaceError('protected_path',403);
-    const data=await this.state.open(context.userId);
-    for(const entry of Object.values(data.projects)) {
-      if(entry.state==='trashed' && (directory===entry.project.path || directory.startsWith(entry.project.path+'/')))
-        throw workspaceError('project_trashed');
-    }
     await this.assertNoFollow(context,directory);
   }
   async allProjects(context) {
@@ -46,21 +41,29 @@ export class WorkspaceManagement {
     });
   }
   async listProjects(context) {
-    const [projects,data]=await Promise.all([this.allProjects(context),this.state.open(context.userId)]);
-    return projects.filter(project=>data.projects[project.id]?.state!=='trashed');
+    return this.synchronizeProjects(context);
   }
   async synchronizeProjects(context) {
     const projects=await this.allProjects(context);
-    await this.state.update(context.userId,data=>{
-      for(const project of projects){const prior=data.projects[project.id];data.projects[project.id]={id:project.id,project,state:prior?.state??'active',deletedAt:prior?.deletedAt??0};}
+    const data=await this.state.open(context.userId);
+    const current=new Set(projects.map(project=>project.id));
+    const changed=Object.keys(data.projects).some(id=>!current.has(id)) ||
+      projects.some(project=>{
+        const prior=data.projects[project.id];
+        return !prior || prior.state!=='active' || prior.deletedAt!==undefined || workspaceHash(prior.project)!==workspaceHash(project);
+      });
+    if(!changed)return projects;
+    await this.state.update(context.userId,next=>{
+      for(const id of Object.keys(next.projects))if(!current.has(id))delete next.projects[id];
+      for(const project of projects)next.projects[project.id]={id:project.id,project,state:'active'};
     });
     return projects;
   }
-  async resolveProject(context,id,{trashed=false}={}) {
+  async resolveProject(context,id) {
     const projects=await this.allProjects(context);
     const matches=projects.filter(project=>project.id===id);
     if(matches.length!==1)throw workspaceError('project_not_found',404);
-    if(!trashed)await this.assertAccessible(context,matches[0].path);
+    await this.assertAccessible(context,matches[0].path);
     return matches[0];
   }
   patchProject(context,id,input) {return this.admission.start(context.userId,()=>this.#patchProject(context,id,input));}
@@ -89,39 +92,37 @@ export class WorkspaceManagement {
     if(input.operationId)await this.state.advance(context.userId,input.operationId,result);
     return result;
   }
-  async trashProject(context,id,input) {
+  async removeProject(context,id,input) {
     if(Object.keys(input).some(key=>!['operationId','expectedRevision'].includes(key)))throw workspaceError('invalid_project',400);
+    const operationId=input.operationId;
+    if(typeof operationId!=='string' || !/^[A-Za-z0-9_-]{1,128}$/.test(operationId))throw workspaceError('invalid_operation',400);
     return this.admission.mutate(context.userId,async()=>{
-      const project=await this.resolveProject(context,id,{trashed:true});
-      const prior=await this.state.receipt(context.userId,input.operationId);
+      const data=await this.state.open(context.userId);
+      const prior=data.operations[operationId];
+      let project;
       if(prior){
-        const data=await this.state.open(context.userId);
-        if(data.operations[input.operationId].hash!==workspaceHash({kind:'trash',project}))throw workspaceError('operation_conflict');
-        return prior;
+        if(prior.input?.kind!=='removeProject' || prior.input.project?.id!==id)throw workspaceError('operation_conflict');
+        if(prior.receipt.state==='committed')return prior.receipt;
+        project=(await this.allProjects(context)).find(value=>value.id===id);
+        if(!project){
+          await this.state.update(context.userId,next=>{delete next.projects[id];next.operations[operationId].receipt={operationId,state:'committed',result:{id}};});
+          return this.state.receipt(context.userId,operationId);
+        }
+      }else{
+        project=await this.resolveProject(context,id);
+        if(input.expectedRevision!==project.revision)throw workspaceError('revision_conflict');
+        if(Object.values(data.operations).some(operation=>operation.input?.kind==='file' && operation.receipt.state==='pending'))throw workspaceError('operation_pending');
+        const prefix=project.path.slice(this.tenantPolicy.account(context).workspaceDir.length+1);
+        if(Object.values(data.uploads??{}).some(upload=>!['cancelled','committed'].includes(upload.state) && (upload.destination===prefix || upload.destination.startsWith(prefix+'/'))))throw workspaceError('upload_pending');
+        if(Object.keys(data.operations).length>=this.state.maxOperations)throw workspaceError('workspace_metadata_full',507);
       }
-      if(input.expectedRevision!==project.revision)throw workspaceError('revision_conflict');
-      if(Object.values((await this.state.open(context.userId)).operations).some(operation=>operation.input?.kind==='file' && operation.receipt.state==='pending'))throw workspaceError('operation_pending');
-      const prefix=project.path.slice(this.tenantPolicy.account(context).workspaceDir.length+1);
-      if(Object.values((await this.state.open(context.userId)).uploads??{}).some(upload=>!['cancelled','committed'].includes(upload.state) && (upload.destination===prefix || upload.destination.startsWith(prefix+'/'))))throw workspaceError('upload_pending');
-      return this.state.project(context.userId,input.operationId,{kind:'trash',project});
-    });
-  }
-  async sessionState(context,id) {
-    this.tenantPolicy.account(context);
-    const session=await this.resolveSession(context,id);
-    const data=await this.state.open(context.userId);
-    const entry=Object.values(data.projects).find(item=>item.state==='trashed' && (session.directory===item.project.path || session.directory.startsWith(item.project.path+'/')));
-    return entry?{state:'trashed',projectId:entry.id}:{state:'active'};
-  }
-  async listTrash(context) {
-    this.tenantPolicy.account(context);
-    return Object.values((await this.state.open(context.userId)).projects).filter(entry=>entry.state==='trashed');
-  }
-  async restore(context,id,input) {
-    if(Object.keys(input).some(key=>key!=='operationId'))throw workspaceError('invalid_project',400);
-    return this.admission.mutate(context.userId,async()=>{
-      const project=await this.resolveProject(context,id,{trashed:true});
-      return this.state.project(context.userId,input.operationId,{kind:'restore',project});
+      await this.gateway(context,`/v1/projects/${id}`,'DELETE');
+      const normalized={kind:'removeProject',project};
+      await this.state.update(context.userId,next=>{
+        delete next.projects[id];
+        next.operations[operationId]={hash:workspaceHash(normalized),receipt:{operationId,state:'committed',result:{id}}};
+      });
+      return this.state.receipt(context.userId,operationId);
     });
   }
   async entries(context,scope,path='') {
@@ -139,7 +140,7 @@ export class WorkspaceManagement {
     const visible=[];
     for(const entry of entries){
       try{await this.assertAccessible(context,directory+'/'+entry.path);visible.push(entry);}
-      catch(error){if(!['project_trashed','protected_path'].includes(error.code))throw error;}
+      catch(error){if(error.code!=='protected_path')throw error;}
     }
     return {directory,entries:visible};
   }

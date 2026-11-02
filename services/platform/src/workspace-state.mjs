@@ -204,16 +204,4 @@ export class WorkspaceState {
       prior.receipt={operationId,state:'failed',error:{code,statusCode}};return prior.receipt;
     });
   }
-  async project(userId,operationId,input) {
-    identifier(operationId);
-    return this.update(userId,data=>{
-      const hash=workspaceHash(input),prior=data.operations[operationId];
-      if(prior){if(prior.hash!==hash)throw workspaceError('operation_conflict');return prior.receipt;}
-      if(Object.keys(data.operations).length>=this.maxOperations)throw workspaceError('workspace_metadata_full',507);
-      if(!['trash','restore'].includes(input.kind) || !input.project?.id || !input.project?.path)throw workspaceError('invalid_project',400);
-      const entry={id:input.project.id,project:input.project,state:input.kind==='trash'?'trashed':'active',deletedAt:Date.now()};
-      const receipt={operationId,state:'committed',result:{trashId:entry.id}};
-      data.projects[entry.id]=entry;data.operations[operationId]={hash,receipt};return receipt;
-    });
-  }
 }

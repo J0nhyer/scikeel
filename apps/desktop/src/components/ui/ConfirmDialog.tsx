@@ -73,6 +73,7 @@ export function ConfirmDialog({
             sits and Enter/Space never triggers the destructive one. */}
         <div className="mt-4 flex justify-end gap-2">
           <button
+            type="button"
             className={cn(
               "rounded-input px-3 py-1.5 text-sm font-medium text-white hover:opacity-90",
               tone === "danger" ? "bg-error" : "bg-accent",
@@ -82,6 +83,7 @@ export function ConfirmDialog({
             {confirmLabel}
           </button>
           <button
+            type="button"
             autoFocus
             className="rounded-input border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-2"
             onClick={onCancel}

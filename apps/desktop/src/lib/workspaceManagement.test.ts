@@ -17,23 +17,25 @@ it('lists a selected project without changing the active runtime directory',asyn
   expect(JSON.parse(url.searchParams.get('scope')!)).toEqual({kind:'project',projectId:'p1'});
   expect(url.searchParams.get('path')).toBe('data');
 });
-it('a lost mutation response checks the original receipt rather than repeating POST',async()=>{
-  const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({operationId:'op-a',state:'committed',result:{trashId:'p1'}})));
-  const result=await client.trashWorkspaceProject('p1','revision','op-a');
+it('a lost project-removal response checks the original receipt rather than repeating POST',async()=>{
+  const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({operationId:'op-a',state:'committed',result:{id:'p1'}})));
+  const result=await client.removeWorkspaceProject('p1','revision','op-a');
   expect(result.state).toBe('committed');expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(String(fetchMock.mock.calls[1][0])).toContain('/operations/op-a');
-  expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).operationId).toBe('op-a');
+  expect(String(fetchMock.mock.calls[0][0])).toContain('/projects/p1/remove');
+  expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({expectedRevision:'revision',operationId:'op-a'});
 });
 it('structured permission failures remain errors and never retry mutations',async()=>{
   const fetchMock=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({code:'read_only',error:'Read only'}),{status:403}));
-  await expect(client.trashWorkspaceProject('p1','revision','op-a')).rejects.toMatchObject({code:'read_only'});
+  await expect(client.removeWorkspaceProject('p1','revision','op-a')).rejects.toMatchObject({code:'read_only'});
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
-it('file restoration submits an optional scope-relative destination and checks the original receipt after response loss',async()=>{
- const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({operationId:'restore-a',state:'committed',result:{path:'recovered/copy.txt'}})));
- expect(typeof client.restoreWorkspaceFile).toBe('function');
- const result=await client.restoreWorkspaceFile('a'.repeat(32),'restore-a','recovered/copy.txt');expect(result.state).toBe('committed');expect(fetchMock).toHaveBeenCalledTimes(2);
- expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({operationId:'restore-a',destinationPath:'recovered/copy.txt'});expect(String(fetchMock.mock.calls[1][0])).toContain('/operations/restore-a');
+it('file deletion submits a permanent delete operation and checks the original receipt after response loss',async()=>{
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({operationId:'delete-a',state:'committed',result:{path:'reports/result.txt',deleted:true}})));
+ const result=await client.operateWorkspace({kind:'project',projectId:'p1'},{kind:'delete',path:'reports/result.txt',expectedRevision:'a'.repeat(64)},'delete-a');
+ expect(result.state).toBe('committed');expect(fetchMock).toHaveBeenCalledTimes(2);
+ expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({scope:{kind:'project',projectId:'p1'},operation:{kind:'delete',path:'reports/result.txt',expectedRevision:'a'.repeat(64)},operationId:'delete-a'});
+ expect(String(fetchMock.mock.calls[1][0])).toContain('/operations/delete-a');
 });
 it('sends raw upload bytes and retains uncertainty after looking up a lost chunk response',async()=>{
  const fetchMock=vi.spyOn(globalThis,'fetch').mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce(new Response(JSON.stringify({id:'upload-a',state:'active',offset:3})));

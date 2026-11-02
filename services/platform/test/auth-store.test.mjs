@@ -99,6 +99,19 @@ test("revoking one device does not end another login for the same user", async (
   assert.deepEqual(await store.activeUserIds(), []);
 });
 
+test("reports whether an account still has a live login after one session is revoked", async () => {
+  const store = await makeStore({ bootstrapAdmin: { username: "admin", password: "admin-password" } });
+  const user = await store.createUser({ username: "student", password: "student-password" });
+  assert.equal(await store.hasActiveSession(user.id), false);
+  const phone = await store.createSession(user.id);
+  const laptop = await store.createSession(user.id);
+  assert.equal(await store.hasActiveSession(user.id), true);
+  await store.revokeSession(phone.token);
+  assert.equal(await store.hasActiveSession(user.id), true);
+  await store.revokeSession(laptop.token);
+  assert.equal(await store.hasActiveSession(user.id), false);
+});
+
 test("changes a password and revokes the account's existing sessions", async () => {
   const store = await makeStore({ bootstrapAdmin: { username: "admin", password: "admin-password" } });
   const admin = await store.authenticate("admin", "admin-password");

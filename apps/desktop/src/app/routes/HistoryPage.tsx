@@ -8,12 +8,14 @@ import {
   ArchiveRestore,
   Download,
   FolderInput,
+  ListChecks,
   Loader2,
   MessageSquare,
   MoreHorizontal,
   Pencil,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import { withManualSessionTitle, type SessionMeta } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
@@ -78,6 +80,12 @@ export function HistoryPage() {
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null);
   const [confirmExport, setConfirmExport] = useState(false);
   const [exported, setExported] = useState<number | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
 
   useEffect(() => {
     const id = setTimeout(() => setQuery(input.trim()), SEARCH_DEBOUNCE_MS);
@@ -89,7 +97,15 @@ export function HistoryPage() {
     async (reset: boolean) => {
       const client = getClient();
       if (!client) return;
+      const generation = ++loadGeneration.current;
       setLoading(true);
+      setLoadError(null);
+      if (reset) {
+        setRows([]);
+        setExhausted(false);
+        setSelecting(false);
+        setSelected(new Set());
+      }
       try {
         const page = await client.querySessions({
           limit: PAGE,
@@ -97,6 +113,7 @@ export function HistoryPage() {
           ...(query ? { search: query } : {}),
           ...(showArchived ? { archived: true } : {}),
         });
+        if (generation !== loadGeneration.current) return;
         // Subagent sessions are internals of their parent conversation, and the
         // cursor deliberately overlaps (it re-reads a shared millisecond), so
         // both are handled here rather than assumed of the server.
@@ -108,10 +125,12 @@ export function HistoryPage() {
         setCursor(page.nextCursor);
         setExhausted(page.nextCursor === null);
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : String(err));
-        setExhausted(true);
+        if (generation !== loadGeneration.current) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setLoadError(message);
+        toast.error(message);
       } finally {
-        setLoading(false);
+        if (generation === loadGeneration.current) setLoading(false);
       }
     },
     [cursor, query, showArchived],
@@ -120,7 +139,11 @@ export function HistoryPage() {
   // A new search or filter restarts the list. `load` is deliberately not a
   // dependency: it changes with `cursor`, which would re-run this on paging.
   useEffect(() => {
-    if (status !== "ready") return;
+    loadGeneration.current++;
+    if (status !== "ready") {
+      setLoading(false);
+      return;
+    }
     void load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, showArchived, status]);
@@ -187,6 +210,68 @@ export function HistoryPage() {
         : prev.map((s) => (s.id === id ? { ...s, ...change } : s)),
     );
 
+  const toggleSelectMode = () => {
+    setSelecting((on) => !on);
+    setSelected(new Set());
+  };
+
+  const toggleSelected = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // A selection only ever covers what is on screen now: a new search or filter
+  // starts over instead of carrying hidden rows into the next batch.
+  useEffect(() => {
+    setSelecting(false);
+    setSelected(new Set());
+  }, [query, showArchived]);
+
+  // Keep the selection tied to rows that are still visible. A reset load clears
+  // both; a late deletion or a refreshed first page must not leave hidden ids
+  // queued for permanent deletion.
+  useEffect(() => {
+    const visible = new Set(rows.map((row) => row.id));
+    setSelected((previous) => {
+      const next = new Set([...previous].filter((id) => visible.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+    if (rows.length === 0) setSelecting(false);
+  }, [rows]);
+
+  const allLoadedSelected = rows.length > 0 && rows.every((s) => selected.has(s.id));
+  const toggleAllLoaded = () =>
+    setSelected(allLoadedSelected ? new Set() : new Set(rows.map((s) => s.id)));
+
+  const deleteRow = async (id: string): Promise<boolean> => {
+    const ok = (await deleteSession(id)) !== false;
+    if (ok) patchRow(id, null);
+    else toast.error(useRuntimeStore.getState().error ?? t("common:notification.problem"));
+    return ok;
+  };
+
+  /** Delete every selected row one at a time — the runtime handles one session
+   *  per request, and serial calls keep a large selection from flooding it. */
+  const deleteSelected = async () => {
+    setConfirmBatchDelete(false);
+    const ids = [...selected];
+    setDeleting(true);
+    let failed = 0;
+    try {
+      for (const id of ids) {
+        if (!(await deleteRow(id))) failed += 1;
+      }
+    } finally {
+      setDeleting(false);
+      setSelecting(false);
+      setSelected(new Set());
+    }
+    if (failed > 0) toast.error(t("history.batchDeleteFailed", { count: failed }));
+  };
+
   const toggleArchived = async (s: SessionMeta) => {
     const archived = s.archived == null;
     if (!(await setSessionArchived(s.id, archived))) return;
@@ -249,7 +334,8 @@ export function HistoryPage() {
   };
 
   const canWrite = !webReadOnly;
-  const empty = !loading && rows.length === 0;
+  const empty = !loading && !loadError && rows.length === 0 && exhausted;
+  const canLoadMore = !exhausted && !loading && !loadError && (rows.length > 0 || cursor !== null);
 
   return (
     <div className="h-full overflow-y-auto">
@@ -258,6 +344,15 @@ export function HistoryPage() {
           <h1 className="min-w-0 flex-1 font-serif text-2xl leading-tight text-text">
             {t("history.pageHeading")}
           </h1>
+          {canWrite && rows.length > 0 && (
+            <button
+              onClick={toggleSelectMode}
+              className="flex shrink-0 items-center gap-1.5 rounded-input border border-border px-2.5 py-1.5 text-xs text-text hover:bg-surface-2"
+            >
+              {selecting ? <X size={13} /> : <ListChecks size={13} />}
+              {selecting ? t("common:actions.cancel") : t("history.select")}
+            </button>
+          )}
           {/* Export writes files into a folder the user picks — desktop only. */}
           {isTauri && canWrite && (
             <button
@@ -306,9 +401,21 @@ export function HistoryPage() {
           {t("history.showArchived")}
         </label>
 
+        {loadError && (
+          <div role="alert" className="mt-4 flex items-center gap-3 rounded-input border border-border bg-surface-2 px-3 py-2 text-sm text-text">
+            <span className="min-w-0 flex-1 break-words">{t("history.loadFailed")}</span>
+            <button
+              onClick={() => void load(rows.length === 0)}
+              className="shrink-0 rounded-input border border-border px-2.5 py-1 text-xs text-text hover:bg-surface"
+            >
+              {t("common:notification.retry")}
+            </button>
+          </div>
+        )}
+
         {empty ? (
           <p className="px-2 py-10 text-center text-sm text-muted">
-            {query ? t("history.noResults") : t("history.empty")}
+            {status !== "ready" ? t("history.loading") : query ? t("history.noResults") : t("history.empty")}
           </p>
         ) : (
           grouped.map(([bucket, group]) => (
@@ -325,26 +432,43 @@ export function HistoryPage() {
                       className="group grid grid-cols-[minmax(0,1fr)_3.5rem_auto] items-center gap-3 px-2 py-2.5"
                     >
                       <div className="flex min-w-0 items-center gap-2">
-                        <MessageSquare size={14} className="shrink-0 text-muted" />
-                        {renamingId === s.id ? (
-                          <RenameInput
-                            defaultValue={editableSessionTitle(s)}
-                            onSubmit={(v) => {
-                              setRenamingId(null);
-                              if (v.trim() && v.trim() !== s.title) {
-                                patchRow(s.id, withManualSessionTitle(s, v.trim()));
-                                void renameSession(s.id, v);
-                              }
-                            }}
-                            onCancel={() => setRenamingId(null)}
-                          />
+                        {selecting ? (
+                          <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={selected.has(s.id)}
+                              onChange={() => toggleSelected(s.id)}
+                              className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+                            />
+                            <span className="truncate text-sm text-text">{displayTitle(s)}</span>
+                          </label>
                         ) : (
-                          <button
-                            onClick={() => open(s.id)}
-                            className="min-w-0 flex-1 truncate text-left text-sm text-text outline-none hover:underline"
-                          >
-                            {displayTitle(s)}
-                          </button>
+                          <>
+                            <MessageSquare size={14} className="shrink-0 text-muted" />
+                            {renamingId === s.id ? (
+                              <RenameInput
+                                defaultValue={editableSessionTitle(s)}
+                                onSubmit={(v) => {
+                                  setRenamingId(null);
+                                  const title = v.trim();
+                                  if (title && title !== s.title) {
+                                    void renameSession(s.id, title).then((ok) => {
+                                      if (ok) patchRow(s.id, withManualSessionTitle(s, title));
+                                      else toast.error(useRuntimeStore.getState().error ?? t("common:notification.problem"));
+                                    });
+                                  }
+                                }}
+                                onCancel={() => setRenamingId(null)}
+                              />
+                            ) : (
+                              <button
+                                onClick={() => open(s.id)}
+                                className="min-w-0 flex-1 truncate text-left text-sm text-text outline-none hover:underline"
+                              >
+                                {displayTitle(s)}
+                              </button>
+                            )}
+                          </>
                         )}
                         {s.archived != null && (
                           <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted ring-1 ring-border">
@@ -370,7 +494,7 @@ export function HistoryPage() {
                         {timeAgo(s.updated ?? s.created, now)}
                       </span>
 
-                      {canWrite && (
+                      {canWrite && !selecting && (
                         <DropdownMenu.Root>
                           <DropdownMenu.Trigger asChild>
                             <button
@@ -417,8 +541,10 @@ export function HistoryPage() {
                                         key={p.id}
                                         disabled={samePath(p.path, s.directory)}
                                         onSelect={() => {
-                                          patchRow(s.id, { directory: p.path });
-                                          void moveSessionToWorkspace(s.id, p.path);
+                                          void moveSessionToWorkspace(s.id, p.path).then((ok) => {
+                                            if (ok) patchRow(s.id, { directory: p.path });
+                                            else toast.error(useRuntimeStore.getState().error ?? t("common:notification.problem"));
+                                          });
                                         }}
                                         className={cn(
                                           "flex cursor-pointer items-center gap-2 rounded-input px-2 py-1.5 outline-none data-[highlighted]:bg-surface-2",
@@ -467,7 +593,7 @@ export function HistoryPage() {
           ))
         )}
 
-        {!exhausted && rows.length > 0 && (
+        {canLoadMore && (
           <button
             onClick={() => void load(false)}
             disabled={loading}
@@ -475,6 +601,31 @@ export function HistoryPage() {
           >
             {loading ? t("history.loading") : t("history.loadMore")}
           </button>
+        )}
+
+        {selecting && rows.length > 0 && (
+          <div className="sticky bottom-0 z-10 mt-6 flex items-center gap-3 border-t border-border bg-surface/95 px-2 py-3 backdrop-blur">
+            <label className="flex min-w-0 cursor-pointer items-center gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={allLoadedSelected}
+                onChange={toggleAllLoaded}
+                className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+              />
+              <span className="truncate">{t("history.selectAllLoaded")}</span>
+            </label>
+            <span className="shrink-0 whitespace-nowrap text-xs text-muted">
+              {t("history.selectedCount", { count: selected.size })}
+            </span>
+            <button
+              onClick={() => setConfirmBatchDelete(true)}
+              disabled={selected.size === 0 || deleting}
+              className="ml-auto flex shrink-0 items-center gap-1.5 rounded-input border border-border px-2.5 py-1.5 text-xs text-error hover:bg-surface-2 disabled:cursor-default disabled:opacity-40"
+            >
+              {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+              {t("confirmDelete.deleteAction")}
+            </button>
+          </div>
         )}
       </div>
 
@@ -494,11 +645,21 @@ export function HistoryPage() {
           body={t("confirmDelete.sessionBody", { title: displayTitle(pendingDelete) })}
           confirmLabel={t("confirmDelete.deleteAction")}
           onConfirm={() => {
-            patchRow(pendingDelete.id, null);
-            void deleteSession(pendingDelete.id);
+            const target = pendingDelete;
             setPendingDelete(null);
+            void deleteRow(target.id);
           }}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {confirmBatchDelete && (
+        <ConfirmDialog
+          title={t("history.batchDeleteTitle", { count: selected.size })}
+          body={t("history.batchDeleteBody", { count: selected.size })}
+          confirmLabel={t("confirmDelete.deleteAction")}
+          onConfirm={() => void deleteSelected()}
+          onCancel={() => setConfirmBatchDelete(false)}
         />
       )}
     </div>

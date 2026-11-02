@@ -109,7 +109,7 @@ export function ProjectsPage() {
     <div className="h-full overflow-y-auto">
       {transition.confirmation}
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-8">
-        <div className="flex min-w-0 items-center justify-between gap-3"><h1 className="font-serif text-2xl leading-tight text-text">{t("projects.heading")}</h1>{isGatewayWeb && <button type="button" onClick={()=>navigate('/files?view=trash')} className="rounded border border-border px-3 py-2 text-sm">{t('projects.trashHeading')}</button>}</div>
+        <div className="flex min-w-0 items-center justify-between gap-3"><h1 className="font-serif text-2xl leading-tight text-text">{t("projects.heading")}</h1></div>
 
         <div className="relative mt-5">
           <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />

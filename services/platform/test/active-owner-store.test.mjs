@@ -35,3 +35,20 @@ test("owner marker ignores missing and malformed files", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("forget removes only the requested owner and reports whether anything changed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-owner-store-"));
+  try {
+    const store = new ActiveOwnerStore({ filePath: join(root, "owners.json"), maxOwners: 2 });
+    await store.remember("usr_a", 100);
+    await store.remember("usr_b", 200);
+    assert.equal(await store.forget("usr_a"), true);
+    assert.deepEqual(await store.read(), [{ userId: "usr_b", since: 200 }]);
+    assert.equal(await store.forget("usr_missing"), false);
+    assert.deepEqual(await store.read(), [{ userId: "usr_b", since: 200 }]);
+    const info = await stat(join(root, "owners.json"));
+    assert.equal(info.mode & 0o077, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

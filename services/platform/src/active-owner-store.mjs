@@ -31,14 +31,28 @@ export class ActiveOwnerStore {
     if (!identifier(userId) || !Number.isSafeInteger(since) || since < 0) return;
     const owners = await this.read();
     const next = [{ userId, since }, ...owners.filter(owner => owner.userId !== userId)].slice(0, this.maxOwners);
+    await this.#write(next);
+  }
+
+  async forget(userId) {
+    if (!identifier(userId)) return false;
+    const owners = await this.read();
+    const next = owners.filter(owner => owner.userId !== userId);
+    if (next.length === owners.length) return false;
+    return this.#write(next);
+  }
+
+  async #write(owners) {
     const temporary = `${this.filePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
     try {
       await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
-      await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+      await writeFile(temporary, `${JSON.stringify(owners, null, 2)}\n`, { mode: 0o600 });
       await rename(temporary, this.filePath);
+      return true;
     } catch {
       await rm(temporary, { force: true }).catch(() => {});
       this.logger({ type: "owner_store.write_failed" });
+      return false;
     }
   }
 }

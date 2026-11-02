@@ -8,9 +8,9 @@ export class WorkspaceProvenance {
  constructor({files,clock=Date.now}){Object.assign(this,{files,clock});}
  async record(context,operationId,record){
   const operation=record.input?.operation;
-  if(record.receipt?.state!=='committed' || !operation || !['createFile','createDirectory','rename','move','trash','restore','upload','saveText'].includes(operation.kind) || !/^[A-Za-z0-9_-]{1,128}$/.test(operationId))throw workspaceError('history_unavailable',503);
+  if(record.receipt?.state!=='committed' || !operation || !['createFile','createDirectory','rename','move','delete','upload','saveText'].includes(operation.kind) || !/^[A-Za-z0-9_-]{1,128}$/.test(operationId))throw workspaceError('history_unavailable',503);
   relativeInput(operation.path);
-  const anchor=['rename','move','trash'].includes(operation.kind)?record.recovery?.source:record.recovery?.destination;
+  const anchor=['rename','move','delete'].includes(operation.kind)?record.recovery?.source:record.recovery?.destination;
   if(typeof anchor!=='string' || !(anchor===operation.path || anchor.endsWith('/'+operation.path)))throw workspaceError('history_unavailable',503);
   const prefix=anchor.slice(0,anchor.length-operation.path.length).replace(/\/$/,'');
   if(prefix && (posix.normalize(prefix)!==prefix || prefix.startsWith('/') || prefix.split('/').some(part=>['.','..','.scikeel','.git','.openscience',''].includes(part))))throw workspaceError('history_unavailable',503);

@@ -82,7 +82,10 @@ const server = createServer(async (request, response) => {
     const native=/^\/session\/([A-Za-z0-9_-]+)(?:\/(message|prompt_async|children|abort))?$/.exec(runtimeUrl.pathname),owned=canonicalSessions.get(native?.[1]);
     if(owned){
       let body={};if(['POST','PATCH'].includes(request.method)){const chunks=[];for await(const chunk of request)chunks.push(chunk);body=JSON.parse(Buffer.concat(chunks).toString()||'{}');}
-      if(!native[2]){if(body.permission)owned.session.permission=body.permission;response.end(JSON.stringify(owned.session));return;}
+      if(!native[2]){
+        if(request.method==='DELETE'){canonicalSessions.delete(native[1]);response.end('true');return;}
+        if(body.permission)owned.session.permission=body.permission;response.end(JSON.stringify(owned.session));return;
+      }
       if(native[2]==='message'&&request.method==='GET'){response.end(JSON.stringify(owned.history));return;}
       if(native[2]==='children'){response.end('[]');return;}
       if(native[2]==='abort'){response.end('true');return;}

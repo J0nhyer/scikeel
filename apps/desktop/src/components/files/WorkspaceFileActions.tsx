@@ -12,7 +12,7 @@ import {ManagementDialog} from '@/components/ui/ManagementDialog';
 
 const parent=(path:string)=>path.split('/').slice(0,-1).join('/');
 const child=(path:string,name:string)=>path?path+'/'+name:name;
-const FILE_ACTION={rename:'rename',move:'move',trash:'trash'} as const;
+const FILE_ACTION={rename:'rename',move:'move',delete:'delete'} as const;
 function useFileAction(scope:WorkspaceScope,onChanged:()=>void){
  const {t}=useTranslation('nav');
  const mounted=useRef(true),locked=useRef(false),operationId=useRef(workspaceOperationId()),lastInput=useRef<string|null>(null);
@@ -22,7 +22,7 @@ function useFileAction(scope:WorkspaceScope,onChanged:()=>void){
  const begin=()=>{operationId.current=workspaceOperationId();lastInput.current=null;setUncertain(false);setError(null);};
  const run=async(operation:WorkspaceFileOperation,done:()=>void)=>{
   if(locked.current || useRuntimeStore.getState().webReadOnly)return;
-  if(['rename','move','trash'].includes(operation.kind) && hasWorkspaceDrafts(scope,operation.path)){setError(t('fileManagement.finishDraft'));return;}
+  if(['rename','move','delete'].includes(operation.kind) && hasWorkspaceDrafts(scope,operation.path)){setError(t('fileManagement.finishDraft'));return;}
   const key=JSON.stringify({scope,operation});
   if(lastInput.current!==null && lastInput.current!==key){if(uncertain)return;operationId.current=workspaceOperationId();}
   lastInput.current=key;
@@ -46,13 +46,13 @@ export function WorkspaceFileControls({scope,path,onChanged,disabled=false}:{sco
 }
 export function WorkspaceFileActions({scope,entry,onChanged}:{scope:WorkspaceScope;entry:DirEntry;onChanged:()=>void}){
  const {t}=useTranslation(['nav','common']);const readOnly=useRuntimeStore(state=>state.webReadOnly);
- const [dialog,setDialog]=useState<'rename'|'move'|'trash'|null>(null);const [destination,setDestination]=useState('');const [folders,setFolders]=useState<DirEntry[]>([]);
+ const [dialog,setDialog]=useState<'rename'|'move'|'delete'|null>(null);const [destination,setDestination]=useState('');const [folders,setFolders]=useState<DirEntry[]>([]);
  const trigger=useRef<HTMLButtonElement>(null),cancel=useRef<HTMLButtonElement>(null),openingDialog=useRef(false);
  const [folderError,setFolderError]=useState<string|null>(null),[loadingFolders,setLoadingFolders]=useState(false),[folderCursor,setFolderCursor]=useState<string|null>(null);const folderGeneration=useRef(0);
  useEffect(()=>()=>{folderGeneration.current++;},[]);
  const action=useFileAction(scope,onChanged);const capabilities=entry.capabilities??[];
  const loadFolders=async(path:string,cursor?:string)=>{const generation=++folderGeneration.current,owner=useRuntimeStore.getState().gatewayUser?.id;setDestination(path);setLoadingFolders(true);setFolderError(null);if(!cursor)setFolderCursor(null);try{const listed=await (cursor?workspaceEntries(scope,path,cursor):workspaceEntries(scope,path));if(generation===folderGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id){const next=listed.entries.filter(folder=>folder.isDir && folder.path!==entry.path && !folder.path.startsWith(entry.path+'/'));setFolders(previous=>cursor?[...previous.filter(folder=>!next.some(item=>item.path===folder.path)),...next]:next);setFolderCursor(listed.nextCursor??null);}}catch(error){if(generation===folderGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id){if(!cursor)setFolders([]);setFolderError(error instanceof Error?error.message:String(error));}}finally{if(generation===folderGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setLoadingFolders(false);}};
- const open=(kind:'rename'|'move'|'trash')=>{openingDialog.current=true;action.begin();setDialog(kind);if(kind==='move')void loadFolders('');};
+ const open=(kind:'rename'|'move'|'delete')=>{openingDialog.current=true;action.begin();setDialog(kind);if(kind==='move')void loadFolders('');};
  const close=()=>{folderGeneration.current++;setDialog(null);};
  const run=(operation:WorkspaceFileOperation)=>void action.run(operation,()=>setDialog(null));
  const revision=entry.revision??'';const item='cursor-pointer rounded px-3 py-2 text-sm outline-none data-[highlighted]:bg-surface-2 data-[disabled]:opacity-40';
@@ -61,13 +61,13 @@ export function WorkspaceFileActions({scope,entry,onChanged}:{scope:WorkspaceSco
    <DropdownMenu.Portal><DropdownMenu.Content align='end' onCloseAutoFocus={event=>{if(openingDialog.current){event.preventDefault();openingDialog.current=false;}}} className='z-50 min-w-[160px] max-w-[calc(100vw-2rem)] rounded border border-border bg-surface p-1 shadow-pop'>
     <DropdownMenu.Item className={item} disabled={readOnly||action.busy||!capabilities.includes(FILE_ACTION.rename)} onSelect={()=>open(FILE_ACTION.rename)}>{t('projects.rename')}</DropdownMenu.Item>
     <DropdownMenu.Item className={item} disabled={readOnly||action.busy||!capabilities.includes(FILE_ACTION.move)} onSelect={()=>open(FILE_ACTION.move)}>{t('fileManagement.move')}</DropdownMenu.Item>
-    <DropdownMenu.Item className={item+' text-error'} disabled={readOnly||action.busy||!capabilities.includes(FILE_ACTION.trash)} onSelect={()=>open(FILE_ACTION.trash)}>{t('projects.trash')}</DropdownMenu.Item>
+    <DropdownMenu.Item className={item+' text-error'} disabled={readOnly||action.busy||!capabilities.includes(FILE_ACTION.delete)} onSelect={()=>open(FILE_ACTION.delete)}>{t('fileManagement.delete')}</DropdownMenu.Item>
    </DropdownMenu.Content></DropdownMenu.Portal>
   </DropdownMenu.Root>
   {dialog==='rename' && <NameProjectDialog returnFocusRef={trigger} defaultName={entry.name} title={t('projects.rename')} subtitle='' busy={action.busy} inputDisabled={action.uncertain} cancelDisabled={action.uncertain} error={action.error??undefined} onCancel={()=>{if(!action.busy && !action.uncertain)close();}} onSave={name=>run({kind:FILE_ACTION.rename,path:entry.path,destinationPath:child(parent(entry.path),name.trim()),expectedRevision:revision})}/>}
-  {dialog==='trash' && <ManagementDialog role='alertdialog' title={t('fileManagement.trashTitle',{name:entry.name})} description={t('fileManagement.trashBody')} onClose={close} dismissible={!action.busy&&!action.uncertain} initialFocusRef={cancel} returnFocusRef={trigger} className='w-[360px]'>
+  {dialog==='delete' && <ManagementDialog role='alertdialog' title={t('fileManagement.deleteTitle',{name:entry.name})} description={t('fileManagement.deleteBody')} onClose={close} dismissible={!action.busy&&!action.uncertain} initialFocusRef={cancel} returnFocusRef={trigger} className='w-[360px]'>
    {action.error && <p role='alert' className='mt-2 break-words text-sm text-error'>{action.error}</p>}
-   <div className='mt-4 flex justify-end gap-2'><button ref={cancel} className='rounded border border-border px-3 py-2 text-sm' disabled={action.busy||action.uncertain} onClick={close}>{t('common:actions.cancel')}</button><button className='rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-40' disabled={action.busy||readOnly} onClick={()=>run({kind:'trash',path:entry.path,expectedRevision:revision})}>{t('projects.trash')}</button></div>
+   <div className='mt-4 flex justify-end gap-2'><button ref={cancel} className='rounded border border-border px-3 py-2 text-sm' disabled={action.busy||action.uncertain} onClick={close}>{t('common:actions.cancel')}</button><button className='rounded bg-error px-3 py-2 text-sm text-white disabled:opacity-40' disabled={action.busy||readOnly} onClick={()=>run({kind:'delete',path:entry.path,expectedRevision:revision})}>{t('fileManagement.delete')}</button></div>
   </ManagementDialog>}
   {dialog==='move' && <ManagementDialog title={t('fileManagement.move')} onClose={close} dismissible={!action.busy&&!action.uncertain} initialFocusRef={cancel} returnFocusRef={trigger} className='w-[360px]'>
    <h2 className='break-words text-sm font-medium'>{entry.name}</h2><label className='mt-3 block text-sm'>{t('fileManagement.destination')}<select aria-label={t('fileManagement.destination')} className='mt-2 w-full min-w-0 rounded border border-border bg-surface px-2 py-2 text-sm' disabled={action.busy||action.uncertain||loadingFolders} value={destination} onChange={event=>void loadFolders(event.target.value)}>

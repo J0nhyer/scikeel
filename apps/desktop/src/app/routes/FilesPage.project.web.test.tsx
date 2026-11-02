@@ -4,7 +4,7 @@ import {MemoryRouter} from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import {useRuntimeStore} from '@/lib/runtime';
 import {FilesPage,SessionFilesPane} from './FilesPage';
-const entries=vi.fn(async()=>({directory:'/ws/project-a',capabilities:{create:true},entries:[{name:'result.txt',path:'result.txt',isDir:false,size:5,modified:1,revision:'a'.repeat(64),capabilities:['rename','move','trash']}]}));
+const entries=vi.fn(async()=>({directory:'/ws/project-a',capabilities:{create:true},entries:[{name:'result.txt',path:'result.txt',isDir:false,size:5,modified:1,revision:'a'.repeat(64),capabilities:['rename','move','delete']}]}));
 vi.mock('@/lib/webMode',async original=>({...await original<typeof import('@/lib/webMode')>(),isGatewayWeb:true,isPlatformWeb:true}));
 vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),workspaceEntries:(...args:unknown[])=>entries(...args as [] )}));
 vi.mock('@/components/inspector/FilePreviewInspector',()=>({FilePreviewInspector:()=>null}));

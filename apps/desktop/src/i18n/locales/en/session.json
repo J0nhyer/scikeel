@@ -313,7 +313,12 @@
         "capacityWaiting": "Waiting for workspace availability. Reconnecting automatically."
       }
     },
-    "account": { "signOutFailed": "Could not sign out. Please retry." },
+    "account": {
+      "signOutFailed": "Could not sign out. Please retry.",
+      "signOutConfirmTitle": "Sign out and stop the workspace?",
+      "signOutConfirmBody": "If this is the last signed-in session, the workspace will stop. Running research may be interrupted; conversation history and workspace files are kept.",
+      "signOutConfirmAction": "Sign out and stop"
+    },
     "starting": {
       "titleWeb": "Connecting to your workspace…",
       "titleSessionsWeb": "Loading conversations…",
@@ -551,8 +556,10 @@
     },
     "askedBy": "Asked by {{origin}}",
     "skip": "Skip",
+    "closeQuestion": "Skip and close the question",
     "submit": "Submit",
     "reject": "Reject",
+    "closePermission": "Reject and close the request",
     "alwaysAllow": "Always allow",
     "allowOnce": "Allow once",
     "state": {
@@ -787,7 +794,7 @@
     "discard": "Discard decision",
     "discardConfirm": "Discard this research decision? The current turn will stop.",
     "retry": "Retry",
-    "savedDecisions": "Confirmed research decisions",
+    "syncFailed": "Collaboration status sync failed",
     "suggestion": "Suggestion",
     "attachmentsAfterAnswer": "Answer the research decision in its card before sending attachments. Your selected files are preserved.",
     "delegatedDescription": "Complete the authorized work; ask about unapproved important choices.",

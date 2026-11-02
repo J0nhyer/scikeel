@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, HelpCircle, Pencil, ShieldQuestion } from "lucide-react";
+import { Check, HelpCircle, Pencil, ShieldQuestion, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PermissionAskedEvent, PermissionReply, QuestionAskedEvent } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
@@ -142,6 +142,16 @@ function QuestionCard({
           >
             {t("interaction.skip")}
           </button>
+          <button
+            type="button"
+            aria-label={t("interaction.closeQuestion")}
+            title={t("interaction.closeQuestion")}
+            className="grid min-h-11 min-w-11 place-items-center rounded text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50"
+            disabled={status === "submitting" || status === "unknown"}
+            onClick={() => onReject(question.requestId)}
+          >
+            <X size={14} />
+          </button>
         </div>
         {origin && (
           <div className="mt-0.5 pl-6 text-xs text-muted">{t("interaction.askedBy", { origin })}</div>
@@ -263,10 +273,20 @@ function PermissionCard({
       <header className="border-b border-border px-4 py-2.5">
         <div className="flex items-center gap-2">
           <ShieldQuestion size={15} className="text-warn" />
-          <span className="text-sm font-medium text-text">
+          <span className="min-w-0 flex-1 text-sm font-medium text-text">
             {t("interaction.permission.heading")}{" "}
             <span className="font-mono">{actionLabel(permission.action)}</span>
           </span>
+          <button
+            type="button"
+            aria-label={t("interaction.closePermission")}
+            title={t("interaction.closePermission")}
+            className="grid min-h-11 min-w-11 shrink-0 place-items-center rounded text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50"
+            disabled={["submitting", "unknown"].includes(status)}
+            onClick={() => onReply(permission.requestId, "reject")}
+          >
+            <X size={14} />
+          </button>
         </div>
         {origin && (
           <div className="mt-0.5 pl-6 text-xs text-muted">{t("interaction.askedBy", { origin })}</div>

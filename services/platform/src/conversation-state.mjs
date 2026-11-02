@@ -262,6 +262,51 @@ export class ConversationState {
    data.conversations[value.id]=value;await this.#save(data,owner);return structuredClone(value);
   });
  }
+ async remove(owner,conversationId) {
+  owner=await this.#owner(owner);
+  if(!name(conversationId))throw invalid();
+  return this.#serialized(owner.userId,async()=>{
+   const data=await this.#load(owner.userId),value=await this.#owned(data,owner,conversationId);
+   const result={id:value.id,directory:value.directory};
+   delete data.conversations[conversationId];
+   await this.#save(data,owner);return result;
+  });
+ }
+ async #removalTree(data,owner,conversationId) {
+  await this.#owned(data,owner,conversationId);
+  const children=new Map();
+  for(const [id,value] of Object.entries(data.conversations))if(value.parentId!==null){
+   const list=children.get(value.parentId)??[];list.push(id);children.set(value.parentId,list);
+  }
+  const ids=new Set([conversationId]),queue=[conversationId];
+  while(queue.length){
+   const parent=queue.shift();
+   for(const child of children.get(parent)??[])if(!ids.has(child)){ids.add(child);queue.push(child);}
+  }
+  const removed=[];
+  for(const id of ids){
+   const value=await this.#owned(data,owner,id);
+   removed.push({id,directory:value.directory,historicalSource:structuredClone(value.historicalSource),bindings:structuredClone(value.bindings)});
+  }
+  return {ids,removed};
+ }
+ async conversationTree(owner,conversationId) {
+  owner=await this.#owner(owner);
+  if(!name(conversationId))throw invalid();
+  return this.#serialized(owner.userId,async()=>{
+   const data=await this.#load(owner.userId);
+   return (await this.#removalTree(data,owner,conversationId)).removed;
+  });
+ }
+ async removeTree(owner,conversationId) {
+  owner=await this.#owner(owner);
+  if(!name(conversationId))throw invalid();
+  return this.#serialized(owner.userId,async()=>{
+   const data=await this.#load(owner.userId),tree=await this.#removalTree(data,owner,conversationId);
+   for(const id of tree.ids)delete data.conversations[id];
+   await this.#save(data,owner);return tree.removed;
+  });
+ }
  async pendingExecutions() {
   try {
    let before;

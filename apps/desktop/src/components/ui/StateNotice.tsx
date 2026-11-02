@@ -6,11 +6,14 @@ export interface StateNoticeProps {
   summary: string;
   detail?: string;
   action?: { label: string; run: () => void | Promise<void> };
+  /** Close the whole notice, including a recovery action that would otherwise
+   *  remain as a lone button. Use when the caller retries on its own. */
+  dismissFully?: boolean;
 }
 /** Closing the notice removes it for this issue; the state that produced it is
  *  still owned by the page around it, so the close control never pretends to
  *  fix anything. */
-export function StateNotice({ issueId, summary, detail, action }: StateNoticeProps) {
+export function StateNotice({ issueId, summary, detail, action, dismissFully }: StateNoticeProps) {
   const { t } = useTranslation("common");
   const account = useToastStore(s => s.accountId);
   const identity = JSON.stringify([account, issueId]);
@@ -19,7 +22,9 @@ export function StateNotice({ issueId, summary, detail, action }: StateNoticePro
   if (dismissed) {
     // Keep a recovery control that has no other home on the page (a failed
     // directory listing, a failed assistant selection); a notice with no
-    // action is feedback only and goes away entirely.
+    // action is feedback only and goes away entirely. A caller whose recovery
+    // is automatic passes dismissFully so nothing is left behind.
+    if (dismissFully) return null;
     return action
       ? <button type="button" className="min-h-11 min-w-11 text-xs text-accent underline" onClick={() => { void action.run(); }}>{action.label}</button>
       : null;

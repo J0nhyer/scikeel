@@ -61,6 +61,31 @@ test('a version-one conversation reader upgrades references in memory without re
  const restored=await state.open(owner,first.id);assert.equal(restored.historicalSource,null);assert.equal(restored.events[0].historicalSourceId,null);
  assert.equal(await readFile(file,'utf8'),bytes);
 });
+test('owned removal deletes canonical metadata and enqueues exactly one catalog tombstone',async t=>{
+ const {state,rootDir,authorize}=await fixture(t);
+ const value=await state.importNative(owner,imported);
+ assert.deepEqual(await state.remove(owner,value.id),{id:value.id,directory:value.directory});
+ await assert.rejects(state.open(owner,value.id),{code:'conversation_not_found'});
+ await assert.rejects(state.remove(owner,value.id),{code:'conversation_not_found'});
+ const changes=await state.pendingCatalogChanges(owner.userId);
+ assert.equal(changes.filter(change=>change.conversationTombstones.includes(value.id)).length,1);
+ assert.equal((await new ConversationState({rootDir,authorize}).list(owner)).length,0);
+});
+test('owned removal preflights and cascades hidden child conversations',async t=>{
+ const {state}=await fixture(t);
+ await state.importNative(owner,imported);
+ await state.importNative(owner,{...imported,conversationId:'child-conversation',parentId:imported.conversationId,
+  binding:{...binding,nativeSessionId:'child-native'},events:[],cursor:null});
+ const tree=await state.conversationTree(owner,imported.conversationId);
+ assert.deepEqual(tree.map(value=>value.id).sort(),['child-conversation','public-conversation']);
+ assert.equal((await state.list(owner)).length,2);
+ const removed=await state.removeTree(owner,imported.conversationId);
+ assert.deepEqual(removed.map(value=>value.id).sort(),['child-conversation','public-conversation']);
+ assert.equal((await state.list(owner)).length,0);
+ const changes=await state.pendingCatalogChanges(owner.userId);
+ assert.ok(changes.some(change=>change.conversationTombstones.includes('public-conversation')));
+ assert.ok(changes.some(change=>change.conversationTombstones.includes('child-conversation')));
+});
 test('new public conversations exist durably before any target-native identity is known',async t=>{
  const {state,rootDir,authorize}=await fixture(t);
  const input={conversationId:'new-conversation',title:'New research',parentId:null,lifecycle:'active'};

@@ -43,6 +43,7 @@ async function fixture(t){
     gateway:async(_context,path,method='GET',body)=>{
       if(path==='/v1/projects')return structuredClone(projects);
       if(method==='PATCH'){projects[0].name=body.name;mutations++;return {ok:true};}
+      if(method==='DELETE' && path==='/v1/projects/'+projects[0]?.id){projects.splice(0,1);mutations++;return {ok:true};}
       if(path==='/v1/fs/list?root=workspace&path=&dir=%2Fowned%2Fa%2Fprojects%2Fa')return [{name:'result.txt',path:'result.txt',isDir:false}];
       throw new Error('unexpected gateway request');
     }});
@@ -55,21 +56,26 @@ test('rename preserves project ID/path and rejects invalid names',async t=>{
   assert.equal(f.mutations(),1);
   assert.equal((await f.state.open('a')).projects[f.projects[0].id].project.name,'Renamed');
 });
-test('trash filters normal project lists and denies nested old session/file paths; restore keeps IDs',async t=>{
+test('remove drops only the project index and leaves its files accessible',async t=>{
   const f=await fixture(t);const [p]=await f.management.listProjects(f.context);
-  await f.management.trashProject(f.context,p.id,{operationId:'op-a',expectedRevision:p.revision});
+  const receipt=await f.management.removeProject(f.context,p.id,{operationId:'op-a',expectedRevision:p.revision});
+  assert.equal(receipt.state,'committed');
   assert.deepEqual(await f.management.listProjects(f.context),[]);
-  await assert.rejects(f.management.assertAccessible(f.context,p.path+'/nested'),{code:'project_trashed'});
-  await f.management.assertAccessible(f.context,p.path+'-peer');
-  const trash=await f.management.listTrash(f.context);
-  assert.equal(trash[0].project.id,p.id);
-  await f.management.restore(f.context,p.id,{operationId:'op-b'});
-  assert.equal((await f.management.listProjects(f.context))[0].path,p.path);
+  assert.equal(f.projects.length,0);
+  assert.equal((await f.state.open('a')).projects[p.id],undefined);
+  await f.management.assertAccessible(f.context,p.path+'/nested');
 });
-test('busy and stale confirmations cannot trash; foreign IDs are not found',async t=>{
+test('a failed project removal leaves no pending receipt that can block the account',async t=>{
+  const f=await fixture(t),gateway=f.management.gateway;const [project]=await f.management.listProjects(f.context);
+  f.management.gateway=async(context,path,method,body)=>{if(method==='DELETE')throw new Error('offline');return gateway(context,path,method,body);};
+  await assert.rejects(f.management.removeProject(f.context,project.id,{operationId:'remove-offline',expectedRevision:project.revision}),/offline/);
+  assert.equal((await f.state.open('a')).operations['remove-offline'],undefined);
+  assert.equal((await f.management.listProjects(f.context)).length,1);
+});
+test('busy and stale confirmations cannot remove; foreign IDs are not found',async t=>{
   const f=await fixture(t);const [p]=await f.management.listProjects(f.context);
-  f.busy(true);await assert.rejects(f.management.trashProject(f.context,p.id,{operationId:'op-a',expectedRevision:p.revision}),{code:'workspace_busy'});
-  f.busy(false);await assert.rejects(f.management.trashProject(f.context,p.id,{operationId:'op-b',expectedRevision:'stale'}),{code:'revision_conflict'});
+  f.busy(true);await assert.rejects(f.management.removeProject(f.context,p.id,{operationId:'op-a',expectedRevision:p.revision}),{code:'workspace_busy'});
+  f.busy(false);await assert.rejects(f.management.removeProject(f.context,p.id,{operationId:'op-b',expectedRevision:'stale'}),{code:'revision_conflict'});
   await assert.rejects(f.management.patchProject(f.context,'ffffffffffffffff',{name:'B'}),{statusCode:404});
   assert.equal((await f.management.listProjects(f.context)).length,1);
 });
@@ -80,6 +86,13 @@ test('empty project file listing uses selected ID rather than active runtime',as
 test('private management payloads cannot be accessed through normal directory paths',async t=>{
  const f=await fixture(t);
  await assert.rejects(f.management.assertAccessible(f.context,'/owned/a/.scikeel/workspace-management/trash/payload'),{code:'protected_path'});
+});
+test('old project tombstones are reactivated when projects are listed',async t=>{
+ const f=await fixture(t);
+ await f.state.update('a',data=>{data.projects[f.projects[0].id]={id:f.projects[0].id,project:f.projects[0],state:'trashed',deletedAt:1};});
+ const projects=await f.management.listProjects(f.context);
+ assert.equal(projects.length,1);
+ assert.equal((await f.state.open('a')).projects[f.projects[0].id].state,'active');
 });
 test('scope fields and project patches validate completely before any effect',async t=>{
  const f=await fixture(t);

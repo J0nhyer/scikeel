@@ -4,7 +4,7 @@ import {Readable} from 'node:stream';
 const {createWorkspaceRoutes}=await import('../src/workspace-routes.mjs').catch(()=>({}));
 function fixture(){
   const calls=[];const context={userId:'a',generation:1};
-  const management={listProjects:async()=>[{id:'a'}],patchProject:async(...args)=>{calls.push(args);return {ok:true};},state:{receipt:async()=>null}};
+  const management={listProjects:async()=>[{id:'a'}],patchProject:async(...args)=>{calls.push(args);return {ok:true};},removeProject:async(...args)=>{calls.push(args);return {state:'committed'};},state:{receipt:async()=>null}};
   const routes=createWorkspaceRoutes({management,readJson:async request=>request.body,sendJson:(response,status,body)=>Object.assign(response,{status,body})});
   return {routes,calls,context};
 }
@@ -23,9 +23,15 @@ test('read-only identity and malformed project fields cannot mutate',async()=>{
 test('file operations and durable receipt lookups use the file coordinator',async()=>{
  const f=fixture();const calls=[];const files={operate:async(...args)=>{calls.push(args);return {state:'committed'};},receipt:async()=>({state:'pending'})};
  const routes=createWorkspaceRoutes({management:f.routes.management??{state:{}},files,readJson:async request=>request.body,sendJson:(response,status,body)=>Object.assign(response,{status,body})});
- const result={};await routes.handle({method:'POST',url:'/api/workspace/operations',headers:{host:'local',origin:'http://local'},body:{scope:{kind:'account'},operationId:'a',operation:{kind:'trash',path:'x'}}},result,f.context);
+ const result={};await routes.handle({method:'POST',url:'/api/workspace/operations',headers:{host:'local',origin:'http://local'},body:{scope:{kind:'account'},operationId:'a',operation:{kind:'delete',path:'x',expectedRevision:'a'.repeat(64)}}},result,f.context);
  assert.equal(result.status,200);assert.equal(calls.length,1);
  const receipt={};await routes.handle({method:'GET',url:'/api/workspace/operations/a',headers:{host:'local'}},receipt,f.context);assert.equal(receipt.body.state,'pending');
+});
+test('project removal uses the lifecycle coordinator instead of the legacy delete route',async()=>{
+ const f=fixture();const response={};
+ await f.routes.handle({method:'POST',url:'/api/workspace/projects/123456789abcdef0/remove',headers:{host:'local',origin:'http://local'},body:{operationId:'remove-a',expectedRevision:'r'}},response,f.context);
+ assert.equal(response.status,200);assert.equal(f.calls.length,1);assert.equal(f.calls[0][1],'123456789abcdef0');
+ const trash={};await f.routes.handle({method:'POST',url:'/api/workspace/projects/123456789abcdef0/trash',headers:{host:'local',origin:'http://local'},body:{operationId:'trash-a'}},trash,f.context);assert.equal(trash.status,404);
 });
 test('upload binary chunks bypass JSON parsing and reject oversized or ambiguous bodies',async()=>{
  const calls=[];let jsonReads=0;

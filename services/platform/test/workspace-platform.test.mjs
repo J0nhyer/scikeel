@@ -12,11 +12,11 @@ import {workspaceError} from '../src/workspace-state.mjs';
 test('actual platform routes retain project payload, hide archived runtime lists, block old access and restore',async t=>{
   const root=await mkdtemp(join(tmpdir(),'workspace-platform-'));
   const project={id:'123456789abcdef0',name:'A',path:root+'/workspace/projects/a',createdAt:1,pinned:false,imported:false};
-  const payload='retained bytes';let upstreamReads=0,projectResponse='normal',chunksSent=0,releaseCreate,createStarted;
+  const payload='retained bytes';let upstreamReads=0,projectResponse='normal',chunksSent=0,releaseCreate,createStarted,projectVisible=true;
   const upstream=createServer(async(req,res)=>{
     const url=new URL(req.url,'http://worker');res.setHeader('content-type','application/json');
     if(url.pathname==='/v1/projects'){
-      if(req.method==='POST'){createStarted();await new Promise(done=>{releaseCreate=done;});return res.end(JSON.stringify(project));}
+      if(req.method==='POST'){projectVisible=true;createStarted();await new Promise(done=>{releaseCreate=done;});return res.end(JSON.stringify(project));}
       if(projectResponse==='declared'){res.setHeader('content-length',String(16*1024**2+1));res.flushHeaders();const timer=setTimeout(()=>res.destroy(),1000);res.once('close',()=>clearTimeout(timer));return;}
       if(projectResponse==='streamed'){
         res.write('{"padding":"');const timer=setInterval(()=>{chunksSent++;res.write('x'.repeat(256*1024));if(chunksSent===68){clearInterval(timer);res.end('"}');}},1);
@@ -24,11 +24,12 @@ test('actual platform routes retain project payload, hide archived runtime lists
       }
       if(projectResponse==='malformed')return res.end('{invalid');
       if(projectResponse==='encoding')return res.end(Buffer.from([0x22,0xff,0x22]));
-      return res.end(JSON.stringify([project]));
+      return res.end(JSON.stringify(projectVisible?[project]:[]));
     }
     if(url.pathname==='/v1/projects/'+project.id && req.method==='PATCH'){
       let body='';for await(const chunk of req)body+=chunk;project.name=JSON.parse(body).name;return res.end('{"ok":true}');
     }
+    if(url.pathname==='/v1/projects/'+project.id && req.method==='DELETE'){projectVisible=false;return res.end('{"ok":true}');}
     if(['/session','/experimental/session'].includes(url.pathname))return res.end(JSON.stringify([{id:'ses_a',directory:project.path,title:'private title'}]));
     if(url.pathname==='/session/ses_a')return res.end(JSON.stringify({id:'ses_a',directory:project.path}));
     if(['/session/ses_a/message','/session/ses_a/children'].includes(url.pathname))return res.end('[]');
@@ -57,18 +58,17 @@ test('actual platform routes retain project payload, hide archived runtime lists
   const listed=await request('/api/workspace/projects');assert.equal(listed.status,200);const [p]=await listed.json();
   const ticket=await (await request('/v1/fs/ticket?root=workspace&path=notes.txt&dir='+encodeURIComponent(project.path))).json();
   assert.notEqual(ticket.ticket,'raw-worker-ticket');
-  const archived=await request('/api/workspace/projects/'+p.id+'/trash','POST',{operationId:'op-trash',expectedRevision:p.revision});assert.equal(archived.status,200);
+  const removed=await request('/api/workspace/projects/'+p.id+'/remove','POST',{operationId:'op-remove',expectedRevision:p.revision});assert.equal(removed.status,200);
   assert.deepEqual(await (await request('/v1/projects')).json(),[]);
-  assert.deepEqual(await (await request('/session?directory='+encodeURIComponent(project.path))).json(),[]);
-  assert.equal((await request('/session/ses_a')).status,409);
-  const lifecycle=await request('/api/workspace/sessions/ses_a/state');assert.equal(lifecycle.status,200);assert.equal((await lifecycle.json()).state,'trashed');
-  assert.equal((await request('/v1/fs/read?ticket='+ticket.ticket)).status,409);assert.equal(upstreamReads,0);
+  assert.equal((await request('/session?directory='+encodeURIComponent(project.path))).status,200);
+  assert.equal((await request('/session/ses_a')).status,200);
+  assert.equal((await request('/api/workspace/sessions/ses_a/state')).status,404);
+  assert.equal((await request('/v1/fs/read?ticket='+ticket.ticket)).status,200);assert.equal(upstreamReads,1);
   assert.equal((await request('/v1/projects/'+p.id,'DELETE',{})).status,409);
-  assert.equal((await request('/v1/projects/'+p.id,'PATCH',{name:'Changed through old route'})).status,409);
+  assert.equal((await request('/v1/projects/'+p.id,'PATCH',{name:'Changed through old route'})).status,404);
   assert.equal(project.name,'A');
-  await assert.rejects(server.collaboration.applyPermissions({userId:worker.userId,directory:project.path,sessionId:'ses_a',runtime:'opencode'},'guided'),{code:'project_trashed'});
-  assert.equal((await request('/api/workspace/trash/'+p.id+'/restore','POST',{operationId:'op-restore'})).status,200);
-  assert.equal((await (await request('/v1/projects')).json())[0].path,project.path);
+  assert.equal((await request('/api/workspace/trash/'+p.id+'/restore','POST',{operationId:'op-restore'})).status,404);
+  assert.equal((await request('/api/workspace/trash')).status,404);
   assert.equal(payload,'retained bytes');
   for(const mode of ['declared','streamed','malformed','encoding'])await t.test('bounded upstream JSON: '+mode,async()=>{
     projectResponse=mode;

@@ -44,6 +44,7 @@ import {waitManagedRuntime} from './sandbox-control-plane.mjs';
 const SESSION_COOKIE = "osd_session";
 const BOOTSTRAP_COOKIE = "osd_worker_bootstrap";
 const DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024;
+const LOGOUT_RELEASE_TIMEOUT_MS = 8_000;
 const SPA_ROOTS = new Set(["live", "example", "skills", "notebooks", "files", "runs", "projects", "settings"]);
 const PUBLIC_BROWSER_ICONS = new Set(["/favicon.ico", "/favicon.svg", "/favicon-32x32.png", "/apple-touch-icon.png"]);
 const STATIC_EXTENSIONS = new Set([
@@ -329,6 +330,7 @@ export class PlatformServer {
     saveRuntimeDefaultModel = null,
     environments = null,
     workspaceFiles = null,
+    workspaceRemovePayload = undefined,
     analyticsRoutes = null,
     analyticsCollector = null,
     enableWorkspaceManagement = false,
@@ -516,7 +518,7 @@ export class PlatformServer {
       if(cliRuntime)cliRuntime.workspaceAccess=async(userId,directory)=>{
         const context=await resolveContext(userId);await this.workspaceManagement.assertAccessible(context,directory);
       };
-      if(workspaceFiles)this.workspaceFiles=new WorkspaceFiles({management:this.workspaceManagement,native:workspaceFiles,state:this.workspaceManagement.state,tenantPolicy,admission:this.workspaceAdmission});
+      if(workspaceFiles)this.workspaceFiles=new WorkspaceFiles({management:this.workspaceManagement,native:workspaceFiles,state:this.workspaceManagement.state,tenantPolicy,admission:this.workspaceAdmission,...(workspaceRemovePayload!==undefined?{removePayload:workspaceRemovePayload}:{})});
       if(this.workspaceFiles)this.workspaceFiles.provenance=new WorkspaceProvenance({files:this.workspaceFiles});
       if(this.workspaceFiles)this.workspaceUploads=new WorkspaceUploads({state:this.workspaceManagement.state,files:this.workspaceFiles,management:this.workspaceManagement,quota:async context=>{
         tenantPolicy.account(context);
@@ -625,7 +627,7 @@ export class PlatformServer {
         const owner={userId,instanceId:worker.id,generation:worker.generation,workspaceDir:worker.workspaceDir,directory:worker.workspaceDir};
         const [projects,conversations,state]=await Promise.all([this.workspaceManagement.allProjects(owner),
           this.conversationRouter.exportCatalog(owner,{runtime:this.cliRuntime.runtimeForUser(userId)}),this.workspaceManagement.state.open(userId)]);
-        return {workspaceDir:worker.workspaceDir,projects:projects.map(row=>({...row,lifecycle:state.projects[row.id]?.state==='trashed'?'trashed':'active'})),conversations};
+        return {workspaceDir:worker.workspaceDir,projects:projects.map(row=>({...row,lifecycle:'active'})),conversations};
       },
     });
     return importer.run({userIds:(await this.authStore.listUsers()).map(user=>user.id),resume:true,verifyOnly});
@@ -999,6 +1001,75 @@ export class PlatformServer {
     return false;
   }
 
+  async #releaseWorkspace(userId) {
+    const release = this.#releaseWorkspaceNow(userId).catch(error => {
+      const code = error?.code ?? "release_failed";
+      this.logger({ type: "workspace.logout_release_failed", userId, code });
+      return { released: false, stopped: false, code };
+    });
+    let timer;
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => {
+        this.logger({ type: "workspace.logout_release_timeout", userId });
+        resolve({ released: false, stopped: false, code: "release_timeout" });
+      }, LOGOUT_RELEASE_TIMEOUT_MS);
+      timer.unref?.();
+    });
+    try { return await Promise.race([release, timeout]); }
+    finally { clearTimeout(timer); }
+  }
+
+  async #releaseWorkspaceNow(userId) {
+    const worker = this.workerManager.getWorker(workerIdForUser(userId));
+    const context = worker
+      ? { userId, instanceId: worker.id,
+        generation: Number.isSafeInteger(worker.generation) ? worker.generation : undefined } : null;
+    if (context) {
+      try { await this.cliRuntime?.sandboxJobs?.interruptGeneration?.(context); }
+      catch (error) {
+        this.logger({ type: "workspace.logout_interrupt_failed", userId, code: error?.code ?? "interrupt_failed" });
+      }
+    }
+    let result;
+    try {
+      if (this.workspaceOwners?.release) result = await this.workspaceOwners.release(userId);
+      else if (worker && worker.status !== "stopped") {
+        await this.workerManager.stopWorker(worker.id,
+          Number.isSafeInteger(worker.generation) ? { expectedGeneration: worker.generation } : undefined);
+        result = { released: true, stopped: true };
+      } else {
+        result = { released: true, stopped: false };
+      }
+    } catch (error) {
+      const code = error?.code ?? "release_failed";
+      this.logger({ type: "workspace.logout_release_failed", userId, code });
+      return { released: false, stopped: false, code };
+    }
+    if (!result?.released) {
+      this.logger({ type: "workspace.logout_release_failed", userId, code: result?.code ?? "release_failed" });
+      return result ?? { released: false, stopped: false, code: "release_failed" };
+    }
+    if (context) {
+      try { await this.cliRuntime?.sandboxJobs?.releaseGeneration?.(context); }
+      catch (error) {
+        this.logger({ type: "workspace.logout_native_release_failed", userId, code: error?.code ?? "release_failed" });
+      }
+      try { await this.researchTasks.interruptGeneration(context); }
+      catch (error) {
+        this.logger({ type: "workspace.logout_research_interrupt_failed", userId, code: error?.code ?? "interrupt_failed" });
+      }
+      try { await this.collaboration.interruptGeneration(context); }
+      catch (error) {
+        this.logger({ type: "workspace.logout_collaboration_interrupt_failed", userId, code: error?.code ?? "interrupt_failed" });
+      }
+      for (const [key, held] of this.promptAdmissions) {
+        if (held.owner.userId === context.userId && held.owner.instanceId === context.instanceId &&
+            held.owner.generation === context.generation) this.promptAdmissions.delete(key);
+      }
+    }
+    return result;
+  }
+
   async #ensureWorker(user, { allowRecovery = true, request } = {}) {
     const workerId = workerIdForUser(user.id);
     const header = request?.headers["x-scikeel-runtime-generation"];
@@ -1095,6 +1166,83 @@ export class PlatformServer {
       }
     }
     this.tenantPolicy.account(context);sendJson(response,200,value);return true;
+  }
+
+  async #deleteNativeSession(context,access,sessionId) {
+    if(!access)return false;
+    const headers={authorization:`Basic ${workerBasicToken(access.token)}`},endpoint=new URL(`/session/${encodeURIComponent(sessionId)}`,access.url);
+    const read=await fetch(endpoint,{headers,redirect:"error",signal:AbortSignal.timeout(5000)});
+    if(read.status===404){await read.body?.cancel();return false;}
+    if(!read.ok){await read.body?.cancel();throw workspaceError("session_delete_unavailable",503);}
+    let session;
+    try{session=await read.json();}
+    catch{throw workspaceError("session_delete_unavailable",503);}
+    if(session?.id!==sessionId||typeof session.directory!=="string")throw workspaceError("conversation_origin_conflict",409);
+    this.tenantPolicy.directory(context,session.directory);
+    await this.workspaceManagement?.assertAccessible(context,session.directory);
+    const deleted=await fetch(endpoint,{method:"DELETE",redirect:"error",headers:{...headers,"content-type":"application/json"},signal:AbortSignal.timeout(10000)});
+    await deleted.body?.cancel();
+    if(deleted.status===404)return true;
+    if(!deleted.ok)throw workspaceError("session_delete_unavailable",503);
+    return true;
+  }
+
+  async #deleteOwnedSession(request,response,access,user,worker,sessionId) {
+    const expectedOrigin=`${this.secureCookies?"https":"http"}://${request.headers.host}`;
+    if(request.headers.origin!==expectedOrigin||request.headers["sec-fetch-site"]==="cross-site"){
+      sendJson(response,403,{error:"foreign origin"});return;
+    }
+    const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
+    if(!(await this.approvalGate?.(context,{operation:"sessionDelete",sessionId,body:{},manual:request.headers["x-scikeel-manual-approval"]==="1"}))){
+      sendJson(response,403,{error:"approval required"});return;
+    }
+    try {
+      const account=this.tenantPolicy.account(context),owner={...context,workspaceDir:account.workspaceDir,directory:account.workspaceDir};
+      let cliTree=[];
+      try{cliTree=await this.cliRuntime.ownedSessionTree(user.id,sessionId);}
+      catch(error){if(error.code!=="unknown_session")throw error;}
+      let canonicalRoot=null,canonicalTree=[];
+      for(const id of new Set([sessionId,...cliTree.map(session=>session.publicConversationId)].filter(Boolean))){
+        try{canonicalTree=await this.conversations.conversationTree(owner,id);canonicalRoot=id;break;}
+        catch(error){if(error.code!=="conversation_not_found")throw error;}
+      }
+      const nativeIds=new Set();
+      if(canonicalTree.length){
+        for(const row of canonicalTree){
+          if(row.historicalSource?.runtime==="opencode")nativeIds.add(row.historicalSource.sessionId);
+          for(const binding of row.bindings??[])if(binding.runtime==="opencode")nativeIds.add(binding.nativeSessionId);
+        }
+      }else if(!cliTree.length)nativeIds.add(sessionId);
+      const keys=new Set([sessionId,...nativeIds]);
+      let removed=false;
+      if(cliTree.length){
+        for(const session of await this.cliRuntime.removeOwnedSessionTree(user.id,sessionId)){
+          keys.add(session.id);if(session.publicConversationId)keys.add(session.publicConversationId);
+        }
+        removed=true;
+      }
+      for(const nativeId of nativeIds)if(await this.#deleteNativeSession(context,access,nativeId))removed=true;
+      for(const row of canonicalTree)keys.add(row.id);
+      for(const key of keys)await this.attachments.deleteSession(user.id,key);
+      if(canonicalRoot){
+        for(const row of await this.conversations.removeTree(owner,canonicalRoot))keys.add(row.id);
+        removed=true;
+      }
+      if(this.workspaceCatalog){
+        const ids=[...keys];
+        for(let index=0;index<ids.length;index+=256)await this.workspaceCatalog.removeConversations(user.id,ids.slice(index,index+256));
+      }
+      for(const [key,record] of this.openCodeTurns)if(keys.has(record?.turn?.owner?.sessionId))this.openCodeTurns.delete(key);
+      for(const [key,held] of this.promptAdmissions)if(keys.has(held?.owner?.sessionId))this.promptAdmissions.delete(key);
+      for(const key of keys)this.tenantPolicy.removeSession(context,key);
+      if(!removed){sendJson(response,404,{error:"conversation not found",code:"conversation_not_found"});return;}
+      sendJson(response,200,true);
+    } catch(error) {
+      if(response.headersSent)throw error;
+      const status=error.statusCode??error.status??500;
+      sendJson(response,status,{error:status<500&&error.message?error.message:"session deletion failed",
+        ...(typeof error.code==="string"&&/^[a-z][a-z0-9_]{0,79}$/.test(error.code)?{code:error.code}:{})});
+    }
   }
 
   #nativeResearchHeld(owner,execution,exclude=[]) {
@@ -1199,6 +1347,12 @@ export class PlatformServer {
         status===403?"conversation_denied":"conversation_history_unavailable";
       sendJson(response,status,{error:code.replaceAll("_"," "),code});return;
     }
+    const deleteRoute=request.method==="DELETE"?classifyRuntimeRoute("DELETE",(request.url??"").split("?")[0]):null;
+    if(deleteRoute?.operation==="sessionDelete"&&this.tenantPolicy&&this.conversationRouter&&this.cliRuntime?.sandboxJobs){
+      try{validateRuntimeInput(deleteRoute,{query:new URL(request.url,"http://platform.invalid").searchParams,body:{},headers:request.headers});}
+      catch{sendJson(response,400,{error:"invalid runtime input"});return;}
+      await this.#deleteOwnedSession(request,response,access,user,worker,deleteRoute.identifiers.sessionId);return;
+    }
     if(this.workspaceManagement && (request.url??"").startsWith("/v1/")) {
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
       const url=new URL(request.url,"http://platform.invalid");
@@ -1220,7 +1374,7 @@ export class PlatformServer {
         if(url.pathname==="/v1/fs/ticket"){sendJson(response,200,await this.workspaceTickets.issue(user.id,{directory,path}));return;}
         if(url.pathname==="/v1/fs/list"){
           const entries=await this.#workspaceGateway(context,url.pathname+url.search);
-          const visible=[];for(const entry of entries){try{await this.workspaceManagement.assertAccessible(context,directory+"/"+entry.path);visible.push(entry);}catch(error){if(!["project_trashed","protected_path"].includes(error.code))throw error;}}
+          const visible=[];for(const entry of entries){try{await this.workspaceManagement.assertAccessible(context,directory+"/"+entry.path);visible.push(entry);}catch(error){if(error.code!=="protected_path")throw error;}}
           sendJson(response,200,visible);return;
         }
       }
@@ -2412,7 +2566,7 @@ export class PlatformServer {
                   const id=properties?.sessionID??properties?.info?.id??properties?.part?.sessionID;
                   if(id){try{const owned=await this.sessionAuthority.ensure(context,id);await this.workspaceManagement.assertAccessible(context,owned.directory);}catch(error){
                     // Transient failures must reconnect rather than lose an idle/checkpoint event silently.
-                    if(["project_trashed","protected_path"].includes(error.code) || [403,404].includes(error.statusCode ?? error.status))continue;
+                    if(error.code==="protected_path" || [403,404].includes(error.statusCode ?? error.status))continue;
                     throw error;
                   }}
                 }
@@ -2478,13 +2632,13 @@ export class PlatformServer {
           if (["sessionList", "sessionChildren"].includes(operation.operation) && Array.isArray(value))
             this.tenantPolicy.registerSessionList(context, value);
           if(this.workspaceManagement && ["sessionList","sessionChildren"].includes(operation.operation) && Array.isArray(value)) {
-            const visible=[];for(const item of value){try{await this.workspaceManagement.assertAccessible(context,item.directory??directory);visible.push(item);}catch(error){if(error.code!=="project_trashed")throw error;}}value=visible;
+            const visible=[];for(const item of value){try{await this.workspaceManagement.assertAccessible(context,item.directory??directory);visible.push(item);}catch(error){if(error.code!=="protected_path")throw error;}}value=visible;
           }
           if (["permissionList", "questionList"].includes(operation.operation) && Array.isArray(value)) {
             const visible = [];
             for (const pending of value) {
               const owned=await this.sessionAuthority.ensure(context,pending.sessionID);
-              try{await this.workspaceManagement?.assertAccessible(context,owned.directory);}catch(error){if(error.code==="project_trashed")continue;throw error;}
+              try{await this.workspaceManagement?.assertAccessible(context,owned.directory);}catch(error){if(error.code==="protected_path")continue;throw error;}
               this.tenantPolicy.registerRequest(context, pending);
               if (operation.operation !== "permissionList" || !(await this.automaticToolPermissions.answer(context, pending))) visible.push(pending);
             }
@@ -2746,6 +2900,15 @@ export class PlatformServer {
         const sessionToken = parseCookies(request.headers.cookie).get(SESSION_COOKIE);
         const logoutUser=await this.#currentUser(request);if(logoutUser)this.workspaceTickets?.revoke(logoutUser.id);
         if (sessionToken) await this.authStore.revokeSession(sessionToken);
+        if (logoutUser) {
+          let lastSession = false;
+          try { lastSession = !(await this.authStore.hasActiveSession(logoutUser.id)); }
+          catch (error) {
+            this.logger({ type: "workspace.logout_session_check_failed", userId: logoutUser.id,
+              code: error?.code ?? "session_check_failed" });
+          }
+          if (lastSession) await this.#releaseWorkspace(logoutUser.id);
+        }
         const cookies = [
           clearCookie(SESSION_COOKIE, { secure: this.secureCookies }),
           clearCookie(BOOTSTRAP_COOKIE, { secure: this.secureCookies }),

@@ -5,8 +5,8 @@ import {MemoryRouter} from 'react-router-dom';
 import {useRuntimeStore} from '@/lib/runtime';
 import {makeLeaf,useLayoutStore} from '@/lib/layout';
 import {WorkspaceRequestError} from '@/lib/workspaceManagement';
-const patch=vi.fn(),trash=vi.fn(),projects=vi.fn();
-vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),patchWorkspaceProject:(...args:unknown[])=>patch(...args),trashWorkspaceProject:(...args:unknown[])=>trash(...args),listWorkspaceProjects:()=>projects()}));
+const patch=vi.fn(),remove=vi.fn(),projects=vi.fn();
+vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),patchWorkspaceProject:(...args:unknown[])=>patch(...args),removeWorkspaceProject:(...args:unknown[])=>remove(...args),listWorkspaceProjects:()=>projects()}));
 const {ProjectActions}=await import('./ProjectActions');
 const project={id:'123456789abcdef0',name:'A',path:'/ws/a',createdAt:1,imported:false,pinned:false,revision:'r1'};
 beforeEach(()=>{vi.clearAllMocks();projects.mockResolvedValue([project]);useRuntimeStore.setState({webReadOnly:false,projects:[project],sessions:[]});});
@@ -21,14 +21,14 @@ it('focuses a rename opened from a transformed sidebar menu and returns focus af
  await waitFor(()=>expect(trigger).toHaveFocus());
  expect(patch).not.toHaveBeenCalled();
 });
-it('focuses the safe trash action and dismisses it with Escape without a mutation',async()=>{
+it('focuses the remove action and dismisses it with Escape without a mutation',async()=>{
  render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
  const trigger=screen.getByRole('button',{name:'Project actions: A'});
- await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Move to trash'}));
+ await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Remove'}));
  await waitFor(()=>expect(screen.getByRole('button',{name:'Cancel'})).toHaveFocus());
  await userEvent.keyboard('{Escape}');
  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
- await waitFor(()=>expect(trigger).toHaveFocus());expect(trash).not.toHaveBeenCalled();
+ await waitFor(()=>expect(trigger).toHaveFocus());expect(remove).not.toHaveBeenCalled();
 });
 it('rename failure retains input and dialog, then retry updates once',async()=>{
   patch.mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce({id:project.id});
@@ -42,11 +42,11 @@ it('rename failure retains input and dialog, then retry updates once',async()=>{
   await userEvent.click(within(dialog).getByRole('button',{name:'Save'}));
   expect(patch).toHaveBeenCalledTimes(2);
 });
-it('trash cancellation changes nothing and read-only menus disable mutations',async()=>{
+it('remove cancellation changes nothing and read-only menus disable mutations',async()=>{
   render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
   await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));
-  await userEvent.click(screen.getByRole('menuitem',{name:'Move to trash'}));
-  await userEvent.click(screen.getByRole('button',{name:'Cancel'}));expect(trash).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('menuitem',{name:'Remove'}));
+  await userEvent.click(screen.getByRole('button',{name:'Cancel'}));expect(remove).not.toHaveBeenCalled();
   act(()=>useRuntimeStore.setState({webReadOnly:true}));
   await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));
   expect(screen.getByRole('menuitem',{name:'Rename'})).toHaveAttribute('data-disabled');
@@ -66,17 +66,17 @@ it('uses a fresh operation ID after correcting a rejected project name',async()=
  await screen.findByRole('alert');fireEvent.change(screen.getByRole('textbox'),{target:{value:'Corrected'}});await userEvent.click(screen.getByRole('button',{name:'Save'}));
  expect(patch.mock.calls[0][2]).not.toBe(patch.mock.calls[1][2]);
 });
-it('confirmed project trash removes its background draft panes while preserving another project draft',async()=>{
+it('confirmed project removal keeps working panes and drafts because it deletes nothing',async()=>{
  const mine=makeLeaf(null),other=makeLeaf(null);
- const groups=[mine,other].map((tree,index)=>({id:'trash-group-'+index,name:'Draft',tree,focusedLeafId:tree.id,zoomedLeafId:null}));
+ const groups=[mine,other].map((tree,index)=>({id:'remove-group-'+index,name:'Draft',tree,focusedLeafId:tree.id,zoomedLeafId:null}));
  useLayoutStore.setState({groups,activeGroupId:groups[1].id,tree:other,focusedLeafId:other.id});
  useRuntimeStore.setState({draftWorkspaces:{['draft:'+mine.id]:project.path,['draft:'+other.id]:'/ws/b'}});
- trash.mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce({state:'committed'});
+ remove.mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce({state:'committed'});
  render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
- await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));await userEvent.click(screen.getByRole('menuitem',{name:'Move to trash'}));
- await userEvent.click(screen.getByRole('button',{name:'Move to trash'}));expect(await screen.findByRole('alert')).toHaveTextContent('Offline');
+ await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));await userEvent.click(screen.getByRole('menuitem',{name:'Remove'}));
+ await userEvent.click(screen.getByRole('button',{name:'Remove'}));expect(await screen.findByRole('alert')).toHaveTextContent('Offline');
  expect(useLayoutStore.getState().groups[0].tree).toEqual(mine);
- await userEvent.click(screen.getByRole('button',{name:'Move to trash'}));
- expect(useLayoutStore.getState().groups.flatMap(group=>group.tree?[group.tree]:[])).toEqual([other]);
- expect(useRuntimeStore.getState().draftWorkspaces).toEqual({['draft:'+other.id]:'/ws/b'});
+ await userEvent.click(screen.getByRole('button',{name:'Remove'}));
+ expect(useLayoutStore.getState().groups.flatMap(group=>group.tree?[group.tree]:[])).toEqual([mine,other]);
+ expect(useRuntimeStore.getState().draftWorkspaces).toEqual({['draft:'+mine.id]:project.path,['draft:'+other.id]:'/ws/b'});
 });

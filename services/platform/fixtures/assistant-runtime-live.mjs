@@ -228,7 +228,9 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
    await read('acceptance-input.csv')==='value\n1\n2\n3\n','Research delivery or original input verification failed');
   phaseResults.research_delivery='passed';
   const beforeReload=JSON.stringify(await history());
-  await json('/auth/logout',{body:{}});cookie='';await login(username,password);await runtimeContext(target.runtime);
+  // A last-session logout now releases the workspace; this gate verifies a
+  // fresh login, not workspace teardown.
+  cookie='';await login(username,password);await runtimeContext(target.runtime);
   ensure(policyRevision===selectedRevision&&JSON.stringify(await history())===beforeReload&&
    await read('acceptance-output.txt')===writeNonce,'Reload lost selected runtime, conversation, or workspace state');
   phaseResults.reload='passed';
@@ -248,7 +250,8 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
   if(heartbeat)clearInterval(heartbeat);if(heartbeatPromise)await heartbeatPromise;
   const cleanup=[];
   if(cookie&&session){try{await json(scoped(sessionPath('/abort')),{body:{}});await idle();}catch{cleanup.push('native jobs');}}
-  if(cookie){try{await json('/auth/logout',{body:{}});}catch{cleanup.push('test login');}}
+  // Disabling the disposable account owns its cleanup; logout would release
+  // the accepted workspace before the account is retired.
   if(user?.id){try{await asAdmin(`/api/admin/users/${user.id}/disable`,{});}catch{cleanup.push('test account');}}
   if(cleanup.length)failure=Error(`Selected assistant acceptance cleanup failed: ${cleanup.join(', ')}${failure?'; native acceptance also failed':''}`);
  }

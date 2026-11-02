@@ -53,10 +53,9 @@ export async function verifyLiveProjectFiles(){
   const pending=await request('/api/workspace/uploads','POST',{scope,path:'cancelled.bin',size:3,operationId:id()});
   expect((await request('/api/workspace/uploads/'+pending.id,'DELETE',{})).state).toBe('cancelled');
   const moved=await operate({kind:'move',path:'note.txt',destinationPath:'reports/moved.txt',expectedRevision:await fileRevision('note.txt')});
-  const trashed=await operate({kind:'trash',path:'reports/moved.txt',expectedRevision:moved.result.revision});
-  await operate({kind:'createFile',path:'reports/moved.txt',text:'collision'});
-  await request('/api/workspace/trash/'+trashed.result.trashId+'/restore','POST',{operationId:id()},409);
-  expect((await request('/api/workspace/trash/'+trashed.result.trashId+'/restore','POST',{operationId:id(),destinationPath:'restored.txt'})).state).toBe('committed');
+  await operate({kind:'delete',path:'reports/moved.txt',expectedRevision:moved.result.revision});
+  await request('/api/workspace/text?'+new URLSearchParams({scope:JSON.stringify(scope),path:'reports/moved.txt'}),'GET',undefined,404);
+  await operate({kind:'createFile',path:'restored.txt',text:'manual save'});
   expect((await text('restored.txt')).text).toBe('manual save');
   const session=await request('/session?directory='+encodeURIComponent(project.path),'POST',{title:'Management acceptance conversation'});
   const catalog=await request('/provider');
@@ -90,13 +89,10 @@ export async function verifyLiveProjectFiles(){
   }
   expect(errors).toEqual([]);
   const current=(await request('/api/workspace/projects')).find(item=>item.id===project.id);
-  await request('/api/workspace/projects/'+project.id+'/trash','POST',{expectedRevision:current.revision,operationId:id()});
+  await request('/api/workspace/projects/'+project.id+'/remove','POST',{expectedRevision:current.revision,operationId:id()});
   expect((await request('/api/workspace/projects')).some(item=>item.id===project.id)).toBe(false);
-  expect((await request('/api/workspace/sessions/'+session.id+'/state')).state).toBe('trashed');
-  const denied=await context.request.get(origin+'/session/'+session.id+'?directory='+encodeURIComponent(project.path));expect(denied.ok()).toBe(false);
-  await request('/api/workspace/trash/'+project.id+'/restore','POST',{operationId:id()});
   expect((await request('/session/'+session.id+'?directory='+encodeURIComponent(project.path))).id).toBe(session.id);
   expect((await messages()).some(item=>item.info?.role==='assistant' && item.parts.some(part=>part.type==='text' && part.text.includes('SCIKEEL_PROJECT_MANAGEMENT_OK')))).toBe(true);
-  await writeFile(join(evidence,'live.json'),JSON.stringify({verifiedAt:new Date().toISOString(),projectId:project.id,sessionId:session.id,views,nativeFileRpc:true,conditionalSave:true,chunkedUpload:true,alternateRestore:true,realProjectReply:true,projectSessionPreserved:true,status:'passed'},null,2));
+  await writeFile(join(evidence,'live.json'),JSON.stringify({verifiedAt:new Date().toISOString(),projectId:project.id,sessionId:session.id,views,nativeFileRpc:true,conditionalSave:true,chunkedUpload:true,realProjectReply:true,projectSessionPreserved:true,status:'passed'},null,2));
  }finally{await context.close();await browser.close();}
 }
