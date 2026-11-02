@@ -129,9 +129,12 @@ async function installPrivate(text, path, recoveryDir, name) {
   command('sudo', ['-n', 'mv', '-f', temporary, path]);
 }
 async function restart() {
-  const { withLiveMaintenance } = await import('./live-maintenance.mjs');
+  const production = await inspectProduction();
+  const { withLiveMaintenance, defaultOps } = await import('./live-maintenance.mjs');
   await withLiveMaintenance(async () => {}, {
+    dataDir: production.dataDir,
     interrupt: process.env.LIVE_MAINTENANCE_INTERRUPT === '1',
+    ops: defaultOps({ port: production.port }),
   });
 }
 async function sessionClient(production) {

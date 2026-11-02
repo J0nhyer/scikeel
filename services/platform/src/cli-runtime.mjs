@@ -306,6 +306,10 @@ function historyHasToolParts(session, userMessageID) {
     (message.parts ?? []).some((part) => part.type === "tool"));
 }
 
+function historyBeforeTurn(session, turn) {
+  return session.history.filter((message) => message.info?.id !== turn.userMessageID);
+}
+
 function toolPart({ sessionId, messageId, callId, title, status, input, output }) {
   return {
     id: `prt_cli_${callId}`,
@@ -395,6 +399,8 @@ export class CliRuntimeManager {
     this.initialized = false;
     this.closed = false;
     this.draining = false;
+    this.liveHeartbeat = null;
+    this.reservationsPending = new Set();
   }
 
   async init() {
@@ -1307,6 +1313,8 @@ export class CliRuntimeManager {
     const { state, session } = await this.getOwnedSession(userId, sessionId);
     if (session.directory !== directory)
       throw issue("invalid_research_context", "Native research directory changed", 403);
+    if (operation === "interruptions" && method === "GET")
+      return { interruptions: structuredClone(session.interruptions ?? []) };
     if (method === "PATCH") {
       const validRules = rules => Array.isArray(rules) && rules.length <= 256 && rules.every(rule =>
         rule && typeof rule === "object" && Object.keys(rule).sort().join(",") === "action,pattern,permission" &&
@@ -1437,15 +1445,32 @@ export class CliRuntimeManager {
     });
   }
 
-  async reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput, workspaceContext, executionAdmission }) {
+  async reservePrompt(args) {
+    let resolvePending;
+    const pending = new Promise((resolve) => { resolvePending = resolve; });
+    this.reservationsPending.add(pending);
+    try {
+      return await this.#reservePrompt(args);
+    } finally {
+      resolvePending();
+      this.reservationsPending.delete(pending);
+    }
+  }
+
+  async #reservePrompt({ userId, sessionId, text, displayText, model, variant, attachmentInput, workspaceContext, executionAdmission }) {
     await this.init();
     if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
     if (this.draining || (this.liveState && await this.liveState.maintenanceRequested()))
-      throw issue("platform_maintenance", "The service is preparing for maintenance", 503);
+      throw Object.assign(issue("platform_maintenance", "The service is preparing for maintenance", 503),
+        { retryable: true, action: "wait", retryAfterMs: 2000 });
     if (this.#policyOperation || this.#policyStorageUncertain ||
         this.assistantPolicy.committedSnapshot().recoveryRequired || this.assistantSnapshot(userId).recoveryRequired)
       throw issue("assistant_recovery_required", "Assistant selection requires reconciliation", 503);
     const { state, session } = await this.getOwnedSession(userId, sessionId);
+    if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
+    if (this.draining || (this.liveState && await this.liveState.maintenanceRequested()))
+      throw Object.assign(issue("platform_maintenance", "The service is preparing for maintenance", 503),
+        { retryable: true, action: "wait", retryAfterMs: 2000 });
     const reserved=this.turnReservations.get(session.id);
     if (session.status === "running" || reserved && reserved!==executionAdmission?.reservation) throw issue("session_busy", "session is already running", 409);
     if(reserved?.cancelled)throw issue("turn_cancelled","Turn was cancelled",409);
@@ -1486,6 +1511,10 @@ export class CliRuntimeManager {
     if(executionAdmission && (executionAdmission.identityRevision!==profile.identityRevision || executionAdmission.model!==chosen))
       throw issue("assistant_identity_conflict","The admitted model profile changed",409);
     if (turn.cancelled) throw issue("turn_cancelled", "turn was cancelled", 409);
+    if (this.closed) throw issue("assistant_closed", "Assistant authority is closed", 503);
+    if (this.draining || (this.liveState && await this.liveState.maintenanceRequested()))
+      throw Object.assign(issue("platform_maintenance", "The service is preparing for maintenance", 503),
+        { retryable: true, action: "wait", retryAfterMs: 2000 });
     const startedAt = now();
     const userMessageID = attachmentInput?.turn?.messageID ?? `msg_cli_user_${randomUUID()}`;
     const userMessage = {
@@ -1506,6 +1535,10 @@ export class CliRuntimeManager {
     session.updatedAt = startedAt;
     await this.persistUser(state);
     await this.#publishLiveState();
+    if (this.closed) {
+      await this.#recordInterruption(turn, "service_restart");
+      throw issue("assistant_closed", "Assistant authority is closed", 503);
+    }
     return Object.assign(turn, { profile, chosen, chosenVariant });
     } catch (error) {
       if (this.turnReservations.get(session.id) === turn) this.turnReservations.delete(session.id);
@@ -1523,6 +1556,15 @@ export class CliRuntimeManager {
   async runReservedPrompt(turn) {
     if (this.closed) {
       await this.#recordInterruption(turn, turn.interruptReason ?? "service_restart");
+      if (turn.executionAdmission) {
+        const cleanupVerified = turn.executionAdmission.dispatched !== true;
+        await turn.executionAdmission.settle({ cleanupVerified }).catch((error) => {
+          this.logger({ type: "cli.turn.unverified_cleanup",
+            userId: turn.userId, sessionId: turn.session?.id ?? null,
+            cancelled: true, dispatched: turn.executionAdmission?.dispatched === true,
+            error: error?.message ?? String(error) });
+        });
+      }
       return;
     }
     const pending=this.executeReservedPrompt(turn);this.activeTurns.add(pending);
@@ -1555,6 +1597,7 @@ export class CliRuntimeManager {
         delete session._error;
         delete session._turnFailed;
         delete session._redact;
+        this.#markTurnOutcome(session, turn, turn.cancelled ? "cancelled" : "failed");
         delete session.turn;
         session.status = "idle";
         this.turnReservations.delete(session.id);
@@ -1591,7 +1634,7 @@ export class CliRuntimeManager {
       }
       if(turn.executionAdmission){await turn.executionAdmission.submitted();turn.executionAdmission.dispatched=true;}
       const handover=turn.executionAdmission?.handover;
-      const result=await this.sandboxJobs.run({userId,session:{...session,id:session.publicConversationId??session.id},workspaceContext:turn.workspaceContext,model:chosen,variant:chosenVariant,text:`${handover?.context??(stale?handoverText(session.history):"")}${text}`,
+      const result=await this.sandboxJobs.run({userId,session:{...session,id:session.publicConversationId??session.id},workspaceContext:turn.workspaceContext,model:chosen,variant:chosenVariant,text:`${handover?.context??(stale?handoverText(historyBeforeTurn(session,turn)):"")}${text}`,
         turnIdentity:turn.executionAdmission?.identity,identityRevision:profile.identityRevision,
         onCleanup:async({cleanupVerified})=>{turn.nativeCleanupVerified=cleanupVerified===true;},
         onAccepted:async native=>{
@@ -1607,7 +1650,11 @@ export class CliRuntimeManager {
             }
           }
           session.nativeSessionId=native.nativeSessionId;session.identityRevision=profile.identityRevision;
-          if(turn.executionAdmission)session.revertVersion=turn.executionAdmission.revertVersion??0;
+          if(turn.executionAdmission){
+            session.revertVersion=turn.executionAdmission.revertVersion??0;
+            turn.publicUserMessageID = turn.executionAdmission.publicMessageId(userMessageId);
+            if(session.turn) session.turn.publicUserMessageID = turn.publicUserMessageID;
+          }
           await this.persistUser(state);
           if(turn.executionAdmission){
             session._publicMessageId=turn.executionAdmission.publicMessageId;
@@ -1631,6 +1678,7 @@ export class CliRuntimeManager {
             let part=assistant.parts.find(part=>part.type==='tool'&&part.callID===event.callId);
             if(!part){part={id:`prt_${randomUUID()}`,type:'tool',callID:event.callId,tool:event.tool,
               messageID:assistant.info.id,sessionID:session.id};assistant.parts.push(part);}
+            if(!turn.hadToolCalls){turn.hadToolCalls=true;if(session.turn)session.turn.hadToolCalls=true;await this.persistUser(state);}
             const start=part.state?.time?.start??now();
             part.state={title:event.tool,metadata:{},...structuredClone(event.state),time:{start,...(event.state.status!=='running'?{end:now()}:{})}};
             this.emitTool(userId,session,assistant,part);
@@ -1667,6 +1715,7 @@ export class CliRuntimeManager {
         if (turn.interruptReason || this.closed) {
           await this.#recordInterruption(turn, turn.interruptReason ?? "service_restart");
         } else {
+          this.#markTurnOutcome(session, turn, turn.cancelled ? "cancelled" : assistant.info.error ? "failed" : "completed");
           delete session.turn;
           session.status="idle";this.processes.delete(session.id);this.turnReservations.delete(session.id);await this.persistUser(state);
           await this.#publishLiveState();
@@ -1683,7 +1732,7 @@ export class CliRuntimeManager {
     const pinned = await this.profileResolver.copyForTurn(profile, { paths: state.paths });
     if (turn.cancelled) throw issue("turn_cancelled", "turn was cancelled", 409);
     const stale = Boolean(session.nativeSessionId && session.identityRevision !== profile.identityRevision);
-    const prompt = `${stale ? handoverText(session.history) : ""}${text}`;
+    const prompt = `${stale ? handoverText(historyBeforeTurn(session, turn)) : ""}${text}`;
     const childSpec = this.commandFor(state, { ...session, model: chosen, variant: chosenVariant }, prompt, stale ? null : session.nativeSessionId, attachmentInput);
     const redact = (value) => {
       let result = String(value ?? "");
@@ -1742,6 +1791,7 @@ export class CliRuntimeManager {
       assistantMessage.info.time.completed = completed;
       assistantMessage.info.error = { name: "CliRuntimeError", data: { message } };
       session.history.push(assistantMessage);
+      this.#markTurnOutcome(session, turn, "failed");
       delete session.turn;
       session.status = "idle";
       this.turnReservations.delete(session.id);
@@ -1802,6 +1852,7 @@ export class CliRuntimeManager {
       if (turn.interruptReason || this.closed) {
         await this.#recordInterruption(turn, turn.interruptReason ?? "service_restart");
       } else {
+        this.#markTurnOutcome(session, turn, turn.cancelled ? "cancelled" : assistantMessage.info.error ? "failed" : "completed");
         delete session.turn;
         session.status = "idle";
         this.turnReservations.delete(session.id);
@@ -1823,6 +1874,7 @@ export class CliRuntimeManager {
       }
       if (session.runtime === "claude") this.parseClaudeEvent(userId, session, assistantMessage, event);
       else this.parseCodexEvent(userId, session, assistantMessage, event);
+      if (session.turn?.hadToolCalls) turn.hadToolCalls = true;
     };
     child.stdout?.setEncoding?.("utf8");
     child.stderr?.setEncoding?.("utf8");
@@ -1870,6 +1922,7 @@ export class CliRuntimeManager {
             input: block.input ? { redacted: true } : undefined,
           });
           assistantMessage.parts.push(part);
+          if (session.turn) session.turn.hadToolCalls = true;
           this.emitTool(userId, session, assistantMessage, part);
         }
       }
@@ -1918,6 +1971,7 @@ export class CliRuntimeManager {
       const previous = assistantMessage.parts.find((candidate) => candidate.callID === callId);
       if (previous) Object.assign(previous, part, { id: previous.id });
       else assistantMessage.parts.push(part);
+      if (session.turn) session.turn.hadToolCalls = true;
       this.emitTool(userId, session, assistantMessage, previous ?? part);
     }
   }
@@ -2032,8 +2086,7 @@ export class CliRuntimeManager {
       const route = match[2] ?? "";
       try {
         if (route === "interruptions" && request.method === "GET") {
-          const { session } = await this.getOwnedSession(userId, sessionId);
-          sendJson(response, 200, { interruptions: structuredClone(session.interruptions ?? []) });
+          sendJson(response, 200, { interruptions: await this.interruptionsForSession(userId, sessionId) });
         } else if (route === "message" && request.method === "GET") {
           const { session } = await this.getOwnedSession(userId, sessionId);
           sendJson(response, 200, session.history);
@@ -2110,7 +2163,11 @@ export class CliRuntimeManager {
           sendJson(response, 404, { error: "not found" });
         }
       } catch (error) {
-        sendJson(response, error.status ?? 400, { error: error.message });
+        sendJson(response, error.status ?? 400, { error: error.message,
+          ...(error.code ? { code: error.code } : {}),
+          ...(error.retryable ? { retryable: true } : {}),
+          ...(error.action ? { action: error.action } : {}),
+          ...(error.retryAfterMs ? { retryAfterMs: error.retryAfterMs } : {}) });
       }
       return true;
     }
@@ -2239,6 +2296,14 @@ export class CliRuntimeManager {
     return structuredClone(session.interruptions ?? []);
   }
 
+  startLiveHeartbeat(intervalMs = 10000) {
+    if (!this.liveState || this.liveHeartbeat) return;
+    this.liveHeartbeat = setInterval(() => {
+      void this.#publishLiveState();
+    }, intervalMs);
+    this.liveHeartbeat.unref?.();
+  }
+
   async #publishLiveState(draining = this.draining === true) {
     if (!this.liveState) return;
     const turns = [...this.turnReservations.entries()].map(([sessionId, turn]) => ({
@@ -2254,15 +2319,26 @@ export class CliRuntimeManager {
     }
   }
 
+  #markTurnOutcome(session, turn, outcome) {
+    if (!turn?.userMessageID) return;
+    session.lastTurn = { userMessageID: turn.userMessageID, outcome, at: now() };
+  }
+
   async #recordInterruption(turn, reason) {
     if (!turn || turn.interruptionRecorded || !turn.userMessageID) return;
     turn.interruptionRecorded = true;
     const { state, session, userId } = turn;
     if (!state || !session) return;
     const hadToolCalls = turn.hadToolCalls === true || historyHasToolParts(session, turn.userMessageID);
+    let publicUserMessageID = turn.publicUserMessageID ??
+      session.turn?.publicUserMessageID ?? turn.userMessageID;
+    if (publicUserMessageID === turn.userMessageID && session._publicMessageId) {
+      try { publicUserMessageID = session._publicMessageId(turn.userMessageID); } catch { /* not accepted */ }
+    }
     const record = {
       turnId: turn.id ?? `turn_${turn.userMessageID}`,
       userMessageID: turn.userMessageID,
+      publicUserMessageID,
       reason,
       at: now(),
       hadToolCalls,
@@ -2274,6 +2350,7 @@ export class CliRuntimeManager {
     }
     delete session.turn;
     if (this.turnReservations.get(session.id) === turn) this.turnReservations.delete(session.id);
+    this.#markTurnOutcome(session, turn, "interrupted");
     session.status = "idle";
     session.updatedAt = record.at;
     await this.persistUser(state);
@@ -2281,7 +2358,7 @@ export class CliRuntimeManager {
     const publicId = session.publicConversationId ?? session.id;
     this.emitVisible(userId, { type: "session.error", properties: {
       sessionID: publicId,
-      userMessageID: turn.userMessageID,
+      userMessageID: publicUserMessageID,
       error: { name: "CliRuntimeError", data: {
         code: reason,
         message: reason === "service_restart"
@@ -2305,20 +2382,26 @@ export class CliRuntimeManager {
     }
     for (const entry of entries) {
       if (!entry.isDirectory() || !USER_ID.test(entry.name)) continue;
-      const state = await this.ensureUser(entry.name);
-      for (const session of state.sessions.values()) {
-        if (session.turn) {
-          await this.#recordInterruption({
-            userId: state.userId,
-            state,
-            session,
-            id: session.turn.id,
-            userMessageID: session.turn.userMessageID,
-            hadToolCalls: session.turn.hadToolCalls === true,
-          }, "unexpected_restart");
-        } else {
-          await this.#reconcileLegacySession(state, session);
+      try {
+        const state = await this.ensureUser(entry.name);
+        for (const session of state.sessions.values()) {
+          if (session.turn) {
+            await this.#recordInterruption({
+              userId: state.userId,
+              state,
+              session,
+              id: session.turn.id,
+              userMessageID: session.turn.userMessageID,
+              publicUserMessageID: session.turn.publicUserMessageID,
+              hadToolCalls: session.turn.hadToolCalls === true,
+            }, "unexpected_restart");
+          } else {
+            await this.#reconcileLegacySession(state, session);
+          }
         }
+      } catch (error) {
+        this.logger({ type: "cli.reconcile.error", userId: entry.name,
+          error: error?.message ?? String(error) });
       }
     }
   }
@@ -2335,6 +2418,7 @@ export class CliRuntimeManager {
       : session.history.slice().reverse().find((message) => message.info?.role === "user");
     const userMessageID = userMessage?.info?.id;
     if (!userMessageID) return;
+    if (session.lastTurn?.userMessageID === userMessageID) return;
     if ((session.interruptions ?? []).some((item) => item.userMessageID === userMessageID)) return;
     const text = (userMessage.parts ?? []).filter((part) => part.type === "text")
       .map((part) => part.text ?? "").join("");
@@ -2353,6 +2437,14 @@ export class CliRuntimeManager {
     if (this.closed) return;
     this.closed = true;
     this.draining = true;
+    if (this.liveHeartbeat) {
+      clearInterval(this.liveHeartbeat);
+      this.liveHeartbeat = null;
+    }
+    await Promise.race([
+      Promise.allSettled([...this.reservationsPending]),
+      new Promise((resolve) => setTimeout(resolve, deadlineMs)),
+    ]);
     for (const turn of this.turnReservations.values()) {
       turn.interruptReason = reason;
       turn.cancelled = true;

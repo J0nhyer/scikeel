@@ -3373,16 +3373,22 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             delete runningSessions[sid];
             const retryNotices = { ...s.retryNotices };
             delete retryNotices[sid];
+            const lastUser = [...cur.blocks].reverse().find((block) => block.kind === "user");
+            const hasAttachments = lastUser?.kind === "user" && (lastUser.attachments?.length ?? 0) > 0;
+            const userMessageID = lastUser?.kind === "user"
+              ? lastUser.messageID ?? event.userMessageID ?? ""
+              : event.userMessageID ?? "";
             const failureBlock = interruptionCode
               ? {
                   kind: "status-line" as const,
-                  text: i18n.t(interruptionCode === "service_restart"
+                  text: `${i18n.t(interruptionCode === "service_restart"
                     ? "session:interruption.serviceRestart"
-                    : "session:interruption.unexpectedRestart"),
+                    : "session:interruption.unexpectedRestart")}${hasAttachments
+                    ? ` ${i18n.t("session:interruption.reattach")}` : ""}`,
                   tone: "error" as const,
-                  retry: Boolean(event.userMessageID),
+                  retry: Boolean(userMessageID) && !hasAttachments,
                   interruption: {
-                    userMessageID: event.userMessageID ?? "",
+                    userMessageID,
                     reason: interruptionCode,
                     hadToolCalls: event.hadToolCalls === true,
                   },
@@ -5422,7 +5428,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   retryInterruptedTurn: async (sessionId, interruption) => {
     const thread = get().threads[sessionId];
     const user = thread?.blocks.find((block) => block.kind === "user" &&
-      block.messageID === interruption.userMessageID);
+      block.messageID === interruption.userMessageID) ??
+      [...(thread?.blocks ?? [])].reverse().find((block) => block.kind === "user");
     if (!user || user.kind !== "user") return false;
     if (user.attachments?.length) {
       toast.error(i18n.t("session:interruption.reattach"));
@@ -6309,8 +6316,19 @@ export function historyToThread(
   interruptions: TurnInterruption[] = [],
 ): FoldState {
   const blocks: ThreadBlock[] = [];
-  const interruptionByUser = new Map(interruptions.map((item) => [item.userMessageID, item]));
+  const interruptionByUser = new Map<string, TurnInterruption>();
+  for (const item of interruptions) {
+    interruptionByUser.set(item.userMessageID, item);
+    if (item.publicUserMessageID) interruptionByUser.set(item.publicUserMessageID, item);
+  }
   const lastUserID = [...messages].reverse().find((message) => message.role === "user")?.id;
+  const messageIDs = new Set(messages.map((message) => message.id).filter(Boolean));
+  const latestInterruption = interruptions[interruptions.length - 1];
+  if (latestInterruption && lastUserID) {
+    const matched = messageIDs.has(latestInterruption.userMessageID) ||
+      (latestInterruption.publicUserMessageID ? messageIDs.has(latestInterruption.publicUserMessageID) : false);
+    if (!matched) interruptionByUser.set(lastUserID, latestInterruption);
+  }
   // OpenCode stores a slash command's EXPANDED template as the user message —
   // show the "/name args" the user actually typed instead. Templates either
   // embed a $ARGUMENTS placeholder anywhere (match prefix + suffix around it,
@@ -6413,7 +6431,7 @@ export function historyToThread(
           text: hasAttachments ? `${message} ${i18n.t("session:interruption.reattach")}` : message,
           tone: "error",
           retry: m.id === lastUserID && !hasAttachments,
-          interruption: { userMessageID: interruption.userMessageID,
+          interruption: { userMessageID: m.id ?? interruption.userMessageID,
             reason: interruption.reason, hadToolCalls: interruption.hadToolCalls },
         });
       }

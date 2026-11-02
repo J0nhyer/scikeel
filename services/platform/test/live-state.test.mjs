@@ -27,6 +27,7 @@ test("removes a stale maintenance request", async () => {
     const state = new LiveState({ dataDir: dir });
     await writeFile(join(dir, "maintenance-request.json"),
       JSON.stringify({ pid: 999999, at: Date.now() - 60 * 60 * 1000 }));
+    assert.equal(await state.maintenanceRequested(), false);
     await state.cleanupStaleRequest();
     assert.equal(await state.maintenanceRequested(), false);
   } finally { await rm(dir, { recursive: true, force: true }); }

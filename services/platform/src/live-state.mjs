@@ -13,6 +13,9 @@ function pidAlive(pid) {
 }
 
 export class LiveState {
+  #publishQueue = Promise.resolve();
+  #sequence = 0;
+
   constructor({ dataDir, logger = () => {} }) {
     this.dataDir = dataDir;
     this.logger = logger;
@@ -20,7 +23,13 @@ export class LiveState {
     this.requestPath = join(dataDir, "maintenance-request.json");
   }
 
-  async publish({ activeTurns, turns = [], draining = false }) {
+  publish(payload) {
+    const next = this.#publishQueue.then(() => this.#write(payload));
+    this.#publishQueue = next.catch(() => {});
+    return next;
+  }
+
+  async #write({ activeTurns, turns = [], draining = false }) {
     await mkdir(this.dataDir, { recursive: true, mode: 0o700 });
     const body = {
       pid: process.pid,
@@ -30,20 +39,28 @@ export class LiveState {
       activeTurns,
       turns,
     };
-    const temporary = join(this.dataDir, `live-state.json.${process.pid}.${Date.now()}.tmp`);
+    const temporary = join(this.dataDir,
+      `live-state.json.${process.pid}.${Date.now()}.${this.#sequence++}.tmp`);
     await writeFile(temporary, `${JSON.stringify(body)}\n`, { mode: 0o600 });
     await rename(temporary, this.statePath);
   }
 
   async maintenanceRequested() {
+    let raw;
     try {
-      await access(this.requestPath);
-      return true;
+      raw = await readFile(this.requestPath, "utf8");
     } catch (error) {
       if (error.code === "ENOENT") return false;
       this.logger({ type: "live_state.request_unreadable", error: error.message });
       return true;
     }
+    let value = null;
+    try { value = JSON.parse(raw); } catch { /* A corrupt request is stale. */ }
+    if (this.#stale(value)) {
+      await unlink(this.requestPath).catch(() => {});
+      return false;
+    }
+    return true;
   }
 
   async cleanupStaleRequest() {
@@ -56,9 +73,12 @@ export class LiveState {
     }
     let value = null;
     try { value = JSON.parse(raw); } catch { /* A corrupt request is stale. */ }
-    const stale = !value || typeof value !== "object" ||
+    if (this.#stale(value)) await unlink(this.requestPath).catch(() => {});
+  }
+
+  #stale(value) {
+    return !value || typeof value !== "object" ||
       !Number.isSafeInteger(value.pid) || !Number.isSafeInteger(value.at) ||
       Date.now() - value.at > REQUEST_TTL_MS || !pidAlive(value.pid);
-    if (stale) await unlink(this.requestPath).catch(() => {});
   }
 }

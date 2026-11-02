@@ -1088,3 +1088,21 @@ it("renders a durable interruption without retrying an older user message", () =
   expect(line?.kind === "status-line" ? line.text : "").toContain("service restarted");
   expect(line?.kind === "status-line" ? line.retry : undefined).toBe(false);
 });
+
+it("matches an interruption by the canonical public message id", () => {
+  const interruption: TurnInterruption = {
+    turnId: "turn_1",
+    userMessageID: "msg_native",
+    publicUserMessageID: "msg_public",
+    reason: "service_restart",
+    at: 1,
+    hadToolCalls: false,
+    retryable: true,
+  };
+  const blocks = historyToThread([
+    { role: "user", id: "msg_public", parts: [{ type: "text", text: "hello" }] },
+  ], undefined, false, [interruption]).blocks;
+  const line = blocks.find((block) => block.kind === "status-line" && block.interruption);
+  expect(line?.kind === "status-line" ? line.retry : undefined).toBe(true);
+  expect(line?.kind === "status-line" ? line.interruption?.userMessageID : undefined).toBe("msg_public");
+});

@@ -964,6 +964,25 @@ test("legacy history ending in a user message is reconciled once", async () => {
   await manager.close();
 });
 
+test("legacy reconciliation skips a turn the user cancelled", async () => {
+  const { root, manager } = await makeManager("codex");
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  const state = await manager.ensureUser("usr_a");
+  const target = state.sessions.get(session.id);
+  target.history = [{ info: { id: "msg_old", role: "user", sessionID: session.id,
+    time: { created: 1, completed: 1 } }, parts: [{ type: "text", text: "old" }] }];
+  target.lastTurn = { userMessageID: "msg_old", outcome: "cancelled", at: 2 };
+  await manager.persistUser(state);
+  await manager.reconcileInterruptedSessions();
+  const { session: saved } = await manager.getOwnedSession("usr_a", session.id);
+  assert.equal(saved.interruptions, undefined);
+  await manager.close();
+});
+
 test("graceful close emits terminal events before ending subscribers", async () => {
   const { root, manager } = await makeManager("codex");
   await manager.init();

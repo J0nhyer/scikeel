@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { appendFile, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const DEFAULT_DATA_DIR = "/opt/open-science-desktop/.deploy/platform-data";
 const DEFAULT_LOCK_DIR = "/opt/open-science-desktop/.deploy";
-const FRESH_MS = 15000;
+const FRESH_MS = 30000;
 
 function pidAlive(pid) {
   try {
@@ -100,8 +100,11 @@ export async function withLiveMaintenance(action, {
   let outcome = "refused";
   try {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
-    await writeFile(requestPath, JSON.stringify({ pid: process.pid, at: Date.now(), interrupt }), { mode: 0o600 });
+    const requestTemporary = `${requestPath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(requestTemporary, JSON.stringify({ pid: process.pid, at: Date.now(), interrupt }), { mode: 0o600 });
+    await rename(requestTemporary, requestPath);
     const healthy = await ops.healthy();
+    await ops.wait(500);
     let state = await readState(dataDir);
     const deadline = Date.now() + waitMs;
     while (healthy && state && state.activeTurns > 0 && Date.now() < deadline) {
@@ -114,6 +117,10 @@ export async function withLiveMaintenance(action, {
     if (healthy && !fresh(state) && !interrupt)
       throw Object.assign(new Error("Live activity is unknown; refusing to stop the platform"),
         { code: "LIVE_STATE_UNKNOWN" });
+    const settled = await readState(dataDir);
+    if (healthy && !interrupt && settled && settled.activeTurns > 0)
+      throw Object.assign(new Error("An active chat turn is in progress; wait or set LIVE_MAINTENANCE_INTERRUPT=1"),
+        { code: "ACTIVE_TURN_IN_PROGRESS", sessions: settled.turns ?? [] });
     if (healthy) {
       stopped = true;
       await ops.stop();

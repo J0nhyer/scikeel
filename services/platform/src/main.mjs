@@ -206,8 +206,11 @@ try {
   }
   await platform.init();
   await cliRuntime.init();
-  await cliRuntime.reconcileInterruptedSessions();
+  await cliRuntime.reconcileInterruptedSessions().catch((error) => {
+    console.error(JSON.stringify({ type: "cli.reconcile.error", error: error?.message ?? String(error) }));
+  });
   await liveState.publish({ activeTurns: 0, turns: [], draining: false });
+  cliRuntime.startLiveHeartbeat();
   const migrate=boolEnv('PLATFORM_CATALOG_MIGRATE',false);
   const startup=await prepareWorkspaceService({migrate,manager:controlPlane?.manager,authStore,platform,workspaceCatalog,
     logger:event=>console.log(JSON.stringify(event))});

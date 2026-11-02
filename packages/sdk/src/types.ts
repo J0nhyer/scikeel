@@ -352,6 +352,8 @@ export interface HistoryMessage {
 export interface TurnInterruption {
   turnId: string;
   userMessageID: string;
+  /** Canonical public message id used by managed Web history. */
+  publicUserMessageID?: string;
   reason: "service_restart" | "unexpected_restart";
   at: number;
   hadToolCalls: boolean;

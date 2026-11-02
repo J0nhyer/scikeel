@@ -14,14 +14,16 @@ export async function withProjectMaintenance(ops, action, { gate = true } = {}) 
     try { await ops.stop(); return await action(previous); }
     finally { await ops.start(); }
   }
+  const port = Number(previous?.port) || 4790;
   return withLiveMaintenance(() => action(previous), {
+    dataDir: typeof previous?.dataDir === 'string' ? previous.dataDir : undefined,
     interrupt: process.env.LIVE_MAINTENANCE_INTERRUPT === '1',
     ops: {
       stop: ops.stop,
       start: ops.start,
       healthy: async () => {
         try {
-          return (await fetch('http://127.0.0.1:4790/health', { signal: AbortSignal.timeout(2000) })).ok;
+          return (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) })).ok;
         } catch { return false; }
       },
       wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
