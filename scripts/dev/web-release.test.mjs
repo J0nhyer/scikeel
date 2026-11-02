@@ -351,6 +351,20 @@ test('publication validates stale baseline before mutation and rolls back incorr
   assert.equal(calls.filter(call=>call==='restartPlatform').length,1);
   assert(calls.includes('rollback-maintenance'));assert(!calls.includes('verifyPrevious'));assert(!calls.includes('markPublished'));
 });
+test('publication restarts with the pre-switch production metadata', async () => {
+  const seen = [];
+  const ops = {
+    validatePrepared: async () => {}, compareBaseline: async () => {},
+    capturePrevious: async () => ({ production: { dataDir: '/old', port: 4790 } }),
+    saveRecovery: async () => {}, switchConfiguration: async () => {},
+    restartPlatform: async (production) => seen.push(production),
+    verifyProduction: async () => {}, requiredLiveAcceptance: async () => {},
+    markPublished: async () => {}, restorePrevious: async () => {}, verifyPrevious: async () => {},
+  };
+  const candidate = { production: { dataDir: '/data', port: 4791 } };
+  await publishRelease(candidate, ops);
+  assert.deepEqual(seen, [candidate.production]);
+});
 test('configuration rewrite preserves unrelated values and rejects duplicates or injection', () => {
   assert.equal(replaceEnvironmentValue('A="secret"\nPLATFORM_WEB_ROOT=/old\nB=keep\n', 'PLATFORM_WEB_ROOT', '/new'), 'A="secret"\nPLATFORM_WEB_ROOT=/new\nB=keep\n');
   assert.throws(() => replaceEnvironmentValue('PLATFORM_WEB_ROOT=/a\nPLATFORM_WEB_ROOT=/b\n', 'PLATFORM_WEB_ROOT', '/new'), /ambiguous/);

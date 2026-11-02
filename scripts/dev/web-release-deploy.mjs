@@ -113,10 +113,10 @@ export async function publishRelease(candidate, ops) {
   await ops.validatePrepared(candidate); await ops.compareBaseline(candidate);
   const previous = await ops.capturePrevious(); await ops.saveRecovery(previous);
   try {
-    await ops.switchConfiguration(candidate); await ops.restartPlatform(); await ops.verifyProduction(candidate);
+    await ops.switchConfiguration(candidate); await ops.restartPlatform(candidate.production); await ops.verifyProduction(candidate);
     await ops.requiredLiveAcceptance(candidate); await ops.markPublished(candidate, previous);
   } catch (cause) {
-    try { await ops.restorePrevious(previous); await ops.restartPlatform(); await ops.verifyPrevious(previous); }
+    try { await ops.restorePrevious(previous); await ops.restartPlatform(previous.production); await ops.verifyPrevious(previous); }
     catch (recovery) { throw new AggregateError([cause, recovery], 'Publication and recovery failed'); }
     throw new Error(previous.recoveryReader ? 'Publication failed; compatible recovery reader restored' : 'Publication failed; previous deployment restored', { cause });
   }
@@ -128,13 +128,15 @@ async function installPrivate(text, path, recoveryDir, name) {
   command('sudo', ['-n', 'install', '-o', 'root', '-g', 'root', '-m', '600', local, temporary]);
   command('sudo', ['-n', 'mv', '-f', temporary, path]);
 }
-async function restart() {
-  const production = await inspectProduction();
+async function restart(production = null) {
+  const dataDir = typeof production?.dataDir === 'string'
+    ? production.dataDir : '/opt/open-science-desktop/.deploy/platform-data';
+  const port = Number(production?.port) || 4790;
   const { withLiveMaintenance, defaultOps } = await import('./live-maintenance.mjs');
   await withLiveMaintenance(async () => {}, {
-    dataDir: production.dataDir,
+    dataDir,
     interrupt: process.env.LIVE_MAINTENANCE_INTERRUPT === '1',
-    ops: defaultOps({ port: production.port }),
+    ops: defaultOps({ port }),
   });
 }
 async function sessionClient(production) {
@@ -459,7 +461,7 @@ export async function deploymentCommand(operation, id, { store, locked = false }
     if (actual && !matchesCandidate && !matchesRecovery && !matchesOriginal && productionFingerprint(actual) !== productionFingerprint(previous.production)) throw new Error('Recovery target does not match the running deployment');
     if (pointer?.id !== id && (!['publishing', 'published', 'recovering','rollback-maintenance'].includes(candidate.status) ||
       (pointer && ![previous.pointer?.id,previous.originalPointer?.id].includes(pointer.id)))) throw new Error('Rollback must reference the current publication or incomplete transaction');
-    await ops.restorePrevious(previous); await ops.restartPlatform(); await ops.verifyPrevious(previous);
+    await ops.restorePrevious(previous); await ops.restartPlatform(previous.production); await ops.verifyPrevious(previous);
   }
   console.log(JSON.stringify({ release: id, status: candidate.status, deployment: candidate.deployment?.production, rollback: candidate.rollback?.production }));
 }
