@@ -963,3 +963,43 @@ test("legacy history ending in a user message is reconciled once", async () => {
   assert.equal(saved.interruptions[0].userMessageID, "msg_old");
   await manager.close();
 });
+
+test("graceful close emits terminal events before ending subscribers", async () => {
+  const { root, manager } = await makeManager("codex");
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  const chunks = [];
+  const response = {
+    writeHead() {},
+    write(value) { chunks.push(String(value)); return true; },
+    end() { chunks.push(":end\n"); },
+    on() {},
+  };
+  await manager.subscribe("usr_a", { on() {} }, response);
+  await manager.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "hello" });
+  manager.draining = true;
+  await manager.close({ reason: "service_restart", deadlineMs: 500 });
+  const body = chunks.join("");
+  assert.match(body, /"type":"session\.error"/);
+  assert.match(body, /service_restart/);
+  assert.match(body, /"type":"session\.idle"/);
+  assert.ok(body.indexOf("service_restart") < body.indexOf(":end"));
+});
+
+test("a new prompt during draining is rejected as platform_maintenance", async () => {
+  const { root, manager } = await makeManager("codex");
+  await manager.init();
+  await manager.setUserRuntime("usr_a", "codex");
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
+  const session = await manager.createSession({ userId: "usr_a", workspaceDir: workspace });
+  manager.draining = true;
+  await assert.rejects(
+    () => manager.reservePrompt({ userId: "usr_a", sessionId: session.id, text: "hello" }),
+    (error) => error.status === 503 && error.code === "platform_maintenance",
+  );
+  await manager.close();
+});

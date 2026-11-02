@@ -173,10 +173,10 @@ async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(JSON.stringify({ type: "platform.stopping", signal }));
+  await cliRuntime?.close({ reason: "service_restart", deadlineMs: 5000 }).catch((error) => console.error(error));
   await platform.close().catch((error) => console.error(error));
   await analyticsCollector?.close();
   await analyticsStore?.close();
-  await cliRuntime?.close().catch((error) => console.error(error));
   await workspaceCatalog?.close();
   if (controlPlane) await controlPlane.close().catch((error) => console.error(error));
   else await workerManager.close().catch((error) => console.error(error));
