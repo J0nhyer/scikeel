@@ -400,7 +400,7 @@ import { withProjectMaintenance } from './web-release-maintenance.mjs';
 test('explicit project maintenance restores service on validation failure', async () => {
   const calls = [];
   const ops = { inspect: async () => { calls.push('inspect'); return {}; }, stop: async () => calls.push('stop'), start: async () => calls.push('start') };
-  await assert.rejects(withProjectMaintenance(ops, async () => { calls.push('validation'); throw new Error('fixture'); }));
+  await assert.rejects(withProjectMaintenance(ops, async () => { calls.push('validation'); throw new Error('fixture'); }, { gate: false }));
   assert.deepEqual(calls, ['inspect', 'stop', 'validation', 'start']);
 });
 
@@ -418,7 +418,7 @@ test('resume refuses already published candidates and production references', as
 
 test('maintenance restores service even if stopping fails after stopping the process', async () => {
   const calls = [];
-  await assert.rejects(withProjectMaintenance({ inspect: async () => ({}), stop: async () => { calls.push('stop'); throw new Error('timeout'); }, start: async () => calls.push('start') }, async () => calls.push('action')));
+  await assert.rejects(withProjectMaintenance({ inspect: async () => ({}), stop: async () => { calls.push('stop'); throw new Error('timeout'); }, start: async () => calls.push('start') }, async () => calls.push('action'), { gate: false }));
   assert.deepEqual(calls, ['stop', 'start']);
 });
 test('unknown deployment and platform runtime dependencies switch to frozen source', () => {

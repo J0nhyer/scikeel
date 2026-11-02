@@ -128,7 +128,12 @@ async function installPrivate(text, path, recoveryDir, name) {
   command('sudo', ['-n', 'install', '-o', 'root', '-g', 'root', '-m', '600', local, temporary]);
   command('sudo', ['-n', 'mv', '-f', temporary, path]);
 }
-async function restart() { command('sudo', ['-n', 'systemctl', 'restart', 'osd-platform.service'], { timeout: 60000 }); }
+async function restart() {
+  const { withLiveMaintenance } = await import('./live-maintenance.mjs');
+  await withLiveMaintenance(async () => {}, {
+    interrupt: process.env.LIVE_MAINTENANCE_INTERRUPT === '1',
+  });
+}
 async function sessionClient(production) {
   const pid = command('systemctl', ['show', 'osd-platform.service', '-p', 'MainPID', '--value']);
   if (!/^[1-9]\d*$/.test(pid)) throw new Error('Platform process unavailable');

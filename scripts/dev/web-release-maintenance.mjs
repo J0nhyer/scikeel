@@ -5,12 +5,28 @@ import { fileURLToPath } from 'node:url';
 import { command, commonStore, inspectProduction } from './web-release-source.mjs';
 import { productionFingerprint } from './web-release.mjs';
 import { verifyTaskLocks } from './web-build.mjs';
+import { withLiveMaintenance } from './live-maintenance.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-export async function withProjectMaintenance(ops, action) {
+export async function withProjectMaintenance(ops, action, { gate = true } = {}) {
   const previous = await ops.inspect();
-  try { await ops.stop(); return await action(previous); }
-  finally { await ops.start(); }
+  if (!gate) {
+    try { await ops.stop(); return await action(previous); }
+    finally { await ops.start(); }
+  }
+  return withLiveMaintenance(() => action(previous), {
+    interrupt: process.env.LIVE_MAINTENANCE_INTERRUPT === '1',
+    ops: {
+      stop: ops.stop,
+      start: ops.start,
+      healthy: async () => {
+        try {
+          return (await fetch('http://127.0.0.1:4790/health', { signal: AbortSignal.timeout(2000) })).ok;
+        } catch { return false; }
+      },
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    },
+  });
 }
 export async function maintenancePrepare(args, { store, id, locked = false, boot = false } = {}) {
   if (process.platform !== 'linux') throw new Error('Workspace maintenance requires Linux systemd');
