@@ -800,5 +800,12 @@
     "first_byte": "El modelo no empezó a responder en 2 minutos. Inténtalo de nuevo o elige otro modelo.",
     "idle": "La respuesta del modelo se interrumpió tras 2 minutos sin datos. Tu trabajo anterior se conserva.",
     "total": "Esta solicitud al modelo alcanzó el límite de 1 hora. Tu trabajo anterior se conserva; continúa en otro turno."
+  },
+  "interruption": {
+    "serviceRestart": "El servicio se reinició antes de que terminara este turno. Tu mensaje está guardado.",
+    "unexpectedRestart": "El servicio se detuvo inesperadamente antes de que terminara este turno. Tu mensaje está guardado.",
+    "retry": "Reintentar",
+    "toolWarning": "Este turno ya ejecutó herramientas. Reintentar puede repetir trabajo. Revisa el espacio de trabajo antes de continuar.",
+    "reattach": "Vuelve a adjuntar los archivos antes de reintentar este mensaje."
   }
 }

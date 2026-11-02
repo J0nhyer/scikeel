@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import i18n from "@/i18n";
-import type { OpenCodeEvent, HistoryMessage } from "@ai4s/sdk";
+import type { OpenCodeEvent, HistoryMessage, TurnInterruption } from "@ai4s/sdk";
 import { AUTO_REVIEW_PROMPT } from "./autoReview";
 import { GOAL_RESUME_NUDGE } from "./goalPrompts";
 import {
@@ -1068,4 +1068,23 @@ it("persists a localized timeout status while retaining partial work", async () 
     expect(JSON.stringify(blocks)).toContain("Partial research result.");
     expect(explainRuntimeError("Connection reset by server")).toBe("Connection reset by server");
   } finally { await i18n.changeLanguage(previous); }
+});
+
+it("renders a durable interruption without retrying an older user message", () => {
+  const interruption: TurnInterruption = {
+    turnId: "turn_1",
+    userMessageID: "msg_1",
+    reason: "service_restart",
+    at: 1,
+    hadToolCalls: false,
+    retryable: true,
+  };
+  const blocks = historyToThread([
+    { role: "user", id: "msg_1", parts: [{ type: "text", text: "hello" }] },
+    { role: "user", id: "msg_2", parts: [{ type: "text", text: "again" }] },
+  ], undefined, false, [interruption]).blocks;
+  const line = blocks.find((block) => block.kind === "status-line" && block.interruption);
+  expect(line?.kind).toBe("status-line");
+  expect(line?.kind === "status-line" ? line.text : "").toContain("service restarted");
+  expect(line?.kind === "status-line" ? line.retry : undefined).toBe(false);
 });

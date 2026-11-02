@@ -101,6 +101,10 @@ local workspace + SQLite + JSONL provenance.
   equivalent verified cgroup limit. A failed build must leave the deployed Web
   bundle untouched. If the bounded build runs out of memory, optimize its
   footprint; never remove the host guard or raise it into the system reserve.
+- Stop or restart the live `osd-platform.service` only through the maintenance
+  gate (`pnpm live:maintenance` or the release tooling). A raw `systemctl stop`
+  bypasses the turn-aware wait/refuse; reserve it for an explicit emergency and
+  expect the platform to mark any active turn interrupted.
 
 ## Proportionate Web releases (mandatory)
 

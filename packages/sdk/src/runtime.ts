@@ -13,6 +13,7 @@ import type {
   SessionPage,
   SessionQuery,
   SkillInfo,
+  TurnInterruption,
 } from "./types";
 
 /**
@@ -59,6 +60,9 @@ export interface AgentRuntime {
   /** Give a session a title of the user's choosing. */
   renameSession(sessionId: string, title: string): Promise<void>;
   getMessages(sessionId: string): Promise<HistoryMessage[]>;
+  /** Durable turn interruptions for a managed runtime. Absent on runtimes that
+   *  do not persist turn lifecycle state. */
+  getInterruptions?(sessionId: string): Promise<TurnInterruption[]>;
   /** Live activity, independent of persisted unfinished messages. Null means
    *  this runtime does not expose the capability. */
   isSessionRunning?(sessionId: string, directory?: string): Promise<boolean | null>;

@@ -235,6 +235,7 @@ export function SessionView({
   const cancelAutoReview = useRuntimeStore((s) => s.cancelAutoReview);
   const stallAction = useRuntimeStore((s) => s.stallAction);
   const loadHistory = useRuntimeStore((s) => s.loadHistory);
+  const retryInterruptedTurn = useRuntimeStore((s) => s.retryInterruptedTurn);
   const editMessage = useRuntimeStore((s) => s.editMessage);
   const revertMessage = useRuntimeStore((s) => s.revertMessage);
   const setComposerDraft = useUiStore((s) => s.setComposerDraft);
@@ -376,6 +377,10 @@ export function SessionView({
         if (!eid) return;
         void loadHistory(eid);
       },
+      onRetryTurn: (interruption) => {
+        if (!eid) return;
+        void retryInterruptedTurn(eid, interruption);
+      },
     }),
     [
       toggleArtifact,
@@ -390,6 +395,7 @@ export function SessionView({
       stallAction,
       eid,
       loadHistory,
+      retryInterruptedTurn,
     ],
   );
   const onEvaluate = (expr: string) =>

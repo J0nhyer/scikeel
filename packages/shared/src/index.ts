@@ -319,12 +319,17 @@ export interface StatusLineBlock {
    *  the warning, re-arm the guard) and Stop turn (interrupt). Carries the
    *  guard's verdict key so the UI can tell WHICH trip a click answers. */
   stall?: { key: string };
-  /** Present on the failed history-load error line (runtime.ts openSession).
-   *  When set, the StatusLine renders a Retry action that reloads the
-   *  session's history — the failure was transient (the runtime was still
-   *  booting) or one a later connect can clear, so it must not be the last
-   *  word for the rest of the app run (#139). */
+  /** Present on the failed history-load error line (runtime.ts openSession)
+   *  and on a durable turn interruption. When set, the StatusLine renders a
+   *  Retry action. */
   retry?: boolean;
+  /** Present when this line reports an interrupted turn. The Retry action
+   *  resends the original user message, never an automatic replay. */
+  interruption?: {
+    userMessageID: string;
+    reason: "service_restart" | "unexpected_restart";
+    hadToolCalls: boolean;
+  };
 }
 
 // ---- Inspector (right pane) ----

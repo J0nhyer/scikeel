@@ -1,5 +1,5 @@
 import { memo } from "react";
-import type { ArtifactBlock, FigureAnnotation, ThreadBlock } from "@ai4s/shared";
+import type { ArtifactBlock, FigureAnnotation, StatusLineBlock, ThreadBlock } from "@ai4s/shared";
 import {
   AgentMessage,
   DataTable,
@@ -40,6 +40,8 @@ export interface BlockHandlers {
   /** Reload a session whose history failed to load — the error line's Retry
    *  action (#139). Present only in the live session. */
   onRetryHistory?: () => void;
+  /** Resend the original user message after a durable turn interruption. */
+  onRetryTurn?: (interruption: NonNullable<StatusLineBlock["interruption"]>) => void;
 }
 
 export function renderBlock(
@@ -112,6 +114,7 @@ export function renderBlock(
           block={block}
           onStallAction={handlers?.onStallAction}
           onRetry={handlers?.onRetryHistory}
+          onRetryTurn={handlers?.onRetryTurn}
         />
       );
   }

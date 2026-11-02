@@ -377,6 +377,7 @@ export const StatusLine = memo(function StatusLine({
   block,
   onStallAction,
   onRetry,
+  onRetryTurn,
 }: {
   block: StatusLineBlock;
   /** Present only in the live session; powers the stall warning's two actions. */
@@ -384,6 +385,8 @@ export const StatusLine = memo(function StatusLine({
   /** Present only in the live session; powers the failed history-load error
    *  line's Retry action (#139). */
   onRetry?: () => void;
+  /** Present only in the live session; resends an interrupted turn's message. */
+  onRetryTurn?: (interruption: NonNullable<StatusLineBlock["interruption"]>) => void;
 }) {
   const { t } = useTranslation(["session", "common"]);
   if (block.presentation?.kind === "completion") return null;
@@ -419,14 +422,17 @@ export const StatusLine = memo(function StatusLine({
             </button>
           </span>
         )}
-        {block.retry && onRetry && (
+        {block.retry && (block.interruption ? onRetryTurn : onRetry) && (
           <span className="flex shrink-0 items-center gap-1.5">
             <button
               type="button"
               className="rounded-input border border-border px-2.5 py-1 text-xs font-medium text-text hover:bg-surface-2"
-              onClick={onRetry}
+              onClick={() => {
+                if (block.interruption && onRetryTurn) onRetryTurn(block.interruption);
+                else onRetry?.();
+              }}
             >
-              {t("historyRetry")}
+              {t(block.interruption ? "interruption.retry" : "historyRetry")}
             </button>
           </span>
         )}

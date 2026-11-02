@@ -808,5 +808,12 @@
     "first_byte": "The model did not start responding within 2 minutes. Try again or choose another model.",
     "idle": "The model response was interrupted after 2 minutes without data. Your existing work is preserved.",
     "total": "This model request reached the 1-hour limit. Your existing work is preserved; continue in another turn."
+  },
+  "interruption": {
+    "serviceRestart": "The service restarted before this turn finished. Your message is saved.",
+    "unexpectedRestart": "The service stopped unexpectedly before this turn finished. Your message is saved.",
+    "retry": "Retry",
+    "toolWarning": "This turn already ran tools. Retrying may repeat work. Check the workspace before continuing.",
+    "reattach": "Reattach the files before retrying this message."
   }
 }

@@ -179,6 +179,10 @@ export interface RuntimeErrorEvent {
   type: "error";
   sessionId?: string;
   message: string;
+  code?: string;
+  retryable?: boolean;
+  hadToolCalls?: boolean;
+  userMessageID?: string;
 }
 
 /** The runtime compacted the conversation's older turns to stay inside the
@@ -333,6 +337,8 @@ export interface HistoryMessage {
    *  failed turn whose live session.error was missed (SSE reconnect, app
    *  restart) reloads as an empty reply with no explanation at all. */
   error?: string;
+  /** Structured failure code from the managed runtime, when present. */
+  errorCode?: string;
   /** Agent that drove this message ("build" / "plan" / …) — required upstream
    *  on user messages; the app derives a session's agent mode from the last
    *  user message when (re)opening it. */
@@ -342,6 +348,16 @@ export interface HistoryMessage {
   usage?: MessageUsage;
   parts: HistoryPart[];
 }
+
+export interface TurnInterruption {
+  turnId: string;
+  userMessageID: string;
+  reason: "service_restart" | "unexpected_restart";
+  at: number;
+  hadToolCalls: boolean;
+  retryable: boolean;
+}
+
 export interface HistoryPart {
   type: string;
   text?: string;

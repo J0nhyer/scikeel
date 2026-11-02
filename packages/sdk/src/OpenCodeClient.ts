@@ -5,6 +5,7 @@ import type {
   AgentInfo,
   CommandInfo,
   HistoryMessage,
+  TurnInterruption,
   McpConfig,
   McpOAuthStart,
   McpServer,
@@ -1005,6 +1006,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     }>;
     return arr.map((m) => {
       const error = errorText(m.info.error);
+      const errorCode = (m.info.error as { data?: { code?: unknown } } | undefined)?.data?.code;
       const usage = toUsage(m.info.tokens, m.info.cost);
       return {
         role: m.info.role,
@@ -1013,11 +1015,23 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         completed: m.info.time?.completed,
         created: m.info.time?.created,
         ...(error ? { error } : {}),
+        ...(typeof errorCode === "string" ? { errorCode } : {}),
         ...(m.info.agent ? { agent: m.info.agent } : {}),
         ...(usage ? { usage } : {}),
         parts: m.parts ?? [],
       };
     });
+  }
+
+  async getInterruptions(sessionId: string): Promise<TurnInterruption[]> {
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/interruptions`,
+      { headers: this.headers() },
+    );
+    if (res.status === 404) return [];
+    if (!res.ok) throw await this.apiError(res, "Failed to load interruptions");
+    const body = await res.json() as { interruptions?: TurnInterruption[] };
+    return Array.isArray(body.interruptions) ? body.interruptions : [];
   }
 
   /** Revert the session to (and including) a message: OpenCode drops that
@@ -2060,10 +2074,15 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       case "session.error": {
         // OpenCode nests the human-readable message at error.data.message.
         // Keep the first line — OpenCode appends a stack trace to some errors.
+        const data = (props.error as { data?: Record<string, unknown> } | undefined)?.data;
         this.emit({
           type: "error",
           sessionId: String(props.sessionID ?? ""),
           message: errorText(props.error) ?? "session error",
+          ...(typeof data?.code === "string" ? { code: data.code } : {}),
+          ...(data?.retryable === true ? { retryable: true } : {}),
+          ...(data?.hadToolCalls === true ? { hadToolCalls: true } : {}),
+          ...(typeof props.userMessageID === "string" ? { userMessageID: props.userMessageID } : {}),
         });
         break;
       }

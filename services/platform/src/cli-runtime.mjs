@@ -2279,22 +2279,19 @@ export class CliRuntimeManager {
     await this.persistUser(state);
     await this.#publishLiveState();
     const publicId = session.publicConversationId ?? session.id;
-    this.emit(userId, {
-      type: "session.error",
-      properties: {
-        sessionID: publicId,
-        userMessageID: turn.userMessageID,
-        error: { name: "CliRuntimeError", data: {
-          code: reason,
-          message: reason === "service_restart"
-            ? "The service restarted before this turn finished. Your message is saved."
-            : "The service stopped unexpectedly before this turn finished. Your message is saved.",
-          retryable: true,
-          hadToolCalls,
-        } },
-      },
-    });
-    this.emit(userId, { type: "session.idle", properties: { sessionID: publicId } });
+    this.emitVisible(userId, { type: "session.error", properties: {
+      sessionID: publicId,
+      userMessageID: turn.userMessageID,
+      error: { name: "CliRuntimeError", data: {
+        code: reason,
+        message: reason === "service_restart"
+          ? "The service restarted before this turn finished. Your message is saved."
+          : "The service stopped unexpectedly before this turn finished. Your message is saved.",
+        retryable: true,
+        hadToolCalls,
+      } },
+    } });
+    this.emitVisible(userId, { type: "session.idle", properties: { sessionID: publicId } });
   }
 
   async reconcileInterruptedSessions() {

@@ -30,6 +30,7 @@ export {
   type CommandInfo,
   type HistoryMessage,
   type HistoryPart,
+  type TurnInterruption,
   type ProviderInfo,
   type ProviderModelInfo,
   type ProviderAuthMethod,

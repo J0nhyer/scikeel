@@ -800,5 +800,12 @@
     "first_byte": "Das Modell hat innerhalb von 2 Minuten nicht geantwortet. Versuchen Sie es erneut oder wählen Sie ein anderes Modell.",
     "idle": "Die Modellantwort wurde nach 2 Minuten ohne Daten unterbrochen. Ihre bisherige Arbeit bleibt erhalten.",
     "total": "Diese Modellanfrage hat das Limit von 1 Stunde erreicht. Ihre bisherige Arbeit bleibt erhalten; fahren Sie in einer neuen Runde fort."
+  },
+  "interruption": {
+    "serviceRestart": "Der Dienst wurde neu gestartet, bevor dieser Zug beendet war. Deine Nachricht ist gespeichert.",
+    "unexpectedRestart": "Der Dienst wurde unerwartet beendet, bevor dieser Zug beendet war. Deine Nachricht ist gespeichert.",
+    "retry": "Erneut versuchen",
+    "toolWarning": "Dieser Zug hat bereits Tools ausgeführt. Ein erneuter Versuch kann Arbeit wiederholen. Prüfe den Arbeitsbereich, bevor du fortfährst.",
+    "reattach": "Bitte hänge die Dateien erneut an, bevor du diese Nachricht wiederholst."
   }
 }

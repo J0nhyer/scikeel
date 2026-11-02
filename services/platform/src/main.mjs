@@ -179,6 +179,9 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(JSON.stringify({ type: "platform.stopping", signal }));
   await cliRuntime?.close({ reason: "service_restart", deadlineMs: 5000 }).catch((error) => console.error(error));
+  // Give the terminal SSE writes a moment to reach the socket before the
+  // remaining HTTP connections are torn down.
+  await new Promise((resolve) => setTimeout(resolve, 100));
   await platform.close().catch((error) => console.error(error));
   await analyticsCollector?.close();
   await analyticsStore?.close();

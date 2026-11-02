@@ -26,6 +26,7 @@ import {
   type AgentRuntime,
   type CommandInfo,
   type HistoryMessage,
+  type TurnInterruption,
   type OpenCodeEvent,
   type OpenCodeCatalogReadOptions,
   type PermissionAskedEvent,
@@ -536,6 +537,8 @@ interface RuntimeState {
   /** Sessions with an active turn (send accepted, session.idle not yet seen).
    *  Drives the composer lock and the "Working…" indicator. */
   runningSessions: Record<string, true>;
+  /** Durable turn interruptions loaded with each session's history. */
+  interruptions: Record<string, TurnInterruption[]>;
   /** Current model-step number per running session (from `step.updated`), so the
    *  working indicator can show "step N" — proof the turn is progressing, not
    *  hung. Reset when a turn starts and cleared on idle. */
@@ -599,6 +602,12 @@ interface RuntimeState {
   /** Interrupt a session's running turn (Stop button / Esc); the focused
    *  session when `sessionId` is omitted. */
   interrupt: (sessionId?: string) => Promise<boolean>;
+  /** Resend the original user message after a durable turn interruption. */
+  retryInterruptedTurn: (sessionId: string, interruption: {
+    userMessageID: string;
+    reason: "service_restart" | "unexpected_restart";
+    hadToolCalls: boolean;
+  }) => Promise<boolean>;
   /** Manually compact a session's context (composer button). Older turns are
    *  summarized by the model into a "Context compacted" seam so subsequent
    *  turns run on a bounded context. No-op on a draft. */
@@ -3349,6 +3358,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           event.message,
           sid ? get().retryNotices[sid]?.action : undefined,
         );
+        const interruptionCode: "service_restart" | "unexpected_restart" | null =
+          event.code === "service_restart" || event.code === "unexpected_restart"
+            ? event.code : null;
         if (sid) {
           // This path ends the turn instead of session.idle (and returns before
           // the fold), so it owes the same auto-review bookkeeping: a turn that
@@ -3361,6 +3373,26 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             delete runningSessions[sid];
             const retryNotices = { ...s.retryNotices };
             delete retryNotices[sid];
+            const failureBlock = interruptionCode
+              ? {
+                  kind: "status-line" as const,
+                  text: i18n.t(interruptionCode === "service_restart"
+                    ? "session:interruption.serviceRestart"
+                    : "session:interruption.unexpectedRestart"),
+                  tone: "error" as const,
+                  retry: Boolean(event.userMessageID),
+                  interruption: {
+                    userMessageID: event.userMessageID ?? "",
+                    reason: interruptionCode,
+                    hadToolCalls: event.hadToolCalls === true,
+                  },
+                }
+              : {
+                  kind: "status-line" as const,
+                  text: message,
+                  tone: "error" as const,
+                  presentation: { kind: "failure" as const, eventId: `error:${cur.blocks.length}` },
+                };
             return {
               runningSessions,
               retryNotices,
@@ -3372,7 +3404,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
                 [sid]: {
                   ...cur,
                   loaded: true,
-                  blocks: [...cur.blocks, { kind: "status-line", text: message, tone: "error", presentation: { kind: "failure", eventId: `error:${cur.blocks.length}` } }],
+                  blocks: [...cur.blocks, failureBlock],
                 },
               },
             };
@@ -4086,6 +4118,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         panes: {},
         sessionAgents: {},
         runningSessions: {},
+        interruptions: {},
         sendingSessions: {},
         sending: false,
         retryNotices: {},
@@ -4274,6 +4307,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   sending: false,
   sendingSessions: {},
   runningSessions: {},
+  interruptions: {},
   stepCounts: {},
   shellTurns: {},
   retryNotices: {},
@@ -4860,7 +4894,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     set({ gatewayUser: null, gatewayUserRole: null, gatewayIdentityState:'unknown', gatewayPolicyRevision: null, gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
       workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [], projectsLoading: false, projectsError: null,
       sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
-      runningSessions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},
+      runningSessions: {}, interruptions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},
       gatewayRuntimes: [], providers: [], defaultModel: null, error: null });
   },
 
@@ -5277,7 +5311,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       if (!ready || seq !== openSessionSeq || get().currentId !== id) return;
     }
     try {
-      const messages = await client.getMessages(id);
+      const [messages, interruptions] = await Promise.all([
+        client.getMessages(id),
+        client.getInterruptions ? client.getInterruptions(id).catch(() => []) : Promise.resolve([]),
+      ]);
       const streaming = turnStillStreaming(messages, get().runtimeStartedAt);
       const serverIdle = (streaming || latestTurnWasAborted(messages)) && await sessionRunning(get, id) === false;
       // The command templates are what turn a stored expansion back into the
@@ -5297,11 +5334,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         return {
           threads: {
             ...s.threads,
-            [id]: { ...historyToThread(messages, s.commands, serverIdle), loaded: true },
+            [id]: { ...historyToThread(messages, s.commands, serverIdle, interruptions), loaded: true },
           },
           // Restore the agent and activity without treating old unfinished
           // history as proof that the current runtime is still executing it.
           sessionAgents: { ...s.sessionAgents, [id]: lastAgentMode(messages) },
+          interruptions: { ...s.interruptions, [id]: interruptions },
           runningSessions,
         };
       });
@@ -5347,7 +5385,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     try {
       // getMessages is session-scoped (server routes by the session's folder),
       // so any connected client works — no folder switch, unlike openSession.
-      const messages = await c.getMessages(id);
+      const [messages, interruptions] = await Promise.all([
+        c.getMessages(id),
+        c.getInterruptions ? c.getInterruptions(id).catch(() => []) : Promise.resolve([]),
+      ]);
       const streaming = turnStillStreaming(messages, get().runtimeStartedAt);
       const serverIdle = (streaming || latestTurnWasAborted(messages)) && await sessionRunning(get, id) === false;
       // Same reason as openSession: without the command templates a stored
@@ -5364,8 +5405,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         if (serverIdle) delete runningSessions[id];
         else if (streaming) runningSessions[id] = true;
         return {
-          threads: { ...s.threads, [id]: { ...historyToThread(messages, s.commands, serverIdle), loaded: true } },
+          threads: { ...s.threads, [id]: { ...historyToThread(messages, s.commands, serverIdle, interruptions), loaded: true } },
           sessionAgents: { ...s.sessionAgents, [id]: lastAgentMode(messages) },
+          interruptions: { ...s.interruptions, [id]: interruptions },
           runningSessions,
         };
       });
@@ -5375,6 +5417,21 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
        * load — focus via openSession, another pass here, or the Retry button —
        * tries again. */
     }
+  },
+
+  retryInterruptedTurn: async (sessionId, interruption) => {
+    const thread = get().threads[sessionId];
+    const user = thread?.blocks.find((block) => block.kind === "user" &&
+      block.messageID === interruption.userMessageID);
+    if (!user || user.kind !== "user") return false;
+    if (user.attachments?.length) {
+      toast.error(i18n.t("session:interruption.reattach"));
+      return false;
+    }
+    if (interruption.hadToolCalls &&
+        !window.confirm(i18n.t("session:interruption.toolWarning"))) return false;
+    await get().sendPrompt(user.text, sessionId);
+    return true;
   },
 
   // The send lifecycle (new → input → send → response) is shared by plain
@@ -5674,7 +5731,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         const runtime = clientForSession(get, sid);
         if (!runtime) continue;
         const observedThread = observedThreads.get(sid);
-        const messages = await runtime.getMessages(sid);
+        const [messages, interruptions] = await Promise.all([
+          runtime.getMessages(sid),
+          runtime.getInterruptions ? runtime.getInterruptions(sid).catch(() => []) : Promise.resolve([]),
+        ]);
         const serverIdle = (!turnIsOver(messages) || latestTurnWasAborted(messages)) && await sessionRunning(get, sid) === false;
         // Still ours to answer for? The lock may have cleared while we fetched.
         if ((!turnIsOver(messages) && !serverIdle) || !get().runningSessions[sid] ||
@@ -5692,10 +5752,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             // the thread with the full history rather than leave it stale.
             threads: {
               ...s.threads,
-              [sid]: { ...historyToThread(messages, s.commands, serverIdle), loaded: true },
+              [sid]: { ...historyToThread(messages, s.commands, serverIdle, interruptions), loaded: true },
             },
             // Same for the agent pill (a plan_exit flip may have been missed).
             sessionAgents: { ...s.sessionAgents, [sid]: lastAgentMode(messages) },
+            interruptions: { ...s.interruptions, [sid]: interruptions },
           };
         });
       } catch {
@@ -5728,6 +5789,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       delete sessionAgents[id];
       const backgroundReviews = { ...s.backgroundReviews };
       delete backgroundReviews[id];
+      const interruptions = { ...s.interruptions };
+      delete interruptions[id];
       return {
         sessions: s.sessions.filter((x) => x.id !== id),
         threads,
@@ -5735,6 +5798,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         panes,
         sessionAgents,
         backgroundReviews,
+        interruptions,
         currentId: s.currentId === id ? null : s.currentId,
       };
     });
@@ -6242,8 +6306,11 @@ export function historyToThread(
   messages: HistoryMessage[],
   commands?: CommandInfo[],
   serverIdle = false,
+  interruptions: TurnInterruption[] = [],
 ): FoldState {
   const blocks: ThreadBlock[] = [];
+  const interruptionByUser = new Map(interruptions.map((item) => [item.userMessageID, item]));
+  const lastUserID = [...messages].reverse().find((message) => message.role === "user")?.id;
   // OpenCode stores a slash command's EXPANDED template as the user message —
   // show the "/name args" the user actually typed instead. Templates either
   // embed a $ARGUMENTS placeholder anywhere (match prefix + suffix around it,
@@ -6335,6 +6402,21 @@ export function historyToThread(
       const id = m.id ? { messageID: m.id } : {};
       if (command) blocks.push({ kind: "user", text: command, ...id });
       else if (text || m.attachments?.length) blocks.push({ kind: "user", text, ...id, ...(m.attachments?.length ? { attachments: m.attachments } : {}) });
+      const interruption = m.id ? interruptionByUser.get(m.id) : undefined;
+      if (interruption) {
+        const hasAttachments = (m.attachments?.length ?? 0) > 0;
+        const message = i18n.t(interruption.reason === "service_restart"
+          ? "session:interruption.serviceRestart"
+          : "session:interruption.unexpectedRestart");
+        blocks.push({
+          kind: "status-line",
+          text: hasAttachments ? `${message} ${i18n.t("session:interruption.reattach")}` : message,
+          tone: "error",
+          retry: m.id === lastUserID && !hasAttachments,
+          interruption: { userMessageID: interruption.userMessageID,
+            reason: interruption.reason, hadToolCalls: interruption.hadToolCalls },
+        });
+      }
     } else {
       // Same accounting the live stream stamps on, recovered from the stored
       // message so a reopened conversation shows the identical meta line.
