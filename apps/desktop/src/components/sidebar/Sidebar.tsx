@@ -118,6 +118,9 @@ export function Sidebar({ project }: { project: Project }) {
   // Select each field individually: a bare `useRuntimeStore()` subscribes to the
   // whole store, re-rendering the sidebar on every SSE fold during a session (#34).
   const sessions = useRuntimeStore((s) => s.sessions);
+  const projectCounts = useRuntimeStore((s) => s.projectCounts);
+  const projectCountsState = useRuntimeStore((s) => s.projectCountsState);
+  const sessionListSource = useRuntimeStore((s) => s.sessionListSource);
   const refreshTitleSessions = useRuntimeStore((s) => s.refreshSessions);
   const displayTitle = useSessionTitles(sessions, refreshTitleSessions);
   const gatewayUser = useRuntimeStore((s) => s.gatewayUser);
@@ -140,10 +143,17 @@ export function Sidebar({ project }: { project: Project }) {
   // subagent) shows it's busy without opening it. A running subagent surfaces
   // on the top-level session at the root of its parent chain.
   const runningSessions = useRuntimeStore((s) => s.runningSessions);
+  // A send starts before the platform admits the turn. Treat a bound
+  // conversation as busy now: admission can spend seconds in the model and
+  // workspace pipeline, and the row must answer the click without waiting for
+  // it. (A new conversation has no row until its session exists; its own chat
+  // pane shows the same state from the click.)
+  const sendingSessions = useRuntimeStore((s) => s.sendingSessions);
   const sessionParents = useRuntimeStore((s) => s.sessionParents);
   const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
   const activeRoots = new Set(
-    Object.keys(runningSessions).map((sid) => rootSessionOf(sessionParents, sid)),
+    [...Object.keys(runningSessions), ...Object.keys(sendingSessions)]
+      .map((sid) => rootSessionOf(sessionParents, sid)),
   );
   const showUpdateBadge = useUpdateStore((s) => s.showBadge);
   const {
@@ -820,6 +830,9 @@ export function Sidebar({ project }: { project: Project }) {
             const open = !collapsedProjects.includes(p.id);
             const active = samePath(p.path, workspace);
             const rows = sessionsByProject.get(p.id) ?? [];
+            const count = projectCountsState === "ready" && projectCounts
+              ? (projectCounts[p.id] ?? 0)
+              : rows.length;
             return (
               <div key={p.id}>
                 {renamingId === p.id ? (
@@ -926,9 +939,12 @@ export function Sidebar({ project }: { project: Project }) {
                     </button>
                     <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center">
                       {isGatewayWeb && <ProjectActions project={p} onNewSession={()=>void openProjectScreen(p)}/>}
-                      {rows.length > 0 && (
-                        <span className="px-1 text-[10px] tabular-nums text-muted group-hover/project:hidden">
-                          {rows.length}
+                      {count > 0 && (
+                        <span
+                          title={t("projects.sessionCount", { count })}
+                          className="px-1 text-[10px] tabular-nums text-muted group-hover/project:hidden"
+                        >
+                          {count}
                         </span>
                       )}
                       {!webReadOnly && (
@@ -966,7 +982,11 @@ export function Sidebar({ project }: { project: Project }) {
                         <MoreRow
                           count={rows.length - ROW_LIMIT}
                           label={t("history.seeAll")}
-                          onClick={() => navigate("/history")}
+                          onClick={() => navigate(
+                            sessionListSource === "catalog"
+                              ? `/history?project=${encodeURIComponent(p.id)}`
+                              : "/history",
+                          )}
                         />
                       )}
                     </div>

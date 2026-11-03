@@ -13,7 +13,11 @@ const PROJECT = {
 };
 
 afterEach(() =>
-  useRuntimeStore.setState({ projects: [], sessions: [], workspace: null }),
+  useRuntimeStore.setState({
+    projects: [], sessions: [], workspace: null,
+    projectCounts: null, projectCountsUnassigned: null,
+    projectCountsState: "unavailable", sessionListSource: "native",
+  }),
 );
 
 /** Whether a session row sits in a project group rather than in the flat list.
@@ -113,5 +117,29 @@ describe("Sidebar projects", () => {
     renderAt("/files");
     expect(await screen.findByText("My Repo")).toBeInTheDocument();
     expect(screen.getByText("imported")).toBeInTheDocument();
+  });
+
+  it("shows the server-side count instead of the recent-window count", async () => {
+    useRuntimeStore.setState({
+      projects: [PROJECT],
+      sessions: [{ id: "recent", title: "recent", directory: PROJECT.path }],
+      projectCounts: { p1: 23 },
+      projectCountsState: "ready",
+      sessionListSource: "catalog",
+    });
+    renderAt("/files");
+    expect(await screen.findByTitle("Sessions: 23")).toBeInTheDocument();
+    expect(screen.queryByTitle("Sessions: 1")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the grouped window when counts are unavailable", async () => {
+    useRuntimeStore.setState({
+      projects: [PROJECT],
+      sessions: [{ id: "a", title: "a", directory: PROJECT.path }],
+      projectCounts: null,
+      projectCountsState: "unavailable",
+    });
+    renderAt("/files");
+    expect(await screen.findByTitle("Sessions: 1")).toBeInTheDocument();
   });
 });
