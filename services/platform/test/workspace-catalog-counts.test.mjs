@@ -57,3 +57,41 @@ test('a project count exceeds the 200-row recent window',async t=>{
  assert.equal(counts.byProject.project_big,250);
  assert.equal(counts.unassigned,0);
 });
+
+function filterChange(){
+ return change([
+  conversation('c1','dir_a',{title:'EEG alpha waves'}),
+  conversation('c2','dir_a',{title:'beta band'}),
+  conversation('c3','dir_a',{lifecycle:'archived',title:'old archived'}),
+  conversation('c4','dir_a',{parentId:'c1',title:'child task'}),
+  conversation('c5','dir_root',{title:'loose note'}),
+  conversation('c6','dir_other',{title:'100% done'}),
+  conversation('c7','dir_other',{lifecycle:'trashed',title:'trashed'}),
+ ]);
+}
+
+test('catalog conversations filter by search, project, unassigned and lifecycle=any',async t=>{
+ const catalog=await openCatalog(t,filterChange());
+ const search=await catalog.listConversations('alice',{search:'eeg'});
+ assert.deepEqual(search.items.map(row=>row.id),['c1']);
+ const wildcard=await catalog.listConversations('alice',{search:'%'});
+ assert.deepEqual(wildcard.items.map(row=>row.id),['c6']);
+ const project=await catalog.listConversations('alice',{projectId:'project_a'});
+ assert.deepEqual(project.items.map(row=>row.id).sort(),['c1','c2','c4']);
+ const unassigned=await catalog.listConversations('alice',{unassigned:true});
+ assert.deepEqual(unassigned.items.map(row=>row.id).sort(),['c5','c6']);
+ const any=await catalog.listConversations('alice',{lifecycle:'any'});
+ assert.deepEqual(any.items.map(row=>row.id).sort(),['c1','c2','c3','c4','c5','c6']);
+ await assert.rejects(catalog.listConversations('alice',{projectId:'missing'}),{code:'project_not_found'});
+ await assert.rejects(catalog.listConversations('alice',{projectId:'project_a',unassigned:true}),{code:'invalid_catalog_query'});
+});
+
+test('a cursor is bound to its project filter and pages beyond one window',async t=>{
+ const rows=Array.from({length:250},(_,index)=>conversation(`bulk_${index}`,'dir_big',{title:`bulk ${index}`,updatedAt:2000+index}));
+ const catalog=await openCatalog(t,change(rows,[project('project_big','dir_big')]));
+ const first=await catalog.listConversations('alice',{projectId:'project_big',limit:100});
+ const second=await catalog.listConversations('alice',{projectId:'project_big',limit:100,cursor:first.nextCursor});
+ const third=await catalog.listConversations('alice',{projectId:'project_big',limit:100,cursor:second.nextCursor});
+ assert.equal(new Set([...first.items,...second.items,...third.items].map(row=>row.id)).size,250);
+ await assert.rejects(catalog.listConversations('alice',{projectId:'project_big',search:'bulk 1',cursor:first.nextCursor}),{code:'invalid_catalog_cursor'});
+});

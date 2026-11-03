@@ -46,17 +46,37 @@ function cursorDecode(cursor,scope,revision){
  if(data.revision!==revision)throw catalogError('catalog_revision_changed',409);
  return data.last;
 }
-function page(kind,{userId,limit=50,cursor=null,directoryRef=null,lifecycle='active'}) {
- if(!Number.isSafeInteger(limit)||limit<1||limit>100||directoryRef!==null&&!identifier(directoryRef)||!['active','archived','trashed'].includes(lifecycle))throw catalogError('invalid_catalog_query',400);
- const rev=revision(userId),scope=digest([userId,kind,limit,directoryRef,lifecycle]),last=cursor===null?null:cursorDecode(cursor,scope,rev);
+const escapeLike=value=>value.replace(/[\\%_]/g,match=>`\\${match}`);
+function page(kind,{userId,limit=50,cursor=null,directoryRef=null,lifecycle='active',search='',projectId=null,unassigned=false}) {
+ if(!Number.isSafeInteger(limit)||limit<1||limit>100||directoryRef!==null&&!identifier(directoryRef)||
+    !['active','archived','trashed','any'].includes(lifecycle)||typeof search!=='string'||search.length>512||
+    projectId!==null&&!identifier(projectId)||typeof unassigned!=='boolean')
+  throw catalogError('invalid_catalog_query',400);
+ if(projectId!==null&&unassigned)throw catalogError('invalid_catalog_query',400);
+ if(projectId!==null&&directoryRef!==null)throw catalogError('invalid_catalog_query',400);
+ if(projectId!==null){
+  const owned=db.prepare("SELECT directory_ref FROM projects WHERE user_id=? AND id=? AND lifecycle='active'").get(userId,projectId);
+  if(!owned)throw catalogError('project_not_found',404);
+  directoryRef=owned.directory_ref;
+ }
+ if(kind==='projects'&&(search||projectId!==null||unassigned||lifecycle==='any'))
+  throw catalogError('invalid_catalog_query',400);
+ const rev=revision(userId),scope=digest([userId,kind,limit,directoryRef,lifecycle,search,unassigned]);
+ const last=cursor===null?null:cursorDecode(cursor,scope,rev);
  let rows;
  if(kind==='projects'){
   if(last&&(last.length!==1||!identifier(last[0])))throw catalogError('invalid_catalog_cursor',400);
   rows=db.prepare(`SELECT id,payload FROM projects WHERE user_id=? AND lifecycle=? ${last?'AND id>?':''} ORDER BY id LIMIT ?`).all(userId,lifecycle,...last??[],limit+1);
  }else{
   if(last&&(last.length!==2||!Number.isSafeInteger(last[0])||last[0]<0||!identifier(last[1])))throw catalogError('invalid_catalog_cursor',400);
-  rows=db.prepare(`SELECT id,updated_at,payload FROM conversations WHERE user_id=? ${directoryRef?'AND directory_ref=?':''} AND lifecycle=? ${last?'AND (updated_at,id)<(?,?)':''} ORDER BY updated_at DESC,id DESC LIMIT ?`)
-   .all(userId,...directoryRef?[directoryRef]:[],lifecycle,...last??[],limit+1);
+  const where=['c.user_id=?'];const values=[userId];
+  if(directoryRef){where.push('c.directory_ref=?');values.push(directoryRef);}
+  if(lifecycle==='any')where.push("c.lifecycle IN ('active','archived')");
+  else{where.push('c.lifecycle=?');values.push(lifecycle);}
+  if(unassigned)where.push("NOT EXISTS (SELECT 1 FROM projects p WHERE p.user_id=c.user_id AND p.lifecycle='active' AND p.directory_ref=c.directory_ref)");
+  if(search){where.push("json_extract(c.payload,'$.title') LIKE ? ESCAPE '\\'");values.push(`%${escapeLike(search)}%`);}
+  if(last){where.push('(c.updated_at,c.id)<(?,?)');values.push(last[0],last[1]);}
+  rows=db.prepare(`SELECT c.id,c.updated_at,c.payload FROM conversations c WHERE ${where.join(' AND ')} ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`).all(...values,limit+1);
  }
  const hasMore=rows.length>limit;rows=rows.slice(0,limit);const tail=rows.at(-1);
  const items=rows.map(row=>JSON.parse(row.payload)),directoryPaths={};
@@ -124,5 +144,5 @@ const operations={
 };
 parentPort.on('message',({id,operation,args})=>{
  try{if(!Object.hasOwn(operations,operation))throw catalogError('invalid_catalog_operation');parentPort.postMessage({id,value:operations[operation](args)});}
- catch(error){parentPort.postMessage({id,error:{code:error.code?.startsWith('catalog_')||error.code?.startsWith('invalid_catalog_')?error.code:'catalog_storage_unavailable',statusCode:error.statusCode??503,message:error?.message??String(error)}});}
+ catch(error){const code=error.code?.startsWith('catalog_')||error.code?.startsWith('invalid_catalog_')||error.code==='project_not_found'?error.code:'catalog_storage_unavailable';parentPort.postMessage({id,error:{code,statusCode:error.statusCode??503,message:error?.message??String(error)}});}
 });
