@@ -1,9 +1,11 @@
-import { screen, waitFor, within, type BoundFunctions, type queries } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within, type BoundFunctions, type queries } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionMeta, SessionQuery } from "@ai4s/sdk";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { useRuntimeStore } from "@/lib/runtime";
 import { renderAt } from "@/test/render";
+import { HistoryPage } from "./HistoryPage";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = new Date("2026-07-29T15:00:00Z").getTime();
@@ -29,6 +31,8 @@ const querySessions = vi.fn(async (q: SessionQuery = {}) => {
   let rows = ALL;
   if (!q.archived) rows = rows.filter((s) => s.archived == null);
   if (q.search) rows = rows.filter((s) => s.title.toLowerCase().includes(q.search!.toLowerCase()));
+  if (q.projectId) rows = rows.filter((s) => s.directory === "/work/projects/bci");
+  if (q.unassigned) rows = rows.filter((s) => !s.directory);
   if (q.cursor != null) rows = rows.filter((s) => (s.updated ?? 0) < q.cursor!);
   const limit = q.limit ?? 100;
   const page = rows.slice(0, limit);
@@ -77,7 +81,11 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
-  useRuntimeStore.setState({ sessions: [], projects: [], status: "offline" });
+  useRuntimeStore.setState({
+    sessions: [], projects: [], status: "offline",
+    projectCounts: null, projectCountsUnassigned: null,
+    projectCountsState: "unavailable", sessionListSource: "native",
+  });
 });
 
 async function openHistory(): Promise<BoundFunctions<typeof queries>> {
@@ -235,5 +243,59 @@ describe("HistoryPage", () => {
     await waitFor(() => expect(renameSession).toHaveBeenCalledWith("s1", "Spike sorting"));
     expect(page.getByText("today's analysis")).toBeInTheDocument();
     expect(page.queryByText("Spike sorting")).not.toBeInTheDocument();
+  });
+});
+
+function renderHistory(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/history" element={<HistoryPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe("History project filter", () => {
+  const project = {
+    id: "p1",
+    name: "BCI Trends",
+    path: "/work/projects/bci",
+    createdAt: 1,
+    imported: false,
+    pinned: false,
+  };
+  beforeEach(() => {
+    useRuntimeStore.setState({
+      status: "ready",
+      projects: [project],
+      sessionListSource: "catalog",
+      projectCounts: { p1: 1 },
+      projectCountsUnassigned: 2,
+      projectCountsState: "ready",
+    });
+  });
+
+  it("requests the project and unassigned filters on the server", async () => {
+    renderHistory("/history?project=p1");
+    await waitFor(() => expect(queries_seen.at(-1)?.projectId).toBe("p1"));
+    fireEvent.change(screen.getByRole("combobox", { name: "Project" }), { target: { value: "unassigned" } });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue("unassigned"));
+    await waitFor(() => expect(queries_seen.at(-1)?.unassigned).toBe(true));
+    expect(queries_seen.at(-1)?.cursor).toBeNull();
+  });
+
+  it("falls back to all conversations for an unknown project", async () => {
+    renderHistory("/history?project=deleted");
+    await waitFor(() => expect(queries_seen.length).toBeGreaterThan(0));
+    expect(queries_seen.at(-1)?.projectId).toBeUndefined();
+    expect(queries_seen.at(-1)?.unassigned).toBeUndefined();
+  });
+
+  it("hides the project filter for a native or count-less client", async () => {
+    useRuntimeStore.setState({ projectCountsState: "unavailable", sessionListSource: "native" });
+    renderHistory("/history");
+    await waitFor(() => expect(queries_seen.length).toBeGreaterThan(0));
+    expect(screen.queryByRole("combobox", { name: "Project" })).not.toBeInTheDocument();
   });
 });

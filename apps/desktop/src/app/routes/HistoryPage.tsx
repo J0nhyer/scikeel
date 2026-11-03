@@ -1,7 +1,7 @@
 import { useSessionTitles, editableSessionTitle } from "@/lib/sessionTitle";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Archive,
@@ -58,8 +58,19 @@ const BUCKETS: TimeBucket[] = ["today", "yesterday", "week", "month", "older"];
 export function HistoryPage() {
   const { t, i18n } = useTranslation(["nav", "common"]);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const isMobile = useIsMobile();
   const projects = useRuntimeStore((s) => s.projects);
+  const projectCounts = useRuntimeStore((s) => s.projectCounts);
+  const projectCountsUnassigned = useRuntimeStore((s) => s.projectCountsUnassigned);
+  const projectCountsState = useRuntimeStore((s) => s.projectCountsState);
+  const sessionListSource = useRuntimeStore((s) => s.sessionListSource);
+  const requestedProject = searchParams.get("project") ?? "";
+  const projectFilter = (() => {
+    if (sessionListSource !== "catalog" || projectCountsState !== "ready" || !projectCounts) return "";
+    if (requestedProject === "unassigned") return (projectCountsUnassigned ?? 0) > 0 ? "unassigned" : "";
+    return Object.prototype.hasOwnProperty.call(projectCounts, requestedProject) ? requestedProject : "";
+  })();
   const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
   const status = useRuntimeStore((s) => s.status);
   const renameSession = useRuntimeStore((s) => s.renameSession);
@@ -112,6 +123,7 @@ export function HistoryPage() {
           cursor: reset ? null : cursor,
           ...(query ? { search: query } : {}),
           ...(showArchived ? { archived: true } : {}),
+          ...(projectFilter === "unassigned" ? { unassigned: true } : projectFilter ? { projectId: projectFilter } : {}),
         });
         if (generation !== loadGeneration.current) return;
         // Subagent sessions are internals of their parent conversation, and the
@@ -133,7 +145,7 @@ export function HistoryPage() {
         if (generation === loadGeneration.current) setLoading(false);
       }
     },
-    [cursor, query, showArchived],
+    [cursor, query, showArchived, projectFilter],
   );
 
   // A new search or filter restarts the list. `load` is deliberately not a
@@ -146,7 +158,7 @@ export function HistoryPage() {
     }
     void load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, showArchived, status]);
+  }, [query, showArchived, projectFilter, status]);
 
   const recentSessions = useRuntimeStore(state => state.sessions);
   useEffect(() => {
@@ -228,7 +240,7 @@ export function HistoryPage() {
   useEffect(() => {
     setSelecting(false);
     setSelected(new Set());
-  }, [query, showArchived]);
+  }, [query, showArchived, projectFilter]);
 
   // Keep the selection tied to rows that are still visible. A reset load clears
   // both; a late deletion or a refreshed first page must not leave hidden ids
@@ -301,6 +313,7 @@ export function HistoryPage() {
           cursor: next,
           ...(query ? { search: query } : {}),
           ...(showArchived ? { archived: true } : {}),
+          ...(projectFilter === "unassigned" ? { unassigned: true } : projectFilter ? { projectId: projectFilter } : {}),
         });
         for (const s of page.sessions) {
           if (s.parentId) continue;
@@ -390,6 +403,35 @@ export function HistoryPage() {
             />
           )}
         </div>
+
+        {sessionListSource === "catalog" && projectCountsState === "ready" && projectCounts && (
+          <label className="mt-3 flex w-fit items-center gap-2 text-xs text-muted">
+            <span>{t("history.projectFilter")}</span>
+            <select
+              value={projectFilter}
+              onChange={(e) => {
+                const next = new URLSearchParams(searchParams);
+                if (e.target.value) next.set("project", e.target.value);
+                else next.delete("project");
+                const search = next.toString();
+                navigate(search ? `/history?${search}` : "/history", { replace: true });
+              }}
+              className="rounded-input border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-accent"
+            >
+              <option value="">{t("history.allProjects")}</option>
+              {projectCountsUnassigned !== null && projectCountsUnassigned > 0 && (
+                <option value="unassigned">{t("history.unassignedOption", { count: projectCountsUnassigned })}</option>
+              )}
+              {projects
+                .filter((p) => Object.prototype.hasOwnProperty.call(projectCounts, p.id))
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {t("history.projectOption", { name: p.name, count: projectCounts[p.id] })}
+                  </option>
+                ))}
+            </select>
+          </label>
+        )}
 
         <label className="mt-3 flex w-fit cursor-pointer items-center gap-2 text-xs text-muted">
           <input
