@@ -485,6 +485,7 @@ beforeEach(async () => {
     gatewayWorkspace: "/ws/base",
     sessionModels: {},
     currentId: null,
+    locallyCreatedSessions: {},
     draftWorkspaces: {},
     threads: {},
     error: null,
@@ -1328,6 +1329,61 @@ describe("gateway runtime selection", () => {
     expect(useRuntimeStore.getState().sessions.some((session) => session.id === "ses_new")).toBe(true);
     expect(useRuntimeStore.getState().sendingSessions).toEqual({});
   });
+  it("keeps a just-created Web session when the catalogue has not indexed it yet", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    const source = makeLeaf(null);
+    useLayoutStore.setState({
+      groups: [{ id: "retain-group", name: "", tree: source, focusedLeafId: source.id, zoomedLeafId: null }],
+      activeGroupId: "retain-group",
+      tree: source,
+      focusedLeafId: source.id,
+      zoomedLeafId: null,
+    });
+    useRuntimeStore.setState({
+      gatewayRuntime: "opencode",
+      gatewayCatalogState: "ready",
+      defaultModel: "fixture/model",
+      providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }],
+      sessionListComplete: true,
+      sessions: [],
+      locallyCreatedSessions: {},
+    });
+    mocks.sessionList = []; // the catalogue has not indexed the new conversation yet
+
+    await useRuntimeStore.getState().sendPrompt("hello", undefined, `draft:${source.id}`);
+
+    const state = useRuntimeStore.getState();
+    expect(state.sessions.some((session) => session.id === "ses_new")).toBe(true);
+    expect(state.locallyCreatedSessions.ses_new).toBeTruthy();
+  });
+
+  it("replaces a pending session with the catalogue entry without duplicating it", async () => {
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_new", title: "New session", directory: "/ws/base" }],
+      locallyCreatedSessions: { ses_new: { id: "ses_new", title: "New session", directory: "/ws/base" } },
+    });
+    mocks.sessionList = [{ id: "ses_new", title: "Python demo", directory: "/ws/base" }];
+
+    await useRuntimeStore.getState().refreshSessions();
+
+    const state = useRuntimeStore.getState();
+    expect(state.sessions.filter((session) => session.id === "ses_new")).toHaveLength(1);
+    expect(state.sessions[0].title).toBe("Python demo");
+    expect(state.locallyCreatedSessions.ses_new).toBeUndefined();
+  });
+
+  it("forgets a pending session when the session is deleted", async () => {
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_new", title: "New session" }],
+      locallyCreatedSessions: { ses_new: { id: "ses_new", title: "New session" } },
+    });
+
+    await useRuntimeStore.getState().deleteSession("ses_new");
+
+    expect(useRuntimeStore.getState().locallyCreatedSessions.ses_new).toBeUndefined();
+  });
+
   it("returns no acceptance when a Web prompt is rejected so the composer retains its draft", async () => {
     mocks.isGatewayWeb = true; mocks.isTauri = false;
     useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });

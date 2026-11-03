@@ -317,6 +317,11 @@ interface RuntimeState {
    *  catalogue is not the whole list: a conversation outside it must not be
    *  judged missing, and it must stay reachable. */
   sessionListComplete: boolean;
+  /** Sessions this client created that the workspace catalogue has not returned
+   *  yet. The catalogue indexes a conversation only after a history read; until
+   *  then the optimistic row must survive refreshSessions, or missingSessionId
+   *  will treat the new conversation as unavailable. */
+  locallyCreatedSessions: Record<string, SessionMeta>;
   gatewayRuntimeSwitching: boolean;
   selectGatewayRuntime: (runtime: GatewayRuntimeId) => Promise<void>;
   /** The connected ACP agent's display name, or null on OpenCode. */
@@ -666,6 +671,8 @@ let opencodeClient: OpenCodeClient | null = null;
 let acpRuntime: AcpRuntime | null = null;
 let acpRuntimeAgentId: string | null = null;
 let openSessionSeq = 0;
+/** Hard bound on the sessions remembered while the catalogue catches up. */
+const MAX_LOCALLY_CREATED_SESSIONS = 100;
 /** The model the user last DELIBERATELY switched to, and when. A switch does a
  *  masked reconnect, and connect() fires loadCatalog() un-awaited — so the
  *  self-heal there can run just after `switching` clears, read the reconnecting
@@ -2113,9 +2120,31 @@ async function performTurn(
           sessionVariants[id!] = sessionVariants[draftSrc];
           delete sessionVariants[draftSrc];
         }
+        let sessions = s.sessions;
+        let locallyCreatedSessions = s.locallyCreatedSessions;
+        if (isGatewayWeb && !s.sessions.some((session) => session.id === id)) {
+          const created: SessionMeta = {
+            id: id!,
+            title: "New session",
+            titlePresentation: {
+              status: "pending" as const,
+              fallback: titleExcerpt([{ type: "text", text: echo }]),
+              pendingUntil: Date.now() + TITLE_WAIT_MS,
+            },
+            directory: s.workspace ?? undefined,
+            created: Date.now(),
+            updated: Date.now(),
+          };
+          sessions = [created, ...s.sessions];
+          locallyCreatedSessions = Object.fromEntries(
+            [...Object.entries(s.locallyCreatedSessions), [id!, created]]
+              .slice(-MAX_LOCALLY_CREATED_SESSIONS),
+          );
+        }
         return {
           currentId: id,
-          ...(isGatewayWeb ? { sessions: s.sessions.some((session) => session.id === id) ? s.sessions : [{ id: id!, title: "New session", titlePresentation: { status: "pending" as const, fallback: titleExcerpt([{ type: "text", text: echo }]), pendingUntil: Date.now() + TITLE_WAIT_MS }, directory: s.workspace ?? undefined, created: Date.now(), updated: Date.now() }, ...s.sessions] } : {}),
+          sessions,
+          locallyCreatedSessions,
           threads,
           panes,
           sessionAgents,
@@ -4107,6 +4136,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       useLayoutStore.getState().reset(null);
       set({
         sessions: [],
+        locallyCreatedSessions: {},
         sessionListReady: false,
         sessionListComplete: false,
         currentId: null,
@@ -4155,6 +4185,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     }
   },
   sessions: [],
+  locallyCreatedSessions: {},
   currentId: null,
   threads: {},
   skills: [],
@@ -4899,7 +4930,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     if (get().gatewaySigningOut) return;
     set({ gatewayUser: null, gatewayUserRole: null, gatewayIdentityState:'unknown', gatewayPolicyRevision: null, gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
       workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [], projectsLoading: false, projectsError: null,
-      sessions: [], threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
+      sessions: [], locallyCreatedSessions: {}, threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
       runningSessions: {}, interruptions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},
       gatewayRuntimes: [], providers: [], defaultModel: null, error: null });
   },
@@ -4969,9 +5000,27 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             }
           }
         }
+        // The catalogue is an asynchronous read model. A conversation this
+        // client just created is not in it until its first history read is
+        // indexed; keep the optimistic row until the catalogue returns it.
+        const freshIds = new Set(sessions.map((session) => session.id));
+        const pending = Object.entries(s.locallyCreatedSessions)
+          .filter(([id]) => !freshIds.has(id))
+          .map(([, session]) => session)
+          .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
+        const locallyCreatedSessions = Object.fromEntries(
+          Object.entries(s.locallyCreatedSessions).filter(([id]) => !freshIds.has(id)),
+        );
         // A runtime list is a bounded window of the conversations, never the
         // whole catalogue: the completeness of the list is not claimed here.
-        return { sessions, sessionParents, sessionModels, sessionListReady: true, sessionListComplete: s.sessionListComplete };
+        return {
+          sessions: [...pending, ...sessions],
+          sessionParents,
+          sessionModels,
+          sessionListReady: true,
+          sessionListComplete: s.sessionListComplete,
+          locallyCreatedSessions,
+        };
       });
       // A reload clears browser memory even when another conversation keeps
       // running on the worker. Discover it without opening or resuming a turn.
@@ -5800,6 +5849,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       delete interruptions[id];
       return {
         sessions: s.sessions.filter((x) => x.id !== id),
+        locallyCreatedSessions: Object.fromEntries(
+          Object.entries(s.locallyCreatedSessions).filter(([sessionId]) => sessionId !== id),
+        ),
         threads,
         runningSessions,
         panes,
