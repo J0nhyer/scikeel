@@ -1394,6 +1394,32 @@ describe("gateway runtime selection", () => {
     expect(useRuntimeStore.getState().locallyCreatedSessions.ses_new).toBeUndefined();
   });
 
+  it("does not resurrect an archived pending session on the next catalogue refresh", async () => {
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_new", title: "New session", directory: "/ws/base" }],
+      locallyCreatedSessions: { ses_new: true },
+    });
+    mocks.sessionList = [];
+
+    await useRuntimeStore.getState().setSessionArchived("ses_new", true);
+    await useRuntimeStore.getState().refreshSessions();
+
+    expect(useRuntimeStore.getState().sessions.some((session) => session.id === "ses_new")).toBe(false);
+    expect(useRuntimeStore.getState().locallyCreatedSessions.ses_new).toBeUndefined();
+  });
+
+  it("does not resurrect a remotely deleted pending session", () => {
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_new", title: "New session", directory: "/ws/base" }],
+      locallyCreatedSessions: { ses_new: true },
+    });
+
+    mocks.fireEvent({ type: "session.deleted", sessionId: "ses_new" });
+
+    expect(useRuntimeStore.getState().sessions.some((session) => session.id === "ses_new")).toBe(false);
+    expect(useRuntimeStore.getState().locallyCreatedSessions.ses_new).toBeUndefined();
+  });
+
   it("returns no acceptance when a Web prompt is rejected so the composer retains its draft", async () => {
     mocks.isGatewayWeb = true; mocks.isTauri = false;
     useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
@@ -2808,6 +2834,38 @@ describe("per-session workspace folders", () => {
     await useRuntimeStore.getState().openSession("ses_history");
 
     expect(mocks.getMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite a send that starts while history is loading", async () => {
+    let release!: () => void;
+    mocks.messagesGate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.messages = [{ role: "user", parts: [{ type: "text", text: "old question" }] }];
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_live", title: "Live", directory: "/ws/base" }],
+      currentId: null,
+      threads: {
+        ses_live: { blocks: [{ kind: "agent", markdown: "live answer" }], index: {}, loaded: true },
+      },
+    });
+
+    const opening = useRuntimeStore.getState().openSession("ses_live");
+    await vi.waitFor(() => expect(mocks.getMessages).toHaveBeenCalledWith("ses_live"));
+    useRuntimeStore.setState((s) => ({
+      sendingSessions: { ...s.sendingSessions, ses_live: true },
+      threads: {
+        ...s.threads,
+        ses_live: {
+          ...s.threads.ses_live,
+          blocks: [...s.threads.ses_live.blocks, { kind: "user", text: "new message" }],
+        },
+      },
+    }));
+    release();
+    await opening;
+
+    const thread = useRuntimeStore.getState().threads.ses_live;
+    expect(thread.blocks.some((block) => block.kind === "user" && block.text === "new message")).toBe(true);
+    expect(thread.blocks.some((block) => block.kind === "user" && block.text === "old question")).toBe(false);
   });
 
   it("loadHistory hydrates a live-only background pane", async () => {

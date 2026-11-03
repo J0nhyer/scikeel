@@ -366,6 +366,11 @@ export interface TurnInterruption {
 
 export interface HistoryPart {
   type: string;
+  /** Native part id, when the runtime provides one. The live event stream
+   *  addresses text/reasoning updates by this id; keeping it in history lets a
+   *  reopened thread update an already-rendered part instead of appending a
+   *  duplicate when the turn is still streaming. */
+  id?: string;
   text?: string;
   /** True on runtime-generated text (e.g. the "tool was executed by the user"
    *  marker a "!" shell run leaves in history) — not something the user typed. */

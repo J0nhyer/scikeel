@@ -394,6 +394,30 @@ describe("historyToThread", () => {
     expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "success" });
   });
 
+  it("indexes history parts so a live update after a reload updates instead of duplicating", () => {
+    const t = historyToThread([
+      {
+        role: "assistant",
+        id: "m1",
+        parts: [
+          { id: "p1", type: "text", text: "hello" },
+          { type: "tool", tool: "bash", callID: "c1", state: { status: "completed" } },
+        ],
+      },
+    ]);
+    const afterText = foldEvent(
+      { blocks: t.blocks, index: t.index },
+      { type: "text.updated", sessionId: S, partId: "p1", messageID: "m1", text: "hello world" },
+    );
+    expect(afterText.blocks.filter((block) => block.kind === "agent")).toHaveLength(1);
+    expect(afterText.blocks.find((block) => block.kind === "agent")).toMatchObject({ markdown: "hello world" });
+    const afterTool = foldEvent(
+      { blocks: afterText.blocks, index: afterText.index },
+      { type: "tool.updated", sessionId: S, callId: "c1", tool: "bash", status: "failed", title: "bash" },
+    );
+    expect(afterTool.blocks.filter((block) => block.kind === "tool-call")).toHaveLength(1);
+  });
+
   it("reoffers the repair on reload, naming the part that makes the session unsendable", () => {
     // The damage is on disk, so reopening the session hits the same wall. Without
     // this the way out would exist only in the tab that was open when it first

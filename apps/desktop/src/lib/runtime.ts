@@ -6497,6 +6497,12 @@ export function historyToThread(
   interruptions: TurnInterruption[] = [],
 ): FoldState {
   const blocks: ThreadBlock[] = [];
+  const index: Record<string, number> = {};
+  const pushBlock = (block: ThreadBlock, keys: string[] = []): void => {
+    blocks.push(block);
+    const at = blocks.length - 1;
+    for (const key of keys) index[key] = at;
+  };
   const interruptionByUser = new Map<string, TurnInterruption>();
   for (const item of interruptions) {
     interruptionByUser.set(item.userMessageID, item);
@@ -6628,11 +6634,11 @@ export function historyToThread(
       for (const p of m.parts) {
         if (p.type === "text" && p.text?.trim()) {
           const { clean, review } = splitReview(p.text);
-          if (clean) blocks.push({ kind: "agent", markdown: clean, ...meta });
-          if (review) blocks.push(review);
+          if (clean) pushBlock({ kind: "agent", markdown: clean, ...meta }, p.id ? [`text:${p.id}`] : []);
+          if (review) pushBlock(review, p.id ? [`review:${p.id}`] : []);
         }
         else if (p.type === "reasoning" && p.text?.trim()) {
-          blocks.push({ kind: "reasoning", text: p.text });
+          pushBlock({ kind: "reasoning", text: p.text }, p.id ? [`reasoning:${p.id}`] : []);
         }
         else if (p.type === "tool") {
           // Interactive tools are surfaced by InteractionPrompt, not the thread;
@@ -6657,7 +6663,7 @@ export function historyToThread(
           const userShell = shellTurn && p.tool === "bash";
           if (userShell) blocks.push({ kind: "user", text: `! ${command}` });
           const { verb, title } = toolPresentation(p.tool ?? "", p.state?.title, p.state?.input);
-          blocks.push({
+          pushBlock({
             kind: "tool-call",
             title,
             status: frozen ? (serverIdle ? "failed" : "pending") : status,
@@ -6683,7 +6689,7 @@ export function historyToThread(
             ...(userShell && p.state?.output?.trim()
               ? { outputSummary: p.state.output.replace(/\s+$/, "") }
               : {}),
-          });
+          }, p.callID ? [`tool:${p.callID}`] : []);
           const artifact = deriveArtifact({
             type: "tool.updated",
             sessionId: "",
@@ -6693,7 +6699,7 @@ export function historyToThread(
             input: p.state?.input,
             output: p.state?.output,
           });
-          if (artifact) blocks.push(artifact);
+          if (artifact) pushBlock(artifact, [`artifact:${artifact.path}`]);
           const presentation = deriveArtifactPresentation({
             type: "tool.updated",
             sessionId: "",
@@ -6703,7 +6709,7 @@ export function historyToThread(
             input: p.state?.input,
             output: p.state?.output,
           });
-          if (presentation?.display === "inline") blocks.push(presentation.artifact);
+          if (presentation?.display === "inline") pushBlock(presentation.artifact, p.callID ? [`presentation:${p.callID}`] : []);
         }
       }
       // Explicit Stop can finalize tool parts while persisting MessageAbortedError.
@@ -6735,5 +6741,5 @@ export function historyToThread(
       presentation: { kind: "interruption", eventId: `history:${messages[messages.length - 1]?.id ?? "interrupted"}` },
     });
   }
-  return { blocks, index: {} };
+  return { blocks, index };
 }
