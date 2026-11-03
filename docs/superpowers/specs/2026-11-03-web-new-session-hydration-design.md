@@ -1,6 +1,10 @@
 # Web New-Session Visibility and First-Message Hydration
 
-Status: design approved by the user's request to spec, plan and publish; implementation pending.
+Status: implemented. The verified Web bundle is served by recovery reader
+`2026-11-03T05-31-17-804Z-37b7a28a-reader` (tree-identical to the candidate; main asset
+`index-DJBZyCAV.js`). The full candidate publication is blocked by the selected-assistant file
+write/read live gate (`GET /api/workspace/text` 404), not by the Web fix; platform health is 200
+and user data is preserved.
 
 ## 1. User requirements
 
