@@ -147,7 +147,7 @@ describe("OpenCodeClient.querySessions", () => {
     const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl });
 
     const seen = new Set<string>();
-    let cursor: number | null | undefined = undefined;
+    let cursor: number | string | null | undefined = undefined;
     for (let page = 0; page < 30; page++) {
       const batch = await client.querySessions({ limit: 100, cursor });
       batch.sessions.forEach((s) => seen.add(s.id));

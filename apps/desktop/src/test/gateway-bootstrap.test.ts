@@ -59,7 +59,7 @@ it('connects when the platform announces no workspace at all',async()=>{
 
 it('decodes project-count aggregates and rejects malformed counts',async()=>{
  const signal=new AbortController().signal;
- const fetchImpl=vi.fn(async()=>new Response(JSON.stringify({revision:3,byProject:{project_a:2},unassigned:5})));
+ const fetchImpl=vi.fn(async(_input?:RequestInfo|URL)=>new Response(JSON.stringify({revision:3,byProject:{project_a:2},unassigned:5})));
  const client=new GatewayBootstrapClient({baseUrl:'https://workbench.example',fetchImpl});
  expect(await client.projectCounts({signal,timeoutMs:1000})).toEqual({
   revision:3,byProject:{project_a:2},unassigned:5,

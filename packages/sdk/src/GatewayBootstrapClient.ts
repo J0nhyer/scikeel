@@ -8,7 +8,7 @@ function decodeProjectCounts(value:unknown):ProjectCounts{
  const entries=Object.entries(value.byProject);
  if(entries.length>10000)throw new Error('Invalid project counts');
  for(const [key,count] of entries)if(!id(key)||!integer(count))throw new Error('Invalid project counts');
- return {revision:value.revision,byProject:Object.fromEntries(entries),unassigned:value.unassigned};
+ return {revision:value.revision,byProject:Object.fromEntries(entries) as Record<string, number>,unassigned:value.unassigned};
 }
 export type ProjectSummary={id:string;directoryRef:string;name:string;lifecycle:'active'|'trashed';sourceRevision:number;createdAt?:number;pinned?:boolean;imported?:boolean};
 export type ConversationSummary={id:string;projectId:string|null;directoryRef:string;title:string;parentId:string|null;

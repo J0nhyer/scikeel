@@ -58,7 +58,7 @@ const mocks = vi.hoisted(() => ({
   createGate: null as Promise<void> | null,
   createProject: vi.fn(),
   listProjects: vi.fn(async (): Promise<{ id: string; name: string; path: string; createdAt: number; imported: boolean; pinned: boolean }[]> => []),
-  getProjectCounts: vi.fn(async () => ({ revision: 1, byProject: {} as Record<string, number>, unassigned: 0 })),
+  getProjectCounts: vi.fn(async (): Promise<{ revision: number; byProject: Record<string, number>; unassigned: number } | null> => ({ revision: 1, byProject: {}, unassigned: 0 })),
   forkSessionSpy: vi.fn(),
   appendTextPartSpy: vi.fn(),
   setSessionArchivedSpy: vi.fn(),
@@ -1367,7 +1367,7 @@ describe("gateway runtime selection", () => {
   it("replaces a pending session with the catalogue entry without duplicating it", async () => {
     useRuntimeStore.setState({
       sessions: [{ id: "ses_new", title: "New session", directory: "/ws/base" }],
-      locallyCreatedSessions: { ses_new: { id: "ses_new", title: "New session", directory: "/ws/base" } },
+      locallyCreatedSessions: { ses_new: true },
     });
     mocks.sessionList = [{ id: "ses_new", title: "Python demo", directory: "/ws/base" }];
 
@@ -1382,7 +1382,7 @@ describe("gateway runtime selection", () => {
   it("forgets a pending session when the session is deleted", async () => {
     useRuntimeStore.setState({
       sessions: [{ id: "ses_new", title: "New session" }],
-      locallyCreatedSessions: { ses_new: { id: "ses_new", title: "New session" } },
+      locallyCreatedSessions: { ses_new: true },
     });
 
     await useRuntimeStore.getState().deleteSession("ses_new");

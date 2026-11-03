@@ -33,7 +33,10 @@ const querySessions = vi.fn(async (q: SessionQuery = {}) => {
   if (q.search) rows = rows.filter((s) => s.title.toLowerCase().includes(q.search!.toLowerCase()));
   if (q.projectId) rows = rows.filter((s) => s.directory === "/work/projects/bci");
   if (q.unassigned) rows = rows.filter((s) => !s.directory);
-  if (q.cursor != null) rows = rows.filter((s) => (s.updated ?? 0) < q.cursor!);
+  if (typeof q.cursor === "number") {
+    const cursor = q.cursor;
+    rows = rows.filter((s) => (s.updated ?? 0) < cursor);
+  }
   const limit = q.limit ?? 100;
   const page = rows.slice(0, limit);
   return { sessions: page, nextCursor: rows.length > limit ? page[page.length - 1]!.updated! : null };
@@ -278,18 +281,18 @@ describe("History project filter", () => {
 
   it("requests the project and unassigned filters on the server", async () => {
     renderHistory("/history?project=p1");
-    await waitFor(() => expect(queries_seen.at(-1)?.projectId).toBe("p1"));
+    await waitFor(() => expect(queries_seen[queries_seen.length - 1]?.projectId).toBe("p1"));
     fireEvent.change(screen.getByRole("combobox", { name: "Project" }), { target: { value: "unassigned" } });
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue("unassigned"));
-    await waitFor(() => expect(queries_seen.at(-1)?.unassigned).toBe(true));
-    expect(queries_seen.at(-1)?.cursor).toBeNull();
+    await waitFor(() => expect(queries_seen[queries_seen.length - 1]?.unassigned).toBe(true));
+    expect(queries_seen[queries_seen.length - 1]?.cursor).toBeNull();
   });
 
   it("falls back to all conversations for an unknown project", async () => {
     renderHistory("/history?project=deleted");
     await waitFor(() => expect(queries_seen.length).toBeGreaterThan(0));
-    expect(queries_seen.at(-1)?.projectId).toBeUndefined();
-    expect(queries_seen.at(-1)?.unassigned).toBeUndefined();
+    expect(queries_seen[queries_seen.length - 1]?.projectId).toBeUndefined();
+    expect(queries_seen[queries_seen.length - 1]?.unassigned).toBeUndefined();
   });
 
   it("hides the project filter for a native or count-less client", async () => {
