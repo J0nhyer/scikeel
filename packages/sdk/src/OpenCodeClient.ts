@@ -32,7 +32,7 @@ import type { AgentRuntime } from "./runtime";
 import { BaseAgentRuntime } from "./base-runtime";
 import {GatewayBootstrapClient,catalogDirectory} from './GatewayBootstrapClient';
 import {isWorkspaceReport} from './GatewayWorkspaceClient';
-import type {CatalogPage,ConversationSummary} from './GatewayBootstrapClient';
+import type {CatalogPage,ConversationSummary,ProjectCounts} from './GatewayBootstrapClient';
 
 export interface ProjectEnvironmentInfo {
   imageDigest: string;
@@ -708,6 +708,34 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       ...(row.lifecycle==='archived'?{archived:row.updatedAt||1}:{}),metadata:{}}));
   }
 
+  private async catalogueSessionPage(query: SessionQuery): Promise<SessionPage> {
+    const client = new GatewayBootstrapClient({ baseUrl: this.baseUrl, fetchImpl: this.fetchImpl });
+    const params: Record<string, string> = { limit: String(query.limit ?? SESSION_PAGE) };
+    if (query.cursor != null) params.cursor = String(query.cursor);
+    if (query.search) params.search = query.search;
+    if (query.projectId) params.projectId = query.projectId;
+    if (query.unassigned) params.unassigned = '1';
+    params.lifecycle = query.archived ? 'any' : 'active';
+    const page = await client.conversations(params, { signal: new AbortController().signal, timeoutMs: this.requestTimeoutMs });
+    return { sessions: this.catalogSessions(page), nextCursor: page.nextCursor };
+  }
+
+  get usesWorkspaceCatalog(): boolean {
+    return this.workspaceCatalogRoot !== null;
+  }
+
+  async getProjectCounts(): Promise<ProjectCounts | null> {
+    if (!this.workspaceCatalogRoot) return null;
+    try {
+      return await new GatewayBootstrapClient({ baseUrl: this.baseUrl, fetchImpl: this.fetchImpl })
+        .projectCounts({ signal: new AbortController().signal, timeoutMs: this.requestTimeoutMs });
+    } catch (error) {
+      const status = (error as { status?: unknown }).status;
+      if (status === 404 || status === 503) return null;
+      throw error;
+    }
+  }
+
   /** One page of conversation history, newest first, across every workspace
    *  folder. Searching and paging happen on the SERVER (measured against 5038
    *  live sessions: a 200-row page in 18 ms, a title search in 1 ms, the whole
@@ -720,6 +748,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  already returns. Pages are topped up so filtering never hands back a
    *  nearly-empty page and makes the user click "load more" repeatedly. */
   async querySessions(query: SessionQuery = {}): Promise<SessionPage> {
+    if (this.workspaceCatalogRoot) return this.catalogueSessionPage(query);
     const limit = query.limit ?? SESSION_PAGE;
     const out: SessionMeta[] = [];
     const seen = new Set<string>();
