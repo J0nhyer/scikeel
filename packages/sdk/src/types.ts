@@ -274,10 +274,14 @@ export interface SessionQuery {
   directory?: string;
   /** Rows per page. */
   limit?: number;
-  /** Page from here (an epoch-ms `updated`); omit for the newest page. */
-  cursor?: number | null;
+  /** Page from here (a native epoch-ms number or a catalog's opaque cursor). */
+  cursor?: number | string | null;
   /** Server-side title search. */
   search?: string;
+  /** Restrict to one catalog project. */
+  projectId?: string;
+  /** Restrict to conversations with no active project directory. */
+  unassigned?: boolean;
   /** Include archived conversations (they are excluded by default). */
   archived?: boolean;
 }
@@ -285,7 +289,7 @@ export interface SessionQuery {
 export interface SessionPage {
   sessions: SessionMeta[];
   /** Cursor for the next page, or null when the history is exhausted. */
-  nextCursor: number | null;
+  nextCursor: number | string | null;
 }
 
 export interface SkillInfo {

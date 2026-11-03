@@ -1,6 +1,15 @@
 import {isWorkspaceReport,type WorkspaceReport} from './GatewayWorkspaceClient';
 
 export type CatalogPage<T>={items:T[];nextCursor:string|null;revision:number;directoryPaths:Record<string,string>};
+export type ProjectCounts={revision:number;byProject:Record<string,number>;unassigned:number};
+function decodeProjectCounts(value:unknown):ProjectCounts{
+ if(!record(value)||!integer(value.revision)||!record(value.byProject)||!integer(value.unassigned))
+  throw new Error('Invalid project counts');
+ const entries=Object.entries(value.byProject);
+ if(entries.length>10000)throw new Error('Invalid project counts');
+ for(const [key,count] of entries)if(!id(key)||!integer(count))throw new Error('Invalid project counts');
+ return {revision:value.revision,byProject:Object.fromEntries(entries),unassigned:value.unassigned};
+}
 export type ProjectSummary={id:string;directoryRef:string;name:string;lifecycle:'active'|'trashed';sourceRevision:number;createdAt?:number;pinned?:boolean;imported?:boolean};
 export type ConversationSummary={id:string;projectId:string|null;directoryRef:string;title:string;parentId:string|null;
  runtime:'codex'|'opencode'|'claude';lifecycle:'active'|'archived'|'trashed';updatedAt:number;sourceRef:string;sourceRevision:number};
@@ -54,6 +63,9 @@ export class GatewayBootstrapClient {
  }
  async projects(query:Record<string,string>,options:BootstrapReadOptions):Promise<CatalogPage<ProjectSummary>>{
   return decodePage(await this.request(`/api/workspace/catalog/projects?${new URLSearchParams(query)}`,options),'projects');
+ }
+ async projectCounts(options:BootstrapReadOptions):Promise<ProjectCounts>{
+  return decodeProjectCounts(await this.request('/api/workspace/catalog/project-counts',options));
  }
  private async request(path:string,{signal,timeoutMs}:BootstrapReadOptions):Promise<unknown>{
   signal.throwIfAborted();if(!Number.isFinite(timeoutMs)||timeoutMs<=0)throw new Error('Workspace request deadline expired');

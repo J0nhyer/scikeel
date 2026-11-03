@@ -56,3 +56,15 @@ it('connects when the platform announces no workspace at all',async()=>{
  client.setGatewayGeneration(1);client.setGatewayAssistantRevision(3);
  await client.connect();expect(client.getStatus()).toBe('ready');client.close();stream.close();
 });
+
+it('decodes project-count aggregates and rejects malformed counts',async()=>{
+ const signal=new AbortController().signal;
+ const fetchImpl=vi.fn(async()=>new Response(JSON.stringify({revision:3,byProject:{project_a:2},unassigned:5})));
+ const client=new GatewayBootstrapClient({baseUrl:'https://workbench.example',fetchImpl});
+ expect(await client.projectCounts({signal,timeoutMs:1000})).toEqual({
+  revision:3,byProject:{project_a:2},unassigned:5,
+ });
+ expect(String(fetchImpl.mock.calls[0][0])).toBe('https://workbench.example/api/workspace/catalog/project-counts');
+ fetchImpl.mockResolvedValueOnce(new Response(JSON.stringify({revision:3,byProject:{project_a:-1},unassigned:5})));
+ await expect(client.projectCounts({signal,timeoutMs:1000})).rejects.toThrow('Invalid project counts');
+});

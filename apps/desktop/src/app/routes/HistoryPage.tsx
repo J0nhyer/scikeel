@@ -73,7 +73,7 @@ export function HistoryPage() {
   const [rows, setRows] = useState<SessionMeta[]>([]);
   const refreshTitleSessions = useRuntimeStore((s) => s.refreshSessions);
   const displayTitle = useSessionTitles(rows, refreshTitleSessions);
-  const [cursor, setCursor] = useState<number | null>(null);
+  const [cursor, setCursor] = useState<number | string | null>(null);
   const [loading, setLoading] = useState(false);
   const [exhausted, setExhausted] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -293,7 +293,7 @@ export function HistoryPage() {
     setExported(0);
     const written: Array<{ session: SessionMeta; file: string }> = [];
     let failed = 0;
-    let next: number | null = null;
+    let next: number | string | null = null;
     try {
       for (;;) {
         const page = await client.querySessions({
