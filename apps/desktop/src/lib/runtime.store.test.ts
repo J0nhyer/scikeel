@@ -2718,6 +2718,106 @@ describe("per-session workspace folders", () => {
     expect(mocks.getMessages).toHaveBeenCalledTimes(2);
   });
 
+  it("openSession loads history for a live-only thread that has no user message", async () => {
+    mocks.messages = [
+      { role: "user", parts: [{ type: "text", text: "first question" }] },
+      { role: "assistant", parts: [{ type: "text", text: "first answer" }] },
+    ];
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_live", title: "Live", directory: "/ws/base" }],
+      currentId: null,
+      threads: {
+        ses_live: {
+          blocks: [{ kind: "agent", markdown: "first answer" }],
+          index: {},
+          loaded: true,
+        },
+      },
+    });
+
+    await useRuntimeStore.getState().openSession("ses_live");
+
+    expect(mocks.getMessages).toHaveBeenCalledWith("ses_live");
+    const thread = useRuntimeStore.getState().threads.ses_live;
+    expect(thread.historyLoaded).toBe(true);
+    expect(thread.blocks[0]).toMatchObject({ kind: "user", text: "first question" });
+  });
+
+  it("openSession keeps an optimistic send transcript that has no confirmed history", async () => {
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_new", title: "New session", directory: "/ws/base" }],
+      currentId: null,
+      threads: {
+        ses_new: {
+          blocks: [
+            { kind: "user", text: "hello" },
+            { kind: "status-line", text: "Failed to send", tone: "error" },
+          ],
+          index: {},
+          loaded: true,
+        },
+      },
+    });
+
+    await useRuntimeStore.getState().openSession("ses_new");
+
+    expect(mocks.getMessages).not.toHaveBeenCalled();
+    const thread = useRuntimeStore.getState().threads.ses_new;
+    expect(thread.blocks[0]).toMatchObject({ kind: "user", text: "hello" });
+    expect(thread.blocks[1]).toMatchObject({ kind: "status-line", text: "Failed to send" });
+  });
+
+  it("openSession does not replace a send in flight with pre-prompt history", async () => {
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_new", title: "New session", directory: "/ws/base" }],
+      currentId: null,
+      sendingSessions: { ses_new: true },
+      threads: { ses_new: { blocks: [], index: {}, loaded: true } },
+    });
+
+    await useRuntimeStore.getState().openSession("ses_new");
+
+    expect(mocks.getMessages).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().threads.ses_new.blocks).toEqual([]);
+  });
+
+  it("openSession does not refetch a confirmed assistant-only history", async () => {
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_history", title: "History", directory: "/ws/base" }],
+      currentId: null,
+      threads: {
+        ses_history: {
+          blocks: [{ kind: "agent", markdown: "only answer" }],
+          index: {},
+          loaded: true,
+          historyLoaded: true,
+        },
+      },
+    });
+
+    await useRuntimeStore.getState().openSession("ses_history");
+
+    expect(mocks.getMessages).not.toHaveBeenCalled();
+  });
+
+  it("loadHistory hydrates a live-only background pane", async () => {
+    mocks.messages = [{ role: "user", parts: [{ type: "text", text: "background question" }] }];
+    useRuntimeStore.setState({
+      currentId: "ses_other",
+      threads: {
+        ses_bg: { blocks: [{ kind: "agent", markdown: "live answer" }], index: {}, loaded: true },
+      },
+    });
+
+    await useRuntimeStore.getState().loadHistory("ses_bg");
+
+    expect(mocks.getMessages).toHaveBeenCalledWith("ses_bg");
+    expect(useRuntimeStore.getState().threads.ses_bg.blocks[0]).toMatchObject({
+      kind: "user",
+      text: "background question",
+    });
+  });
+
   it("loadHistory refetches a failed history load without switching focus (Retry path)", async () => {
     mocks.failMessages = true;
     useRuntimeStore.setState({

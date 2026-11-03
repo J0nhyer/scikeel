@@ -243,6 +243,10 @@ export interface Thread {
   blocks: ThreadBlock[];
   index: Record<string, number>;
   loaded: boolean;
+  /** True only after a server history read succeeded. Live SSE folds and the
+   *  optimistic send echo set `loaded` so the pane can paint, but neither
+   *  contains earlier user messages. */
+  historyLoaded?: boolean;
   /** Set when loading this session's history failed (openSession's catch).
    *  `loaded` alone cannot carry that: a failure must still stop the loading
    *  skeleton (the thread renders an error line instead), but it must NOT
@@ -1128,6 +1132,23 @@ async function submitInteraction(set: StoreSet, get: StoreGet, requestId: string
 }
 
 const emptyThread = (): Thread => ({ blocks: [], index: {}, loaded: false });
+
+/** Whether opening this thread must fetch the server history.
+ *
+ *  A live SSE fold or a new send's optimistic echo sets `loaded`, but only a
+ *  successful history read sets `historyLoaded`. A live-only thread with no
+ *  user block is the reload-during-a-running-turn case: its first user message
+ *  exists only in the server history. An optimistic send (a user block) and a
+ *  send in flight are authoritative until the prompt is accepted; replacing
+ *  them with the empty pre-prompt history would destroy the message and any
+ *  failure line. */
+function needsHistory(thread: Thread | undefined, sendInFlight: boolean): boolean {
+  if (!thread?.loaded) return true;
+  if (sendInFlight) return false;
+  if (thread.historyError) return true;
+  if (thread.historyLoaded) return false;
+  return !thread.blocks.some((block) => block.kind === "user");
+}
 
 /** Retire a draft slot's folder — its session was created, or the user asked for
  *  a plain New. Absent means "give the next session a fresh dated folder". */
@@ -2685,7 +2706,7 @@ async function revertToMessage(set: StoreSet, get: StoreGet, messageID: string, 
     const index = messages.findIndex(m=>m.id===messageID);
     // OpenCode keeps reverted messages until the next prompt; its marker defines visibility.
     const visible = index >= 0 ? messages.slice(0,index) : messages;
-    set(s=>({threads:{...s.threads,[sid]:{...historyToThread(visible,s.commands,true),loaded:true}}}));
+    set(s=>({threads:{...s.threads,[sid]:{...historyToThread(visible,s.commands,true),loaded:true,historyLoaded:true}}}));
     return true;
   } catch(error) {
     if (current()) {
@@ -5337,11 +5358,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     void recoverInteractions(set, get, client);
     // A session reopened while "Working…" may have finished behind our back.
     void get().reconcileRunning();
-    // A FAILED load must not count as "already loaded": the session would show
-    // its error line for the rest of the run, because every later open hit this
-    // early return and never refetched (#139). Only a load that succeeded (or
-    // one still pending) closes the door — `historyError` reopens it.
-    if (get().threads[id]?.loaded && !get().threads[id]?.historyError) return;
+    // A live SSE fold or the optimistic send can set `loaded` before this
+    // session's server history has ever been read. Only a confirmed history
+    // closes the door; a live-only thread with no user block is the
+    // reload-during-a-running-turn case and must fetch. A failed load keeps
+    // `historyError`, so it is retried (#139). An optimistic send (its user
+    // block) and a send in flight are authoritative until the prompt is
+    // accepted; replacing them with the empty pre-prompt history would destroy
+    // the message and any failure line.
+    if (!needsHistory(get().threads[id], !!get().sendingSessions[id])) return;
     // Never fetch history from a runtime that is not serving yet. A restored
     // session can reach this point while the sidecar is still booting — the
     // event stream to the shared instance is up while the session's own folder
@@ -5389,7 +5414,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         return {
           threads: {
             ...s.threads,
-            [id]: { ...historyToThread(messages, s.commands, serverIdle, interruptions), loaded: true },
+            [id]: { ...historyToThread(messages, s.commands, serverIdle, interruptions), loaded: true, historyLoaded: true },
           },
           // Restore the agent and activity without treating old unfinished
           // history as proof that the current runtime is still executing it.
@@ -5432,11 +5457,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     const c = client;
     if (!c) return;
     const cur = get().threads[id];
-    // Loaded-and-fine threads are done; everything else — never tried, or tried
-    // and failed (historyError) — is fetched. The failure case is what makes a
-    // background pane self-heal on the next pass, and what powers the error
-    // line's Retry action (#139).
-    if (cur?.loaded && !cur?.historyError) return;
+    // Confirmed-history threads are done; everything else — never tried,
+    // tried and failed (historyError), or live-only with no user message — is
+    // fetched. The failure case is what makes a background pane self-heal on
+    // the next pass, and what powers the error line's Retry action (#139).
+    if (!needsHistory(cur, !!get().sendingSessions[id])) return;
     try {
       // getMessages is session-scoped (server routes by the session's folder),
       // so any connected client works — no folder switch, unlike openSession.
@@ -5449,18 +5474,17 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // Same reason as openSession: without the command templates a stored
       // slash-command expansion renders raw.
       if (commandsInFlight && get().commands.length === 0) await commandsInFlight;
-      // Only skip when a REAL load landed meanwhile. A live fold sets `loaded`
-      // but cannot clear a prior `historyError`, so it must not swallow our
-      // reload — the fold's partial content would leave the stale error line
-      // and marker in place.
+      // Only skip when a REAL history load landed meanwhile. A live fold sets
+      // `loaded` but never `historyLoaded`, so it must not swallow our reload —
+      // the fold's partial content would leave the first user message missing.
       const latest = get().threads[id];
-      if (latest?.loaded && !latest?.historyError) return;
+      if (latest?.historyLoaded && !latest?.historyError) return;
       set((s) => {
         const runningSessions = { ...s.runningSessions };
         if (serverIdle) delete runningSessions[id];
         else if (streaming) runningSessions[id] = true;
         return {
-          threads: { ...s.threads, [id]: { ...historyToThread(messages, s.commands, serverIdle, interruptions), loaded: true } },
+          threads: { ...s.threads, [id]: { ...historyToThread(messages, s.commands, serverIdle, interruptions), loaded: true, historyLoaded: true } },
           sessionAgents: { ...s.sessionAgents, [id]: lastAgentMode(messages) },
           interruptions: { ...s.interruptions, [id]: interruptions },
           runningSessions,
@@ -5808,7 +5832,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
             // the thread with the full history rather than leave it stale.
             threads: {
               ...s.threads,
-              [sid]: { ...historyToThread(messages, s.commands, serverIdle, interruptions), loaded: true },
+              [sid]: { ...historyToThread(messages, s.commands, serverIdle, interruptions), loaded: true, historyLoaded: true },
             },
             // Same for the agent pill (a plan_exit flip may have been missed).
             sessionAgents: { ...s.sessionAgents, [sid]: lastAgentMode(messages) },
