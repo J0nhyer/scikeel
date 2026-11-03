@@ -324,8 +324,17 @@ interface RuntimeState {
   /** Sessions this client created that the workspace catalogue has not returned
    *  yet. The catalogue indexes a conversation only after a history read; until
    *  then the optimistic row must survive refreshSessions, or missingSessionId
-   *  will treat the new conversation as unavailable. */
-  locallyCreatedSessions: Record<string, SessionMeta>;
+   *  will treat the new conversation as unavailable. Only the ids are stored:
+   *  the current row in `sessions` carries title/directory updates made after
+   *  creation. */
+  locallyCreatedSessions: Record<string, true>;
+  /** Server-side active/top-level conversation counts per catalog project. */
+  projectCounts: Record<string, number> | null;
+  projectCountsUnassigned: number | null;
+  projectCountsState: "unavailable" | "loading" | "ready" | "error";
+  /** Whether the connected runtime lists conversations through the workspace
+   *  catalogue (managed Web) or the native runtime (desktop / legacy gateway). */
+  sessionListSource: "catalog" | "native";
   gatewayRuntimeSwitching: boolean;
   selectGatewayRuntime: (runtime: GatewayRuntimeId) => Promise<void>;
   /** The connected ACP agent's display name, or null on OpenCode. */
@@ -475,6 +484,9 @@ interface RuntimeState {
   bootstrap: () => Promise<void>;
   disconnect: () => void;
   refreshSessions: (discoverInBackground?: boolean) => Promise<void>;
+  /** Refresh the server-side project counts. A missing endpoint leaves the
+   *  counts unavailable instead of failing the view. */
+  refreshProjectCounts: () => Promise<void>;
   startDraft: () => void;
   /** Blank the draft view WITHOUT unpinning the folder the next session
    *  will be created in — only an explicit New may do that (#69). */
@@ -675,6 +687,7 @@ let opencodeClient: OpenCodeClient | null = null;
 let acpRuntime: AcpRuntime | null = null;
 let acpRuntimeAgentId: string | null = null;
 let openSessionSeq = 0;
+let projectCountsGeneration = 0;
 /** Hard bound on the sessions remembered while the catalogue catches up. */
 const MAX_LOCALLY_CREATED_SESSIONS = 100;
 /** The model the user last DELIBERATELY switched to, and when. A switch does a
@@ -1148,6 +1161,36 @@ function needsHistory(thread: Thread | undefined, sendInFlight: boolean): boolea
   if (thread.historyError) return true;
   if (thread.historyLoaded) return false;
   return !thread.blocks.some((block) => block.kind === "user");
+}
+
+/** Merge a catalogue page with rows this client created but the catalogue has
+ *  not returned yet. The pending ids are a set, not a snapshot: the current
+ *  row in `sessions` is the source of title, directory and other updates made
+ *  after creation. A pending id whose row is no longer present is dropped, so
+ *  a delete/archive path that removed the row also heals the set. */
+function mergeLocallyCreatedSessions(
+  state: Pick<RuntimeState, "sessions" | "locallyCreatedSessions">,
+  next: SessionMeta[],
+  { append = false } = {},
+): { sessions: SessionMeta[]; locallyCreatedSessions: Record<string, true> } {
+  const byId = new Map<string, SessionMeta>(
+    append ? state.sessions.map((session) => [session.id, session]) : [],
+  );
+  for (const session of next) byId.set(session.id, session);
+  for (const id of Object.keys(state.locallyCreatedSessions)) {
+    if (byId.has(id)) continue;
+    const current = state.sessions.find((session) => session.id === id);
+    if (current) byId.set(id, current);
+  }
+  const nextIds = new Set(next.map((session) => session.id));
+  return {
+    sessions: [...byId.values()].sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0)),
+    locallyCreatedSessions: Object.fromEntries(
+      Object.keys(state.locallyCreatedSessions)
+        .filter((id) => !nextIds.has(id) && byId.has(id))
+        .map((id) => [id, true as const]),
+    ),
+  };
 }
 
 /** Retire a draft slot's folder — its session was created, or the user asked for
@@ -2158,7 +2201,7 @@ async function performTurn(
           };
           sessions = [created, ...s.sessions];
           locallyCreatedSessions = Object.fromEntries(
-            [...Object.entries(s.locallyCreatedSessions), [id!, created]]
+            [...Object.entries(s.locallyCreatedSessions), [id!, true as const]]
               .slice(-MAX_LOCALLY_CREATED_SESSIONS),
           );
         }
@@ -3127,7 +3170,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       const loadCatalogueConversations=async(cursor:string,root:string,isActive:()=>boolean)=>{
         const result=await collectCatalogueConversations(new GatewayBootstrapClient({baseUrl}),cursor,root,{isActive,limit:CATALOGUE_PAGE_LIMIT});
         if(!isActive())return;
-        set(state=>({sessions:[...state.sessions,...result.sessions],sessionListComplete:result.complete}));
+        set(state=>({...mergeLocallyCreatedSessions(state,result.sessions,{append:true}),sessionListComplete:result.complete}));
       };
       if(bootstrapSnapshot&&get().gatewayWorkspace){
         const snapshot=bootstrapSnapshot as WorkspaceBootstrap,root=get().gatewayWorkspace!;
@@ -3137,10 +3180,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         // conversation outside it must not be judged missing.
         const sessionParents:Record<string,string>={};
         for(const row of page.items)if(row.parentId)sessionParents[row.id]=row.parentId;
-        set({sessions:page.items.map(row=>({id:row.id,title:row.title,directory:catalogDirectory(page,row.directoryRef,root),
-          ...(row.parentId?{parentId:row.parentId}:{}),updated:row.updatedAt})),sessionParents,sessionListReady:true,sessionListComplete:page.nextCursor===null,
+        const catalogueRows=page.items.map(row=>({id:row.id,title:row.title,directory:catalogDirectory(page,row.directoryRef,root),
+          ...(row.parentId?{parentId:row.parentId}:{}),updated:row.updatedAt}));
+        set((state)=>({...mergeLocallyCreatedSessions(state,catalogueRows),sessionParents,sessionListReady:true,sessionListComplete:page.nextCursor===null,
           projects:snapshot.projects.items.map(row=>({id:row.id,name:row.name,path:catalogDirectory(snapshot.projects,row.directoryRef,root),createdAt:row.createdAt??0,imported:row.imported??false,pinned:row.pinned??false})),
-          projectsLoading:false,projectsError:null});
+          projectsLoading:false,projectsError:null}));
         if(page.nextCursor)void loadCatalogueConversations(page.nextCursor,root,active);
       }
     } else {
@@ -3203,7 +3247,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // an ACP agent owns its own model choice (v1 changes it through
       // `session/set_config_option`, from the agent's own list), so leaving the
       // old providers on screen would offer a switch that does nothing.
-      set({ runtimeKind: "acp", acpAgentName: acpAgent.name, providers: [], defaultModel: null });
+      set({ runtimeKind: "acp", acpAgentName: acpAgent.name, providers: [], defaultModel: null, sessionListSource: "native" });
     } else {
       const oc = new OpenCodeClient({
         baseUrl,
@@ -3237,7 +3281,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         gatewayPolicyRevision,
         gatewayRuntimes,
         ...(!isPlatformWeb ? { gatewayUserRole, gatewayUser } : {}),
+        sessionListSource: managedBootstrap && bootstrapSnapshot ? "catalog" : "native",
       });
+      void get().refreshProjectCounts();
       // Background streams reuse the same sidecar; the foreground now streams
       // this folder, so drop any background stream that was covering it (avoid a
       // double fold of the same events).
@@ -3278,7 +3324,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     if (!sharedEventHandler)
       sharedEventHandler = (event) => {
       if (event.type === "session.deleted") {
-        set(state => ({ sessions: state.sessions.filter(session => session.id !== event.sessionId) }));
+        set(state => {
+          const locallyCreatedSessions = { ...state.locallyCreatedSessions };
+          delete locallyCreatedSessions[event.sessionId];
+          return { sessions: state.sessions.filter(session => session.id !== event.sessionId), locallyCreatedSessions };
+        });
         return;
       }
       if (event.type === "session.updated") {
@@ -3787,27 +3837,35 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
                   presentation.artifact.presentation?.title ?? presentation.artifact.filename;
                 const dedicatedSessionId = await presentationClient.createSession(title);
                 await get().refreshSessions();
-                set((state) => ({
-                  sessions: state.sessions.some((session) => session.id === dedicatedSessionId)
-                    ? state.sessions
-                    : [
-                        {
-                          id: dedicatedSessionId,
-                          title,
-                          ...(sourceDirectory ? { directory: sourceDirectory } : {}),
-                          created: Date.now(),
-                          updated: Date.now(),
-                        },
-                        ...state.sessions,
-                      ],
-                  threads: {
-                    ...state.threads,
-                    [dedicatedSessionId]: {
-                      ...(state.threads[dedicatedSessionId] ?? emptyThread()),
-                      loaded: true,
+                set((state) => {
+                  const exists = state.sessions.some((session) => session.id === dedicatedSessionId);
+                  return {
+                    sessions: exists
+                      ? state.sessions
+                      : [
+                          {
+                            id: dedicatedSessionId,
+                            title,
+                            ...(sourceDirectory ? { directory: sourceDirectory } : {}),
+                            created: Date.now(),
+                            updated: Date.now(),
+                          },
+                          ...state.sessions,
+                        ],
+                    // This session was created outside performTurn; register it
+                    // so the next catalogue refresh retains it too.
+                    locallyCreatedSessions: exists
+                      ? state.locallyCreatedSessions
+                      : { ...state.locallyCreatedSessions, [dedicatedSessionId]: true as const },
+                    threads: {
+                      ...state.threads,
+                      [dedicatedSessionId]: {
+                        ...(state.threads[dedicatedSessionId] ?? emptyThread()),
+                        loaded: true,
+                      },
                     },
-                  },
-                }));
+                  };
+                });
                 useLayoutStore
                   .getState()
                   .presentArtifact(
@@ -4108,6 +4166,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   gatewayUserRole: null,
   sessionListReady: false,
   sessionListComplete: false,
+  projectCounts: null,
+  projectCountsUnassigned: null,
+  projectCountsState: "unavailable",
+  sessionListSource: "native",
   gatewayRuntimeSwitching: false,
   selectGatewayRuntime: async (runtime) => {
     if (!isGatewayWeb) return;
@@ -4949,8 +5011,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     useToastStore.getState().reset();
     clearWorkspaceTextDrafts();
     if (get().gatewaySigningOut) return;
+    projectCountsGeneration += 1;
     set({ gatewayUser: null, gatewayUserRole: null, gatewayIdentityState:'unknown', gatewayPolicyRevision: null, gatewayContext: null, gatewayWorkspaceReport: null, gatewayWorkspaceFailure: null, gatewayRestartPending: false, currentId: null,
       workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [], projectsLoading: false, projectsError: null,
+      projectCounts: null, projectCountsUnassigned: null, projectCountsState: "unavailable", sessionListSource: "native",
       sessions: [], locallyCreatedSessions: {}, threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
       runningSessions: {}, interruptions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},
       gatewayRuntimes: [], providers: [], defaultModel: null, error: null });
@@ -4978,6 +5042,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     retiredBackgroundReviews.clear();
     backgroundReviewResultParts.clear();
     reviewInFlight = null;
+    projectCountsGeneration += 1;
     set({
       status: "offline",
       switching: false,
@@ -4986,6 +5051,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       backgroundReviews: {},
       sessionListReady: false,
       sessionListComplete: false,
+      projectCounts: null,
+      projectCountsUnassigned: null,
+      projectCountsState: "unavailable",
+      sessionListSource: "native",
     });
   },
 
@@ -5024,23 +5093,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         // The catalogue is an asynchronous read model. A conversation this
         // client just created is not in it until its first history read is
         // indexed; keep the optimistic row until the catalogue returns it.
-        const freshIds = new Set(sessions.map((session) => session.id));
-        const pending = Object.entries(s.locallyCreatedSessions)
-          .filter(([id]) => !freshIds.has(id))
-          .map(([, session]) => session)
-          .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
-        const locallyCreatedSessions = Object.fromEntries(
-          Object.entries(s.locallyCreatedSessions).filter(([id]) => !freshIds.has(id)),
-        );
         // A runtime list is a bounded window of the conversations, never the
         // whole catalogue: the completeness of the list is not claimed here.
         return {
-          sessions: [...pending, ...sessions],
+          ...mergeLocallyCreatedSessions(s, sessions),
           sessionParents,
           sessionModels,
           sessionListReady: true,
           sessionListComplete: s.sessionListComplete,
-          locallyCreatedSessions,
         };
       });
       // A reload clears browser memory even when another conversation keeps
@@ -5085,6 +5145,30 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       }
     } catch {
       /* ignore transient list failures */
+    }
+    void get().refreshProjectCounts();
+  },
+
+  refreshProjectCounts: async () => {
+    const oc = getClient();
+    if (!oc?.getProjectCounts) return;
+    const generation = ++projectCountsGeneration;
+    set({ projectCountsState: "loading" });
+    try {
+      const counts = await oc.getProjectCounts();
+      if (generation !== projectCountsGeneration) return;
+      if (!counts) {
+        set({ projectCountsState: "unavailable" });
+        return;
+      }
+      set({
+        projectCounts: counts.byProject,
+        projectCountsUnassigned: counts.unassigned,
+        projectCountsState: "ready",
+      });
+    } catch {
+      if (generation !== projectCountsGeneration) return;
+      set({ projectCountsState: "error" });
     }
   },
 
@@ -5150,6 +5234,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     try {
       const projects = await listProjects();
       if (current()) set({ projects, projectsError: null });
+      if (current()) void get().refreshProjectCounts();
     } catch (error) {
       if (current()) set({ projectsError: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -5390,6 +5475,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       }
       if (!ready || seq !== openSessionSeq || get().currentId !== id) return;
     }
+    const observedHadUser = !!get().threads[id]?.blocks.some((block) => block.kind === "user");
     try {
       const [messages, interruptions] = await Promise.all([
         client.getMessages(id),
@@ -5404,6 +5490,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // load already running.
       if (commandsInFlight && get().commands.length === 0) await commandsInFlight;
       if (seq !== openSessionSeq || get().currentId !== id) return;
+      // A send can start while this fetch is in flight (the composer is
+      // enabled during a live-only open). Its optimistic user block is newer
+      // than this snapshot; replacing it would erase the message and mark the
+      // thread historyLoaded, so it would never be fetched again.
+      if (get().sendingSessions[id] ||
+          (!observedHadUser && get().threads[id]?.blocks.some((block) => block.kind === "user"))) return;
       // A replayed ACP session reports its selectors during the load — show the
       // model it is actually on, not the one the last session used.
       syncAcpConfig(set, id);
@@ -5462,6 +5554,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     // fetched. The failure case is what makes a background pane self-heal on
     // the next pass, and what powers the error line's Retry action (#139).
     if (!needsHistory(cur, !!get().sendingSessions[id])) return;
+    const observedHadUser = !!cur?.blocks.some((block) => block.kind === "user");
     try {
       // getMessages is session-scoped (server routes by the session's folder),
       // so any connected client works — no folder switch, unlike openSession.
@@ -5478,6 +5571,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       // `loaded` but never `historyLoaded`, so it must not swallow our reload —
       // the fold's partial content would leave the first user message missing.
       const latest = get().threads[id];
+      // A send started while this fetch was in flight; its optimistic user
+      // block is newer than the snapshot and must not be replaced.
+      if (get().sendingSessions[id] ||
+          (!observedHadUser && latest?.blocks.some((block) => block.kind === "user"))) return;
       if (latest?.historyLoaded && !latest?.historyError) return;
       set((s) => {
         const runningSessions = { ...s.runningSessions };
@@ -5934,8 +6031,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       return false;
     }
     // The sidebar's window holds only ACTIVE conversations, so an archived one
-    // leaves it at once; a restored one comes back with the next refresh.
-    set((s) => ({ sessions: s.sessions.filter((x) => x.id !== id) }));
+    // leaves it at once; a restored one comes back with the next refresh. Drop
+    // the pending id too: the catalogue never returns an archived row in this
+    // active list, so keeping it would resurrect the row on every refresh.
+    set((s) => {
+      const locallyCreatedSessions = { ...s.locallyCreatedSessions };
+      delete locallyCreatedSessions[id];
+      return { sessions: s.sessions.filter((x) => x.id !== id), locallyCreatedSessions };
+    });
     if (!archived) void get().refreshSessions();
     return true;
   },

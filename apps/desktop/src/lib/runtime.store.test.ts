@@ -58,6 +58,7 @@ const mocks = vi.hoisted(() => ({
   createGate: null as Promise<void> | null,
   createProject: vi.fn(),
   listProjects: vi.fn(async (): Promise<{ id: string; name: string; path: string; createdAt: number; imported: boolean; pinned: boolean }[]> => []),
+  getProjectCounts: vi.fn(async () => ({ revision: 1, byProject: {} as Record<string, number>, unassigned: 0 })),
   forkSessionSpy: vi.fn(),
   appendTextPartSpy: vi.fn(),
   setSessionArchivedSpy: vi.fn(),
@@ -238,6 +239,9 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
         throw new Error("Session list temporarily unavailable");
       }
       return mocks.sessionList;
+    }
+    async getProjectCounts() {
+      return mocks.getProjectCounts();
     }
     async compactSession(sid: string, providerID?: string, modelID?: string) {
       mocks.compactSessionSpy(sid, providerID, modelID);
@@ -469,6 +473,8 @@ beforeEach(async () => {
   mocks.startRuntime.mockImplementation(async () => "http://127.0.0.1:1");
   mocks.runtimeFailure.mockClear();
   mocks.runtimeFailure.mockResolvedValue(null);
+  mocks.getProjectCounts.mockClear();
+  mocks.getProjectCounts.mockResolvedValue({ revision: 1, byProject: {}, unassigned: 0 });
   mocks.takeConfigQuarantineNotice.mockClear();
   mocks.takeConfigQuarantineNotice.mockResolvedValue(null);
   useToastStore.setState({ toasts: [] });
@@ -5928,6 +5934,35 @@ describe("Web project directory ownership", () => {
       expect(useRuntimeStore.getState().currentId).toBe("ses_saved");
       expect(useRuntimeStore.getState().projects.some(p => p.id === "p_a")).toBe(true);
     } finally { useRuntimeStore.setState({ refreshProjects: original }); }
+  });
+
+  it("loads server project counts without replacing the session window", async () => {
+    mocks.sessionList = [{ id: "recent", title: "recent", directory: "/ws/base" }];
+    mocks.getProjectCounts.mockResolvedValue({ revision: 2, byProject: { p1: 7 }, unassigned: 4 });
+    await useRuntimeStore.getState().refreshSessions();
+    await vi.waitFor(() => expect(useRuntimeStore.getState().projectCountsState).toBe("ready"));
+    expect(useRuntimeStore.getState().projectCounts).toEqual({ p1: 7 });
+    expect(useRuntimeStore.getState().projectCountsUnassigned).toBe(4);
+    expect(useRuntimeStore.getState().sessions.map((s) => s.id)).toEqual(["recent"]);
+  });
+
+  it("keeps the last good counts on failure and marks a missing endpoint unavailable", async () => {
+    let behavior: "ok" | "fail" | "missing" = "ok";
+    mocks.getProjectCounts.mockImplementation(async () => {
+      if (behavior === "fail") throw Object.assign(new Error("unavailable"), { status: 500 });
+      if (behavior === "missing") return null;
+      return { revision: 2, byProject: { p1: 7 }, unassigned: 4 };
+    });
+    await useRuntimeStore.getState().refreshProjectCounts();
+    expect(useRuntimeStore.getState().projectCounts).toEqual({ p1: 7 });
+    expect(useRuntimeStore.getState().projectCountsState).toBe("ready");
+    behavior = "fail";
+    await useRuntimeStore.getState().refreshProjectCounts();
+    expect(useRuntimeStore.getState().projectCounts).toEqual({ p1: 7 });
+    expect(useRuntimeStore.getState().projectCountsState).toBe("error");
+    behavior = "missing";
+    await useRuntimeStore.getState().refreshProjectCounts();
+    expect(useRuntimeStore.getState().projectCountsState).toBe("unavailable");
   });
 });
 
