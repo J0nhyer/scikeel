@@ -80,6 +80,7 @@ export class WorkspaceCatalog {
  sources(userId){return this.#request('sources',{userId});}
  rowIds(userId){return this.#request('rowIds',{userId});}
  listProjects(userId,options={}){return this.#request('projects',{userId,...options});}
+ projectCounts(userId){return this.#request('projectCounts',{userId});}
  queryPlans(){return this.#request('queryPlans');}
  async close(){if(this.#closed)return;try{if(!this.#failure)await this.#request('close');}finally{this.#closed=true;await this.worker.terminate();}}
 }

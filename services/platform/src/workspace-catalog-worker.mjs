@@ -66,6 +66,22 @@ function page(kind,{userId,limit=50,cursor=null,directoryRef=null,lifecycle='act
  }
  return {items,nextCursor:hasMore?cursorEncode({scope,revision:rev,last:kind==='projects'?[tail.id]:[tail.updated_at,tail.id]}):null,revision:rev,directoryPaths};
 }
+const projectCounts=({userId})=>{
+ const rev=revision(userId);
+ const projects=db.prepare("SELECT id FROM projects WHERE user_id=? AND lifecycle='active'").all(userId);
+ const byProject=Object.fromEntries(projects.map(row=>[row.id,0]));
+ const rows=db.prepare(`SELECT p.id AS id,COUNT(c.id) AS count
+  FROM conversations c
+  JOIN projects p ON p.user_id=c.user_id AND p.directory_ref=c.directory_ref AND p.lifecycle='active'
+  WHERE c.user_id=? AND c.lifecycle='active' AND json_extract(c.payload,'$.parentId') IS NULL
+  GROUP BY p.id`).all(userId);
+ for(const row of rows)byProject[row.id]=row.count;
+ const unassigned=db.prepare(`SELECT COUNT(*) AS count FROM conversations c
+  WHERE c.user_id=? AND c.lifecycle='active' AND json_extract(c.payload,'$.parentId') IS NULL
+   AND NOT EXISTS (SELECT 1 FROM projects p
+    WHERE p.user_id=c.user_id AND p.lifecycle='active' AND p.directory_ref=c.directory_ref)`).get(userId).count;
+ return {revision:rev,byProject,unassigned};
+};
 const operations={
  ping:()=>true,apply:({change})=>apply(change),
  directories:db.transaction(({userId,directories})=>{
@@ -80,7 +96,7 @@ const operations={
  }),
  verify:({userId,sourceDigest})=>{account(userId);if(!/^[a-f0-9]{64}$/.test(sourceDigest??''))throw catalogError('invalid_catalog_change');db.prepare("INSERT INTO accounts(user_id,import_state,source_revision_digest) VALUES (?,'ready',?) ON CONFLICT(user_id) DO UPDATE SET import_state='ready',source_revision_digest=excluded.source_revision_digest").run(userId,sourceDigest);return true;},
  checkpoint:({userId,source,payload})=>{account(userId);if(!identifier(source)||Buffer.byteLength(JSON.stringify(payload))>65536)throw catalogError('invalid_catalog_change');db.prepare('INSERT OR REPLACE INTO import_checkpoints VALUES (?,?,?)').run(userId,source,JSON.stringify(payload));return true;},
- conversations:args=>page('conversations',args),projects:args=>page('projects',args),
+ conversations:args=>page('conversations',args),projects:args=>page('projects',args),projectCounts,
  sources:({userId})=>{const row=account(userId);
   const revisions=db.prepare('SELECT source_key,revision FROM source_revisions WHERE user_id=?').all(userId);
   return {importState:row?.import_state??'pending',sourceDigest:row?.source_revision_digest??null,
