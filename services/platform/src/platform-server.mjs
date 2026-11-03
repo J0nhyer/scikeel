@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { WorkspaceState, workspaceError } from "./workspace-state.mjs";
+import { catalogQuery } from "./catalog-query.mjs";
 import { readAssistantLedgerInventory } from "./assistant-inventory.mjs";
 import { ConversationState } from "./conversation-state.mjs";
 import { ConversationRouter } from "./conversation-router.mjs";
@@ -2948,19 +2949,18 @@ export class PlatformServer {
           this.#unauthorized(request, response);
           return;
         }
-        if(this.workspaceBootstrap&&request.method==='GET'&&['/api/workspace/bootstrap','/api/workspace/catalog/conversations','/api/workspace/catalog/projects'].includes(path)){
-          if([...parsed.searchParams.keys()].some(key=>!['limit','cursor','directoryRef','lifecycle'].includes(key)||parsed.searchParams.getAll(key).length!==1))throw workspaceError('invalid_catalog_query',400);
-          const query=Object.fromEntries(parsed.searchParams);
-          if(query.limit!==undefined){if(!/^[1-9]\d{0,2}$/.test(query.limit))throw workspaceError('invalid_catalog_query',400);query.limit=Number(query.limit);}
+        if(this.workspaceBootstrap&&request.method==='GET'&&['/api/workspace/bootstrap','/api/workspace/catalog/conversations','/api/workspace/catalog/projects','/api/workspace/catalog/project-counts'].includes(path)){
+          const query=catalogQuery(path,parsed.searchParams);
           const controller=new AbortController();request.once('aborted',()=>controller.abort());
           if(path==='/api/workspace/bootstrap'){
-            if(Object.keys(query).some(key=>key!=='limit'))throw workspaceError('invalid_catalog_query',400);
             void this.workspaceBootstrap.prepare(user).catch(()=>this.logger({type:'login.preparation_failed',userId:user.id}));
             sendJson(response,200,await this.workspaceBootstrap.read(user,{...query,signal:controller.signal}),{'cache-control':'no-store'});
           }else{
             const value=await this.workspaceAdmission.start(user.id,async()=>{
               await this.catalogProjector.drain(user.id);
-              return path.endsWith('/conversations')?this.workspaceCatalog.listConversations(user.id,query):this.workspaceCatalog.listProjects(user.id,query);
+              return path.endsWith('/project-counts')?this.workspaceCatalog.projectCounts(user.id)
+                :path.endsWith('/conversations')?this.workspaceCatalog.listConversations(user.id,query)
+                :this.workspaceCatalog.listProjects(user.id,query);
             });sendJson(response,200,value,{'cache-control':'no-store'});
           }return;
         }
