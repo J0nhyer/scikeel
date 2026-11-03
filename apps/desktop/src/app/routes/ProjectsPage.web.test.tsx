@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { useRuntimeStore } from "@/lib/runtime";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ProjectsPage } from "./ProjectsPage";
 const renderAt = (_path: string) => render(<MemoryRouter><ProjectsPage /></MemoryRouter>);
 vi.mock("@/lib/webMode", async (original) => ({ ...await original<typeof import("@/lib/webMode")>(), isGatewayWeb: true }));
@@ -39,4 +39,28 @@ it('offers a reachable Web project actions menu including Rename and Remove',asy
   expect(await screen.findByRole('menuitem',{name:'Rename'})).toBeInTheDocument();
   expect(screen.getByRole('menuitem',{name:'Remove'})).toBeInTheDocument();
   expect(screen.queryByRole('button',{name:'Trash'})).not.toBeInTheDocument();
+});
+
+it('shows the full project count and opens the project-filtered history', async () => {
+  useRuntimeStore.setState({
+    projects: [{ id: 'p1', name: 'BCI Trends', path: '/ws/bci', createdAt: 1, imported: false, pinned: false }],
+    sessions: [],
+    projectCounts: { p1: 23 },
+    projectCountsUnassigned: 46,
+    projectCountsState: 'ready',
+    sessionListSource: 'catalog',
+    webReadOnly: false,
+  });
+  render(
+    <MemoryRouter initialEntries={['/projects']}>
+      <Routes>
+        <Route path="/projects" element={<ProjectsPage />} />
+        <Route path="/history" element={<h1>All sessions</h1>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  expect(await screen.findByRole('button', { name: 'Sessions: 23' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Unassigned sessions: 46' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Sessions: 23' }));
+  expect(await screen.findByRole('heading', { name: 'All sessions' })).toBeInTheDocument();
 });

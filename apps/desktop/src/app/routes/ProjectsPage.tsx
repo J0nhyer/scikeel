@@ -44,6 +44,9 @@ export function ProjectsPage() {
   const projectsLoading = useRuntimeStore((s) => s.projectsLoading);
   const projectsError = useRuntimeStore((s) => s.projectsError);
   const sessions = useRuntimeStore((s) => s.sessions);
+  const projectCounts = useRuntimeStore((s) => s.projectCounts);
+  const projectCountsUnassigned = useRuntimeStore((s) => s.projectCountsUnassigned);
+  const projectCountsState = useRuntimeStore((s) => s.projectCountsState);
   const setProjectPinned = useRuntimeStore((s) => s.setProjectPinned);
   const deleteProject = useRuntimeStore((s) => s.deleteProject);
 
@@ -176,6 +179,17 @@ export function ProjectsPage() {
                           {t("projects.importedBadge")}
                         </span>
                       )}
+                      {projectCountsState === "ready" && projectCounts && (
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/history?project=${encodeURIComponent(p.id)}`)}
+                          aria-label={t("projects.sessionCount", { count: projectCounts[p.id] ?? 0 })}
+                          title={t("projects.sessionCount", { count: projectCounts[p.id] ?? 0 })}
+                          className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] tabular-nums text-muted outline-none hover:text-text"
+                        >
+                          {projectCounts[p.id] ?? 0}
+                        </button>
+                      )}
                     </div>
 
                     {/* Sources — click to open the folder in the OS file manager. */}
@@ -285,6 +299,18 @@ export function ProjectsPage() {
               );
             })}
           </div>
+        )}
+
+        {projectCountsState === "ready" && (projectCountsUnassigned ?? 0) > 0 && (
+          <button
+            type="button"
+            onClick={() => navigate("/history?project=unassigned")}
+            aria-label={t("projects.unassignedCount", { count: projectCountsUnassigned })}
+            className="mt-2 flex w-full items-center justify-between gap-3 rounded-input px-2 py-3 text-left text-sm text-muted outline-none hover:bg-surface-2 hover:text-text"
+          >
+            <span className="truncate">{t("projects.unassigned")}</span>
+            <span className="tabular-nums">{projectCountsUnassigned}</span>
+          </button>
         )}
       </div>
 
