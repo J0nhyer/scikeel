@@ -307,6 +307,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   private readonly directory: string | null;
   private readonly accountWideSessions: boolean;
   private readonly workspaceCatalogRoot: string | null;
+  private catalogHistoryUnsupported = false;
   private readonly workspaceAcknowledgement: boolean;
   private workspaceAcknowledged: (() => void) | null = null;
   private acknowledgeWorkspace(raw: OpenCodeRawEvent): void {
@@ -710,7 +711,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
 
   private async catalogueSessionPage(query: SessionQuery): Promise<SessionPage> {
     const client = new GatewayBootstrapClient({ baseUrl: this.baseUrl, fetchImpl: this.fetchImpl });
-    const params: Record<string, string> = { limit: String(query.limit ?? SESSION_PAGE) };
+    const params: Record<string, string> = { limit: String(Math.min(query.limit ?? SESSION_PAGE, 100)) };
     if (query.cursor != null) params.cursor = String(query.cursor);
     if (query.search) params.search = query.search;
     if (query.projectId) params.projectId = query.projectId;
@@ -748,7 +749,25 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
    *  already returns. Pages are topped up so filtering never hands back a
    *  nearly-empty page and makes the user click "load more" repeatedly. */
   async querySessions(query: SessionQuery = {}): Promise<SessionPage> {
-    if (this.workspaceCatalogRoot) return this.catalogueSessionPage(query);
+    if (this.workspaceCatalogRoot && !this.catalogHistoryUnsupported) {
+      try {
+        return await this.catalogueSessionPage(query);
+      } catch (error) {
+        const failure = error as { status?: unknown; code?: unknown };
+        if (failure.status === 400 && failure.code === 'invalid_catalog_query') {
+          // An older platform serves the catalogue but not the new filters
+          // (search / projectId / unassigned / lifecycle=any). Keep the previous
+          // behaviour for this client instead of failing every filtered query.
+          this.catalogHistoryUnsupported = true;
+        } else {
+          throw error;
+        }
+      }
+    }
+    return this.nativeSessionPage(query);
+  }
+
+  private async nativeSessionPage(query: SessionQuery): Promise<SessionPage> {
     const limit = query.limit ?? SESSION_PAGE;
     const out: SessionMeta[] = [];
     const seen = new Set<string>();

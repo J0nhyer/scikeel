@@ -63,11 +63,10 @@ export function HistoryPage() {
   const projects = useRuntimeStore((s) => s.projects);
   const projectCounts = useRuntimeStore((s) => s.projectCounts);
   const projectCountsUnassigned = useRuntimeStore((s) => s.projectCountsUnassigned);
-  const projectCountsState = useRuntimeStore((s) => s.projectCountsState);
   const sessionListSource = useRuntimeStore((s) => s.sessionListSource);
   const requestedProject = searchParams.get("project") ?? "";
   const projectFilter = (() => {
-    if (sessionListSource !== "catalog" || projectCountsState !== "ready" || !projectCounts) return "";
+    if (sessionListSource !== "catalog" || !projectCounts) return "";
     if (requestedProject === "unassigned") return (projectCountsUnassigned ?? 0) > 0 ? "unassigned" : "";
     return Object.prototype.hasOwnProperty.call(projectCounts, requestedProject) ? requestedProject : "";
   })();
@@ -138,6 +137,18 @@ export function HistoryPage() {
         setExhausted(page.nextCursor === null);
       } catch (err) {
         if (generation !== loadGeneration.current) return;
+        // A catalogue cursor is bound to the snapshot it came from. A turn or
+        // another client can advance that snapshot between pages; restarting
+        // from the newest page is the only recovery that does not reuse the
+        // now-invalid cursor forever.
+        const code = (err as { code?: unknown }).code;
+        if (!reset && (code === "catalog_revision_changed" || code === "invalid_catalog_cursor")) {
+          setCursor(null);
+          setExhausted(false);
+          setLoadError(null);
+          void load(true);
+          return;
+        }
         const message = err instanceof Error ? err.message : String(err);
         setLoadError(message);
         toast.error(message);
@@ -404,7 +415,7 @@ export function HistoryPage() {
           )}
         </div>
 
-        {sessionListSource === "catalog" && projectCountsState === "ready" && projectCounts && (
+        {sessionListSource === "catalog" && projectCounts && (
           <label className="mt-3 flex w-fit items-center gap-2 text-xs text-muted">
             <span>{t("history.projectFilter")}</span>
             <select

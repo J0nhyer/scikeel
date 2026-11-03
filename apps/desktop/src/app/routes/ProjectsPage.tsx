@@ -46,7 +46,6 @@ export function ProjectsPage() {
   const sessions = useRuntimeStore((s) => s.sessions);
   const projectCounts = useRuntimeStore((s) => s.projectCounts);
   const projectCountsUnassigned = useRuntimeStore((s) => s.projectCountsUnassigned);
-  const projectCountsState = useRuntimeStore((s) => s.projectCountsState);
   const setProjectPinned = useRuntimeStore((s) => s.setProjectPinned);
   const deleteProject = useRuntimeStore((s) => s.deleteProject);
 
@@ -140,6 +139,8 @@ export function ProjectsPage() {
           <div className="divide-y divide-border">
             {rows.map((p) => {
               const open = expanded.has(p.id);
+              const sessionCount = projectCounts?.[p.id];
+              const count = sessionCount ?? p.sessions.length;
               return (
                 <div key={p.id}>
                   <div className="group grid grid-cols-[minmax(0,1fr)_4rem_auto] items-center gap-3 px-2 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,14rem)_5rem_5rem]">
@@ -179,15 +180,15 @@ export function ProjectsPage() {
                           {t("projects.importedBadge")}
                         </span>
                       )}
-                      {projectCountsState === "ready" && projectCounts && (
+                      {sessionCount !== undefined && (
                         <button
                           type="button"
                           onClick={() => navigate(`/history?project=${encodeURIComponent(p.id)}`)}
-                          aria-label={t("projects.sessionCount", { count: projectCounts[p.id] ?? 0 })}
-                          title={t("projects.sessionCount", { count: projectCounts[p.id] ?? 0 })}
+                          aria-label={t("projects.sessionCount", { count })}
+                          title={t("projects.sessionCount", { count })}
                           className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] tabular-nums text-muted outline-none hover:text-text"
                         >
-                          {projectCounts[p.id] ?? 0}
+                          {count}
                         </button>
                       )}
                     </div>
@@ -279,19 +280,40 @@ export function ProjectsPage() {
                   {open && (
                     <div className="pb-2">
                       {p.sessions.length === 0 ? (
-                        <p className="px-8 py-2 text-xs text-muted">{t("projects.noSessions")}</p>
-                      ) : (
-                        p.sessions.map((s) => (
+                        count === 0 ? (
+                          <p className="px-8 py-2 text-xs text-muted">{t("projects.noSessions")}</p>
+                        ) : (
                           <button
-                            key={s.id}
-                            onClick={() => navigate(`/live/${s.id}`)}
-                            className="grid w-full grid-cols-[minmax(0,1fr)_5rem_1.5rem] items-center gap-3 rounded-input py-1.5 pl-8 pr-2 text-left hover:bg-surface-2"
+                            onClick={() => navigate(`/history?project=${encodeURIComponent(p.id)}`)}
+                            className="flex w-full items-center gap-1.5 py-1.5 pl-8 pr-2 text-left text-xs text-muted hover:bg-surface-2 hover:text-text"
                           >
-                            <span className="truncate text-sm text-text">{s.title}</span>
-                            <span className="text-xs tabular-nums text-muted">{timeAgo(s.updated, now)}</span>
-                            <ChevronRight size={14} className="justify-self-end text-muted" />
+                            {t("history.seeAll")} ({count})
+                            <ChevronRight size={12} className="ml-auto" />
                           </button>
-                        ))
+                        )
+                      ) : (
+                        <>
+                          {p.sessions.map((s) => (
+                            <button
+                              key={s.id}
+                              onClick={() => navigate(`/live/${s.id}`)}
+                              className="grid w-full grid-cols-[minmax(0,1fr)_5rem_1.5rem] items-center gap-3 rounded-input py-1.5 pl-8 pr-2 text-left hover:bg-surface-2"
+                            >
+                              <span className="truncate text-sm text-text">{s.title}</span>
+                              <span className="text-xs tabular-nums text-muted">{timeAgo(s.updated, now)}</span>
+                              <ChevronRight size={14} className="justify-self-end text-muted" />
+                            </button>
+                          ))}
+                          {count > p.sessions.length && (
+                            <button
+                              onClick={() => navigate(`/history?project=${encodeURIComponent(p.id)}`)}
+                              className="flex w-full items-center gap-1.5 py-1.5 pl-8 pr-2 text-left text-xs text-muted hover:bg-surface-2 hover:text-text"
+                            >
+                              {t("history.seeAll")} ({count})
+                              <ChevronRight size={12} className="ml-auto" />
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   )}
@@ -301,7 +323,7 @@ export function ProjectsPage() {
           </div>
         )}
 
-        {projectCountsState === "ready" && (projectCountsUnassigned ?? 0) > 0 && (
+        {projectCountsUnassigned !== null && projectCountsUnassigned > 0 && (
           <button
             type="button"
             onClick={() => navigate("/history?project=unassigned")}

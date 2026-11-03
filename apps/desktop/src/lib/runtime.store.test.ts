@@ -62,6 +62,7 @@ const mocks = vi.hoisted(() => ({
   forkSessionSpy: vi.fn(),
   appendTextPartSpy: vi.fn(),
   setSessionArchivedSpy: vi.fn(),
+  deleteSessionSpy: vi.fn(),
   reviewSessionCounter: 0,
   sendPromptSpy: vi.fn(),
   /** Captures the FULL sendPrompt arg list (incl. model + variant) — the plain
@@ -308,6 +309,9 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
     }
     async setSessionArchived(sid: string, archived: boolean) {
       mocks.setSessionArchivedSpy(sid, archived);
+    }
+    async deleteSession(sid: string) {
+      mocks.deleteSessionSpy(sid);
     }
     async sendPrompt(
       sid: string,
@@ -5963,6 +5967,17 @@ describe("Web project directory ownership", () => {
     behavior = "missing";
     await useRuntimeStore.getState().refreshProjectCounts();
     expect(useRuntimeStore.getState().projectCountsState).toBe("unavailable");
+  });
+
+  it("refreshes project counts after deleting or archiving a conversation", async () => {
+    useRuntimeStore.setState({ sessions: [{ id: "ses_a", title: "A" }] });
+    mocks.getProjectCounts.mockClear();
+    await useRuntimeStore.getState().deleteSession("ses_a");
+    await vi.waitFor(() => expect(mocks.getProjectCounts).toHaveBeenCalled());
+    useRuntimeStore.setState({ sessions: [{ id: "ses_b", title: "B" }] });
+    mocks.getProjectCounts.mockClear();
+    await useRuntimeStore.getState().setSessionArchived("ses_b", true);
+    await vi.waitFor(() => expect(mocks.getProjectCounts).toHaveBeenCalled());
   });
 });
 

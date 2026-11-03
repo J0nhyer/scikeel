@@ -47,7 +47,7 @@ it('shows the full project count and opens the project-filtered history', async 
     sessions: [],
     projectCounts: { p1: 23 },
     projectCountsUnassigned: 46,
-    projectCountsState: 'ready',
+    projectCountsState: 'loading',
     sessionListSource: 'catalog',
     webReadOnly: false,
   });
@@ -61,6 +61,9 @@ it('shows the full project count and opens the project-filtered history', async 
   );
   expect(await screen.findByRole('button', { name: 'Sessions: 23' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Unassigned sessions: 46' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'BCI Trends' }));
+  expect(screen.queryByText('No sessions yet.')).not.toBeInTheDocument();
+  expect(screen.getByText('All sessions (23)')).toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: 'Sessions: 23' }));
   expect(await screen.findByRole('heading', { name: 'All sessions' })).toBeInTheDocument();
 });

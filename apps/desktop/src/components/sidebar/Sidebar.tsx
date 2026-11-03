@@ -119,7 +119,6 @@ export function Sidebar({ project }: { project: Project }) {
   // whole store, re-rendering the sidebar on every SSE fold during a session (#34).
   const sessions = useRuntimeStore((s) => s.sessions);
   const projectCounts = useRuntimeStore((s) => s.projectCounts);
-  const projectCountsState = useRuntimeStore((s) => s.projectCountsState);
   const sessionListSource = useRuntimeStore((s) => s.sessionListSource);
   const refreshTitleSessions = useRuntimeStore((s) => s.refreshSessions);
   const displayTitle = useSessionTitles(sessions, refreshTitleSessions);
@@ -830,9 +829,7 @@ export function Sidebar({ project }: { project: Project }) {
             const open = !collapsedProjects.includes(p.id);
             const active = samePath(p.path, workspace);
             const rows = sessionsByProject.get(p.id) ?? [];
-            const count = projectCountsState === "ready" && projectCounts
-              ? (projectCounts[p.id] ?? 0)
-              : rows.length;
+            const count = projectCounts ? (projectCounts[p.id] ?? 0) : rows.length;
             return (
               <div key={p.id}>
                 {renamingId === p.id ? (
@@ -942,6 +939,7 @@ export function Sidebar({ project }: { project: Project }) {
                       {count > 0 && (
                         <span
                           title={t("projects.sessionCount", { count })}
+                          aria-label={t("projects.sessionCount", { count })}
                           className="px-1 text-[10px] tabular-nums text-muted group-hover/project:hidden"
                         >
                           {count}
@@ -972,15 +970,15 @@ export function Sidebar({ project }: { project: Project }) {
                 >
                   <div className="overflow-hidden">
                     <div className="mb-0.5 ml-[15px] border-l border-border-faint pl-1.5">
-                      {rows.length === 0 && (
+                      {count === 0 && (
                         <div className="px-2 py-1 text-xs text-muted">
                           {t("projects.noSessions")}
                         </div>
                       )}
                       {rows.slice(0, ROW_LIMIT).map(sessionRow)}
-                      {rows.length > ROW_LIMIT && (
+                      {count > Math.min(rows.length, ROW_LIMIT) && (
                         <MoreRow
-                          count={rows.length - ROW_LIMIT}
+                          count={count - Math.min(rows.length, ROW_LIMIT)}
                           label={t("history.seeAll")}
                           onClick={() => navigate(
                             sessionListSource === "catalog"

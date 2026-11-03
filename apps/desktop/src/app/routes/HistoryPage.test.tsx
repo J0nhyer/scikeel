@@ -302,3 +302,53 @@ describe("History project filter", () => {
     expect(screen.queryByRole("combobox", { name: "Project" })).not.toBeInTheDocument();
   });
 });
+
+describe("History project filter stability", () => {
+  const project = {
+    id: "p1",
+    name: "BCI Trends",
+    path: "/work/projects/bci",
+    createdAt: 1,
+    imported: false,
+    pinned: false,
+  };
+  beforeEach(() => {
+    useRuntimeStore.setState({
+      status: "ready",
+      projects: [project],
+      sessionListSource: "catalog",
+      projectCounts: { p1: 1 },
+      projectCountsUnassigned: 2,
+      projectCountsState: "loading",
+    });
+  });
+
+  it("keeps the project filter while counts refresh or fail", async () => {
+    renderHistory("/history?project=p1");
+    await waitFor(() => expect(queries_seen[queries_seen.length - 1]?.projectId).toBe("p1"));
+    expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue("p1");
+    useRuntimeStore.setState({ projectCountsState: "error" });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue("p1"));
+    expect(queries_seen[queries_seen.length - 1]?.projectId).toBe("p1");
+  });
+});
+
+describe("History paging recovery", () => {
+  it("restarts the list when the catalog revision changes while paging", async () => {
+    const original = querySessions.getMockImplementation()!;
+    querySessions.mockImplementation(async (q: SessionQuery = {}) => {
+      queries_seen.push(q);
+      if (q.cursor != null) throw Object.assign(new Error("catalog revision changed"), { code: "catalog_revision_changed" });
+      return { sessions: ALL.slice(0, 1), nextCursor: 123 };
+    });
+    try {
+      renderHistory("/history");
+      await screen.findByText("today's analysis");
+      fireEvent.click(screen.getByText("Load more"));
+      await waitFor(() => expect(queries_seen.filter((q) => q.cursor === null).length).toBeGreaterThan(1));
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    } finally {
+      querySessions.mockImplementation(original);
+    }
+  });
+});

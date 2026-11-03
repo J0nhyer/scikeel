@@ -124,12 +124,26 @@ describe("Sidebar projects", () => {
       projects: [PROJECT],
       sessions: [{ id: "recent", title: "recent", directory: PROJECT.path }],
       projectCounts: { p1: 23 },
-      projectCountsState: "ready",
+      projectCountsState: "loading",
       sessionListSource: "catalog",
     });
     renderAt("/files");
     expect(await screen.findByTitle("Sessions: 23")).toBeInTheDocument();
     expect(screen.queryByTitle("Sessions: 1")).not.toBeInTheDocument();
+  });
+
+  it("does not claim no sessions when the server count is non-zero", async () => {
+    useRuntimeStore.setState({
+      projects: [PROJECT],
+      sessions: [],
+      projectCounts: { p1: 23 },
+      projectCountsState: "ready",
+      sessionListSource: "catalog",
+    });
+    renderAt("/files");
+    expect(await screen.findByTitle("Sessions: 23")).toBeInTheDocument();
+    expect(screen.queryByText("No sessions yet.")).not.toBeInTheDocument();
+    expect(screen.getByText("+23")).toBeInTheDocument();
   });
 
   it("falls back to the grouped window when counts are unavailable", async () => {

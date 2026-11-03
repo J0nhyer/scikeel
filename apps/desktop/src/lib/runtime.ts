@@ -5982,6 +5982,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         currentId: s.currentId === id ? null : s.currentId,
       };
     });
+    void get().refreshProjectCounts();
     return true;
   },
 
@@ -6039,7 +6040,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       delete locallyCreatedSessions[id];
       return { sessions: s.sessions.filter((x) => x.id !== id), locallyCreatedSessions };
     });
-    if (!archived) void get().refreshSessions();
+    if (archived) void get().refreshProjectCounts();
+    else void get().refreshSessions();
     return true;
   },
 

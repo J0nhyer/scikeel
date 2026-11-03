@@ -95,3 +95,24 @@ test('a cursor is bound to its project filter and pages beyond one window',async
  assert.equal(new Set([...first.items,...second.items,...third.items].map(row=>row.id)).size,250);
  await assert.rejects(catalog.listConversations('alice',{projectId:'project_big',search:'bulk 1',cursor:first.nextCursor}),{code:'invalid_catalog_cursor'});
 });
+
+test('search escapes LIKE wildcards', async t => {
+  const catalog = await openCatalog(t, change([
+    conversation('c1','dir_a',{title:'under_score'}),
+    conversation('c2','dir_a',{title:'percent%done'}),
+    conversation('c3','dir_a',{title:'back\\slash'}),
+  ]));
+  assert.deepEqual((await catalog.listConversations('alice',{search:'_'})).items.map(row=>row.id),['c1']);
+  assert.deepEqual((await catalog.listConversations('alice',{search:'%'})).items.map(row=>row.id),['c2']);
+  assert.deepEqual((await catalog.listConversations('alice',{search:'\\'})).items.map(row=>row.id),['c3']);
+});
+
+test('two active projects sharing a directory both count its conversations', async t => {
+  const catalog = await openCatalog(t, change(
+    [conversation('c1','dir_shared')],
+    [project('project_x','dir_shared'),project('project_y','dir_shared')],
+  ));
+  assert.deepEqual(await catalog.projectCounts('alice'),{
+    revision:1,byProject:{project_x:1,project_y:1},unassigned:0,
+  });
+});
