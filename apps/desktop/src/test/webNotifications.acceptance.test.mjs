@@ -103,7 +103,7 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
         await page.locator('input[type="file"]').first().setInputFiles({ name: 'notification-fixture.csv', mimeType: 'text/csv', buffer: Buffer.from('value\n1\n') });
         await page.getByText(longFailure, { exact: true }).waitFor();
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
-        const notice = page.locator('[data-state-notice]', { hasText: longFailure });
+        const notice = page.locator('[data-notification-card][data-error-card]', { hasText: longFailure });
         await notice.getByRole('button', { name: 'Close notification', exact: true }).click();
         expect(await notice.count()).toBe(0);
         expect(await page.getByRole('button', { name: 'Retry notification-fixture.csv', exact: true }).isEnabled()).toBe(true);
@@ -131,6 +131,7 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
         await codex.focus(); await page.mouse.move(0, 0); await page.clock.fastForward(10_100);
         await expect.poll(() => notifications.getByRole('button', { name: 'Close notification' }).count()).toBe(0);
         expect(await failure.isVisible()).toBe(true);
+        expect(await page.locator('[data-notification-card][data-error-card]', { hasText: 'Could not save the assistant selection. Try again.' }).isVisible()).toBe(true);
         expect(await page.getByRole('radio', { name: 'OpenCode', exact: true }).isChecked()).toBe(true);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
         expect(errors).toEqual([]);

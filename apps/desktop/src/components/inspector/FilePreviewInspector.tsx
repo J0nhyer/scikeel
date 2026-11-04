@@ -1010,7 +1010,7 @@ export function PreviewError({
 /** Render the probe's memory pointer as a compact, readable fact sheet. */
 function LargeFilePointerPanel({ p }: { p: LargeFilePointer }) {
   const { t } = useTranslation(["inspector", "common"]);
-  if (p.error) return <div className="mt-3 text-[13px] text-error">{p.error}</div>;
+  if (p.error) return <div className="mt-3"><ErrorNotice issueId={`preview-pointer:${p.error}`} summary={p.error} /></div>;
   const fmt = (n: number) => formatNumber(n);
   const rows: [string, string][] = [];
   if (p.format) rows.push([t("filePreview.pointer.format"), p.format]);
