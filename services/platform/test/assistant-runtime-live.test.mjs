@@ -19,7 +19,8 @@ test('a forbidden Admin selection cannot dispatch inference or manufacture nativ
 });
 
 function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed',fileRevertFailure,
- historyConflictsAfterPrompt=0,selectionConflicts=0,model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex',multiStepFiles=false}={}) {
+ historyConflictsAfterPrompt=0,selectionConflicts=0,model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex',multiStepFiles=false,
+ multiStepQuestion=false,toolOnlyQuestion=false}={}) {
  const calls=[],files=new Map(),history=[],questions=[],selections=[];
  let revision=1,runtime='opencode',currentPhase,checkpointAnswered=false,disabled=false,aborted=false,warm=false,settling=0;
  let fileStep=0,fileMarker;
@@ -68,7 +69,11 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
   if(path==='/permission')return Response.json([]);
   if(path==='/question')return Response.json(questions);
   if(path==='/question/que_acceptance/reply'){
-   assert.equal(body.answers[0][0],'Continue');questions.length=0;answer(lostQuestionAnswer?'Answer not delivered.':'Continue');return Response.json({});
+   assert.equal(body.answers[0][0],'Continue');questions.length=0;
+   if(multiStepQuestion)history.push({info:{id:`msg_${history.length}`,role:'assistant',time:{completed:1},finish:'stop'},
+    parts:[{type:'text',text:'Continue'}]});
+   else answer(lostQuestionAnswer?'Answer not delivered.':'Continue');
+   return Response.json({});
   }
   if(path==='/api/collaboration/ses_legacy') {
    if(body?.action==='mode'){
@@ -136,7 +141,17 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
     }
    }else if(currentPhase==='question'){
     assert.ok(text.includes(selectedRuntime==='codex'?'request_user_input':'question tool'));
-    questions.push({id:'que_acceptance',sessionID:'ses_legacy',questions:[{question:'Release question',options:[{label:'Continue'},{label:'Stop'}]}]});
+    const questionTool=selectedRuntime==='codex'?'request_user_input':'question';
+    if(toolOnlyQuestion){
+     // Settled tool-only step: completed, no text, no pending question.
+     history.push({info:{id:`msg_${history.length}`,role:'assistant',time:{completed:1},finish:'stop'},
+      parts:[{type:'tool',tool:questionTool,state:{status:'completed',input:{},output:'no question'}}]});
+    }else{
+     if(multiStepQuestion)history.push({info:{id:`msg_${history.length}`,role:'assistant',time:{completed:1},finish:'tool-calls'},
+      parts:[{type:'text',text:'I will ask the required question now.'},
+       {type:'tool',tool:questionTool,state:{status:'completed',input:{question:'Release question'},output:'asked'}}]});
+     questions.push({id:'que_acceptance',sessionID:'ses_legacy',questions:[{question:'Release question',options:[{label:'Continue'},{label:'Stop'}]}]});
+    }
    }
    else if(currentPhase==='fetch'){
     answer('Example Domain');if(!omitFetch)history.at(-1).parts.push({type:'tool',tool:'webfetch',state:{status:'completed',input:{url:'https://example.com/'},output:'<h1>Example Domain</h1>'}});
@@ -177,12 +192,42 @@ for(const selectedRuntime of ['codex','opencode'])test(`a multi-step ${selectedR
  // completion settled on the final step and aggregated parts across steps.
  const toolStep=fixture.history.find(message=>message.info.role==='assistant'&&message.info.finish==='tool-calls');
  const finalStep=fixture.history.find(message=>message.info.role==='assistant'&&message.info.finish==='stop');
+ assert.ok(toolStep);assert.ok(finalStep);
  assert.equal(toolStep.parts.length,1);
  assert.equal(toolStep.parts[0].tool,'bash');
  assert.equal(toolStep.parts[0].state.status,'completed');
  assert.equal(finalStep.parts.some(part=>part.type==='tool'),false);
  assert.equal(finalStep.parts.some(part=>part.type==='text'&&part.text),true);
  assert.equal(fixture.snapshot().disabled,true);
+});
+
+for(const selectedRuntime of ['codex','opencode'])test(`a multi-step ${selectedRuntime} question turn ignores intermediate preamble text`,async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const model='fixture-next-model',providerID=selectedRuntime==='codex'?'codex':'configured-provider';
+ const fixture=gateway({selectedRuntime,model,providerID,multiStepQuestion:true});
+ const proof=await runSelectedAssistantAcceptance({...fixture,target:{schema:2,runtime:selectedRuntime,model,providerID},
+  timeoutMs:1000,pollMs:1,stopGraceMs:1});
+ assert.equal(proof.capabilities.question_answer,'passed');
+ assert.equal(Object.values(proof.capabilities).every(value=>value==='passed'),true);
+ const preamble=fixture.history.find(message=>message.info.role==='assistant'&&message.info.finish==='tool-calls');
+ const finalStep=fixture.history.find(message=>message.info.role==='assistant'&&message.info.finish==='stop');
+ assert.ok(preamble);assert.ok(finalStep);
+ assert.ok(preamble.parts.some(part=>part.type==='text'&&part.text));
+ assert.equal(preamble.parts.find(part=>part.type==='tool')?.tool,selectedRuntime==='codex'?'request_user_input':'question');
+ assert.equal(preamble.parts.find(part=>part.type==='tool')?.state?.status,'completed');
+ assert.ok(finalStep.parts.some(part=>part.type==='text'&&part.text==='Continue'));
+ assert.equal(fixture.snapshot().disabled,true);
+});
+
+test('a settled tool-only native turn fails requireRunning immediately instead of timing out',async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({toolOnlyQuestion:true});
+ const started=Date.now();
+ await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1}),
+  /Native turn ended without the requested question/i);
+ assert.ok(Date.now()-started<900);
+ assert.equal(fixture.snapshot().disabled,true);
+ assert.equal(fixture.snapshot().currentPhase,'question');
 });
 
 for(const selectedRuntime of ['codex','opencode'])for(const nativeFileEvidence of ['wrong-exit','wrong-protocol'])

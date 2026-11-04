@@ -121,25 +121,30 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
  };
  // OpenCode records one assistant message per native step. A completed tool
  // step is not the end of the user turn: wait until the last step settles and
- // the session is idle, then aggregate every step's parts so text and tool
- // evidence from earlier steps remain visible.
- const settledTurn=async ids=>{
+ // the session is idle. Completion keeps earlier tool evidence but exposes only
+ // the final step's text, so an intermediate preamble cannot change the answer.
+ const settled=async ids=>{
   const messages=await history();ensure(Array.isArray(messages),'Acceptance history is unavailable');
-  const assistants=messages.filter(message=>!ids.has(message.info.id)&&message.info.role==='assistant');
-  ensure(!assistants.some(message=>message.info.error),'Selected assistant native execution failed');
-  const last=assistants.at(-1);
+  const steps=messages.filter(message=>!ids.has(message.info.id)&&message.info.role==='assistant');
+  ensure(!steps.some(message=>message.info.error),'Selected assistant native execution failed');
+  const last=steps.at(-1);
   if(!last?.info.time?.completed||last.info.finish==='tool-calls')return null;
-  const parts=assistants.flatMap(message=>message.parts??[]);
+  const parts=steps.flatMap(message=>message.parts??[]);
   if(parts.some(part=>part.type==='tool'&&['pending','running'].includes(part.state?.status)))return null;
-  if(!last.parts?.some(part=>part.type==='text'&&!part.synthetic&&part.text))return null;
   const statuses=await json(scoped('/session/status')),questions=await json(scoped('/question')),permissions=await json(scoped('/permission'));
   ensure(statuses&&Array.isArray(questions)&&Array.isArray(permissions),'Acceptance turn state is unavailable');
   if(statuses[session.id]&&statuses[session.id].type!=='idle')return null;
   if(questions.some(value=>value.sessionID===session.id)||permissions.some(value=>value.sessionID===session.id))return null;
-  return {info:last.info,parts};
+  return {steps,last};
  };
- const completion=ids=>poll('completed native reply',()=>settledTurn(ids));
- const requireRunning=async(ids,label)=>ensure(!(await settledTurn(ids)),`Native turn ended without ${label}`);
+ const completion=ids=>poll('completed native reply',async()=>{
+  const turn=await settled(ids);if(!turn)return null;
+  const {steps,last}=turn;
+  ensure(last.parts?.some(part=>part.type==='text'&&!part.synthetic&&part.text),
+   'Selected assistant native reply has no visible text');
+  return {info:last.info,parts:[...steps.slice(0,-1).flatMap(message=>(message.parts??[]).filter(part=>part.type!=='text')),...(last.parts??[])]};
+ });
+ const requireRunning=async(ids,label)=>ensure(!(await settled(ids)),`Native turn ended without ${label}`);
  const mode=async value=>{const {state}=await collaboration();if(state.mode!==value)await collaborate({action:'mode',mode:value,revision:state.revision});};
  const idle=()=>poll('native cleanup',async()=>{
   const statuses=await json(scoped('/session/status')),questions=await json(scoped('/question')),permissions=await json(scoped('/permission'));
