@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
+
+const UNKNOWN_FORMAT = "unknown-format";
 import { useTranslation } from "react-i18next";
 import { parseQCode, segmentsFor, type QCodeParsed } from "@/lib/qcode";
 import { cn } from "@/lib/cn";
@@ -38,7 +40,7 @@ export function QCodeView({ filename, text }: { filename: string; text: string }
   if (parsed.error || !parsed.doc) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <ErrorNotice issueId={`qcode:${filename}:${parsed.error ?? "unknown-format"}`} summary={t("qcode.readError", { error: parsed.error ?? t("qcode.unknownFormat") })} />
+        <ErrorNotice issueId={`qcode:${filename}:${parsed.error ?? UNKNOWN_FORMAT}`} summary={t("qcode.readError", { error: parsed.error ?? t("qcode.unknownFormat") })} />
       </div>
     );
   }

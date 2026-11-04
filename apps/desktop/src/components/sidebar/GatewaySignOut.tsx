@@ -7,6 +7,8 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { signOutPlatformBrowser } from "@/lib/runtime";
 import { useToastStore } from "@/lib/toast";
+
+const SIGN_OUT_ISSUE = "signout";
 import { isPlatformWeb } from "@/lib/webMode";
 
 export function GatewaySignOut({ inMenu = false }: { inMenu?: boolean }) {
@@ -41,7 +43,7 @@ export function GatewaySignOut({ inMenu = false }: { inMenu?: boolean }) {
   </button>;
   return <form method="post" action="/auth/logout" onSubmit={submitSignOut}>
     {inMenu ? <DropdownMenu.Item asChild onSelect={event => event.preventDefault()}>{button}</DropdownMenu.Item> : button}
-    {error && <ErrorNotice issueId="signout" summary={t("session:live.account.signOutFailed")} />}
+    {error && <ErrorNotice issueId={SIGN_OUT_ISSUE} summary={t("session:live.account.signOutFailed")} />}
     {confirming && createPortal(<ConfirmDialog
       title={t("session:live.account.signOutConfirmTitle")}
       body={t("session:live.account.signOutConfirmBody")}

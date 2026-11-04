@@ -8,7 +8,7 @@ import {listPendingWorkspaceOperations,retryPendingWorkspaceOperation,type Pendi
 
 type View={owner:string;items:PendingWorkspaceOperation[];nextCursor:string|null;error?:string};
 export function WorkspacePendingActions(){
- const {t}=useTranslation('nav'),account=useRuntimeStore(state=>state.gatewayUser?.id),context=useRuntimeStore(state=>state.gatewayContext),readOnly=useRuntimeStore(state=>state.webReadOnly);
+ const {t}=useTranslation(['nav','common']),account=useRuntimeStore(state=>state.gatewayUser?.id),context=useRuntimeStore(state=>state.gatewayContext),readOnly=useRuntimeStore(state=>state.webReadOnly);
  const owner=JSON.stringify([account,context?.instanceId,context?.generation]);
  const [view,setView]=useState<View>({owner:'',items:[],nextCursor:null}),[busy,setBusy]=useState<string|null>(null);
  const loadRef=useRef<((cursor?:string)=>Promise<void>)|null>(null),currentRef=useRef<()=>boolean>(()=>false);

@@ -40,7 +40,7 @@ function EnvironmentDetails({ sessionId, running, onClose, returnFocusRef }: {
       }
     }
     finally { if (current === generation.current) setLoading(false); }
-  }, [sessionId]);
+  }, [sessionId, t]);
   useEffect(() => { void load(); return () => { generation.current++; }; }, [load]);
   async function request() {
     const client = getClient();

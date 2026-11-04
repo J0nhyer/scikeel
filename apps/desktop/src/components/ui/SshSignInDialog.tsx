@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, Loader2, Lock } from "lucide-react";
 import { useSshStore } from "@/lib/ssh";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
+
+const SSH_FAILED_ISSUE = "failed";
 import { cn } from "@/lib/cn";
 
 /**
@@ -89,7 +91,7 @@ export function SshSignInDialog() {
 
         {failed ? (
           <div className="mt-3">
-            <ErrorNotice issueId={`ssh:${session?.error ?? "failed"}`} summary={session?.error || t("ssh.failed")} />
+            <ErrorNotice issueId={`ssh:${session?.error ?? SSH_FAILED_ISSUE}`} summary={session?.error || t("ssh.failed")} />
           </div>
         ) : waiting ? (
           <div className="mt-3 flex items-center gap-2 text-[13px] text-muted">

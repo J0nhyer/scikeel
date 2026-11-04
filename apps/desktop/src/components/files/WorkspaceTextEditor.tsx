@@ -10,6 +10,8 @@ import {NameProjectDialog} from '@/components/projects/NameProjectDialog';
 import {ErrorNotice} from '@/components/ui/ErrorNotice';
 import {toast} from '@/lib/toast';
 
+const DRAFT_LIMIT_ISSUE = 'draft-limit';
+
 export function WorkspaceTextEditor({scope,path,filename,language,directory,onClose,controls}:{scope:WorkspaceScope;path:string;filename:string;language?:string;directory?:string;onClose:()=>void;controls?:React.ReactNode}){
  const owner=useRuntimeStore(state=>JSON.stringify([state.gatewayUser?.id,state.gatewayContext?.instanceId,state.gatewayContext?.generation]));
  return <OwnedTextEditor key={owner+JSON.stringify(scope)+path} {...{scope,path,filename,language,directory,onClose,controls,owner}}/>;
@@ -25,14 +27,14 @@ function OwnedTextEditor({scope,path,filename,language,directory,onClose,control
  // Retry deliberately rechecks capacity without changing the file identity.
  // eslint-disable-next-line react-hooks/exhaustive-deps
  },[owner,scope,path,directory,attempt]);
- if(!model)return <div className='flex min-w-0 flex-col gap-3 p-4'><ErrorNotice issueId='draft-limit' summary={t('fileManagement.draftLimit')} action={{label:t('common:notification.retry'),run:()=>setAttempt(value=>value+1)}} /><div className='flex gap-3'><button type='button' className='min-h-11 px-3' onClick={onClose}>{t('inspector:shell.closeInspector')}</button></div></div>;
+ if(!model)return <div className='flex min-w-0 flex-col gap-3 p-4'><ErrorNotice issueId={DRAFT_LIMIT_ISSUE} summary={t('fileManagement.draftLimit')} action={{label:t('common:notification.retry'),run:()=>setAttempt(value=>value+1)}} /><div className='flex gap-3'><button type='button' className='min-h-11 px-3' onClick={onClose}>{t('inspector:shell.closeInspector')}</button></div></div>;
  return <DraftEditor {...{scope,path,filename,language,directory,onClose,controls,model,readOnly}}/>;
 }
 function DraftEditor({scope,path,filename,language,onClose,controls,model,readOnly}:{scope:WorkspaceScope;path:string;filename:string;language?:string;directory?:string;onClose:()=>void;controls?:React.ReactNode;model:WorkspaceTextDraft;readOnly:boolean}){
  const {t}=useTranslation(['nav','inspector','common']);
  const state=useSyncExternalStore(model.subscribe,model.getSnapshot),[saveAs,setSaveAs]=useState(false);
  useEffect(()=>{const release=retainWorkspaceTextDraft(model);void model.load();return release;},[model]);
- useEffect(()=>{if(state.error)toast.error(state.conflict?t('fileManagement.textConflict'):state.status==='uncertain'?t('fileManagement.saveUncertain'):state.error);},[state.error,state.conflict,state.status]);
+ useEffect(()=>{if(state.error)toast.error(state.conflict?t('fileManagement.textConflict'):state.status==='uncertain'?t('fileManagement.saveUncertain'):state.error);},[state.error,state.conflict,state.status,t]);
  const blocked=readOnly || state.status==='saving' || state.status==='uncertain';
  const icon='flex h-8 w-8 shrink-0 items-center justify-center rounded hover:bg-surface-2 disabled:opacity-40';
  const close=()=>{if(confirmWorkspaceDraftLeave(t('fileManagement.discardDraft'),scope,path))onClose();};

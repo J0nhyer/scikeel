@@ -91,6 +91,8 @@ import {
 } from "@/lib/browser";
 import { toast } from "@/lib/toast";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
+
+const CATALOG_UNAVAILABLE_ISSUE = "catalog-unavailable";
 import { cn } from "@/lib/cn";
 
 /**
@@ -1097,7 +1099,7 @@ export function SettingsPage() {
             <p className="px-4 py-3 text-[13px] text-muted">{t("model.connectPrompt")}</p>
           ) : catalogState === "unavailable" ? (
             <div className="px-4 py-3">
-              <ErrorNotice issueId="catalog-unavailable" summary={t("model.catalogUnavailable")} />
+              <ErrorNotice issueId={CATALOG_UNAVAILABLE_ISSUE} summary={t("model.catalogUnavailable")} />
             </div>
           ) : catalogState === "loading" ? (
             <p className="px-4 py-3 text-[13px] text-muted">{t("model.catalogLoading")}</p>

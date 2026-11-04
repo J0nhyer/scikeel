@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
+
+const UNKNOWN_FORMAT = "unknown-format";
 import { useTranslation } from "react-i18next";
 import { parseEigenval, type BandData } from "@/lib/bands";
 
@@ -24,7 +26,7 @@ export function BandView({ filename, bytes }: { filename: string; bytes: ArrayBu
   if (parsed.error || !parsed.data) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <ErrorNotice issueId={`band:${filename}:${parsed.error ?? "unknown-format"}`} summary={t("band.readError", { error: parsed.error ?? t("band.unknownFormat") })} />
+        <ErrorNotice issueId={`band:${filename}:${parsed.error ?? UNKNOWN_FORMAT}`} summary={t("band.readError", { error: parsed.error ?? t("band.unknownFormat") })} />
       </div>
     );
   }

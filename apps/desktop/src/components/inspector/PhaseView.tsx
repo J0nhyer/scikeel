@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
+
+const UNKNOWN_FORMAT = "unknown-format";
 import { useTranslation } from "react-i18next";
 import { parsePhaseDiagram, type PhaseDiagram } from "@/lib/phase";
 
@@ -25,7 +27,7 @@ export function PhaseView({ filename, text }: { filename: string; text: string }
   if (parsed.error || !parsed.pd) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <ErrorNotice issueId={`phase:${filename}:${parsed.error ?? "unknown-format"}`} summary={t("phase.readError", { error: parsed.error ?? t("phase.unknownFormat") })} />
+        <ErrorNotice issueId={`phase:${filename}:${parsed.error ?? UNKNOWN_FORMAT}`} summary={t("phase.readError", { error: parsed.error ?? t("phase.unknownFormat") })} />
       </div>
     );
   }

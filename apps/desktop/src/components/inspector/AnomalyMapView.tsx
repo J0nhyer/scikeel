@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
+
+const UNKNOWN_FORMAT = "unknown-format";
 import { useTranslation } from "react-i18next";
 import { divergingColor, parseAnomaly, type AnomalyGrid } from "@/lib/anomaly";
 
@@ -23,7 +25,7 @@ export function AnomalyMapView({ filename, text }: { filename: string; text: str
   if (parsed.error || !parsed.grid) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <ErrorNotice issueId={`anomaly:${filename}:${parsed.error ?? "unknown-format"}`} summary={t("anomaly.readError", { error: parsed.error ?? t("anomaly.unknownFormat") })} />
+        <ErrorNotice issueId={`anomaly:${filename}:${parsed.error ?? UNKNOWN_FORMAT}`} summary={t("anomaly.readError", { error: parsed.error ?? t("anomaly.unknownFormat") })} />
       </div>
     );
   }

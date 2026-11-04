@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
+
+const UNKNOWN_FORMAT = "unknown-format";
 import { useTranslation } from "react-i18next";
 import { parseDoscar, type DosData } from "@/lib/dos";
 import { cn } from "@/lib/cn";
@@ -26,7 +28,7 @@ export function DosView({ filename, bytes }: { filename: string; bytes: ArrayBuf
   if (parsed.error || !parsed.dos) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <ErrorNotice issueId={`dos:${filename}:${parsed.error ?? "unknown-format"}`} summary={t("dos.readError", { error: parsed.error ?? t("dos.unknownFormat") })} />
+        <ErrorNotice issueId={`dos:${filename}:${parsed.error ?? UNKNOWN_FORMAT}`} summary={t("dos.readError", { error: parsed.error ?? t("dos.unknownFormat") })} />
       </div>
     );
   }
