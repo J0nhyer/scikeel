@@ -5827,7 +5827,6 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
           error: err instanceof Error ? err.message : String(err),
         };
       });
-      toast.error(i18n.t("runtime.compact.error"));
     }
   },
 

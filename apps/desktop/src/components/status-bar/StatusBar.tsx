@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Popover from "@radix-ui/react-popover";
 import { RefreshCw } from "lucide-react";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import {
   agentPressure,
   agentWindows,
@@ -344,7 +345,12 @@ function UsageRosterRow({ row, mode, now }: { row: UsageRow; mode: UsageMode; no
             first attempt looked when the requests were going out unproxied.
             Shown even when a stale session-file percentage stands in above:
             that number is the symptom, and this is the cause. */}
-        {row.planError && <span className="text-[11px] text-warn">{row.planError}</span>}
+        {row.planError && (
+          <ErrorNotice
+            issueId={`plan:${row.usage.agent}:${row.planError}`}
+            summary={row.planError}
+          />
+        )}
         {/* Spend, for the agents that report no plan window at all. Claude Code
             writes token counts and nothing about the subscription, so a
             percentage there would be invented. */}

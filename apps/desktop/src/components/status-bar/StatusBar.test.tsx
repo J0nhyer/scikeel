@@ -2,7 +2,9 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
+import { useToastStore } from "@/lib/toast";
 import { useUsageStore, type AgentUsage, type TokenTotals, type UsageSummary } from "@/lib/usage";
+import { Toaster } from "@/components/ui/Toaster";
 import { StatusBar } from "./StatusBar";
 
 // The bar scans on mount; these tests set the store directly instead.
@@ -346,6 +348,7 @@ describe("StatusBar · the plan figures come from the provider", () => {
 describe("StatusBar · when the provider cannot be asked", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
+    useToastStore.getState().reset();
     useUsageStore.setState({ summary: null, loading: false });
   });
 
@@ -354,14 +357,14 @@ describe("StatusBar · when the provider cannot be asked", () => {
       agents: [agent("claude", { week: totals({ costUsd: 4, pricedTurns: 2 }) })],
       plan: { claude: [], codex: [], claudeError: "could not connect — check the proxy in Settings" },
     });
-    render(<StatusBar />);
+    render(<><StatusBar /><Toaster /></>);
     await userEvent.click(screen.getByRole("button", { name: "Usage" }));
 
     // A silent absence reads as "this app cannot do that", which is exactly how
     // it looked while the requests were going out unproxied.
     expect(
-      await screen.findByText("could not connect — check the proxy in Settings"),
-    ).toBeInTheDocument();
+      await screen.findByRole("alert"),
+    ).toHaveTextContent("could not connect — check the proxy in Settings");
   });
 
   it("marks a session-file percentage with its age, and still says why", async () => {
@@ -381,13 +384,13 @@ describe("StatusBar · when the provider cannot be asked", () => {
       ],
       plan: { claude: [], codex: [], codexError: "timed out — check the proxy in Settings" },
     });
-    render(<StatusBar />);
+    render(<><StatusBar /><Toaster /></>);
     await userEvent.click(screen.getByRole("button", { name: "Usage" }));
 
     const popover = within(await screen.findByRole("dialog"));
     expect(popover.getByText("91%")).toBeInTheDocument();
     expect(popover.getByText("as of 3h ago")).toBeInTheDocument();
-    expect(popover.getByText("timed out — check the proxy in Settings")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("timed out — check the proxy in Settings");
   });
 
   it("says nothing when the bars are there", async () => {
@@ -399,7 +402,7 @@ describe("StatusBar · when the provider cannot be asked", () => {
         claudeError: "stale message from an earlier attempt",
       },
     });
-    render(<StatusBar />);
+    render(<><StatusBar /><Toaster /></>);
     await userEvent.click(screen.getByRole("button", { name: "Usage" }));
 
     const popover = within(await screen.findByRole("dialog"));

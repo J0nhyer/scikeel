@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import type { ResearchDecision } from "@/lib/collaboration";
+import { ErrorNotice } from "../ui/ErrorNotice";
 import { StateNotice } from "../ui/StateNotice";
 import { ResearchDecisionCard } from "../thread/ResearchDecisionCard";
 
@@ -65,18 +66,11 @@ export function ComposerNotices({
   return (
     <>
       {decisionInputError && pendingDecision && (
-        <div role="alert" className="flex min-w-0 items-start gap-2 text-xs text-danger">
-          <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">{decisionInputError}</span>
-          <button
-            type="button"
-            aria-label={t("common:notification.close")}
-            title={t("common:notification.close")}
-            className={closeButtonClass}
-            onClick={onDismissDecisionInputError}
-          >
-            <X size={14} />
-          </button>
-        </div>
+        <ErrorNotice
+          issueId={`decision-input:${decisionInputError}`}
+          summary={decisionInputError}
+          onDismiss={onDismissDecisionInputError}
+        />
       )}
       {collaborationError && (
         <StateNotice
@@ -84,7 +78,6 @@ export function ComposerNotices({
           summary={t("collaboration.syncFailed")}
           detail={collaborationError}
           action={{ label: t("collaboration.retry"), run: onRetryCollaboration }}
-          dismissFully
         />
       )}
       {pendingDecision && (

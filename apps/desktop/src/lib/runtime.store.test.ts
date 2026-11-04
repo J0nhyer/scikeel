@@ -484,7 +484,7 @@ beforeEach(async () => {
   mocks.getProjectCounts.mockResolvedValue({ revision: 1, byProject: {}, unassigned: 0 });
   mocks.takeConfigQuarantineNotice.mockClear();
   mocks.takeConfigQuarantineNotice.mockResolvedValue(null);
-  useToastStore.setState({ toasts: [] });
+  useToastStore.setState({ toasts: [], errors: [] });
   mocks.closedDirs.length = 0;
   useRuntimeStore.setState({
     runtimeKind: "opencode",
@@ -2214,7 +2214,7 @@ describe("runtime authentication", () => {
     await useRuntimeStore.getState().reportQuarantinedConfig();
     await useRuntimeStore.getState().reportQuarantinedConfig();
 
-    const messages = useToastStore.getState().toasts.map((t) => t.message);
+    const messages = useToastStore.getState().errors.map((t) => t.message);
     // Once — the second call has nothing left to take.
     expect(messages).toHaveLength(1);
     // The path is the whole point: it is where the user's providers still are.
@@ -5327,6 +5327,8 @@ describe("manual context compaction", () => {
     await useRuntimeStore.getState().compactContext("ses_1");
     expect(useRuntimeStore.getState().compactingSessions["ses_1"]).toBeUndefined();
     expect(useRuntimeStore.getState().error).toContain("compact rejected");
+    // The focused-session StateNotice owns the prompt; no duplicate toast.
+    expect(useToastStore.getState().errors).toEqual([]);
   });
 
   it("refuses to compact while a turn is streaming", async () => {
