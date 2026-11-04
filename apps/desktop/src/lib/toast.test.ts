@@ -11,10 +11,48 @@ describe("notification lifecycle", () => {
     expect(useToastStore.getState().toasts).toHaveLength(1);
     expect(useToastStore.getState().toasts[0].eventId).toMatch(/^[0-9a-f]{32}$/);
   });
-  it("expires every tone at ten seconds", () => {
+  it("expires non-error feedback at ten seconds and keeps errors", () => {
     toast.success("Saved"); toast.error("Failed");
-    vi.advanceTimersByTime(9999); expect(useToastStore.getState().toasts).toHaveLength(2);
+    vi.advanceTimersByTime(9999); expect(useToastStore.getState().toasts).toHaveLength(1);
+    expect(useToastStore.getState().errors).toHaveLength(1);
     vi.advanceTimersByTime(1); expect(useToastStore.getState().toasts).toEqual([]);
+    expect(useToastStore.getState().errors.map((item) => item.message)).toEqual(["Failed"]);
+    useToastStore.getState().dismiss(useToastStore.getState().errors[0].id);
+    expect(useToastStore.getState().errors).toEqual([]);
+  });
+  it("keeps at most three errors and evicts the oldest error first", () => {
+    for (const message of ["one", "two", "three", "four"]) toast.error(message);
+    expect(useToastStore.getState().errors.map((item) => item.message)).toEqual(["two", "three", "four"]);
+    toast.success("saved");
+    expect(useToastStore.getState().errors).toHaveLength(3);
+  });
+  it("updates an issue card instead of duplicating it", () => {
+    toast.error("first", { issueId: "load" });
+    toast.error("second", { issueId: "load" });
+    expect(useToastStore.getState().errors).toHaveLength(1);
+    expect(useToastStore.getState().errors[0].message).toBe("second");
+  });
+  it("records dismissal for an issue card and reopens it explicitly", () => {
+    toast.error("Failed", { issueId: "load" });
+    const item = useToastStore.getState().errors[0];
+    useToastStore.getState().dismiss(item.id);
+    expect(useToastStore.getState().errors).toEqual([]);
+    expect(useToastStore.getState().dismissedIssues).toContain(JSON.stringify([null, "load"]));
+    useToastStore.getState().showIssue(JSON.stringify([null, "load"]));
+    expect(useToastStore.getState().dismissedIssues).toEqual([]);
+  });
+  it("does not re-add a dismissed issue until it is shown again", () => {
+    useToastStore.getState().dismissIssue(JSON.stringify([null, "load"]));
+    toast.error("Failed", { issueId: "load" });
+    expect(useToastStore.getState().errors).toEqual([]);
+  });
+  it("clears errors and dismissal state on account change", () => {
+    useToastStore.getState().setAccount("a");
+    toast.error("Failed", { accountId: "a", issueId: "load" });
+    useToastStore.getState().dismiss(useToastStore.getState().errors[0].id);
+    useToastStore.getState().setAccount("b");
+    expect(useToastStore.getState().errors).toEqual([]);
+    expect(useToastStore.getState().dismissedIssues).toEqual([]);
   });
   it("bounds visible items and consumes event identities rather than text", () => {
     useToastStore.getState().setAccount("a");
@@ -30,9 +68,7 @@ describe("notification lifecycle", () => {
     useToastStore.getState().resume(id);
     vi.advanceTimersByTime(7999); expect(useToastStore.getState().toasts).toHaveLength(1);
     vi.advanceTimersByTime(1); expect(useToastStore.getState().toasts).toEqual([]);
-    toast.error("Failed"); const next = useToastStore.getState().toasts[0].id;
-    useToastStore.getState().pause(next); vi.advanceTimersByTime(30_000);
-    expect(useToastStore.getState().toasts).toEqual([]); vi.advanceTimersByTime(0); expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(0); expect(vi.getTimerCount()).toBe(0);
   });
   it("does not extend deadlines when the same event reappears", () => {
     toast.success("Saved", { eventId: "op" }); vi.advanceTimersByTime(4000);
@@ -42,7 +78,8 @@ describe("notification lifecycle", () => {
   it("rejects late completions from a different account", () => {
     useToastStore.getState().setAccount("a"); toast.error("Failed", { accountId: "a" });
     useToastStore.getState().setAccount("b"); toast.success("Old result", { accountId: "a", eventId: "late" });
-    expect(useToastStore.getState().toasts).toEqual([]); vi.advanceTimersByTime(0); expect(vi.getTimerCount()).toBe(0);
+    expect(useToastStore.getState().toasts).toEqual([]); expect(useToastStore.getState().errors).toEqual([]);
+    vi.advanceTimersByTime(0); expect(vi.getTimerCount()).toBe(0);
   });
   it("cleans timers on dismissal and eviction", () => {
     for (let n = 0; n < 8; n++) toast.success(String(n));

@@ -3,7 +3,7 @@ import { appendConsumed, defaultToastMs, expiryAt } from "./notificationPolicy";
 describe("notification deadline policy", () => {
   it("caps every deadline independently of reading pauses", () => {
     expect(defaultToastMs("success")).toBe(10_000); expect(defaultToastMs("info")).toBe(10_000);
-    expect(defaultToastMs("warning")).toBe(10_000); expect(defaultToastMs("error")).toBe(10_000);
+    expect(defaultToastMs("warning")).toBe(10_000);
     expect(expiryAt(29_000, 0, 5000)).toBe(30_000);
   });
   it("bounds and deduplicates consumed event IDs", () => {
