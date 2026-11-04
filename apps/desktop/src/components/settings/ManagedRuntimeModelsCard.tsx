@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { Section } from "@/components/settings/Section";
 import { inputCls, selectCls } from "@/components/settings/inputCls";
 import { cn } from "@/lib/cn";
+import { toast } from "@/lib/toast";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { gatewayOrigin } from "@/lib/webMode";
 
 type ManagedRuntimeId = "claude" | "codex";
@@ -127,12 +129,9 @@ export function ManagedRuntimeModelsCard() {
         [runtime]: t("managedModels.saved", { runtime: label }),
       }));
     } catch (error) {
-      setMessages((current) => ({
-        ...current,
-        [runtime]: t("managedModels.failed", {
-          runtime: label,
-          detail: error instanceof Error ? error.message : String(error),
-        }),
+      toast.error(t("managedModels.failed", {
+        runtime: label,
+        detail: error instanceof Error ? error.message : String(error),
       }));
     } finally {
       setSaving((current) => ({ ...current, [runtime]: false }));
@@ -147,9 +146,9 @@ export function ManagedRuntimeModelsCard() {
       flush
     >
       {loadError && (
-        <p className="border-b border-faint px-4 py-3 text-[13px] text-error" role="alert">
-          {t("managedModels.failed", { runtime: "Managed CLI", detail: loadError })}
-        </p>
+        <div className="border-b border-faint px-4 py-3">
+          <ErrorNotice issueId={`managed-models:${loadError}`} summary={t("managedModels.failed", { runtime: "Managed CLI", detail: loadError })} />
+        </div>
       )}
       {RUNTIMES.map(({ id, label }, index) => {
         const draft = drafts[id];

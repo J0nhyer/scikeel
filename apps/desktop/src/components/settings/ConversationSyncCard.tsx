@@ -5,7 +5,6 @@ import { Row, Section } from "./Section";
 import { pickFolder } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
 import { checkSyncDir, lastSync, runSync, setSyncDir, syncDir, type LastSync } from "@/lib/syncRunner";
-import { cn } from "@/lib/cn";
 import { useRuntimeStore } from "@/lib/runtime";
 
 /**
@@ -107,15 +106,13 @@ export function ConversationSyncCard() {
             hint={
               <>
                 {t("sync.nowHint")}
-                {last && (
-                  <span className={cn("mt-0.5 block", last.error && "text-error")}>
-                    {last.error
-                      ? t("sync.lastFailed", { error: last.error })
-                      : t("sync.last", {
-                          when: new Date(last.at).toLocaleString(),
-                          imported: last.imported,
-                          exported: last.exported,
-                        })}
+                {last && !last.error && (
+                  <span className="mt-0.5 block">
+                    {t("sync.last", {
+                      when: new Date(last.at).toLocaleString(),
+                      imported: last.imported,
+                      exported: last.exported,
+                    })}
                   </span>
                 )}
               </>

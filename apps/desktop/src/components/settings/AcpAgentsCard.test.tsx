@@ -2,6 +2,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRuntimeStore } from "@/lib/runtime";
+import { useToastStore } from "@/lib/toast";
+import { Toaster } from "@/components/ui/Toaster";
 import { loadAcpAgents, activeAcpAgentId } from "@/lib/acpAgents";
 import { AcpAgentsCard } from "./AcpAgentsCard";
 
@@ -14,7 +16,8 @@ vi.mock("@/lib/tauri", () => ({ isTauri: true }));
 beforeEach(() => {
   window.localStorage.clear();
   connectRetry.mockClear();
-  useRuntimeStore.setState({ connectRetry, status: "ready", runtimeKind: "opencode" });
+  useToastStore.getState().reset();
+  useRuntimeStore.setState({ connectRetry, status: "ready", runtimeKind: "opencode", error: null });
 });
 
 describe("Settings → the agent this app drives", () => {
@@ -96,5 +99,12 @@ describe("Settings → the agent this app drives", () => {
     // The running child was started from the OLD command line — restart it, or
     // Settings describes one agent while another one answers.
     expect(connectRetry).toHaveBeenCalled();
+  });
+
+  it("shows a runtime failure in the global card", async () => {
+    useRuntimeStore.setState({ runtimeKind: "acp", status: "error", error: "fixture runtime failed" });
+    render(<><AcpAgentsCard /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent("fixture runtime failed");
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 });

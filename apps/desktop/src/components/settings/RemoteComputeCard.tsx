@@ -37,7 +37,6 @@ export function RemoteComputeCard() {
   const [machines, setMachines] = useState<Machine[]>([]);
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
   // Per-host live probe + expand/queue state, keyed by host.
   const [probes, setProbes] = useState<Record<string, ComputeProbe | "loading">>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -111,13 +110,12 @@ export function RemoteComputeCard() {
     const host = draft.trim();
     if (!host) return;
     setAdding(true);
-    setAddError(null);
     try {
       await addComputeMachine(host, undefined);
       setDraft("");
       await loadMachines(); // probes every listed machine, including this new host
     } catch (e) {
-      setAddError(e instanceof Error ? e.message : String(e));
+      toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setAdding(false);
     }
@@ -209,7 +207,6 @@ export function RemoteComputeCard() {
                     {adding ? t("remoteCompute.adding") : t("remoteCompute.add")}
                   </button>
                 </div>
-                {addError && <p className="mt-2 text-xs text-error">{addError}</p>}
               </div>
             </div>
           </>

@@ -276,7 +276,7 @@ export function ManagedAgentsCard() {
       })}
     </div>
     {resolving && <p className="px-4 pb-3 text-xs text-muted" role="status">{t("managedAgents.saving")}</p>}
-    {detail && <div role="alert" className="px-4 pb-3"><StateNotice issueId={`assistant-selection:${pending?.operationId ?? policy?.revision ?? 0}:${message}`}
+    {detail && <div className="px-4 pb-3"><StateNotice issueId={`assistant-selection:${pending?.operationId ?? policy?.revision ?? 0}:${message}`}
       summary={t("common:notification.problem")} detail={detail}
       action={retryable ? { label: t("managedAgents.retry"), run: () => {
         if (resolvingRef.current) return;

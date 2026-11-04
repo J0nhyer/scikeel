@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { useRuntimeStore } from "@/lib/runtime";
+import { useToastStore } from "@/lib/toast";
+import { Toaster } from "@/components/ui/Toaster";
 import { GatewayModelsPanel } from "./GatewayModelsPanel";
+
+const renderPanel = () => render(<><GatewayModelsPanel /><Toaster /></>);
 
 const viewport = vi.hoisted(() => ({ mobile: false }));
 vi.mock("@/lib/useIsMobile", () => ({ useIsMobile: () => viewport.mobile }));
@@ -14,6 +18,7 @@ const language = i18n.language;
 beforeEach(async () => {
   viewport.mobile = false;
   await i18n.changeLanguage("en");
+  useToastStore.getState().reset();
   useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready",
     gatewayRuntimeSwitching: false, modelSwitching: false, modelSwitchError: null,
     defaultModel: "fixture/old", sessionModels: { ses_existing: "fixture/old" }, gatewayUserRole: "user",
@@ -23,17 +28,17 @@ beforeEach(async () => {
       label: "OpenCode", enabled: true, models: [], defaultModel: null, selectedModel: null }],
   });
 });
-afterEach(async () => { cleanup(); useRuntimeStore.setState(before, true); await i18n.changeLanguage(language); });
+afterEach(async () => { cleanup(); useToastStore.getState().reset(); useRuntimeStore.setState(before, true); await i18n.changeLanguage(language); });
 
 describe("Gateway default model settings", () => {
   it.each(["user", "admin"] as const)("keeps the existing single Admin entry and no per-user selector for %s", role => {
-    useRuntimeStore.setState({ gatewayUserRole: role }); render(<GatewayModelsPanel />);
+    useRuntimeStore.setState({ gatewayUserRole: role }); renderPanel();
     expect(screen.queryByRole("button", { name: /AI assistant/ })).not.toBeInTheDocument();
     expect(screen.queryAllByTestId("deployment-assistant-selector")).toHaveLength(role === "admin" ? 1 : 0);
   });
   it.each(["en", "zh-Hans"])("explains the default in %s", async locale => {
     await i18n.changeLanguage(locale);
-    render(<GatewayModelsPanel />);
+    renderPanel();
     expect(screen.getByRole("button", { name: locale === "en" ? "Default model: Old model" : "默认模型: Old model" })).toBeEnabled();
     expect(screen.getByText(locale === "en"
       ? "New conversations use this model for your account and current assistant. Existing conversation choices stay the same."
@@ -45,7 +50,7 @@ describe("Gateway default model settings", () => {
     const save = vi.fn(async (model: string) => { useRuntimeStore.setState({ defaultModel: model }); });
     useRuntimeStore.setState({ setDefaultModel: save });
     const user = userEvent.setup();
-    render(<GatewayModelsPanel />);
+    renderPanel();
     await user.click(screen.getByRole("button", { name: "Default model: Old model" }));
     await user.click(screen.getByRole(mobile ? "button" : "menuitem", { name: "New model" }));
     expect(save).toHaveBeenCalledWith("fixture/new");
@@ -63,22 +68,29 @@ describe("Gateway default model settings", () => {
     });
     useRuntimeStore.setState({ setDefaultModel: save });
     const user = userEvent.setup();
-    render(<GatewayModelsPanel />);
+    renderPanel();
     await user.click(screen.getByRole("button", { name: "Default model: Old model" }));
     await user.click(screen.getByRole(mobile ? "button" : "menuitem", { name: "New model" }));
-    expect(screen.getByText("Fixture save failure")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Fixture save failure");
     expect(screen.getByRole("button", { name: "Default model: Old model" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Default model: Old model" }));
     await user.click(screen.getByRole(mobile ? "button" : "menuitem", { name: "New model" }));
-    expect(screen.queryByText("Fixture save failure")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(save).toHaveBeenCalledTimes(2);
   });
 
   it("preserves the saved default while explaining a recovery failure", () => {
     act(() => useRuntimeStore.setState({ defaultModel: "fixture/new",
       modelSwitchError: i18n.t("settings:model.defaultRecoveryFailed", { detail: "Fixture reconnect failure" }) }));
-    render(<GatewayModelsPanel />);
+    renderPanel();
     expect(screen.getByRole("button", { name: "Default model: New model" })).toBeEnabled();
-    expect(screen.getByText("The default model was saved, but the assistant could not reconnect: Fixture reconnect failure")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("The default model was saved, but the assistant could not reconnect: Fixture reconnect failure");
+  });
+
+  it("shows a catalog limitation as status text, not an error card", () => {
+    useRuntimeStore.setState({ gatewayCatalogState: "limited" });
+    renderPanel();
+    expect(screen.getByText("The server could only identify some models for this assistant.")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

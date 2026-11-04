@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { signOutPlatformBrowser } from "@/lib/runtime";
 import { useToastStore } from "@/lib/toast";
 import { isPlatformWeb } from "@/lib/webMode";
@@ -40,7 +41,7 @@ export function GatewaySignOut({ inMenu = false }: { inMenu?: boolean }) {
   </button>;
   return <form method="post" action="/auth/logout" onSubmit={submitSignOut}>
     {inMenu ? <DropdownMenu.Item asChild onSelect={event => event.preventDefault()}>{button}</DropdownMenu.Item> : button}
-    {error && <p role="alert" className="px-3 py-2 text-xs text-danger">{t("session:live.account.signOutFailed")}</p>}
+    {error && <ErrorNotice issueId="signout" summary={t("session:live.account.signOutFailed")} />}
     {confirming && createPortal(<ConfirmDialog
       title={t("session:live.account.signOutConfirmTitle")}
       body={t("session:live.account.signOutConfirmBody")}

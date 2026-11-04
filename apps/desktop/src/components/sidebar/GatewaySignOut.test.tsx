@@ -1,17 +1,20 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
+import { useToastStore } from "@/lib/toast";
+import { Toaster } from "@/components/ui/Toaster";
 import { GatewaySignOut } from "./GatewaySignOut";
 
 const signOut = vi.hoisted(() => vi.fn<() => Promise<void>>());
 vi.mock("@/lib/runtime", () => ({ signOutPlatformBrowser: signOut }));
 vi.mock("@/lib/webMode", () => ({ isPlatformWeb: true }));
-beforeEach(() => { signOut.mockReset().mockResolvedValue(); });
+beforeEach(() => { signOut.mockReset().mockResolvedValue(); useToastStore.getState().reset(); });
+const renderSignOut = () => render(<><GatewaySignOut /><Toaster /></>);
 
 it("asks before stopping the workspace and coalesces the confirmed submission", async () => {
   let release!: () => void;
   signOut.mockImplementation(() => new Promise<void>(resolve => { release = resolve; }));
-  render(<GatewaySignOut />);
+  renderSignOut();
   const button = screen.getByRole("button", { name: "Sign out" });
   const form = button.closest("form")!;
   fireEvent.submit(form); fireEvent.submit(form);
@@ -30,7 +33,7 @@ it("asks before stopping the workspace and coalesces the confirmed submission", 
 
 it("cancels without stopping the workspace", async () => {
   const user = userEvent.setup();
-  render(<GatewaySignOut />);
+  renderSignOut();
   await user.click(screen.getByRole("button", { name: "Sign out" }));
   expect(screen.getByRole("alertdialog", { name: "Sign out and stop the workspace?" }))
     .toHaveTextContent("If this is the last signed-in session, the workspace will stop.");
@@ -42,11 +45,12 @@ it("cancels without stopping the workspace", async () => {
 it("keeps a failed logout actionable without native form navigation", async () => {
   signOut.mockRejectedValueOnce(new Error("HTTP 502"));
   const user = userEvent.setup();
-  render(<GatewaySignOut />);
+  renderSignOut();
   const button = screen.getByRole("button", { name: "Sign out" });
   await user.click(button);
   await user.click(screen.getByRole("button", { name: "Sign out and stop" }));
   expect(screen.getByRole("alert")).toHaveTextContent("Could not sign out. Please retry.");
+  expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   expect(button).toBeEnabled();
   await user.click(button);
   await user.click(screen.getByRole("button", { name: "Sign out and stop" }));
@@ -57,7 +61,7 @@ it("keeps a failed logout actionable without native form navigation", async () =
 it("does not publish local state after unmount while logout is pending", async () => {
   let reject!: (error: Error) => void;
   signOut.mockImplementation(() => new Promise<void>((_resolve, no) => { reject = no; }));
-  const view = render(<GatewaySignOut />);
+  const view = renderSignOut();
   fireEvent.submit(screen.getByRole("button", { name: "Sign out" }).closest("form")!);
   fireEvent.click(screen.getByRole("button", { name: "Sign out and stop" }));
   view.unmount();
@@ -66,7 +70,7 @@ it("does not publish local state after unmount while logout is pending", async (
 });
 
 it("renders the confirmation outside the surrounding form", () => {
-  render(<GatewaySignOut />);
+  renderSignOut();
   fireEvent.submit(screen.getByRole("button", { name: "Sign out" }).closest("form")!);
   expect(screen.getByRole("alertdialog", { name: "Sign out and stop the workspace?" }).closest("form")).toBeNull();
 });
@@ -74,10 +78,11 @@ it("renders the confirmation outside the surrounding form", () => {
 it("keeps a previous failure visible when the retry dialog is cancelled", async () => {
   signOut.mockRejectedValueOnce(new Error("HTTP 502"));
   const user = userEvent.setup();
-  render(<GatewaySignOut />);
+  renderSignOut();
   await user.click(screen.getByRole("button", { name: "Sign out" }));
   await user.click(screen.getByRole("button", { name: "Sign out and stop" }));
   expect(screen.getByRole("alert")).toHaveTextContent("Could not sign out. Please retry.");
+  expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   await user.click(screen.getByRole("button", { name: "Sign out" }));
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.getByRole("alert")).toHaveTextContent("Could not sign out. Please retry.");

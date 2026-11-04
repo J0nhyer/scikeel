@@ -32,13 +32,14 @@ function Notification({ item, region }: { item: Toast; region: RefObject<HTMLDiv
     {item.tone === "error" ? <XCircle size={16} className="mt-3 shrink-0" /> : <CheckCircle2 size={16} className="mt-3 shrink-0 text-ok" />}
     <div className="min-w-0 flex-1 py-2">
       <p role={item.tone === "error" ? "alert" : "status"}
+        data-error-card={item.tone === "error" ? "true" : undefined}
         className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{item.message}</p>
       {item.action && <button type="button" className="min-h-11 min-w-11 underline" onClick={() => {
         try {
           const result = item.action!.run();
           void Promise.resolve(result).catch(() => toast.error(t("notification.actionFailed"), { accountId: item.accountId }));
         } catch { toast.error(t("notification.actionFailed"), { accountId: item.accountId }); }
-        dismiss(item.id);
+        if (item.tone !== "error") dismiss(item.id);
       }}>{item.action.label}</button>}
     </div>
     <button type="button" aria-label={t("notification.close")} className="grid min-h-11 min-w-11 shrink-0 place-items-center rounded hover:bg-surface-2"

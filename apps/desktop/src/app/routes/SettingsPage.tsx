@@ -90,6 +90,7 @@ import {
   PRIVATE_BROWSER,
 } from "@/lib/browser";
 import { toast } from "@/lib/toast";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { cn } from "@/lib/cn";
 
 /**
@@ -1095,7 +1096,9 @@ export function SettingsPage() {
           {!modelSurfaceAvailable ? (
             <p className="px-4 py-3 text-[13px] text-muted">{t("model.connectPrompt")}</p>
           ) : catalogState === "unavailable" ? (
-            <p className="px-4 py-3 text-[13px] text-muted">{t("model.catalogUnavailable")}</p>
+            <div className="px-4 py-3">
+              <ErrorNotice issueId="catalog-unavailable" summary={t("model.catalogUnavailable")} />
+            </div>
           ) : catalogState === "loading" ? (
             <p className="px-4 py-3 text-[13px] text-muted">{t("model.catalogLoading")}</p>
           ) : (
@@ -2043,9 +2046,13 @@ export function SettingsPage() {
                         : t("python.sourceAutoDetected")}
                   </span>
                 </>
+              ) : pyInfo?.error ? (
+                <div className="min-w-0 flex-1">
+                  <ErrorNotice issueId={`python:${pyInfo.error}`} summary={pyInfo.error} />
+                </div>
               ) : (
-                <span className="min-w-0 flex-1 text-error">
-                  {pyInfo?.error ?? t("python.checking")}
+                <span className="min-w-0 flex-1 text-muted">
+                  {t("python.checking")}
                 </span>
               )}
             </div>
@@ -2221,8 +2228,8 @@ export function SettingsPage() {
               }
             >
               {updateStatus === "error" && updateError && (
-                <div className="mt-2 text-xs text-error">
-                  {t("updates.checkFailed", { message: updateError })}
+                <div className="mt-2">
+                  <ErrorNotice issueId={`update:${updateError}`} summary={t("updates.checkFailed", { message: updateError })} />
                 </div>
               )}
             </Row>

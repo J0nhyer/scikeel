@@ -18,7 +18,7 @@ export function GatewayModelsPanel() {
     <p className="text-xs text-muted">{t("model.defaultDescription")}</p>
     {modelError && <StateNotice issueId={`default-model:${runtime}:${modelError}`}
       summary={t("model.defaultSaveProblem")} detail={modelError} />}
-    {state === "limited" && <StateNotice issueId={`catalog:${runtime}:limited`} summary={t("model.title")} detail={t("model.catalogLimited")} />}
+    {state === "limited" && <p className="px-4 py-3 text-[13px] text-muted">{t("model.catalogLimited")}</p>}
     {state === "unavailable" && <StateNotice issueId={`catalog:${runtime}:unavailable`} summary={t("common:notification.problem")} detail={t("model.catalogUnavailable")} action={{ label: t("common:notification.retry"), run: () => useRuntimeStore.getState().refreshGatewayRuntimes() }} />}
     {role === "admin" && <ManagedAgentsCard />}
   </section>;

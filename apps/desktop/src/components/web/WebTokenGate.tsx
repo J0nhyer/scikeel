@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { gatewayOrigin, setGatewayToken } from "@/lib/webMode";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 
 /** Pre-auth screen for the gateway-served web client: paste the bearer token
  *  (validated against /v1/whoami) before the real app boots. See
@@ -50,7 +51,7 @@ export function WebTokenGate({ onConnect }: { onConnect: () => void }) {
           placeholder={t("remote.token")}
           className="mt-4 h-10 w-full rounded-input border border-border bg-surface-2 px-3 text-sm outline-none focus:border-accent"
         />
-        {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+        {error && <ErrorNotice issueId={`token:${error}`} summary={error} />}
         <button
           type="button"
           onClick={() => void submit()}

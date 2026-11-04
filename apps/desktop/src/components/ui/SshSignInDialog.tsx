@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, Loader2, Lock } from "lucide-react";
 import { useSshStore } from "@/lib/ssh";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { cn } from "@/lib/cn";
 
 /**
@@ -87,7 +88,9 @@ export function SshSignInDialog() {
         )}
 
         {failed ? (
-          <p className="mt-3 text-[13px] text-error">{session?.error || t("ssh.failed")}</p>
+          <div className="mt-3">
+            <ErrorNotice issueId={`ssh:${session?.error ?? "failed"}`} summary={session?.error || t("ssh.failed")} />
+          </div>
         ) : waiting ? (
           <div className="mt-3 flex items-center gap-2 text-[13px] text-muted">
             <Loader2 size={13} className="animate-spin" />

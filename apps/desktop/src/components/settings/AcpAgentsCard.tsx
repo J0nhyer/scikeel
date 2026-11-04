@@ -4,6 +4,7 @@ import { Check, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { isTauri } from "@/lib/tauri";
 import { useRuntimeStore } from "@/lib/runtime";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import {
   ACP_PRESETS,
   activeAcpAgentId,
@@ -174,9 +175,13 @@ export function AcpAgentsCard() {
             </div>
             <p className="mt-2.5 text-xs leading-relaxed text-muted">{t("acp.limits")}</p>
             {runtimeKind === "acp" && (
-              <p className={cn("mt-2 text-xs", running ? "text-muted" : "text-error")}>
-                {running ? t("acp.running") : (error ?? t("acp.starting"))}
-              </p>
+              running ? (
+                <p className="mt-2 text-xs text-muted">{t("acp.running")}</p>
+              ) : error ? (
+                <div className="mt-2"><ErrorNotice issueId={`acp:${error}`} summary={error} /></div>
+              ) : (
+                <p className="mt-2 text-xs text-muted">{t("acp.starting")}</p>
+              )
             )}
           </div>
         )}

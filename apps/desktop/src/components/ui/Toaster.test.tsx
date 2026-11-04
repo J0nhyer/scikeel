@@ -60,6 +60,14 @@ describe("Toaster", () => {
     act(() => vi.advanceTimersByTime(30_000));
     expect(screen.getByRole("alert")).toHaveTextContent("Failed");
   });
+  it("keeps an error card open after running its action", () => {
+    const run = vi.fn();
+    toast.error("Failed", { action: { label: "Retry", run } });
+    render(<Toaster />);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(run).toHaveBeenCalledOnce();
+    expect(screen.getByRole("alert")).toHaveTextContent("Failed");
+  });
   it("shows at most three cards and prioritizes errors", () => {
     toast.success("one"); toast.success("two"); toast.success("three");
     toast.error("error one"); toast.error("error two"); toast.error("error three");

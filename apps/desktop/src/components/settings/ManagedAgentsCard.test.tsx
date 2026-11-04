@@ -4,7 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import { useRuntimeStore } from "@/lib/runtime";
+import { Toaster } from "@/components/ui/Toaster";
 import { ManagedAgentsCard } from "./ManagedAgentsCard";
+
+const renderCard = () => render(<><ManagedAgentsCard /><Toaster /></>);
 
 const available = [
   { runtime: "opencode", enabled: true, models: [] },
@@ -33,7 +36,7 @@ describe("ManagedAgentsCard deployment selection", () => {
 
   it("shows one committed deployment assistant and disables unavailable targets", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response()));
-    render(<ManagedAgentsCard />);
+    renderCard();
     await waitFor(() => expect(screen.getByRole("radio", { name: "Codex" })).toBeEnabled());
     expect(screen.getByRole("radio", { name: "OpenCode" })).toBeChecked();
     expect(screen.getByRole("radio", { name: "Codex" })).not.toBeChecked();
@@ -48,7 +51,7 @@ describe("ManagedAgentsCard deployment selection", () => {
       if (init?.method === "POST") { operationId = JSON.parse(String(init.body)).operationId; return new Promise<Response>(resolve => { complete = resolve; }); }
       return response(String(input).includes("operationId=") ? committed(operationId) : snapshot);
     });
-    vi.stubGlobal("fetch", fetchMock); const user = userEvent.setup(); render(<ManagedAgentsCard />);
+    vi.stubGlobal("fetch", fetchMock); const user = userEvent.setup(); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await user.click(codex);
     expect(screen.getByRole("radio", { name: "OpenCode" })).toBeChecked(); expect(codex).not.toBeChecked();
@@ -67,7 +70,7 @@ describe("ManagedAgentsCard deployment selection", () => {
       if (init?.method === "POST") { operationId = JSON.parse(String(init.body)).operationId; throw Error("fixture-private"); }
       return response(String(input).includes("operationId=") ? committed(operationId) : snapshot);
     });
-    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    vi.stubGlobal("fetch", fetchMock); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex); await waitFor(() => expect(codex).toBeChecked());
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
@@ -81,7 +84,7 @@ describe("ManagedAgentsCard deployment selection", () => {
         if (posted.length === 1) throw Error("lost acknowledgement"); return response({ activeRuntime: "codex", revision: 2, operationId }); }
       return response(String(input).includes("operationId=") ? (posted.length > 1 ? committed(operationId) : unknown(operationId)) : snapshot);
     });
-    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    vi.stubGlobal("fetch", fetchMock); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex); await screen.findByRole("alert");
     expect(codex).toBeDisabled(); expect(screen.getByRole("radio", { name: "OpenCode" })).toBeChecked();
@@ -104,7 +107,7 @@ describe("ManagedAgentsCard deployment selection", () => {
       }
       return response(String(input).includes("operationId=") ? committed(operationId) : snapshot);
     });
-    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    vi.stubGlobal("fetch", fetchMock); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex);
     await waitFor(() => expect(codex).toBeChecked());
@@ -115,7 +118,7 @@ describe("ManagedAgentsCard deployment selection", () => {
   it("recovers the stored operation after refresh using GET only", async () => {
     sessionStorage.setItem(storageKey, JSON.stringify(selection));
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => response(committed(selection.operationId))); vi.stubGlobal("fetch", fetchMock);
-    render(<ManagedAgentsCard />);
+    renderCard();
     await waitFor(() => expect(screen.getByRole("radio", { name: "Codex" })).toBeChecked());
     expect(fetchMock).toHaveBeenCalledTimes(1); expect(String(fetchMock.mock.calls[0][0])).toContain("operationId=fixture-operation");
     expect(sessionStorage.getItem(storageKey)).toBeNull();
@@ -128,7 +131,7 @@ describe("ManagedAgentsCard deployment selection", () => {
       if (String(input).includes("operationId=")) { if (!readable) throw Error("fixture-private"); return response(committed(operationId)); }
       return response();
     });
-    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    vi.stubGlobal("fetch", fetchMock); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex); await screen.findByRole("alert");
     expect(codex).toBeDisabled(); expect(screen.getByRole("radio", { name: "OpenCode" })).toBeChecked();
@@ -141,7 +144,7 @@ describe("ManagedAgentsCard deployment selection", () => {
     let complete!: (result: Response) => void;
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
       init?.method === "POST" ? new Promise<Response>(resolve => { complete = resolve; }) : response());
-    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    vi.stubGlobal("fetch", fetchMock); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex);
     act(() => {
@@ -163,7 +166,7 @@ describe("ManagedAgentsCard deployment selection", () => {
       return response(String(input).includes("operationId=") ? settled ? committed(operationId) : { ...snapshot, recoveryRequired: true,
         operation: { operationId, state: "pending" } } : snapshot);
     });
-    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    vi.stubGlobal("fetch", fetchMock); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex); await screen.findByRole("alert");
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -182,7 +185,7 @@ describe("ManagedAgentsCard deployment selection", () => {
       if (init?.method === "POST") { operationId = JSON.parse(String(init.body)).operationId; return response({ code: "assistant_recovery_required" }, 503); }
       return response(String(input).includes("operationId=") ? unknown(operationId) : snapshot);
     }));
-    render(<ManagedAgentsCard />);
+    renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Work must be reconciled before the assistant can change."));
@@ -197,7 +200,7 @@ describe("ManagedAgentsCard deployment selection", () => {
       if (init?.method === "POST") { calls.push("select"); return response({ code: "assistant_recovery_required" }, 503); }
       return response(String(input).includes("operationId=") ? unknown("fixture-operation") : { ...snapshot, recoveryRequired: true });
     }));
-    render(<ManagedAgentsCard />);
+    renderCard();
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Work must be reconciled before the assistant can change."));
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(calls).toContain("reconcile"));
@@ -209,7 +212,7 @@ describe("ManagedAgentsCard deployment selection", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "POST") { operationId = JSON.parse(String(init.body)).operationId; return response({ code: "assistant_busy" }, 409); }
       return response(String(input).includes("operationId=") ? unknown(operationId) : snapshot);
-    })); render(<ManagedAgentsCard />);
+    })); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex);
     await waitFor(() => expect(codex).toBeEnabled()); expect(screen.getByRole("radio", { name: "OpenCode" })).toBeChecked();
@@ -222,7 +225,7 @@ describe("ManagedAgentsCard deployment selection", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "POST") { operationId = JSON.parse(String(init.body)).operationId; return response({ code: "invalid_assistant_selection", error: "fixture-private" }, 400); }
       return response(String(input).includes("operationId=") ? unknown(operationId) : snapshot);
-    })); render(<ManagedAgentsCard />);
+    })); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not save the assistant selection. Try again."));
@@ -234,14 +237,14 @@ describe("ManagedAgentsCard deployment selection", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "POST") { operationId = JSON.parse(String(init.body)).operationId; return response({ activeRuntime: "codex", revision: 2, operationId }); }
       return response(String(input).includes("operationId=") ? committed(operationId) : snapshot);
-    })); render(<ManagedAgentsCard />);
+    })); renderCard();
     const codex = screen.getByRole("radio", { name: "Codex" }); await waitFor(() => expect(codex).toBeEnabled());
     await userEvent.click(codex); await waitFor(() => expect(codex).toBeChecked()); expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("rejects malformed policy metadata and retries loading without a write", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(response({ assistantEnabled: { codex: true } })).mockImplementation(async () => response());
-    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />); await screen.findByRole("alert");
+    vi.stubGlobal("fetch", fetchMock); renderCard(); await screen.findByRole("alert");
     expect(screen.getByRole("radio", { name: "Codex" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.getByRole("radio", { name: "Codex" })).toBeEnabled());
@@ -250,7 +253,7 @@ describe("ManagedAgentsCard deployment selection", () => {
 
   it("renders no assistant control and makes no Admin request for an ordinary account", () => {
     useRuntimeStore.setState({ gatewayUserRole: "user", gatewayUser: { id: "ordinary", username: "ordinary", role: "user" } });
-    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock); renderCard();
     expect(screen.queryByRole("radio")).not.toBeInTheDocument(); expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -286,7 +289,7 @@ describe("ManagedAgentsCard assistant recovery", () => {
       return response(recovered ? { ...fenced, recoveryRequired: false, recoveryReason: null, recoverable: null } : fenced);
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<ManagedAgentsCard />);
+    renderCard();
     await screen.findByText("Assistant recovery required");
     expect(screen.getByRole("radio", { name: "Codex" })).toBeDisabled();
     expect(screen.getByRole("radio", { name: "OpenCode" })).toBeDisabled();
@@ -304,7 +307,7 @@ describe("ManagedAgentsCard assistant recovery", () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
       init?.method === "POST" ? response({ code: "assistant_recovery_required" }, 409) : response(fenced));
     vi.stubGlobal("fetch", fetchMock);
-    render(<ManagedAgentsCard />);
+    renderCard();
     await screen.findByText("Assistant recovery required");
     await userEvent.click(screen.getByRole("button", { name: "Recover interrupted turn" }));
     await userEvent.click(await screen.findByRole("button", { name: "Recover" }));
@@ -325,7 +328,7 @@ describe("ManagedAgentsCard recovery edge states", () => {
 
   it("shows a restart instruction for a live unknown execution", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response({ ...fenced, recoveryReason: "live", recoverable: null })));
-    render(<ManagedAgentsCard />);
+    renderCard();
     await screen.findByText("Assistant recovery required");
     expect(screen.getByText(/Restart the platform/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Recover interrupted turn" })).not.toBeInTheDocument();
@@ -347,7 +350,7 @@ describe("ManagedAgentsCard recovery edge states", () => {
         ? { ...fenced, operation: { operationId: selection.operationId, state: "unknown" } }
         : fenced);
     });
-    vi.stubGlobal("fetch", fetchMock); render(<ManagedAgentsCard />);
+    vi.stubGlobal("fetch", fetchMock); renderCard();
     await screen.findByText("Assistant recovery required");
     const recover = screen.getByRole("button", { name: "Recover interrupted turn" });
     expect(recover).toBeEnabled();
