@@ -8,7 +8,6 @@ import { Sidebar } from "@/components/sidebar/Sidebar";
 import { CommandPalette } from "@/components/command-palette/CommandPalette";
 import { PaneDragGhost } from "@/components/session/PaneDragGhost";
 import { StatusBar } from "@/components/status-bar/StatusBar";
-import { Toaster } from "@/components/ui/Toaster";
 import { SshSignInDialog } from "@/components/ui/SshSignInDialog";
 import { mockProject } from "@/lib/mock";
 import { adoptSourceFolder, installWebRecovery, useRuntimeStore } from "@/lib/runtime";
@@ -276,7 +275,6 @@ export function AppShell() {
       </div>
       <StatusBar />
       <CommandPalette />
-      <Toaster />
       {/* Sign-in for an interactively authenticated compute host (#73): app-wide,
           because the prompt has to reach the user wherever the need arose — the
           Settings card or the conversation the agent is working in. */}

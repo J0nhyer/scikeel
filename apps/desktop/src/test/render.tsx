@@ -1,5 +1,6 @@
 import { render } from "@testing-library/react";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
+import { Toaster } from "@/components/ui/Toaster";
 import { AppShell } from "@/app/layout/AppShell";
 import { AdminAnalyticsLayout } from "@/app/layout/AdminAnalyticsLayout";
 import { LiveSessionPage } from "@/app/routes/LiveSessionPage";
@@ -40,5 +41,5 @@ export const testRoutes = [
 /** Render the whole app at a given route, using an in-memory router. */
 export function renderAt(path: string) {
   const router = createMemoryRouter(testRoutes, { initialEntries: [path] });
-  return render(<RouterProvider router={router} />);
+  return render(<><RouterProvider router={router} /><Toaster /></>);
 }

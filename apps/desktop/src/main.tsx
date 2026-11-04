@@ -7,6 +7,7 @@ import { LocaleProvider } from "./app/providers/LocaleProvider";
 import { ThemeProvider } from "./app/providers/ThemeProvider";
 import { ZoomProvider } from "./app/providers/ZoomProvider";
 import { PlatformBootGate } from "./components/boot/PlatformBootGate";
+import { Toaster } from "./components/ui/Toaster";
 import { router } from "./app/router";
 import { consumeUrlToken, installGatewayAuthGuard } from "./lib/webMode";
 import "./index.css";
@@ -29,6 +30,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <PlatformBootGate>
             <RouterProvider router={router} />
           </PlatformBootGate>
+          <Toaster />
         </ZoomProvider>
       </ThemeProvider>
     </LocaleProvider>
