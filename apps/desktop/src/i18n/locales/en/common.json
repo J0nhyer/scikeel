@@ -13,6 +13,7 @@
   },
   "notification": {
     "close": "Close notification",
+    "show": "Show error",
     "region": "Notifications",
     "details": "Details",
     "closeDetails": "Close details",

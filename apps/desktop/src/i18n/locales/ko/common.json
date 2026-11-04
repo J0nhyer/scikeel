@@ -13,6 +13,7 @@
   },
   "notification": {
     "close": "알림 닫기",
+    "show": "오류 표시",
     "region": "알림",
     "details": "상세 정보",
     "closeDetails": "상세 정보 닫기",

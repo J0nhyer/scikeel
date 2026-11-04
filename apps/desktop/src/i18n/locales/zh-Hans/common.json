@@ -13,6 +13,7 @@
   },
   "notification": {
     "close": "关闭通知",
+    "show": "显示错误",
     "region": "通知",
     "details": "详情",
     "closeDetails": "关闭详情",

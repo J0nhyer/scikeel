@@ -1,46 +1,50 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useToastStore } from "@/lib/toast";
 import { StateNotice } from "./StateNotice";
+import { Toaster } from "./Toaster";
+
+const view = (props: ComponentProps<typeof StateNotice>) =>
+  render(<><StateNotice {...props} /><Toaster /></>);
+
 describe("persistent state explanations", () => {
   beforeEach(() => useToastStore.getState().reset());
-  it("closes the notice but keeps a recovery action that has no other home", () => {
+
+  it("shows the card, closes it, then leaves a reopen control", () => {
     const run = vi.fn();
-    const props = { issueId: "load-1", summary: "Unavailable", detail: "Network error", action: { label: "Retry", run } };
-    const view = render(<StateNotice {...props} />);
+    view({ issueId: "load-1", summary: "Unavailable", detail: "Network error", action: { label: "Retry", run } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Unavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent("Network error");
     fireEvent.click(screen.getByRole("button", { name: "Close notification" }));
-    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
     expect(screen.queryByText("Network error")).not.toBeInTheDocument();
     expect(run).not.toHaveBeenCalled();
-    view.unmount(); render(<StateNotice {...props} />);
-    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
-    expect(screen.queryByText("Network error")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show error" })).toBeInTheDocument();
+  });
+
+  it("reopens the same card and runs its action", async () => {
+    const run = vi.fn();
+    view({ issueId: "load-2", summary: "Unavailable", action: { label: "Retry", run } });
+    fireEvent.click(screen.getByRole("button", { name: "Close notification" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show error" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Unavailable"));
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(run).toHaveBeenCalledOnce();
   });
 
-  it("closes a feedback-only notice completely", () => {
-    render(<StateNotice issueId="send-1" summary="Problem" detail="AI assistant changed." />);
+  it("stays dismissed after remount until the issue is shown again", () => {
+    const { unmount } = view({ issueId: "load-3", summary: "Unavailable" });
     fireEvent.click(screen.getByRole("button", { name: "Close notification" }));
-    expect(screen.queryByText("Problem")).not.toBeInTheDocument();
-    expect(screen.queryByText("AI assistant changed.")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Close notification" })).not.toBeInTheDocument();
+    unmount();
+    view({ issueId: "load-3", summary: "Unavailable" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show error" })).toBeInTheDocument();
   });
 
-  it("hides a recovery action too when the caller requires a full close", () => {
-    const run = vi.fn();
-    render(
-      <StateNotice
-        issueId="collaboration-1"
-        summary="Collaboration status sync failed"
-        detail="Network error"
-        action={{ label: "Retry", run }}
-        dismissFully
-      />,
-    );
+  it("calls onDismiss when the card is closed", () => {
+    const onDismiss = vi.fn();
+    view({ issueId: "load-4", summary: "Unavailable", onDismiss });
     fireEvent.click(screen.getByRole("button", { name: "Close notification" }));
-    expect(screen.queryByText("Collaboration status sync failed")).not.toBeInTheDocument();
-    expect(screen.queryByText("Network error")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(onDismiss).toHaveBeenCalledOnce();
   });
 });

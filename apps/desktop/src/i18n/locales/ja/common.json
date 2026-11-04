@@ -13,6 +13,7 @@
   },
   "notification": {
     "close": "通知を閉じる",
+    "show": "エラーを表示",
     "region": "通知",
     "details": "詳細",
     "closeDetails": "詳細を閉じる",

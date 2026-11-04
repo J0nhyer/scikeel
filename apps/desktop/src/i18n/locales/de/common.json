@@ -13,6 +13,7 @@
   },
   "notification": {
     "close": "Benachrichtigung schließen",
+    "show": "Fehler anzeigen",
     "region": "Benachrichtigungen",
     "details": "Details",
     "closeDetails": "Details schließen",
