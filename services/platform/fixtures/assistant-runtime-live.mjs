@@ -119,18 +119,27 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
    headers:{...authHeaders(),'x-scikeel-request-id':'acceptance-'+randomUUID()}});
   return ids;
  };
- const completion=ids=>poll('completed native reply',async()=>{
+ // OpenCode records one assistant message per native step. A completed tool
+ // step is not the end of the user turn: wait until the last step settles and
+ // the session is idle, then aggregate every step's parts so text and tool
+ // evidence from earlier steps remain visible.
+ const settledTurn=async ids=>{
   const messages=await history();ensure(Array.isArray(messages),'Acceptance history is unavailable');
-  const result=messages.find(message=>!ids.has(message.info.id)&&message.info.role==='assistant'&&message.info.time?.completed);
-  if(!result)return null;
-  ensure(!result.info.error,'Selected assistant native execution failed');return result;
- });
- const requireRunning=async(ids,label)=>{
-  const messages=await history();ensure(Array.isArray(messages),'Acceptance history is unavailable');
-  const completed=messages.find(message=>!ids.has(message.info.id)&&message.info.role==='assistant'&&message.info.time?.completed);
-  ensure(!completed?.info.error,'Selected assistant native execution failed');
-  ensure(!completed,`Native turn ended without ${label}`);
+  const assistants=messages.filter(message=>!ids.has(message.info.id)&&message.info.role==='assistant');
+  ensure(!assistants.some(message=>message.info.error),'Selected assistant native execution failed');
+  const last=assistants.at(-1);
+  if(!last?.info.time?.completed||last.info.finish==='tool-calls')return null;
+  const parts=assistants.flatMap(message=>message.parts??[]);
+  if(parts.some(part=>part.type==='tool'&&['pending','running'].includes(part.state?.status)))return null;
+  if(!last.parts?.some(part=>part.type==='text'&&!part.synthetic&&part.text))return null;
+  const statuses=await json(scoped('/session/status')),questions=await json(scoped('/question')),permissions=await json(scoped('/permission'));
+  ensure(statuses&&Array.isArray(questions)&&Array.isArray(permissions),'Acceptance turn state is unavailable');
+  if(statuses[session.id]&&statuses[session.id].type!=='idle')return null;
+  if(questions.some(value=>value.sessionID===session.id)||permissions.some(value=>value.sessionID===session.id))return null;
+  return {info:last.info,parts};
  };
+ const completion=ids=>poll('completed native reply',()=>settledTurn(ids));
+ const requireRunning=async(ids,label)=>ensure(!(await settledTurn(ids)),`Native turn ended without ${label}`);
  const mode=async value=>{const {state}=await collaboration();if(state.mode!==value)await collaborate({action:'mode',mode:value,revision:state.revision});};
  const idle=()=>poll('native cleanup',async()=>{
   const statuses=await json(scoped('/session/status')),questions=await json(scoped('/question')),permissions=await json(scoped('/permission'));
@@ -173,7 +182,7 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
   await mode('autonomous');
   const readNonce='read-secret-'+randomUUID(),writeNonce='write-'+randomUUID();
   await create('acceptance-read.txt',readNonce);await create('acceptance-input.csv','value\n1\n2\n3\n');
-  ids=await begin('files',`Explicitly approved single file operation: Write exactly ${writeNonce} to acceptance-output.txt without a trailing newline. Read acceptance-read.txt using native command execution and return its actual contents. Preserve all other inputs. Use the real workspace tools.`);
+  ids=await begin('files',`Explicitly approved single file operation: Write exactly ${writeNonce} to acceptance-output.txt without a trailing newline. Read acceptance-read.txt by running a bash tool command (for example cat acceptance-read.txt); do not use the built-in read tool for that read, and do not substitute its output for the executed command. Return the actual contents. Preserve all other inputs. Use the real workspace tools.`);
   reply=await completion(ids);
   ensure(await read('acceptance-output.txt')===writeNonce&&await read('acceptance-read.txt')===readNonce&&text(reply).includes(readNonce),
    'Native file write/read verification failed');

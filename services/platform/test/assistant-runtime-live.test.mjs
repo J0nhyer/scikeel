@@ -19,9 +19,10 @@ test('a forbidden Admin selection cannot dispatch inference or manufacture nativ
 });
 
 function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed',fileRevertFailure,
- historyConflictsAfterPrompt=0,selectionConflicts=0,model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex'}={}) {
+ historyConflictsAfterPrompt=0,selectionConflicts=0,model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex',multiStepFiles=false}={}) {
  const calls=[],files=new Map(),history=[],questions=[],selections=[];
  let revision=1,runtime='opencode',currentPhase,checkpointAnswered=false,disabled=false,aborted=false,warm=false,settling=0;
+ let fileStep=0,fileMarker;
  let selectionConflictsRemaining=selectionConflicts;
  let reverted=null,restorePoint;
  const state={revision:1,phase:'idle',mode:'autonomous',execution:1,pending:null};
@@ -93,6 +94,17 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
     historyConflictsAfterPrompt--;
     return Response.json({error:'Conversation changed',code:'conversation_revision_conflict'},{status:409});
    }
+   if(method==='GET'&&multiStepFiles&&currentPhase==='files'){
+    // The native turn advances one assistant step per observed history read, so
+    // a reader that settles on the first completed step sees only the read tool
+    // call before the write step has run.
+    if(fileStep===1)fileStep=2;
+    else if(fileStep===2){
+     files.set('acceptance-output.txt',fileMarker);
+     history.push({info:{id:`msg_${history.length}`,role:'assistant',time:{completed:1},finish:'stop'},
+      parts:[{type:'text',text:files.get('acceptance-read.txt')}]});fileStep=3;
+    }
+   }
    return Response.json(history);
   }
   if(path==='/session/ses_legacy/prompt_async') {
@@ -108,12 +120,20 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
    if(currentPhase==='handover'){assert.ok(!text.includes('legacy-secret-'));answer(history[0].parts[0].text);}
    else if(currentPhase==='files'){
     const marker=/Write exactly ([A-Za-z0-9_-]+) to/.exec(text)?.[1];assert.ok(marker);
-    files.set('acceptance-output.txt',marker);answer(files.get('acceptance-read.txt'));
-    if(nativeFileEvidence!=='missing')history.at(-1).parts.push({type:'tool',tool:'bash',state:{
-     status:nativeFileEvidence==='failed'?'error':'completed',input:{command:'cat acceptance-read.txt'},
-     output:nativeFileEvidence==='wrong-output'?'unrelated output':files.get('acceptance-read.txt'),
-     metadata:(selectedRuntime==='codex')!==(nativeFileEvidence==='wrong-protocol')?
-      {nativeItemType:'commandExecution',exitCode:nativeFileEvidence==='wrong-exit'?1:0}:{exit:nativeFileEvidence==='wrong-exit'?1:0}}});
+    if(multiStepFiles){
+     fileMarker=marker;fileStep=1;
+     history.push({info:{id:`msg_${history.length}`,role:'assistant',time:{completed:1},finish:'tool-calls'},
+      parts:[{type:'tool',tool:'bash',state:{status:'completed',input:{command:'cat acceptance-read.txt'},
+       output:files.get('acceptance-read.txt'),
+       metadata:selectedRuntime==='codex'?{nativeItemType:'commandExecution',exitCode:0}:{exit:0}}}]});
+    }else{
+     files.set('acceptance-output.txt',marker);answer(files.get('acceptance-read.txt'));
+     if(nativeFileEvidence!=='missing')history.at(-1).parts.push({type:'tool',tool:'bash',state:{
+      status:nativeFileEvidence==='failed'?'error':'completed',input:{command:'cat acceptance-read.txt'},
+      output:nativeFileEvidence==='wrong-output'?'unrelated output':files.get('acceptance-read.txt'),
+      metadata:(selectedRuntime==='codex')!==(nativeFileEvidence==='wrong-protocol')?
+       {nativeItemType:'commandExecution',exitCode:nativeFileEvidence==='wrong-exit'?1:0}:{exit:nativeFileEvidence==='wrong-exit'?1:0}}});
+    }
    }else if(currentPhase==='question'){
     assert.ok(text.includes(selectedRuntime==='codex'?'request_user_input':'question tool'));
     questions.push({id:'que_acceptance',sessionID:'ses_legacy',questions:[{question:'Release question',options:[{label:'Continue'},{label:'Stop'}]}]});
@@ -141,6 +161,27 @@ for(const selectedRuntime of ['codex','opencode'])test(`replacement ${selectedRu
   timeoutMs:1000,pollMs:1,stopGraceMs:1});
  assert.equal(proof.model,model);assert.equal(proof.runtime,selectedRuntime);
  assert.equal(Object.keys(proof.capabilities).length,9);assert.equal(Object.values(proof.capabilities).every(value=>value==='passed'),true);
+ assert.equal(fixture.snapshot().disabled,true);
+});
+
+for(const selectedRuntime of ['codex','opencode'])test(`a multi-step ${selectedRuntime} file turn waits for the whole turn and aggregates step evidence`,async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const model='fixture-next-model',providerID=selectedRuntime==='codex'?'codex':'configured-provider';
+ const fixture=gateway({selectedRuntime,model,providerID,multiStepFiles:true});
+ const proof=await runSelectedAssistantAcceptance({...fixture,target:{schema:2,runtime:selectedRuntime,model,providerID},
+  timeoutMs:1000,pollMs:1,stopGraceMs:1});
+ assert.equal(proof.capabilities.file_write_read,'passed');
+ assert.equal(Object.values(proof.capabilities).every(value=>value==='passed'),true);
+ // The completed bash evidence lives only in the intermediate tool-call step;
+ // the final step carries only the read result text. The gate can pass only if
+ // completion settled on the final step and aggregated parts across steps.
+ const toolStep=fixture.history.find(message=>message.info.role==='assistant'&&message.info.finish==='tool-calls');
+ const finalStep=fixture.history.find(message=>message.info.role==='assistant'&&message.info.finish==='stop');
+ assert.equal(toolStep.parts.length,1);
+ assert.equal(toolStep.parts[0].tool,'bash');
+ assert.equal(toolStep.parts[0].state.status,'completed');
+ assert.equal(finalStep.parts.some(part=>part.type==='tool'),false);
+ assert.equal(finalStep.parts.some(part=>part.type==='text'&&part.text),true);
  assert.equal(fixture.snapshot().disabled,true);
 });
 
