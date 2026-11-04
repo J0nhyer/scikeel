@@ -7,6 +7,8 @@ import {WorkspaceTextDraft} from '@/lib/workspaceTextDraft';
 import {acquireWorkspaceTextDraft,confirmWorkspaceDraftLeave,retainWorkspaceTextDraft,WorkspaceDraftLimitError} from '@/lib/workspaceDrafts';
 import {FileEditor} from '@/components/code-editor/FileEditor';
 import {NameProjectDialog} from '@/components/projects/NameProjectDialog';
+import {ErrorNotice} from '@/components/ui/ErrorNotice';
+import {toast} from '@/lib/toast';
 
 export function WorkspaceTextEditor({scope,path,filename,language,directory,onClose,controls}:{scope:WorkspaceScope;path:string;filename:string;language?:string;directory?:string;onClose:()=>void;controls?:React.ReactNode}){
  const owner=useRuntimeStore(state=>JSON.stringify([state.gatewayUser?.id,state.gatewayContext?.instanceId,state.gatewayContext?.generation]));
@@ -23,13 +25,14 @@ function OwnedTextEditor({scope,path,filename,language,directory,onClose,control
  // Retry deliberately rechecks capacity without changing the file identity.
  // eslint-disable-next-line react-hooks/exhaustive-deps
  },[owner,scope,path,directory,attempt]);
- if(!model)return <div className='flex min-w-0 flex-col gap-3 p-4'><p role='alert' className='break-words text-sm'>{t('fileManagement.draftLimit')}</p><div className='flex gap-3'><button type='button' className='min-h-11 px-3' onClick={()=>setAttempt(value=>value+1)}>{t('common:notification.retry')}</button><button type='button' className='min-h-11 px-3' onClick={onClose}>{t('inspector:shell.closeInspector')}</button></div></div>;
+ if(!model)return <div className='flex min-w-0 flex-col gap-3 p-4'><ErrorNotice issueId='draft-limit' summary={t('fileManagement.draftLimit')} action={{label:t('common:notification.retry'),run:()=>setAttempt(value=>value+1)}} /><div className='flex gap-3'><button type='button' className='min-h-11 px-3' onClick={onClose}>{t('inspector:shell.closeInspector')}</button></div></div>;
  return <DraftEditor {...{scope,path,filename,language,directory,onClose,controls,model,readOnly}}/>;
 }
 function DraftEditor({scope,path,filename,language,onClose,controls,model,readOnly}:{scope:WorkspaceScope;path:string;filename:string;language?:string;directory?:string;onClose:()=>void;controls?:React.ReactNode;model:WorkspaceTextDraft;readOnly:boolean}){
  const {t}=useTranslation(['nav','inspector','common']);
  const state=useSyncExternalStore(model.subscribe,model.getSnapshot),[saveAs,setSaveAs]=useState(false);
  useEffect(()=>{const release=retainWorkspaceTextDraft(model);void model.load();return release;},[model]);
+ useEffect(()=>{if(state.error)toast.error(state.conflict?t('fileManagement.textConflict'):state.status==='uncertain'?t('fileManagement.saveUncertain'):state.error);},[state.error,state.conflict,state.status]);
  const blocked=readOnly || state.status==='saving' || state.status==='uncertain';
  const icon='flex h-8 w-8 shrink-0 items-center justify-center rounded hover:bg-surface-2 disabled:opacity-40';
  const close=()=>{if(confirmWorkspaceDraftLeave(t('fileManagement.discardDraft'),scope,path))onClose();};
@@ -44,7 +47,6 @@ function DraftEditor({scope,path,filename,language,onClose,controls,model,readOn
    {controls}<button type='button' className={icon} aria-label={t('inspector:shell.closeInspector')} title={t('inspector:shell.closeInspector')} disabled={state.status==='saving'||state.status==='uncertain'} onClick={close}><X size={15}/></button>
   </header>
   {state.status==='loading' && <div className='flex items-center gap-2 p-3 text-sm text-muted'><Loader2 size={15} className='animate-spin'/>{t('inspector:filePreview.loading',{filename})}</div>}
-  {state.error && <p role='alert' className='shrink-0 break-words px-3 py-2 text-sm text-error'>{state.conflict?t('fileManagement.textConflict'):state.status==='uncertain'?t('fileManagement.saveUncertain'):state.error}</p>}
   {state.warning && <p className='shrink-0 break-words px-3 py-2 text-xs text-muted'>{t('fileManagement.historyFailed')}</p>}
   {state.savedAs && <p role='status' className='shrink-0 break-words px-3 py-2 text-xs text-muted'>{t('fileManagement.savedAs',{path:state.savedAs})}</p>}
   {state.status==='uncertain' && <div className='flex shrink-0 items-center gap-1 px-2'>
@@ -52,6 +54,6 @@ function DraftEditor({scope,path,filename,language,onClose,controls,model,readOn
    <button type='button' className={icon} aria-label={t('fileManagement.retryOperation',{name:filename})} title={t('fileManagement.retryOperation',{name:filename})} disabled={readOnly} onClick={()=>void model.retry()}><RotateCcw size={15}/></button>
   </div>}
   {state.revision && <div className='min-h-0 min-w-0 flex-1'><FileEditor value={state.draft} language={language} prose={/\.(md|txt)$/i.test(filename)} ariaLabel={filename} readOnly={blocked} onChange={value=>model.edit(value)} onSave={()=>{if(!blocked)void model.save();}}/></div>}
-  {saveAs && <NameProjectDialog defaultName={filename} title={t('fileManagement.saveAs')} subtitle='' busy={state.status==='saving'} inputDisabled={state.status==='uncertain'} cancelDisabled={state.status==='uncertain'} error={state.error??undefined} onCancel={()=>setSaveAs(false)} onSave={name=>{const parent=path.split('/').slice(0,-1).join('/');void model.saveAs(parent?parent+'/'+name.trim():name.trim()).then(()=>{if(model.getSnapshot().savedAs)setSaveAs(false);});}}/>}
+  {saveAs && <NameProjectDialog defaultName={filename} title={t('fileManagement.saveAs')} subtitle='' busy={state.status==='saving'} inputDisabled={state.status==='uncertain'} cancelDisabled={state.status==='uncertain'} onCancel={()=>setSaveAs(false)} onSave={name=>{const parent=path.split('/').slice(0,-1).join('/');void model.saveAs(parent?parent+'/'+name.trim():name.trim()).then(()=>{if(model.getSnapshot().savedAs)setSaveAs(false);});}}/>}
  </div>;
 }

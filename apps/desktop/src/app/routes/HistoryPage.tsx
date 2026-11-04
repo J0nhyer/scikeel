@@ -29,6 +29,7 @@ import { isTauri, pickFolder, writeExportFile } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
 import { pathKey, samePath } from "@/lib/workspacePath";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 
 /** Rows fetched per request. The server answers a 200-row page in ~10 ms at
  *  5k sessions, so this is about how far the list grows per click, not about
@@ -151,7 +152,6 @@ export function HistoryPage() {
         }
         const message = err instanceof Error ? err.message : String(err);
         setLoadError(message);
-        toast.error(message);
       } finally {
         if (generation === loadGeneration.current) setLoading(false);
       }
@@ -455,14 +455,13 @@ export function HistoryPage() {
         </label>
 
         {loadError && (
-          <div role="alert" className="mt-4 flex items-center gap-3 rounded-input border border-border bg-surface-2 px-3 py-2 text-sm text-text">
-            <span className="min-w-0 flex-1 break-words">{t("history.loadFailed")}</span>
-            <button
-              onClick={() => void load(rows.length === 0)}
-              className="shrink-0 rounded-input border border-border px-2.5 py-1 text-xs text-text hover:bg-surface"
-            >
-              {t("common:notification.retry")}
-            </button>
+          <div className="mt-4">
+            <ErrorNotice
+              issueId={`history:${loadError}`}
+              summary={t("history.loadFailed")}
+              detail={loadError}
+              action={{ label: t("common:notification.retry"), run: () => load(rows.length === 0) }}
+            />
           </div>
         )}
 

@@ -1,7 +1,9 @@
 import {act,render,screen,waitFor,within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import {beforeEach,describe,it,expect,vi} from 'vitest';
+import {afterEach,beforeEach,describe,it,expect,vi} from 'vitest';
 import {useRuntimeStore} from '@/lib/runtime';
+import {useToastStore} from '@/lib/toast';
+import {Toaster} from '@/components/ui/Toaster';
 import {WorkspaceRequestError} from '@/lib/workspaceManagement';
 import {clearWorkspaceTextDrafts} from '@/lib/workspaceDrafts';
 import {WorkspaceTextEditor} from './WorkspaceTextEditor';
@@ -15,6 +17,7 @@ beforeEach(()=>{
  clearWorkspaceTextDrafts();vi.clearAllMocks();api.read.mockResolvedValue({text:'original',revision:'a'.repeat(64)});api.write.mockResolvedValue({state:'committed',result:{revision:'b'.repeat(64)}});
  useRuntimeStore.setState({gatewayUser:{id:'alice',username:'alice',role:'user'},gatewayContext:{instanceId:'worker-a',generation:1},webReadOnly:false});
 });
+afterEach(()=>useToastStore.getState().reset());
 describe('web text editor',()=>{
  it('draft capacity displays a recoverable notice instead of crashing or dropping another draft',async()=>{
   const owner=JSON.stringify(['alice','worker-a',1]),models=[];
@@ -22,8 +25,8 @@ describe('web text editor',()=>{
    const model=acquireWorkspaceTextDraft(owner,scope,'draft-'+i+'.md',undefined,()=>new WorkspaceTextDraft({read:api.read,write:api.write,receipt:api.receipt,current:()=>true},'draft-'+i+'.md'));
    await model.load();model.edit('kept-'+i);models.push(model);
   }
-  render(<WorkspaceTextEditor scope={scope} path='notes.md' filename='notes.md' onClose={()=>{}}/>);
-  expect(screen.getByRole('alert')).toHaveTextContent(/save or discard/i);expect(models[0].getSnapshot().draft).toBe('kept-0');
+  render(<><WorkspaceTextEditor scope={scope} path='notes.md' filename='notes.md' onClose={()=>{}}/><Toaster/></>);
+  expect(screen.getByRole('alert')).toHaveTextContent(/save or discard/i);expect(screen.getByRole('alert')).toHaveAttribute('data-error-card','true');expect(models[0].getSnapshot().draft).toBe('kept-0');
   models[0].discard();await userEvent.click(screen.getByRole('button',{name:'Retry'}));
   expect(await screen.findByRole('textbox',{name:'notes.md'})).toHaveValue('original');expect(models[1].getSnapshot().draft).toBe('kept-1');
  });
@@ -33,8 +36,8 @@ describe('web text editor',()=>{
   await user.click(screen.getByRole('button',{name:'Save'}));await waitFor(()=>expect(api.write).toHaveBeenCalledWith(scope,expect.objectContaining({kind:'saveText',path:'notes.md',text:'mine',expectedRevision:'a'.repeat(64)}),expect.any(String),expect.any(Function)));
  });
  it('keeps conflicts visible with the draft intact and offers exclusive Save As',async()=>{
-  const user=userEvent.setup();api.write.mockRejectedValueOnce(new WorkspaceRequestError('Changed','revision_conflict',409));render(<WorkspaceTextEditor scope={scope} path='notes.md' filename='notes.md' onClose={()=>{}}/>);
-  const editor=await screen.findByRole('textbox',{name:'notes.md'});await user.type(editor,' mine');await user.click(screen.getByRole('button',{name:'Save'}));expect(await screen.findByRole('alert')).toHaveTextContent(/changed/i);expect(editor).toHaveValue('original mine');expect(screen.getByRole('button',{name:'Save'})).toBeDisabled();
+  const user=userEvent.setup();api.write.mockRejectedValueOnce(new WorkspaceRequestError('Changed','revision_conflict',409));render(<><WorkspaceTextEditor scope={scope} path='notes.md' filename='notes.md' onClose={()=>{}}/><Toaster/></>);
+  const editor=await screen.findByRole('textbox',{name:'notes.md'});await user.type(editor,' mine');await user.click(screen.getByRole('button',{name:'Save'}));expect(await screen.findByRole('alert')).toHaveTextContent(/changed/i);expect(screen.getByRole('alert')).toHaveAttribute('data-error-card','true');expect(editor).toHaveValue('original mine');expect(screen.getByRole('button',{name:'Save'})).toBeDisabled();
   await user.click(screen.getByRole('button',{name:'Save As'}));const dialog=within(screen.getByRole('dialog',{name:'Save As'}));await user.clear(dialog.getByRole('textbox'));await user.type(dialog.getByRole('textbox'),'copy.md');await user.click(dialog.getByRole('button',{name:'Save'}));
   await waitFor(()=>expect(api.write).toHaveBeenLastCalledWith(scope,{kind:'createFile',path:'copy.md',text:'original mine'},expect.any(String),expect.any(Function)));
  });

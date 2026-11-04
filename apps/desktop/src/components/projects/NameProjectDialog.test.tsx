@@ -1,8 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { Toaster } from "@/components/ui/Toaster";
+import { useToastStore } from "@/lib/toast";
 import { NameProjectDialog } from "./NameProjectDialog";
 import userEvent from "@testing-library/user-event";
-afterEach(cleanup);
+afterEach(() => { cleanup(); useToastStore.getState().reset(); });
 const props = () => ({ defaultName: "New project", title: "Name project", subtitle: "Choose a name", busy: false, onSave: vi.fn(), onCancel: vi.fn() });
 it("portals outside transformed ancestors and closes on Escape from any control", async () => {
   const values = props();
@@ -24,11 +26,12 @@ it("traps keyboard focus inside the modal", async () => {
 });
 it("retains the typed name with a creation error and refuses whitespace", () => {
   const values = props();
-  const { rerender } = render(<NameProjectDialog {...values} />);
+  const { rerender } = render(<><NameProjectDialog {...values} /><Toaster /></>);
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Reef survey" } });
-  rerender(<NameProjectDialog {...values} error="Request failed" />);
+  rerender(<><NameProjectDialog {...values} error="Request failed" /><Toaster /></>);
   expect(screen.getByRole("textbox")).toHaveValue("Reef survey");
-  expect(screen.getByRole("alert")).toHaveTextContent("Request failed");
+  expect(screen.getByText("Request failed")).toBeInTheDocument();
+  expect(screen.getByText("Request failed")).toHaveAttribute("data-error-card", "true");
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "  " } });
   expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 });

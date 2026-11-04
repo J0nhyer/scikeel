@@ -1,11 +1,13 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Toaster } from "@/components/ui/Toaster";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 (window as unknown as { __OS_WEB__?: boolean }).__OS_WEB__ = true;
 const i18n = (await import("@/i18n")).default;
 const { useRuntimeStore } = await import("@/lib/runtime");
+const { useToastStore } = await import("@/lib/toast");
 const { SkillsPage } = await import("./SkillsPage");
 const initial = useRuntimeStore.getState();
 const loadCatalog = vi.fn(async () => {});
@@ -16,15 +18,16 @@ describe("Web skill catalog", () => {
     useRuntimeStore.setState({ status: "ready", skills: [], agents: [], skillsStatus: "loading", loadCatalog });
     await i18n.changeLanguage("en");
   });
-  afterEach(() => { cleanup(); useRuntimeStore.setState(initial, true); });
+  afterEach(() => { cleanup(); useToastStore.getState().reset(); useRuntimeStore.setState(initial, true); });
 
   it("distinguishes loading, failure and empty results, and retries discovery", async () => {
     const user = userEvent.setup();
-    render(<MemoryRouter><SkillsPage /></MemoryRouter>);
+    render(<><MemoryRouter><SkillsPage /></MemoryRouter><Toaster /></>);
     expect(screen.getByRole("status")).toHaveTextContent("Loading skills");
     expect(screen.queryByText("No skills loaded yet.")).not.toBeInTheDocument();
     act(() => useRuntimeStore.setState({ skillsStatus: "error" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Could not load skills");
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
     await user.click(screen.getByRole("button", { name: "Retry" }));
     expect(loadCatalog).toHaveBeenCalledTimes(2);
     act(() => useRuntimeStore.setState({ skillsStatus: "ready" }));

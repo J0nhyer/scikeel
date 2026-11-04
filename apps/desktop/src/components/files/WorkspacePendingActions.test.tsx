@@ -1,12 +1,14 @@
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {useRuntimeStore} from '@/lib/runtime';
+import {useToastStore} from '@/lib/toast';
+import {Toaster} from '@/components/ui/Toaster';
 const api={list:vi.fn(),retry:vi.fn()},refreshProjects=vi.fn();
 vi.mock('@/lib/webMode',async original=>({...await original<typeof import('@/lib/webMode')>(),isGatewayWeb:true,isPlatformWeb:true}));
 vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof import('@/lib/workspaceManagement')>(),listPendingWorkspaceOperations:(...args:unknown[])=>api.list(...args),retryPendingWorkspaceOperation:(...args:unknown[])=>api.retry(...args)}));
 const {WorkspacePendingActions}=await import('./WorkspacePendingActions').catch(()=>({} as typeof import('./WorkspacePendingActions')));
 const pending={operationId:'move-a',path:'source.txt',scope:{kind:'account'},receipt:{operationId:'move-a',state:'pending'},retry:{method:'POST',path:'/api/workspace/operations',body:{operationId:'move-a',scope:{kind:'account'},operation:{kind:'rename',path:'source.txt',destinationPath:'renamed.txt',expectedRevision:'a'.repeat(64)}}}};
-beforeEach(()=>{vi.clearAllMocks();api.list.mockResolvedValue({items:[pending],nextCursor:null});api.retry.mockResolvedValue({state:'committed'});refreshProjects.mockResolvedValue(undefined);useRuntimeStore.setState({gatewayUser:{id:'a',username:'a',role:'admin'},gatewayContext:{instanceId:'user-a',generation:1},webReadOnly:false,refreshProjects});});afterEach(cleanup);
+beforeEach(()=>{vi.clearAllMocks();api.list.mockResolvedValue({items:[pending],nextCursor:null});api.retry.mockResolvedValue({state:'committed'});refreshProjects.mockResolvedValue(undefined);useRuntimeStore.setState({gatewayUser:{id:'a',username:'a',role:'admin'},gatewayContext:{instanceId:'user-a',generation:1},webReadOnly:false,refreshProjects});});afterEach(()=>{cleanup();useToastStore.getState().reset();});
 it('recovers an owned pending operation after refresh and retries its original request',async()=>{
  expect(typeof WorkspacePendingActions).toBe('function');render(<WorkspacePendingActions/>);await screen.findByText('source.txt');
  api.list.mockResolvedValue({items:[],nextCursor:null});fireEvent.click(screen.getByRole('button',{name:'Retry operation: source.txt'}));
@@ -17,13 +19,14 @@ it('offers receipt checking without mutation replay when native state is indeter
  expect(screen.queryByRole('button',{name:'Retry operation: source.txt'})).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Check operation: source.txt'}));await waitFor(()=>expect(api.list.mock.calls.length).toBeGreaterThan(1));expect(api.retry).not.toHaveBeenCalled();
 });
 it('keeps the page usable when the pending operations response is malformed',async()=>{
- api.list.mockResolvedValue({});render(<WorkspacePendingActions/>);
+ api.list.mockResolvedValue({});render(<><WorkspacePendingActions/><Toaster/></>);
  expect(await screen.findByRole('alert')).toHaveTextContent('Pending operations are unavailable');
+ expect(screen.getByRole('alert')).toHaveAttribute('data-error-card','true');
  expect(screen.queryByText('source.txt')).not.toBeInTheDocument();
 });
 it('retains the pending entry when a retry still has an unknown outcome',async()=>{
- expect(typeof WorkspacePendingActions).toBe('function');api.retry.mockRejectedValueOnce(new Error('Result not confirmed'));render(<WorkspacePendingActions/>);await screen.findByText('source.txt');fireEvent.click(screen.getByRole('button',{name:'Retry operation: source.txt'}));
- expect(await screen.findByRole('alert')).toHaveTextContent('Result not confirmed');expect(screen.getByText('source.txt')).toBeInTheDocument();
+ expect(typeof WorkspacePendingActions).toBe('function');api.retry.mockRejectedValueOnce(new Error('Result not confirmed'));render(<><WorkspacePendingActions/><Toaster/></>);await screen.findByText('source.txt');fireEvent.click(screen.getByRole('button',{name:'Retry operation: source.txt'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('Result not confirmed');expect(screen.getByRole('alert')).toHaveAttribute('data-error-card','true');expect(screen.getByText('source.txt')).toBeInTheDocument();
 });
 it('does not refresh the new account from an old pending operation response',async()=>{
  expect(typeof WorkspacePendingActions).toBe('function');let resolve!:(value:{state:string})=>void;api.retry.mockReturnValue(new Promise(done=>{resolve=done;}));render(<WorkspacePendingActions/>);await screen.findByText('source.txt');fireEvent.click(screen.getByRole('button',{name:'Retry operation: source.txt'}));await waitFor(()=>expect(api.retry).toHaveBeenCalledOnce());

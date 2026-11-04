@@ -192,8 +192,13 @@ export function SkillsPage() {
             </div>
 
             {skillsStatus === "error" && (
-              <div role="alert" className="mt-4"><StateNotice issueId={skillsStatus} summary={t("skills.loadFailed")} detail={t("skills.loadFailed")}
-                action={{ label: t("skills.retry"), run: () => loadCatalog() }} /></div>
+              <div className="mt-4">
+                <StateNotice
+                  issueId={skillsStatus}
+                  summary={t("skills.loadFailed")}
+                  action={{ label: t("skills.retry"), run: () => loadCatalog() }}
+                />
+              </div>
             )}
             {skillsStatus === "loading" && skills.length === 0 && kind !== "agent" && (
               <p role="status" className="mt-4 text-sm text-muted">{t("skills.loading")}</p>

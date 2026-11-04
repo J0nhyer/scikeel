@@ -1,6 +1,7 @@
-import { useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
+import { toast } from "@/lib/toast";
 import { ManagementDialog } from "@/components/ui/ManagementDialog";
 
 /** Modal for naming a new (from-scratch) project: a focused, pre-selected input
@@ -36,6 +37,7 @@ export function NameProjectDialog({
   const { t } = useTranslation(["common", "nav"]);
   const [name, setName] = useState(defaultName);
   const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (error) toast.error(error); }, [error]);
   const save = () => {
     const v = name;
     if (v.trim() && !busy) onSave(v);
@@ -58,7 +60,6 @@ export function NameProjectDialog({
             busy && "animate-pulse opacity-60",
           )}
         />
-        {error && <p role="alert" className="mt-3 text-sm text-error">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button
             className="rounded-input border border-border px-3 py-1.5 text-sm text-text hover:bg-surface-2 disabled:opacity-50"

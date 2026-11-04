@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../ui/ErrorNotice";
 import { StateNotice } from "../ui/StateNotice";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -999,7 +1000,7 @@ export function PreviewError({
             <ExternalLink size={13} /> {t("filePreview.openExternally")}
           </button>
         </div>
-        {probeError && <div className="mt-3 text-[13px] text-error">{probeError}</div>}
+        {probeError && <ErrorNotice issueId={`preview-probe:${path}:${probeError}`} summary={probeError} />}
         {pointer && <LargeFilePointerPanel p={pointer} />}
       </div>
     </div>

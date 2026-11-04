@@ -4,11 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FilePreviewInspector as FilePreviewInspectorT } from "@ai4s/shared";
 import { readArtifact } from "@/lib/artifactFile";
 import { useRuntimeStore } from "@/lib/runtime";
+import { useToastStore } from "@/lib/toast";
+import { Toaster } from "@/components/ui/Toaster";
 import { FilePreviewInspector, PreviewError } from "./FilePreviewInspector";
 
 // The markdown tests below carry inline `content`, so they never hit
 // readArtifact — this mock only feeds the binary-file test.
 const probeLargeFile = vi.fn();
+beforeEach(() => useToastStore.getState().reset());
 vi.mock("@/lib/artifactFile", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/artifactFile")>();
   return {
@@ -100,8 +103,9 @@ describe("FilePreviewInspector — binary file behind a text preview", () => {
       filename: "blob.bin",
       artifact: "data",
     };
-    render(<FilePreviewInspector data={bin} onClose={() => {}} />);
-    expect(await screen.findByText(/binary and has no preview/)).toBeInTheDocument();
+    render(<><FilePreviewInspector data={bin} onClose={() => {}} /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/binary and has no preview/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
     expect(screen.queryByText(/available in the desktop app/)).not.toBeInTheDocument();
   });
 });
@@ -269,18 +273,20 @@ describe("PreviewError", () => {
     expect(probeLargeFile).toHaveBeenCalledWith("data/reads.fastq.gz", undefined);
   });
 
-  it("shows the probe's error if introspection fails", async () => {
+  it("shows the probe's error in the global card if introspection fails", async () => {
     probeLargeFile.mockRejectedValueOnce(new Error("no Python found"));
     render(
-      <PreviewError error="file too large to preview" filename="x.bam" path="x.bam" onOpenExternally={() => {}} />,
+      <><PreviewError error="file too large to preview" filename="x.bam" path="x.bam" onOpenExternally={() => {}} /><Toaster /></>,
     );
     await userEvent.click(screen.getByRole("button", { name: /Inspect without loading/i }));
-    expect(await screen.findByText(/no Python found/)).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/no Python found/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 
-  it("renders other errors as a plain line, no card", () => {
-    render(<PreviewError error="Preview is available in the desktop app." filename="x.bin" onOpenExternally={() => {}} />);
-    expect(screen.getByText(/available in the desktop app/)).toBeInTheDocument();
+  it("renders other errors in the global card", () => {
+    render(<><PreviewError error="Preview is available in the desktop app." filename="x.bin" onOpenExternally={() => {}} /><Toaster /></>);
+    expect(screen.getByRole("alert")).toHaveTextContent(/available in the desktop app/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
     expect(screen.queryByRole("button", { name: /Open externally/ })).not.toBeInTheDocument();
   });
 });

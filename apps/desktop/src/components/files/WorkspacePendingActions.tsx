@@ -3,6 +3,7 @@ import {ChevronDown,RefreshCw,RotateCcw} from 'lucide-react';
 import {useTranslation} from 'react-i18next';
 import {useRuntimeStore} from '@/lib/runtime';
 import {isPlatformWeb} from '@/lib/webMode';
+import {ErrorNotice} from '@/components/ui/ErrorNotice';
 import {listPendingWorkspaceOperations,retryPendingWorkspaceOperation,type PendingWorkspaceOperation} from '@/lib/workspaceManagement';
 
 type View={owner:string;items:PendingWorkspaceOperation[];nextCursor:string|null;error?:string};
@@ -54,6 +55,6 @@ export function WorkspacePendingActions(){
    {operation.retry && <button type='button' className={icon} disabled={readOnly||busy!==null} aria-label={t(operation.code==='history_failed'?'fileManagement.retryHistory':'fileManagement.retryOperation',{name:operation.path})} title={t(operation.code==='history_failed'?'fileManagement.retryHistory':'fileManagement.retryOperation',{name:operation.path})} onClick={()=>void retry(operation)}><RotateCcw size={15}/></button>}
   </div>)}
   {view.nextCursor && <button type='button' className={icon} aria-label={t('fileManagement.moreOperations')} title={t('fileManagement.moreOperations')} onClick={()=>void loadRef.current?.(view.nextCursor??undefined)}><ChevronDown size={15}/></button>}
-  {view.error && <p role='alert' className='break-words text-xs text-error'>{view.error}</p>}
+  {view.error && <ErrorNotice issueId={`pending:${view.error}`} summary={view.error} action={{label:t('common:notification.retry'),run:()=>loadRef.current?.()}} />}
  </section>;
 }

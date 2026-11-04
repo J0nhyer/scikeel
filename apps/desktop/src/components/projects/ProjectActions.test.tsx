@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {MemoryRouter} from 'react-router-dom';
 import {useRuntimeStore} from '@/lib/runtime';
+import {useToastStore} from '@/lib/toast';
+import {Toaster} from '@/components/ui/Toaster';
 import {makeLeaf,useLayoutStore} from '@/lib/layout';
 import {WorkspaceRequestError} from '@/lib/workspaceManagement';
 const patch=vi.fn(),remove=vi.fn(),projects=vi.fn();
@@ -10,7 +12,7 @@ vi.mock('@/lib/workspaceManagement',async original=>({...await original<typeof i
 const {ProjectActions}=await import('./ProjectActions');
 const project={id:'123456789abcdef0',name:'A',path:'/ws/a',createdAt:1,imported:false,pinned:false,revision:'r1'};
 beforeEach(()=>{vi.clearAllMocks();projects.mockResolvedValue([project]);useRuntimeStore.setState({webReadOnly:false,projects:[project],sessions:[]});});
-afterEach(cleanup);
+afterEach(()=>{cleanup();useToastStore.getState().reset();});
 it('focuses a rename opened from a transformed sidebar menu and returns focus after Escape',async()=>{
  render(<MemoryRouter><div style={{transform:'translateY(-50%)'}}><ProjectActions project={project}/></div></MemoryRouter>);
  const trigger=screen.getByRole('button',{name:'Project actions: A'});
@@ -32,13 +34,13 @@ it('focuses the remove action and dismisses it with Escape without a mutation',a
 });
 it('rename failure retains input and dialog, then retry updates once',async()=>{
   patch.mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce({id:project.id});
-  render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
+  render(<><MemoryRouter><ProjectActions project={project}/></MemoryRouter><Toaster/></>);
   await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));
   await userEvent.click(screen.getByRole('menuitem',{name:'Rename'}));
   const dialog=screen.getByRole('dialog',{name:'Rename'});
   fireEvent.change(within(dialog).getByRole('textbox'),{target:{value:'Renamed'}});
   await userEvent.click(within(dialog).getByRole('button',{name:'Save'}));
-  expect(await screen.findByRole('alert')).toHaveTextContent('Offline');expect(screen.getByRole('textbox')).toHaveValue('Renamed');
+  expect(await screen.findByText('Offline')).toBeInTheDocument();expect(screen.getByText('Offline')).toHaveAttribute('data-error-card','true');expect(screen.getByRole('textbox')).toHaveValue('Renamed');
   await userEvent.click(within(dialog).getByRole('button',{name:'Save'}));
   expect(patch).toHaveBeenCalledTimes(2);
 });
@@ -60,10 +62,10 @@ it('offers the shared new-session action from its menu',async()=>{
 });
 it('uses a fresh operation ID after correcting a rejected project name',async()=>{
  patch.mockRejectedValueOnce(new WorkspaceRequestError('Invalid name','invalid_name',400)).mockResolvedValueOnce({id:project.id});
- render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
+ render(<><MemoryRouter><ProjectActions project={project}/></MemoryRouter><Toaster/></>);
  await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));await userEvent.click(screen.getByRole('menuitem',{name:'Rename'}));
  fireEvent.change(screen.getByRole('textbox'),{target:{value:'Rejected'}});await userEvent.click(screen.getByRole('button',{name:'Save'}));
- await screen.findByRole('alert');fireEvent.change(screen.getByRole('textbox'),{target:{value:'Corrected'}});await userEvent.click(screen.getByRole('button',{name:'Save'}));
+ await screen.findByText('Invalid name');expect(screen.getByText('Invalid name')).toHaveAttribute('data-error-card','true');fireEvent.change(screen.getByRole('textbox'),{target:{value:'Corrected'}});await userEvent.click(screen.getByRole('button',{name:'Save'}));
  expect(patch.mock.calls[0][2]).not.toBe(patch.mock.calls[1][2]);
 });
 it('confirmed project removal keeps working panes and drafts because it deletes nothing',async()=>{
@@ -72,9 +74,9 @@ it('confirmed project removal keeps working panes and drafts because it deletes 
  useLayoutStore.setState({groups,activeGroupId:groups[1].id,tree:other,focusedLeafId:other.id});
  useRuntimeStore.setState({draftWorkspaces:{['draft:'+mine.id]:project.path,['draft:'+other.id]:'/ws/b'}});
  remove.mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce({state:'committed'});
- render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
+ render(<><MemoryRouter><ProjectActions project={project}/></MemoryRouter><Toaster/></>);
  await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));await userEvent.click(screen.getByRole('menuitem',{name:'Remove'}));
- await userEvent.click(screen.getByRole('button',{name:'Remove'}));expect(await screen.findByRole('alert')).toHaveTextContent('Offline');
+ await userEvent.click(screen.getByRole('button',{name:'Remove'}));expect(await screen.findByText('Offline')).toBeInTheDocument();expect(screen.getByText('Offline')).toHaveAttribute('data-error-card','true');
  expect(useLayoutStore.getState().groups[0].tree).toEqual(mine);
  await userEvent.click(screen.getByRole('button',{name:'Remove'}));
  expect(useLayoutStore.getState().groups.flatMap(group=>group.tree?[group.tree]:[])).toEqual([mine,other]);

@@ -9,6 +9,7 @@ import {listWorkspaceProjects,patchWorkspaceProject,removeWorkspaceProject,works
 import {NameProjectDialog} from './NameProjectDialog';
 import {ManagementDialog} from '@/components/ui/ManagementDialog';
 import {hasWorkspaceDraftInDirectory} from '@/lib/workspaceDrafts';
+import {toast} from '@/lib/toast';
 
 export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNewSession?:()=>void}) {
   const {t}=useTranslation(['nav','common']);const navigate=useNavigate();
@@ -17,6 +18,7 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
   const [uncertain,setUncertain]=useState(false);
   const mounted=useRef(true),locked=useRef(false),operation=useRef(workspaceOperationId()),lastName=useRef<string|null>(null);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  useEffect(()=>{if(error)toast.error(error);},[error]);
   const trigger=useRef<HTMLButtonElement>(null),cancel=useRef<HTMLButtonElement>(null),openingDialog=useRef(false);
   const begin=(kind:'rename'|'remove')=>{openingDialog.current=true;operation.current=workspaceOperationId();lastName.current=null;setUncertain(false);setError(null);setDialog(kind);};
   const openRename=()=>begin('rename');
@@ -55,11 +57,9 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
         <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={openRemove}>{t('projects.remove')}</DropdownMenu.Item>
       </DropdownMenu.Content></DropdownMenu.Portal>
     </DropdownMenu.Root>
-    {dialog==='rename' && <NameProjectDialog returnFocusRef={trigger} defaultName={project.name} title={t('projects.rename')} subtitle={t('projects.nameSubtitle')} busy={busy} inputDisabled={uncertain} cancelDisabled={uncertain} error={error??undefined} onCancel={()=>{if(!busy && !uncertain)setDialog(null);}} onSave={rename}/>}
+    {dialog==='rename' && <NameProjectDialog returnFocusRef={trigger} defaultName={project.name} title={t('projects.rename')} subtitle={t('projects.nameSubtitle')} busy={busy} inputDisabled={uncertain} cancelDisabled={uncertain} onCancel={()=>{if(!busy && !uncertain)setDialog(null);}} onSave={rename}/>}
     {dialog==='remove' && <ManagementDialog role="alertdialog" title={t('projects.removeTitle',{name:project.name})} description={t('projects.removeBody')} onClose={()=>setDialog(null)} dismissible={!busy} initialFocusRef={cancel} returnFocusRef={trigger} className="w-[360px]">
-      {error && <p role="alert" className="mt-2 text-sm text-error">{error}</p>}
       <div className="mt-4 flex justify-end gap-2"><button ref={cancel} disabled={busy} onClick={()=>setDialog(null)} className="rounded border border-border px-3 py-2 text-sm">{t('common:actions.cancel')}</button><button disabled={busy||readOnly} onClick={()=>void run(remove)} className="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">{t('projects.remove')}</button></div>
     </ManagementDialog>}
-    {error && dialog===null && <p role="alert" className="text-xs text-error">{error}</p>}
   </>;
 }

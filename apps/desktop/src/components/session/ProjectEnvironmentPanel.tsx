@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { FlaskConical, RefreshCw } from "lucide-react";
 import type { ProjectEnvironmentApproval, ProjectEnvironmentInfo } from "@ai4s/sdk";
 import { getClient } from "@/lib/runtime";
+import { toast } from "@/lib/toast";
 import { ManagementDialog } from "@/components/ui/ManagementDialog";
 
 export function ProjectEnvironmentPanel({ sessionId, running, visible }: { sessionId: string; running: boolean; visible: boolean }) {
@@ -22,7 +23,7 @@ function EnvironmentDetails({ sessionId, running, onClose, returnFocusRef }: {
   const [info, setInfo] = useState<ProjectEnvironmentInfo | null>(null);
   const [approval, setApproval] = useState<ProjectEnvironmentApproval | null>(null);
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
-  const [readError, setReadError] = useState(false), [error, setError] = useState(false);
+  const [readError, setReadError] = useState(false);
   const generation = useRef(0);
   const load = useCallback(async () => {
     const current = ++generation.current;
@@ -32,7 +33,12 @@ function EnvironmentDetails({ sessionId, running, onClose, returnFocusRef }: {
       if (!client) throw new Error("Runtime unavailable");
       const value = await client.describeProjectEnvironment(sessionId);
       if (current === generation.current) setInfo(value);
-    } catch { if (current === generation.current) setReadError(true); }
+    } catch {
+      if (current === generation.current) {
+        setReadError(true);
+        toast.error(t("environment.loadFailed"), { action: { label: t("common:notification.retry"), run: load } });
+      }
+    }
     finally { if (current === generation.current) setLoading(false); }
   }, [sessionId]);
   useEffect(() => { void load(); return () => { generation.current++; }; }, [load]);
@@ -40,34 +46,33 @@ function EnvironmentDetails({ sessionId, running, onClose, returnFocusRef }: {
     const client = getClient();
     if (!client || running || busy) return;
     const current = generation.current;
-    setBusy(true); setError(false);
+    setBusy(true);
     try { const value = await client.requestProjectEnvironment(sessionId); if (current === generation.current) setApproval(value); }
-    catch { if (current === generation.current) setError(true); }
+    catch { if (current === generation.current) toast.error(t("environment.failed")); }
     finally { if (current === generation.current) setBusy(false); }
   }
   async function install() {
     const client = getClient();
     if (!client || !approval || running || busy) return;
     const current = generation.current;
-    setBusy(true); setError(false);
+    setBusy(true);
     try {
       await client.approveProjectEnvironment(sessionId, approval.id);
       if (current !== generation.current) return;
       setApproval(null);
       const value = await client.describeProjectEnvironment(sessionId);
       if (current === generation.current) setInfo(value);
-    } catch { if (current === generation.current) { setApproval(null); setError(true); } }
+    } catch { if (current === generation.current) { setApproval(null); toast.error(t("environment.failed")); } }
     finally { if (current === generation.current) setBusy(false); }
   }
   return <ManagementDialog title={t("environment.title")} onClose={onClose} dismissible={!busy} returnFocusRef={returnFocusRef}>
     <div className="mt-3 space-y-3 text-sm">
       {loading && <p role="status" className="text-muted">{t("environment.detailsLoading")}</p>}
-      {readError && <div role="alert" className="flex items-center gap-3"><p className="min-w-0 flex-1 text-error">{t("environment.loadFailed")}</p><button type="button" title={t("common:notification.retry")} aria-label={t("common:notification.retry")} className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-border" onClick={()=>void load()}><RefreshCw size={15}/></button></div>}
+      {readError && <button type="button" title={t("common:notification.retry")} aria-label={t("common:notification.retry")} className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-border" onClick={()=>void load()}><RefreshCw size={15}/></button>}
       {info && <>
         <p className="font-medium">{t(`environment.${info.venvState}`)}</p>
         <p>{t("environment.explanation")}</p>
         {!info.inputHash && <p>{t("environment.lockRequired")}</p>}
-        {error && <p role="alert" className="text-error">{t("environment.failed")}</p>}
         {running && <p>{t("environment.stopFirst")}</p>}
         {approval ? <>
           <p>{t("environment.confirm")}</p><p className="break-words">{approval.patterns.join(", ")}</p>

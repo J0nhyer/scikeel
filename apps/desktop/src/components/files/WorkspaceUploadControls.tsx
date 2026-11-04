@@ -5,6 +5,7 @@ import {useTranslation} from 'react-i18next';
 import {useRuntimeStore} from '@/lib/runtime';
 import {WorkspaceUploadQueue,type UploadQueueRecord} from '@/lib/workspaceUploadQueue';
 import type {WorkspaceScope} from '@/lib/workspaceManagement';
+import {ErrorNotice} from '@/components/ui/ErrorNotice';
 
 export function WorkspaceUploadControls({scope,path,onChanged,disabled=false}:{scope:WorkspaceScope;path:string;onChanged:()=>void;disabled?:boolean}){
  const {t}=useTranslation(['nav','common']);
@@ -39,7 +40,7 @@ export function WorkspaceUploadControls({scope,path,onChanged,disabled=false}:{s
     <button type='button' className={icon} aria-label={t('common:notification.retry')} title={t('common:notification.retry')} onClick={()=>{setError(null);void queue.current?.refresh().catch(error=>setError(error instanceof Error?error.message:String(error)));}}><RefreshCw size={15}/></button>
     <Dialog.Close className={icon} aria-label={t('common:notification.closeDetails')} title={t('common:notification.closeDetails')}><X size={15}/></Dialog.Close>
    </div>
-   {error && <p role='alert' className='mt-3 break-words text-sm text-error'>{error}</p>}
+   {error && <ErrorNotice issueId={`upload-global:${error}`} summary={error} action={{label:t('common:notification.retry'),run:()=>{setError(null);void queue.current?.refresh().catch(e=>setError(e instanceof Error?e.message:String(e)));}}} />}
    <div className='mt-3 min-h-0 overflow-y-auto'>
     {records.map(record=>{const name=record.input.path.split('/').slice(-1)[0]??record.input.path,offset=record.upload?.offset??0,busy=record.status==='uploading'||record.status==='cancelling',terminal=record.status==='complete'||record.status==='cancelled',resume=t('fileManagement.resumeUpload',{name});return <div key={record.key} className='border-t border-border py-3'>
      <div className='flex items-center gap-2'><span className='min-w-0 flex-1 break-words text-sm'>{name}</span>
@@ -51,7 +52,7 @@ export function WorkspaceUploadControls({scope,path,onChanged,disabled=false}:{s
      </div>
      <progress aria-label={name} className='mt-2 h-1 w-full accent-accent' max={Math.max(record.input.size,1)} value={record.status==='complete'?Math.max(record.input.size,1):offset}/>
      <div className='mt-1 flex gap-2 text-xs text-muted'><span className='min-w-0 flex-1'>{t(`fileManagement.uploadStatus.${record.status}` as const)}</span><span className='shrink-0 tabular-nums'>{offset.toLocaleString()} / {record.input.size.toLocaleString()} B</span></div>
-     {record.error && <p role='alert' className='mt-2 break-words text-sm text-error'>{record.error}</p>}
+     {record.error && <ErrorNotice issueId={`upload:${record.key}:${record.error}`} summary={record.error} />}
     </div>;})}
    </div>
   </Dialog.Content></Dialog.Portal></Dialog.Root>

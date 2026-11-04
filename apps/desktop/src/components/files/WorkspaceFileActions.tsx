@@ -8,6 +8,7 @@ import {operateWorkspace,workspaceEntries,workspaceOperationId,WorkspaceRequestE
 import {NameProjectDialog} from '@/components/projects/NameProjectDialog';
 import {WorkspaceUploadControls} from './WorkspaceUploadControls';
 import {hasWorkspaceDrafts} from '@/lib/workspaceDrafts';
+import {toast} from '@/lib/toast';
 import {ManagementDialog} from '@/components/ui/ManagementDialog';
 
 const parent=(path:string)=>path.split('/').slice(0,-1).join('/');
@@ -36,12 +37,13 @@ function useFileAction(scope:WorkspaceScope,onChanged:()=>void){
 export function WorkspaceFileControls({scope,path,onChanged,disabled=false}:{scope:WorkspaceScope;path:string;onChanged:()=>void;disabled?:boolean}){
  const {t}=useTranslation(['nav','common']);const readOnly=useRuntimeStore(state=>state.webReadOnly);
  const [kind,setKind]=useState<'createFile'|'createDirectory'|null>(null);const action=useFileAction(scope,onChanged);
+ useEffect(()=>{if(action.error)toast.error(action.error);},[action.error]);
  const open=(kind:'createFile'|'createDirectory')=>{action.begin();setKind(kind);};
  return <>
   <button type='button' className='flex h-8 w-8 items-center justify-center rounded hover:bg-surface-2 disabled:opacity-40' aria-label={t('fileManagement.newFile')} title={t('fileManagement.newFile')} disabled={readOnly||action.busy||disabled} onClick={()=>open('createFile')}><FilePlus size={15}/></button>
   <button type='button' className='flex h-8 w-8 items-center justify-center rounded hover:bg-surface-2 disabled:opacity-40' aria-label={t('fileManagement.newFolder')} title={t('fileManagement.newFolder')} disabled={readOnly||action.busy||disabled} onClick={()=>open('createDirectory')}><FolderPlus size={15}/></button>
   <WorkspaceUploadControls scope={scope} path={path} onChanged={onChanged} disabled={disabled}/>
-  {kind && <NameProjectDialog defaultName='' title={t(kind==='createFile'?'fileManagement.newFile':'fileManagement.newFolder')} subtitle='' busy={action.busy||disabled} inputDisabled={action.uncertain} cancelDisabled={action.uncertain} error={action.error??undefined} onCancel={()=>{if(!action.busy && !action.uncertain)setKind(null);}} onSave={name=>{if(!disabled)void action.run(kind==='createFile'?{kind,path:child(path,name.trim()),text:''}:{kind,path:child(path,name.trim())},()=>setKind(null));}}/>}
+  {kind && <NameProjectDialog defaultName='' title={t(kind==='createFile'?'fileManagement.newFile':'fileManagement.newFolder')} subtitle='' busy={action.busy||disabled} inputDisabled={action.uncertain} cancelDisabled={action.uncertain} onCancel={()=>{if(!action.busy && !action.uncertain)setKind(null);}} onSave={name=>{if(!disabled)void action.run(kind==='createFile'?{kind,path:child(path,name.trim()),text:''}:{kind,path:child(path,name.trim())},()=>setKind(null));}}/>}
  </>;
 }
 export function WorkspaceFileActions({scope,entry,onChanged}:{scope:WorkspaceScope;entry:DirEntry;onChanged:()=>void}){
@@ -51,6 +53,8 @@ export function WorkspaceFileActions({scope,entry,onChanged}:{scope:WorkspaceSco
  const [folderError,setFolderError]=useState<string|null>(null),[loadingFolders,setLoadingFolders]=useState(false),[folderCursor,setFolderCursor]=useState<string|null>(null);const folderGeneration=useRef(0);
  useEffect(()=>()=>{folderGeneration.current++;},[]);
  const action=useFileAction(scope,onChanged);const capabilities=entry.capabilities??[];
+ useEffect(()=>{if(action.error)toast.error(action.error);},[action.error]);
+ useEffect(()=>{if(folderError)toast.error(folderError);},[folderError]);
  const loadFolders=async(path:string,cursor?:string)=>{const generation=++folderGeneration.current,owner=useRuntimeStore.getState().gatewayUser?.id;setDestination(path);setLoadingFolders(true);setFolderError(null);if(!cursor)setFolderCursor(null);try{const listed=await (cursor?workspaceEntries(scope,path,cursor):workspaceEntries(scope,path));if(generation===folderGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id){const next=listed.entries.filter(folder=>folder.isDir && folder.path!==entry.path && !folder.path.startsWith(entry.path+'/'));setFolders(previous=>cursor?[...previous.filter(folder=>!next.some(item=>item.path===folder.path)),...next]:next);setFolderCursor(listed.nextCursor??null);}}catch(error){if(generation===folderGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id){if(!cursor)setFolders([]);setFolderError(error instanceof Error?error.message:String(error));}}finally{if(generation===folderGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setLoadingFolders(false);}};
  const open=(kind:'rename'|'move'|'delete')=>{openingDialog.current=true;action.begin();setDialog(kind);if(kind==='move')void loadFolders('');};
  const close=()=>{folderGeneration.current++;setDialog(null);};
@@ -64,15 +68,14 @@ export function WorkspaceFileActions({scope,entry,onChanged}:{scope:WorkspaceSco
     <DropdownMenu.Item className={item+' text-error'} disabled={readOnly||action.busy||!capabilities.includes(FILE_ACTION.delete)} onSelect={()=>open(FILE_ACTION.delete)}>{t('fileManagement.delete')}</DropdownMenu.Item>
    </DropdownMenu.Content></DropdownMenu.Portal>
   </DropdownMenu.Root>
-  {dialog==='rename' && <NameProjectDialog returnFocusRef={trigger} defaultName={entry.name} title={t('projects.rename')} subtitle='' busy={action.busy} inputDisabled={action.uncertain} cancelDisabled={action.uncertain} error={action.error??undefined} onCancel={()=>{if(!action.busy && !action.uncertain)close();}} onSave={name=>run({kind:FILE_ACTION.rename,path:entry.path,destinationPath:child(parent(entry.path),name.trim()),expectedRevision:revision})}/>}
+  {dialog==='rename' && <NameProjectDialog returnFocusRef={trigger} defaultName={entry.name} title={t('projects.rename')} subtitle='' busy={action.busy} inputDisabled={action.uncertain} cancelDisabled={action.uncertain} onCancel={()=>{if(!action.busy && !action.uncertain)close();}} onSave={name=>run({kind:FILE_ACTION.rename,path:entry.path,destinationPath:child(parent(entry.path),name.trim()),expectedRevision:revision})}/>}
   {dialog==='delete' && <ManagementDialog role='alertdialog' title={t('fileManagement.deleteTitle',{name:entry.name})} description={t('fileManagement.deleteBody')} onClose={close} dismissible={!action.busy&&!action.uncertain} initialFocusRef={cancel} returnFocusRef={trigger} className='w-[360px]'>
-   {action.error && <p role='alert' className='mt-2 break-words text-sm text-error'>{action.error}</p>}
    <div className='mt-4 flex justify-end gap-2'><button ref={cancel} className='rounded border border-border px-3 py-2 text-sm' disabled={action.busy||action.uncertain} onClick={close}>{t('common:actions.cancel')}</button><button className='rounded bg-error px-3 py-2 text-sm text-white disabled:opacity-40' disabled={action.busy||readOnly} onClick={()=>run({kind:'delete',path:entry.path,expectedRevision:revision})}>{t('fileManagement.delete')}</button></div>
   </ManagementDialog>}
   {dialog==='move' && <ManagementDialog title={t('fileManagement.move')} onClose={close} dismissible={!action.busy&&!action.uncertain} initialFocusRef={cancel} returnFocusRef={trigger} className='w-[360px]'>
    <h2 className='break-words text-sm font-medium'>{entry.name}</h2><label className='mt-3 block text-sm'>{t('fileManagement.destination')}<select aria-label={t('fileManagement.destination')} className='mt-2 w-full min-w-0 rounded border border-border bg-surface px-2 py-2 text-sm' disabled={action.busy||action.uncertain||loadingFolders} value={destination} onChange={event=>void loadFolders(event.target.value)}>
     <option value={destination}>{destination||'/'}</option>{destination && <option value={parent(destination)}>..</option>}{folders.map(folder=><option key={folder.path} value={folder.path}>{folder.name}</option>)}
-   </select></label>{(action.error||folderError) && <p role='alert' className='mt-2 break-words text-sm text-error'>{action.error??folderError}</p>}
+   </select></label>
    {folderCursor && <button type='button' aria-label={t('fileManagement.loadMore')} title={t('fileManagement.loadMore')} className='mt-2 flex h-8 w-8 items-center justify-center rounded border border-border' disabled={loadingFolders||action.busy||action.uncertain} onClick={()=>void loadFolders(destination,folderCursor)}><ChevronDown size={15}/></button>}
    {folderError && <button type='button' aria-label={t('common:notification.retry')} title={t('common:notification.retry')} className='mt-2 flex h-8 w-8 items-center justify-center rounded border border-border' onClick={()=>void loadFolders(destination)}><RefreshCw size={15}/></button>}
    <div className='mt-4 flex justify-end gap-2'><button ref={cancel} className='rounded border border-border px-3 py-2 text-sm' disabled={action.busy||action.uncertain} onClick={close}>{t('common:actions.cancel')}</button><button className='rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-40' disabled={action.busy||readOnly||loadingFolders||folderError!==null||child(destination,entry.name)===entry.path} onClick={()=>run({kind:'move',path:entry.path,destinationPath:child(destination,entry.name),expectedRevision:revision})}>{t('fileManagement.move')}</button></div>
