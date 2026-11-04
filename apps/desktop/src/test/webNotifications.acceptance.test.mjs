@@ -79,14 +79,16 @@ test.skipIf(!process.env.OSD_NOTIFICATIONS_ACCEPTANCE)('Web feedback expires wit
         const success = notifications.getByText('Delivery files verified', { exact: true });
         await success.waitFor({ state: 'visible', timeout: 10000 });
         expect(await composer.boundingBox()).toEqual(originalComposer);
-        const rectangle = await notifications.boundingBox(); const composerBox = await composer.boundingBox();
-        expect(rectangle.y + rectangle.height).toBeLessThanOrEqual(composerBox.y);
+        const card = notifications.locator('[data-notification-card]').filter({ hasText: 'Delivery files verified' });
+        const rectangle = await card.boundingBox(); const viewport = page.viewportSize();
+        expect(Math.abs(rectangle.x + rectangle.width / 2 - viewport.width / 2)).toBeLessThanOrEqual(2);
+        expect(Math.abs(rectangle.y + rectangle.height / 2 - viewport.height / 2)).toBeLessThanOrEqual(2);
         const close = notifications.getByRole('button', { name: 'Close notification' });
         const touch = await close.boundingBox(); expect(touch.width).toBeGreaterThanOrEqual(44); expect(touch.height).toBeGreaterThanOrEqual(44);
         await page.locator('textarea').first().focus();
-        // Move the pointer off the toast so the five-second reading timer runs.
+        // Move the pointer off the toast so the ten-second reading timer runs.
         await page.mouse.move(0, 0);
-        await expect.poll(() => success.isVisible(), { timeout: 8000 }).toBe(false);
+        await expect.poll(() => success.isVisible(), { timeout: 13_000 }).toBe(false);
         expect(await page.locator('summary[aria-label="Delivery files verified"]').count()).toBe(0);
         await page.reload(); await page.getByText('Original assistant result remains available.', { exact: true }).waitFor();
         expect(await notifications.getByText('Delivery files verified', { exact: true }).count()).toBe(0);

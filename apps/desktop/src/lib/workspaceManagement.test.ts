@@ -55,3 +55,50 @@ it('does not claim an unacknowledged chunk succeeded or resend it automatically'
  expect(typeof client.uploadWorkspaceChunk).toBe('function');
  await expect(client.uploadWorkspaceChunk('upload-a',0,new Blob(['abc']))).rejects.toMatchObject({code:'upload_uncertain'});expect(fetchMock).toHaveBeenCalledTimes(2);
 });
+it('allocates an isolated workspace folder for a new conversation',async()=>{
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({directory:'/ws/sessions/2026-11-03-2130'})));
+ expect(typeof client.createSessionWorkspace).toBe('function');
+ await expect(client.createSessionWorkspace('2026-11-03-2130')).resolves.toEqual({directory:'/ws/sessions/2026-11-03-2130'});
+ const [url,init]=fetchMock.mock.calls[0];
+ expect(String(url)).toBe('http://localhost/api/workspace/session-workspaces');
+ expect(init?.method).toBe('POST');
+ expect(JSON.parse(String(init?.body))).toEqual({name:'2026-11-03-2130'});
+});
+it('treats a platform without the allocation route as compatible',async()=>{
+ vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({code:'not_found',error:'not found'}),{status:404}));
+ await expect(client.createSessionWorkspace('2026-11-03-2130')).resolves.toBeNull();
+});
+it('retries a transiently busy session workspace allocation',async()=>{
+ const busy=new Response(JSON.stringify({code:'session_workspace_unavailable',error:'session workspace unavailable'}),{status:503});
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockResolvedValueOnce(busy.clone()).mockResolvedValueOnce(busy.clone()).mockResolvedValue(new Response(JSON.stringify({directory:'/ws/sessions/2026-11-03-2130'})));
+ await expect(client.createSessionWorkspace('2026-11-03-2130')).resolves.toEqual({directory:'/ws/sessions/2026-11-03-2130'});
+ expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+it('detects an older platform without session workspace allocation',async()=>{
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockResolvedValueOnce(new Response(JSON.stringify({supported:true}))).mockResolvedValueOnce(new Response(JSON.stringify({code:'not_found',error:'not found'}),{status:404}));
+ await expect(client.sessionWorkspaceSupported()).resolves.toBe(true);
+ await expect(client.sessionWorkspaceSupported()).resolves.toBe(false);
+ expect(String(fetchMock.mock.calls[0][0])).toContain('/api/workspace/session-workspaces');
+ expect(fetchMock.mock.calls[0][1]?.method).toBeUndefined();
+});
+it('treats an unsupported probe method as a legacy platform',async()=>{
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockResolvedValueOnce(new Response(JSON.stringify({code:'method_not_allowed',error:'method not allowed'}),{status:405}));
+ await expect(client.sessionWorkspaceSupported()).resolves.toBe(false);
+ expect(String(fetchMock.mock.calls[0][0])).toContain('/api/workspace/session-workspaces');
+});
+it('rethrows a capability probe failure that is not a legacy 404 or 405',async()=>{
+ vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({code:'workspace_unavailable',error:'workspace unavailable'}),{status:500}));
+ await expect(client.sessionWorkspaceSupported()).rejects.toMatchObject({status:500,code:'workspace_unavailable'});
+});
+it('rethrows a network failure from the capability probe',async()=>{
+ vi.spyOn(globalThis,'fetch').mockRejectedValue(new TypeError('network'));
+ await expect(client.sessionWorkspaceSupported()).rejects.toThrow('network');
+});
+it('bounds the capability probe and allocation requests with a timeout',async()=>{
+ const timeout=vi.spyOn(AbortSignal,'timeout');
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockImplementation(async()=>new Response(JSON.stringify({supported:true,directory:'/ws/sessions/a'})));
+ await expect(client.sessionWorkspaceSupported()).resolves.toBe(true);
+ await expect(client.createSessionWorkspace('a')).resolves.toMatchObject({directory:'/ws/sessions/a'});
+ expect(timeout.mock.calls.filter(([ms])=>ms===30000)).toHaveLength(2);
+ for(const [,init] of fetchMock.mock.calls) expect(init?.signal).toBeInstanceOf(AbortSignal);
+});

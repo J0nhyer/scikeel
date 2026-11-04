@@ -19,8 +19,8 @@ test('a forbidden Admin selection cannot dispatch inference or manufacture nativ
 });
 
 function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lostQuestionAnswer=false,nativeFileEvidence='completed',fileRevertFailure,
- historyConflictsAfterPrompt=0,selectionConflicts=0,model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex',multiStepFiles=false,
- multiStepQuestion=false,toolOnlyQuestion=false}={}) {
+ historyConflictsAfterPrompt=0,historyErrorsAfterPrompt=0,selectionConflicts=0,model='gpt-6.1-sol',providerID='codex',selectedRuntime='codex',multiStepFiles=false,
+ multiStepQuestion=false,toolOnlyQuestion=false,nativeWriteEvidence='completed'}={}) {
  const calls=[],files=new Map(),history=[],questions=[],selections=[];
  let revision=1,runtime='opencode',currentPhase,checkpointAnswered=false,disabled=false,aborted=false,warm=false,settling=0;
  let fileStep=0,fileMarker;
@@ -29,6 +29,9 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
  const state={revision:1,phase:'idle',mode:'autonomous',execution:1,pending:null};
  const admin={origin:'http://127.0.0.1:4790',headers:{cookie:'admin-private'}};
  const answer=text=>{state.phase='running';settling=2;history.push({info:{id:`msg_${history.length}`,role:'assistant',time:{completed:1}},parts:[{type:'text',text}]});};
+ const writePart=marker=>selectedRuntime==='codex'?
+  {type:'tool',tool:'apply_patch',state:{status:'completed',input:{patch:`*** Begin Patch\n*** Update File: acceptance-output.txt\n+${marker}\n*** End Patch`}}}:
+  {type:'tool',tool:'write',state:{status:'completed',input:{filePath:'acceptance-output.txt',content:marker}}};
  const request=async(url,options={})=>{
   const {pathname:path,searchParams}=new URL(url),body=options.body?JSON.parse(options.body):undefined;
   const method=options.method??'GET';calls.push({path,method,body,headers:options.headers});
@@ -99,6 +102,10 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
     historyConflictsAfterPrompt--;
     return Response.json({error:'Conversation changed',code:'conversation_revision_conflict'},{status:409});
    }
+   if(method==='GET'&&currentPhase&&historyErrorsAfterPrompt>0){
+    historyErrorsAfterPrompt--;
+    return Response.json({error:'Conversation is busy',code:'session_busy'},{status:503});
+   }
    if(method==='GET'&&multiStepFiles&&currentPhase==='files'){
     // The native turn advances one assistant step per observed history read, so
     // a reader that settles on the first completed step sees only the read tool
@@ -130,7 +137,8 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
      history.push({info:{id:`msg_${history.length}`,role:'assistant',time:{completed:1},finish:'tool-calls'},
       parts:[{type:'tool',tool:'bash',state:{status:'completed',input:{command:'cat acceptance-read.txt'},
        output:files.get('acceptance-read.txt'),
-       metadata:selectedRuntime==='codex'?{nativeItemType:'commandExecution',exitCode:0}:{exit:0}}}]});
+       metadata:selectedRuntime==='codex'?{nativeItemType:'commandExecution',exitCode:0}:{exit:0}}},
+       ...(nativeWriteEvidence==='missing'?[]:[writePart(marker)])]});
     }else{
      files.set('acceptance-output.txt',marker);answer(files.get('acceptance-read.txt'));
      if(nativeFileEvidence!=='missing')history.at(-1).parts.push({type:'tool',tool:'bash',state:{
@@ -138,6 +146,7 @@ function gateway({failPhase,failAsyncPhase,omitFetch=false,cleanupFails=false,lo
       output:nativeFileEvidence==='wrong-output'?'unrelated output':files.get('acceptance-read.txt'),
       metadata:(selectedRuntime==='codex')!==(nativeFileEvidence==='wrong-protocol')?
        {nativeItemType:'commandExecution',exitCode:nativeFileEvidence==='wrong-exit'?1:0}:{exit:nativeFileEvidence==='wrong-exit'?1:0}}});
+     if(nativeWriteEvidence!=='missing')history.at(-1).parts.push(writePart(marker));
     }
    }else if(currentPhase==='question'){
     assert.ok(text.includes(selectedRuntime==='codex'?'request_user_input':'question tool'));
@@ -176,6 +185,13 @@ for(const selectedRuntime of ['codex','opencode'])test(`replacement ${selectedRu
   timeoutMs:1000,pollMs:1,stopGraceMs:1});
  assert.equal(proof.model,model);assert.equal(proof.runtime,selectedRuntime);
  assert.equal(Object.keys(proof.capabilities).length,9);assert.equal(Object.values(proof.capabilities).every(value=>value==='passed'),true);
+ assert.equal(proof.capabilities.file_write_read,'passed');
+ // Native file restoration is a Codex-bound gateway capability; OpenCode still
+ // verifies write/read/evidence but must not call revert or unrevert.
+ const revertCalls=fixture.calls.filter(call=>call.path.endsWith('/revert')).length;
+ const unrevertCalls=fixture.calls.filter(call=>call.path.endsWith('/unrevert')).length;
+ if(selectedRuntime==='codex'){assert.equal(revertCalls,1);assert.equal(unrevertCalls,1);}
+ else{assert.equal(revertCalls,0);assert.equal(unrevertCalls,0);}
  assert.equal(fixture.snapshot().disabled,true);
 });
 
@@ -193,9 +209,10 @@ for(const selectedRuntime of ['codex','opencode'])test(`a multi-step ${selectedR
  const toolStep=fixture.history.find(message=>message.info.role==='assistant'&&message.info.finish==='tool-calls');
  const finalStep=fixture.history.find(message=>message.info.role==='assistant'&&message.info.finish==='stop');
  assert.ok(toolStep);assert.ok(finalStep);
- assert.equal(toolStep.parts.length,1);
- assert.equal(toolStep.parts[0].tool,'bash');
- assert.equal(toolStep.parts[0].state.status,'completed');
+ assert.equal(toolStep.parts.length,2);
+ assert.ok(toolStep.parts.some(part=>part.tool==='bash'&&part.state.status==='completed'));
+ assert.ok(toolStep.parts.some(part=>['write','edit','apply_patch'].includes(part.tool)&&part.state.status==='completed'));
+ assert.equal(toolStep.parts.some(part=>part.type==='text'),false);
  assert.equal(finalStep.parts.some(part=>part.type==='tool'),false);
  assert.equal(finalStep.parts.some(part=>part.type==='text'&&part.text),true);
  assert.equal(fixture.snapshot().disabled,true);
@@ -228,6 +245,29 @@ test('a settled tool-only native turn fails requireRunning immediately instead o
  assert.ok(Date.now()-started<900);
  assert.equal(fixture.snapshot().disabled,true);
  assert.equal(fixture.snapshot().currentPhase,'question');
+});
+
+test('the file phase prompt requires the built-in write tool and forbids bash writes',async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway();
+ await runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1});
+ const prompt=fixture.calls.find(call=>call.path==='/session/ses_legacy/prompt_async'&&
+  call.body?.parts?.[0]?.text?.includes('Acceptance phase: files'))?.body.parts[0].text;
+ assert.ok(prompt);
+ assert.match(prompt,/built-in file write tool \(write, edit, or apply_patch\)/i);
+ assert.match(prompt,/do not create or overwrite acceptance-output\.txt with a bash or shell command/i);
+ assert.match(prompt,/exactly one bash tool command: cat acceptance-read\.txt/i);
+ assert.match(prompt,/no other commands, redirection, pipes, or follow-up shell commands/i);
+ assert.match(prompt,/do not use the built-in read tool/i);
+});
+
+test('file bytes without completed built-in write-tool evidence are rejected',async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({nativeWriteEvidence:'missing'});
+ await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1}),
+  /Completed native file write tool evidence is missing/);
+ assert.equal(fixture.snapshot().disabled,true);
+ assert.equal(fixture.snapshot().currentPhase,'files');
 });
 
 for(const selectedRuntime of ['codex','opencode'])for(const nativeFileEvidence of ['wrong-exit','wrong-protocol'])
@@ -338,5 +378,21 @@ test('a persistent assistant selection conflict still fails the selected-assista
  const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
  const fixture=gateway({selectionConflicts:1000});
  await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1,selectionTimeoutMs:50}),/remained busy/i);
+ assert.equal(fixture.snapshot().disabled,true);
+});
+
+test('a transient history read 503 is retried instead of failing the selected-assistant gate',async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({historyErrorsAfterPrompt:1});
+ const proof=await runSelectedAssistantAcceptance({...fixture,target,timeoutMs:1000,pollMs:1,stopGraceMs:1});
+ assert.equal(proof.status,'passed');assert.equal(proof.capabilities.legacy_handover,'passed');
+ assert.equal(fixture.snapshot().disabled,true);
+ assert(fixture.calls.filter(call=>call.path==='/session/ses_legacy/message'&&call.method==='GET').length>=2);
+});
+
+test('a persistent history read 503 still fails the selected-assistant gate after bounded retries',async()=>{
+ const {runSelectedAssistantAcceptance}=await import('../fixtures/assistant-runtime-live.mjs');
+ const fixture=gateway({historyErrorsAfterPrompt:20});
+ await assert.rejects(runSelectedAssistantAcceptance({...fixture,target,timeoutMs:5000,pollMs:1,stopGraceMs:1}),/\(503\)/);
  assert.equal(fixture.snapshot().disabled,true);
 });

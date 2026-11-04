@@ -39,6 +39,13 @@ export function createWorkspaceRoutes({management,files,uploads,readJson,sendJso
       else if(uploads && method==='GET' && upload && !upload[2])result=await uploads.inspect(context,upload[1]);
       else if(uploads && method==='POST' && upload?.[2]==='commit')result=await uploads.commit(context,upload[1],body);
       else if(uploads && method==='DELETE' && upload && !upload[2]){if(Object.keys(body).length)throw workspaceError('invalid_input',400);result=await uploads.cancel(context,upload[1]);}
+      else if(files && typeof files.createSessionWorkspace==='function' && method==='GET' && path==='/api/workspace/session-workspaces'){
+        result={supported:true};
+      }
+      else if(files && typeof files.createSessionWorkspace==='function' && method==='POST' && path==='/api/workspace/session-workspaces'){
+        if(Object.keys(body).some(key=>key!=='name') || typeof body.name!=='string')throw workspaceError('invalid_input',400);
+        result=await files.createSessionWorkspace(context,body.name);
+      }
       else if(method==='GET' && path==='/api/workspace/projects')result=await management.listProjects(context);
       else if(method==='GET' && receipt)result=files?await files.receipt(context,receipt[1]):await management.state.receipt(context.userId,receipt[1]);
       else if(method==='GET' && path==='/api/workspace/operations' && files){

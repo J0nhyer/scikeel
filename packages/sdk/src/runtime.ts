@@ -42,8 +42,9 @@ export interface AgentRuntime {
   onEvent(listener: (event: OpenCodeEvent) => void): () => void;
 
   // ---- sessions (a conversation) ----
-  /** Create a session, optionally giving the runtime a concise initial title. */
-  createSession(title?: string): Promise<string>;
+  /** Create a session, optionally giving the runtime a concise initial title
+   *  and a managed working directory to file it under. */
+  createSession(title?: string, directory?: string): Promise<string>;
   /** Fork a conversation, optionally stopping before `beforeMessageId`.
    *  Without a boundary the child receives the full current context. */
   forkSession(sessionId: string, beforeMessageId?: string): Promise<string>;

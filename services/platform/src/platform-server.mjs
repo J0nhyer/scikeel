@@ -1231,7 +1231,11 @@ export class PlatformServer {
       }
       if(this.workspaceCatalog){
         const ids=[...keys];
-        for(let index=0;index<ids.length;index+=256)await this.workspaceCatalog.removeConversations(user.id,ids.slice(index,index+256));
+        // A catalogue-only row is still a conversation the user sees in
+        // History: removing it is the deletion, even when no canonical, CLI or
+        // native record survives behind it.
+        for(let index=0;index<ids.length;index+=256)
+          if((await this.workspaceCatalog.removeConversations(user.id,ids.slice(index,index+256))).removed)removed=true;
       }
       for(const [key,record] of this.openCodeTurns)if(keys.has(record?.turn?.owner?.sessionId))this.openCodeTurns.delete(key);
       for(const [key,held] of this.promptAdmissions)if(keys.has(held?.owner?.sessionId))this.promptAdmissions.delete(key);

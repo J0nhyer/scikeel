@@ -29,6 +29,33 @@ async function mutation<T>(path:string,method:string,body:Record<string,unknown>
   }finally{if(typeof window!=='undefined')window.dispatchEvent(new Event('scikeel.workspace-operation-updated'));}
 }
 export const listWorkspaceProjects=()=>workspaceRequest<ManagedProject[]>('/api/workspace/projects');
+/** Whether this platform has the session-workspace allocation route. Only a
+ *  legacy platform that does not serve the route (404/405) falls back to the
+ *  account-scoped default; any other failure must reach the sender instead of
+ *  silently mixing conversations into the shared root. */
+export async function sessionWorkspaceSupported():Promise<boolean>{
+ try{await workspaceRequest<{supported:boolean}>('/api/workspace/session-workspaces',{signal:AbortSignal.timeout(30000)});return true;}
+ catch(error){
+  if(error instanceof WorkspaceRequestError && (error.status===404 || error.status===405))return false;
+  throw error;
+ }
+}
+/** Create a fresh per-conversation folder. A 404 means the platform is older
+ *  than this client (for example a recovery reader), so the caller may keep the
+ *  account-scoped default instead of failing every new conversation. */
+export async function createSessionWorkspace(name:string):Promise<{directory:string}|null>{
+ let last:unknown;
+ for(let attempt=0;attempt<6;attempt++){
+  try{return await workspaceRequest<{directory:string}>('/api/workspace/session-workspaces',{method:'POST',body:JSON.stringify({name}),signal:AbortSignal.timeout(30000)});}
+  catch(error){
+   last=error;
+   if(error instanceof WorkspaceRequestError && error.status===404)return null;
+   if(!(error instanceof WorkspaceRequestError) || error.status!==503 || error.code!=='session_workspace_unavailable' || attempt===5)throw error;
+   await new Promise(done=>setTimeout(done,1000*(attempt+1)));
+  }
+ }
+ throw last;
+}
 export const workspaceEntries=(scope:WorkspaceScope,path='',cursor?:string)=>workspaceRequest<{directory:string;entries:DirEntry[];nextCursor?:string|null;capabilities?:{create:boolean}}>('/api/workspace/entries?'+new URLSearchParams({scope:JSON.stringify(scope),path,...(cursor?{cursor}:{})}));
 export async function operateWorkspace(scope:WorkspaceScope,operation:WorkspaceFileOperation,operationId:string=workspaceOperationId()):Promise<OperationReceipt>{
  const result=await mutation<OperationReceipt>('/api/workspace/operations','POST',{scope,operation},operationId);

@@ -79,7 +79,7 @@ function makeClient(base) {
   };
 }
 
-async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null, enableWorkspaceManagement = false, logger = () => {}, analyticsCollector = null } = {}) {
+async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null, enableWorkspaceManagement = false, workspaceCatalog = null, logger = () => {}, analyticsCollector = null } = {}) {
   const root = providedRoot ?? (await mkdtemp(join(tmpdir(), "osd-platform-server-")));
   const authStore = new AuthStore({
     filePath: join(root, "platform", "auth.json"),
@@ -92,7 +92,7 @@ async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRo
     startupTimeoutMs: 5_000,
     stopTimeoutMs: 1_000,
   });
-  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles, enableWorkspaceManagement, logger, analyticsCollector });
+  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles, enableWorkspaceManagement, workspaceCatalog, logger, analyticsCollector });
   const address = await server.listen();
   const fixture = { root, authStore, manager, server, cliRuntime, base: `http://${address.host}:${address.port}` };
   fixtures.push(fixture);
@@ -1740,6 +1740,30 @@ test('deleting a canonical-only row succeeds after an old partial delete and sta
  const listed=await (await f.client.request('/experimental/session?limit=200')).json();
  assert.ok(!listed.some(row=>row.id===f.session.id));
  await assert.rejects(f.server.conversations.open(f.owner,f.session.id),{code:'conversation_not_found'});
+});
+test('deleting a catalogue-only conversation removes its catalogue row and succeeds',async t=>{
+ const catalog={rows:new Set(['ses_catalog_only_fixture']),removals:[],
+  async apply(){},async verify(){},
+  async removeConversations(userId,ids){const removed=ids.filter(id=>this.rows.delete(id)).length;this.removals.push({userId,ids:[...ids],removed});return {removed,revision:1};}};
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');},
+  {workspaceCatalog:catalog,enableWorkspaceManagement:true});
+ const removed=await f.client.request('/session/ses_catalog_only_fixture',{method:'DELETE',
+  headers:{'x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}});
+ assert.equal(removed.status,200,await removed.text());
+ assert.ok(!catalog.rows.has('ses_catalog_only_fixture'));
+ assert.ok(catalog.removals.some(entry=>entry.userId===f.user.id &&
+  entry.removed===1 && entry.ids.includes('ses_catalog_only_fixture')));
+});
+test('deleting an unknown conversation with no catalogue row still reports not found',async t=>{
+ const catalog={rows:new Set(),removals:[],
+  async apply(){},async verify(){},
+  async removeConversations(userId,ids){const removed=ids.filter(id=>this.rows.delete(id)).length;this.removals.push({userId,ids:[...ids],removed});return {removed,revision:1};}};
+ const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');},
+  {workspaceCatalog:catalog,enableWorkspaceManagement:true});
+ const removed=await f.client.request('/session/ses_missing_fixture',{method:'DELETE',
+  headers:{'x-scikeel-manual-approval':'1','x-scikeel-assistant-revision':'2'}});
+ assert.equal(removed.status,404,await removed.text());
+ assert.ok(catalog.removals.some(entry=>entry.userId===f.user.id && entry.removed===0));
 });
 test('deleting a native-only historical conversation works while Codex is selected',async t=>{
  const f=await nativeHttpFixture(t,async()=>{throw Error('Deletion must not dispatch inference');});

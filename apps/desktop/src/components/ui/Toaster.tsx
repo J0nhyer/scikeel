@@ -18,7 +18,7 @@ function Notification({ item, region }: { item: Toast; region: RefObject<HTMLDiv
       }
     };
   }, [item.returnFocus, region]);
-  return <div ref={element}
+  return <div ref={element} data-notification-card
     onMouseEnter={() => pause(item.id)}
     onMouseLeave={() => { if (!element.current?.contains(document.activeElement)) resume(item.id); }}
     onFocus={() => pause(item.id)}
@@ -49,20 +49,19 @@ function Notification({ item, region }: { item: Toast; region: RefObject<HTMLDiv
 export function Toaster() {
   const { t } = useTranslation("common"); const region = useRef<HTMLDivElement>(null);
   const toasts = useToastStore(s => s.toasts);
-  const [placement, setPlacement] = useState({ top: 64, height: 260, hidden: false });
+  const [viewport, setViewport] = useState(() => {
+    const visual = typeof window === "undefined" ? undefined : window.visualViewport;
+    return { top: visual?.offsetTop ?? 0, height: visual?.height ?? (typeof window === "undefined" ? 260 : window.innerHeight), hidden: false };
+  });
   useEffect(() => {
     const measure = () => {
-      const viewport = window.visualViewport;
-      const top = (viewport?.offsetTop ?? 0) + 64;
-      let bottom = (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight) - 12;
-      for (const node of document.querySelectorAll<HTMLElement>("[data-notification-avoid]")) {
-        const rect = node.getBoundingClientRect(); if (rect.height > 0) bottom = Math.min(bottom, rect.top - 12);
-      }
+      const visual = window.visualViewport;
+      const top = visual?.offsetTop ?? 0;
+      const height = visual?.height ?? window.innerHeight;
       const dialog = [...document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')]
         .some(node => node.getBoundingClientRect().height > 0);
-      const height = Math.max(0, Math.min(260, bottom - top));
       const next = { top, height, hidden: dialog || height < 48 };
-      setPlacement(old => old.top === next.top && old.height === next.height && old.hidden === next.hidden ? old : next);
+      setViewport(old => old.top === next.top && old.height === next.height && old.hidden === next.hidden ? old : next);
     };
     measure();
     const observer = new MutationObserver(measure); observer.observe(document.body, { childList: true, subtree: true });
@@ -72,8 +71,10 @@ export function Toaster() {
   // Re-check wall-clock deadlines before displaying a resumed tab.
   useLayoutEffect(() => { useToastStore.getState().pruneExpired(); }, [toasts]);
   return <div ref={region} role="region" tabIndex={-1} aria-label={t("notification.region")}
-    className="pointer-events-none fixed inset-x-0 z-40 mx-auto flex w-[calc(100%-24px)] max-w-md flex-col gap-2 overflow-y-auto outline-none"
-    style={{ top: `max(${placement.top}px, env(safe-area-inset-top))`, maxHeight: placement.height, visibility: placement.hidden ? "hidden" : undefined }}>
-    {toasts.map(item => <Notification key={item.id} item={item} region={region} />)}
+    className="pointer-events-none fixed inset-x-0 z-40 mx-auto flex w-[calc(100%-24px)] max-w-md flex-col items-center justify-center overflow-y-auto outline-none"
+    style={{ top: viewport.top, height: viewport.height, visibility: viewport.hidden ? "hidden" : undefined }}>
+    <div className="m-auto flex w-full flex-col gap-2 py-3">
+      {toasts.map(item => <Notification key={item.id} item={item} region={region} />)}
+    </div>
   </div>;
 }

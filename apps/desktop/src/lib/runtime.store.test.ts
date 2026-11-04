@@ -55,6 +55,8 @@ const mocks = vi.hoisted(() => ({
   failRename: false,
   createSessionSpy: vi.fn(),
   createSessionDirectorySpy: vi.fn(),
+  createSessionWorkspace: vi.fn(async (name: string): Promise<{ directory: string } | null> => ({ directory: `/ws/base/sessions/${name}` })),
+  sessionWorkspaceSupported: vi.fn(async () => true),
   createGate: null as Promise<void> | null,
   createProject: vi.fn(),
   listProjects: vi.fn(async (): Promise<{ id: string; name: string; path: string; createdAt: number; imported: boolean; pinned: boolean }[]> => []),
@@ -186,6 +188,7 @@ vi.mock("./webMode", () => ({
   setPlatformAssistantRevision: vi.fn(),
 }));
 vi.mock("./collaboration",()=>({prepareCollaborationSend:mocks.prepareCollaborationSend}));
+vi.mock("./workspaceManagement",()=>({createSessionWorkspace:mocks.createSessionWorkspace,sessionWorkspaceSupported:mocks.sessionWorkspaceSupported}));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
 vi.mock("./systemNotification", () => ({
   notifyPermissionRequest: mocks.notifyPermissionRequest,
@@ -288,9 +291,9 @@ vi.mock("@ai4s/sdk", async (importOriginal) => {
       if (mocks.failSetModel) throw new Error("Load failed");
       mocks.currentModel = model;
     }
-    async createSession(title?: string) {
+    async createSession(title?: string, directory?: string) {
       mocks.createSessionSpy(title);
-      mocks.createSessionDirectorySpy(this.opts.directory);
+      mocks.createSessionDirectorySpy(directory ?? this.opts.directory);
       if (mocks.createGate) await mocks.createGate;
       if (mocks.failCreates > 0) {
         mocks.failCreates--;
@@ -3691,6 +3694,34 @@ describe("per-session right pane", () => {
     await useRuntimeStore.getState().deleteSession("ses_1");
     expect(useRuntimeStore.getState().panes["ses_1"]).toBeUndefined();
   });
+
+  it("treats a missing conversation on delete as an idempotent success", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    const { ApiError } = await import("@ai4s/sdk");
+    mocks.deleteSessionSpy.mockImplementationOnce(() => {
+      throw new ApiError("Failed to delete session (404: conversation not found)", 404, { code: "conversation_not_found" });
+    });
+    useRuntimeStore.setState({ sessions: [{ id: "ses_gone", title: "Gone" }], error: null });
+    const result = await useRuntimeStore.getState().deleteSession("ses_gone");
+    expect(result).toBe(true);
+    expect(useRuntimeStore.getState().sessions.some((session) => session.id === "ses_gone")).toBe(false);
+    expect(useRuntimeStore.getState().error).toBeNull();
+  });
+
+  it("still reports a 404 that is not a missing conversation", async () => {
+    mocks.isGatewayWeb = true;
+    mocks.isTauri = false;
+    const { ApiError } = await import("@ai4s/sdk");
+    mocks.deleteSessionSpy.mockImplementationOnce(() => {
+      throw new ApiError("Failed to delete session (404: not found)", 404);
+    });
+    useRuntimeStore.setState({ sessions: [{ id: "ses_alive", title: "Alive" }], error: null });
+    const result = await useRuntimeStore.getState().deleteSession("ses_alive");
+    expect(result).toBe(false);
+    expect(useRuntimeStore.getState().sessions.some((session) => session.id === "ses_alive")).toBe(true);
+    expect(useRuntimeStore.getState().error).toContain("404");
+  });
 });
 
 
@@ -5737,7 +5768,10 @@ it("persists a draft's Guided choice before sending its created conversation", a
   mocks.isPlatformWeb = true;
   mocks.isGatewayWeb = true;
   mocks.isTauri = false;
-  useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model", providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
+  mocks.sessionWorkspaceSupported.mockResolvedValueOnce(false);
+  useRuntimeStore.setState({ gatewayRuntime: "opencode", gatewayCatalogState: "ready", defaultModel: "fixture/model",
+    gatewayWorkspace: "/ws/base", workspace: "/ws/base", webWorkspace: "/ws/base", status: "ready",
+    providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }] });
   mocks.prepareCollaborationSend.mockImplementation(async () => {
     expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
     return 5;
@@ -5817,6 +5851,29 @@ describe("Web project directory ownership", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ directory: "/ws/base", mode: "full", runtime: "opencode", kind: "opencode", available: [] }))));
     useRuntimeStore.setState({ webWorkspace: null, gatewayWorkspace: "/ws/base", gatewayCatalogState: "ready" });
   }
+  /** Platform Web handshake: unlike a standalone gateway, a platform connect
+   *  reads /v1/whoami and requires an assistant policy revision from /api/runtime. */
+  function platformWeb() {
+    web();
+    mocks.isPlatformWeb = true;
+    vi.stubGlobal("fetch", vi.fn(async (input) => {
+      if (String(input).includes("/v1/whoami")) return new Response(JSON.stringify({ directory: "/ws/base", mode: "full" }));
+      if (String(input).includes("/api/runtime")) return new Response(JSON.stringify({
+        runtime: "opencode", kind: "opencode", label: "OpenCode", policyRevision: 1,
+        context: { instanceId: "user-a", generation: 1 },
+        available: [{ runtime: "opencode", kind: "opencode", managed: false, label: "OpenCode", enabled: true,
+          models: ["fixture/model"], defaultModel: "fixture/model", selectedModel: "fixture/model", status: "ready" }],
+      }));
+      return new Response(JSON.stringify({}));
+    }));
+  }
+  function platformAccount() {
+    useRuntimeStore.setState({ gatewayUser: { id: "usr_a", username: "a", role: "admin" },
+      gatewayContext: { instanceId: "user-a", generation: 1 }, gatewayCatalogState: "ready",
+      gatewayRuntime: "opencode", defaultModel: "fixture/model",
+      providers: [{ id: "fixture", name: "Fixture", models: [{ id: "model", name: "Model" }] }],
+      workspace: "/ws/base", webWorkspace: "/ws/base", status: "ready" });
+  }
   it("keeps the project draft target after viewing another session", async () => {
     web();
     await useRuntimeStore.getState().startDraftInWorkspace("/ws/project-a", "draft:phone");
@@ -5837,12 +5894,134 @@ describe("Web project directory ownership", () => {
     expect(useRuntimeStore.getState().threads["draft:phone"]?.blocks ?? []).toEqual([]);
     expect(useRuntimeStore.getState().threads.ses_saved.blocks).toHaveLength(1);
   });
-  it("uses the account default for an unaimed new Web conversation", async () => {
+  it("creates an unaimed new platform Web conversation in its own session workspace", async () => {
     web();
+    mocks.isPlatformWeb = true;
+    mocks.createSessionWorkspace.mockClear();
+    mocks.sessionWorkspaceSupported.mockClear();
+    mocks.sessionWorkspaceSupported.mockResolvedValue(true);
+    mocks.createSessionDirectorySpy.mockClear();
+    vi.stubGlobal("fetch", vi.fn(async (input) => {
+      if (String(input).includes("/v1/whoami")) return new Response(JSON.stringify({ directory: "/ws/base", mode: "full" }));
+      if (String(input).includes("/api/runtime")) return new Response(JSON.stringify({
+        runtime: "opencode", kind: "opencode", label: "OpenCode", policyRevision: 1,
+        context: { instanceId: "user-a", generation: 1 },
+        available: [{ runtime: "opencode", kind: "opencode", managed: false, label: "OpenCode", enabled: true,
+          models: ["fixture/model"], defaultModel: "fixture/model", selectedModel: "fixture/model", status: "ready" }],
+      }));
+      return new Response(JSON.stringify({}));
+    }));
+    useRuntimeStore.setState({ gatewayUser: { id: "usr_a", username: "a", role: "admin" }, gatewayContext: { instanceId: "user-a", generation: 1 },
+      gatewayCatalogState: "ready", gatewayRuntime: null, workspace: "/ws/base", webWorkspace: "/ws/base",
+      draftWorkspaces: { "draft:old": "/ws/project-a" } });
+    await useRuntimeStore.getState().sendPrompt("Ordinary new", undefined, "draft:fresh");
+    expect(mocks.sessionWorkspaceSupported).toHaveBeenCalled();
+    expect(mocks.createSessionWorkspace).toHaveBeenCalledTimes(1);
+    const directoryName = mocks.createSessionWorkspace.mock.calls[0][0];
+    expect(directoryName).toMatch(/^\d{4}-\d{2}-\d{2}-\d{4}-[a-f0-9]{6}$/);
+    expect(mocks.createSessionDirectorySpy).toHaveBeenCalledWith(`/ws/base/sessions/${directoryName}`);
+    expect(useRuntimeStore.getState().workspace).toBe(`/ws/base/sessions/${directoryName}`);
+  });
+  it("does not fall back to the shared account root when session workspace allocation fails", async () => {
+    web();
+    mocks.isPlatformWeb = true;
+    mocks.createSessionWorkspace.mockRejectedValueOnce(new Error("workspace allocation failed"));
+    useRuntimeStore.setState({ gatewayUser: { id: "usr_a", username: "a", role: "admin" }, gatewayContext: { instanceId: "user-a", generation: 1 },
+      gatewayCatalogState: "ready", gatewayRuntime: null, workspace: "/ws/base", webWorkspace: "/ws/base" });
+    await useRuntimeStore.getState().sendPrompt("Ordinary new", undefined, "draft:alloc-fail");
+    expect(mocks.createSessionSpy).toHaveBeenCalledTimes(1);
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().error).toContain("workspace allocation failed");
+  });
+  it("uses the account root when a compatible platform has no session-workspace allocation", async () => {
+    web();
+    mocks.isPlatformWeb = true;
+    mocks.sessionWorkspaceSupported.mockResolvedValueOnce(false);
+    mocks.createSessionWorkspace.mockClear();
+    mocks.createSessionDirectorySpy.mockClear();
+    useRuntimeStore.setState({ gatewayUser: { id: "usr_a", username: "a", role: "admin" }, gatewayContext: { instanceId: "user-a", generation: 1 },
+      gatewayCatalogState: "ready", gatewayRuntime: null, workspace: "/ws/base", webWorkspace: "/ws/base", status: "ready" });
+    await useRuntimeStore.getState().sendPrompt("Ordinary new", undefined, "draft:fresh");
+    expect(mocks.createSessionWorkspace).not.toHaveBeenCalled();
+    expect(mocks.createSessionDirectorySpy).toHaveBeenCalledWith("/ws/base");
+  });
+  it("keeps the account default for an unaimed legacy gateway conversation", async () => {
+    web();
+    mocks.createSessionWorkspace.mockClear();
     await useRuntimeStore.getState().startDraftInWorkspace("/ws/project-a", "draft:old");
     useRuntimeStore.setState({ gatewayCatalogState: "ready", gatewayRuntime: null });
     await useRuntimeStore.getState().sendPrompt("Ordinary new", undefined, "draft:fresh");
+    expect(mocks.createSessionWorkspace).not.toHaveBeenCalled();
     expect(mocks.createSessionDirectorySpy).toHaveBeenCalledWith("/ws/base");
+  });
+  it("isolates the sidebar New draft even though New aims the account root", async () => {
+    platformWeb();
+    mocks.sessionWorkspaceSupported.mockResolvedValue(true);
+    mocks.createSessionWorkspace.mockImplementation(async (name: string) => ({ directory: `/ws/base/sessions/${name}` }));
+    mocks.createSessionWorkspace.mockClear();
+    mocks.createSessionDirectorySpy.mockClear();
+    platformAccount();
+    const key = "draft:new-root";
+    const promptedIn: string[] = [];
+    mocks.sendPromptSpy.mockImplementation(() => { promptedIn.push(useRuntimeStore.getState().workspace ?? ""); });
+    // The real Web "New" action (useWebDraftTransition) aims the account root.
+    expect(await useRuntimeStore.getState().startDraftInWorkspace("/ws/base", key)).toBe(true);
+    expect(useRuntimeStore.getState().draftWorkspaces[key]).toBe("/ws/base");
+    await useRuntimeStore.getState().sendPrompt("New conversation", undefined, key);
+    const name = mocks.createSessionWorkspace.mock.calls[0]?.[0];
+    expect(name).toMatch(/^\d{4}-\d{2}-\d{2}-\d{4}-[a-f0-9]{6}$/);
+    expect(mocks.createSessionDirectorySpy).toHaveBeenCalledWith(`/ws/base/sessions/${name}`);
+    // The prompt must run in the new folder, not in the shared account root.
+    expect(promptedIn).toEqual([`/ws/base/sessions/${name}`]);
+    expect(useRuntimeStore.getState().workspace).toBe(`/ws/base/sessions/${name}`);
+  });
+  it("keeps an explicit project aim out of platform session isolation", async () => {
+    platformWeb();
+    mocks.sessionWorkspaceSupported.mockClear().mockResolvedValue(true);
+    mocks.createSessionWorkspace.mockClear();
+    mocks.createSessionDirectorySpy.mockClear();
+    platformAccount();
+    expect(await useRuntimeStore.getState().startDraftInWorkspace("/ws/project-a", "draft:project")).toBe(true);
+    expect(useRuntimeStore.getState().draftWorkspaces["draft:project"]).toBe("/ws/project-a");
+    await useRuntimeStore.getState().sendPrompt("Project work", undefined, "draft:project");
+    expect(mocks.sessionWorkspaceSupported).not.toHaveBeenCalled();
+    expect(mocks.createSessionWorkspace).not.toHaveBeenCalled();
+    expect(mocks.createSessionDirectorySpy).toHaveBeenCalledWith("/ws/project-a");
+    expect(useRuntimeStore.getState().workspace).toBe("/ws/project-a");
+    expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(1);
+  });
+  it("does not create a shared-root conversation when the isolation probe fails", async () => {
+    platformWeb();
+    mocks.sessionWorkspaceSupported.mockResolvedValue(true);
+    mocks.sessionWorkspaceSupported.mockRejectedValueOnce(new Error("capability probe unavailable"));
+    mocks.createSessionWorkspace.mockClear();
+    mocks.createSessionDirectorySpy.mockClear();
+    platformAccount();
+    await useRuntimeStore.getState().sendPrompt("New conversation", undefined, "draft:probe-fail");
+    expect(mocks.createSessionSpy).not.toHaveBeenCalled();
+    expect(mocks.createSessionDirectorySpy).not.toHaveBeenCalled();
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().error).toContain("capability probe unavailable");
+  });
+  it("lets an explicit new draft clear its uncertain-create guard", async () => {
+    platformWeb();
+    mocks.sessionWorkspaceSupported.mockResolvedValue(true);
+    mocks.createSessionWorkspace.mockImplementation(async (name: string) => ({ directory: `/ws/base/sessions/${name}` }));
+    mocks.createSessionWorkspace.mockClear();
+    platformAccount();
+    const key = "draft:guard-reset";
+    mocks.failCreates = 1;
+    await useRuntimeStore.getState().sendPrompt("First try", undefined, key);
+    expect(mocks.createSessionSpy).toHaveBeenCalledTimes(1);
+    expect(mocks.sendPromptSpy).not.toHaveBeenCalled();
+    await useRuntimeStore.getState().sendPrompt("Blocked retry", undefined, key);
+    expect(mocks.createSessionSpy).toHaveBeenCalledTimes(1);
+    expect(useRuntimeStore.getState().error).toContain("could not be confirmed");
+    // An explicit New for this pane is the user's way out of the guard.
+    expect(await useRuntimeStore.getState().startDraftInWorkspace("/ws/base", key)).toBe(true);
+    await useRuntimeStore.getState().sendPrompt("Fresh draft", undefined, key);
+    expect(mocks.createSessionSpy).toHaveBeenCalledTimes(2);
+    expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(1);
   });
   it("returns failed entry without creating or sending a conversation", async () => {
     web();

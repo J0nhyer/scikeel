@@ -1,8 +1,9 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
 import { useRuntimeStore } from "@/lib/runtime";
-import { WorkspaceChip } from "./WorkspaceChip";
+import { baseName, WorkspaceChip } from "./WorkspaceChip";
 import { DRAFT_KEY } from "@/lib/runtime";
 
 // workspacePath reflects the folder setWorkspace last persisted, like the real bridge.
@@ -66,6 +67,18 @@ describe("WorkspaceChip", () => {
     expect(btn.title).toContain("new dated folder");
     // No folder name shown until the user actually picks one.
     expect(screen.queryByText("base")).not.toBeInTheDocument();
+  });
+
+  it("names the managed workspace root in the active language, not its folder basename", async () => {
+    await i18n.changeLanguage("zh-Hans");
+    try {
+      expect(baseName("/accounts/alice/workspace", "/accounts/alice/workspace")).toBe("工作区");
+      expect(baseName("/accounts/alice/workspace/projects/study", "/accounts/alice/workspace")).toBe(
+        "study",
+      );
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("picking a folder pins it and shows its name", async () => {

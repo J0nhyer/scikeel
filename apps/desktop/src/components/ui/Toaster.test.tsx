@@ -23,4 +23,9 @@ describe("Toaster", () => {
     expect(screen.getByRole("region", { name: "Notifications" })).toHaveClass("fixed");
     expect(screen.getByRole("status")).not.toHaveClass("truncate");
   });
+  it("centers the overlay in the viewport", () => {
+    toast.error("Failed"); render(<Toaster />);
+    expect(screen.getByRole("region", { name: "Notifications" }))
+      .toHaveClass("fixed", "inset-x-0", "items-center", "justify-center");
+  });
 });

@@ -11,17 +11,16 @@ describe("notification lifecycle", () => {
     expect(useToastStore.getState().toasts).toHaveLength(1);
     expect(useToastStore.getState().toasts[0].eventId).toMatch(/^[0-9a-f]{32}$/);
   });
-  it("expires success at five seconds and errors at ten", () => {
+  it("expires every tone at ten seconds", () => {
     toast.success("Saved"); toast.error("Failed");
-    vi.advanceTimersByTime(4999); expect(useToastStore.getState().toasts).toHaveLength(2);
-    vi.advanceTimersByTime(1); expect(useToastStore.getState().toasts.map(t => t.message)).toEqual(["Failed"]);
-    vi.advanceTimersByTime(5000); expect(useToastStore.getState().toasts).toEqual([]);
+    vi.advanceTimersByTime(9999); expect(useToastStore.getState().toasts).toHaveLength(2);
+    vi.advanceTimersByTime(1); expect(useToastStore.getState().toasts).toEqual([]);
   });
   it("bounds visible items and consumes event identities rather than text", () => {
     useToastStore.getState().setAccount("a");
     for (const eventId of ["1", "2", "3", "4", "4"]) toast.success("Saved", { accountId: "a", eventId });
     expect(useToastStore.getState().toasts.map(t => t.eventId)).toEqual(["2", "3", "4"]);
-    vi.advanceTimersByTime(5000); toast.success("Saved", { accountId: "a", eventId: "4" });
+    vi.advanceTimersByTime(10_000); toast.success("Saved", { accountId: "a", eventId: "4" });
     expect(useToastStore.getState().toasts).toEqual([]);
   });
   it("pauses the default deadline but expires focused feedback at thirty seconds", () => {
@@ -29,7 +28,7 @@ describe("notification lifecycle", () => {
     vi.advanceTimersByTime(2000); useToastStore.getState().pause(id);
     vi.advanceTimersByTime(10_000); expect(useToastStore.getState().toasts).toHaveLength(1);
     useToastStore.getState().resume(id);
-    vi.advanceTimersByTime(2999); expect(useToastStore.getState().toasts).toHaveLength(1);
+    vi.advanceTimersByTime(7999); expect(useToastStore.getState().toasts).toHaveLength(1);
     vi.advanceTimersByTime(1); expect(useToastStore.getState().toasts).toEqual([]);
     toast.error("Failed"); const next = useToastStore.getState().toasts[0].id;
     useToastStore.getState().pause(next); vi.advanceTimersByTime(30_000);
@@ -37,7 +36,7 @@ describe("notification lifecycle", () => {
   });
   it("does not extend deadlines when the same event reappears", () => {
     toast.success("Saved", { eventId: "op" }); vi.advanceTimersByTime(4000);
-    toast.success("Saved", { eventId: "op" }); vi.advanceTimersByTime(1000);
+    toast.success("Saved", { eventId: "op" }); vi.advanceTimersByTime(6000);
     expect(useToastStore.getState().toasts).toEqual([]);
   });
   it("rejects late completions from a different account", () => {

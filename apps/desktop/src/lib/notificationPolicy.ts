@@ -2,7 +2,7 @@ export type ToastTone = "success" | "info" | "warning" | "error";
 export const MAX_TOASTS = 3;
 export const MAX_CONSUMED_EVENTS = 200;
 export const HARD_TOAST_MS = 30_000;
-export const defaultToastMs = (tone: ToastTone) => tone === "success" || tone === "info" ? 5000 : 10_000;
+export const defaultToastMs = (_tone: ToastTone) => 10_000;
 export const expiryAt = (now: number, createdAt: number, remainingMs: number) => Math.min(now + remainingMs, createdAt + HARD_TOAST_MS);
 export const appendConsumed = (ids: string[], id: string) => ids.includes(id) ? ids : [...ids, id].slice(-MAX_CONSUMED_EVENTS);
 const storageKey = (account: string) => `scikeel.notifications.consumed:${encodeURIComponent(account)}`;

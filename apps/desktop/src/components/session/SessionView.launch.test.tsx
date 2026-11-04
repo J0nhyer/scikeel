@@ -1,7 +1,8 @@
 import { act, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderAt } from "@/test/render";
-import { useRuntimeStore } from "@/lib/runtime";
+import { draftKeyFor, useRuntimeStore } from "@/lib/runtime";
+import { makeLeaf, useLayoutStore } from "@/lib/layout";
 
 // COPYCAT RULE: useRuntimeStore is module-global — restore the complete state
 // this file found, so no other suite inherits a faked runtime kind or action.
@@ -13,9 +14,11 @@ vi.mock("@/lib/webMode", async (importOriginal) => ({
 }));
 
 const INITIAL_RUNTIME = useRuntimeStore.getState();
+const INITIAL_LAYOUT = useLayoutStore.getState();
 afterEach(() => {
   webMode.enabled = false;
   useRuntimeStore.setState(INITIAL_RUNTIME, true);
+  useLayoutStore.setState(INITIAL_LAYOUT, true);
   vi.useRealTimers();
 });
 
@@ -126,5 +129,39 @@ describe("Web Full autonomy defaults", () => {
     expect(await screen.findByRole("textbox")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Autonomy:/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Agent mode" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Web immediate processing state", () => {
+  it("says Working… as soon as a new conversation's send starts", async () => {
+    webMode.enabled = true;
+    const leaf = makeLeaf(null);
+    useLayoutStore.setState({
+      groups: [{ id: "g0", name: "", tree: leaf, focusedLeafId: leaf.id, zoomedLeafId: null }],
+      activeGroupId: "g0",
+      tree: leaf,
+      focusedLeafId: leaf.id,
+      zoomedLeafId: null,
+      ephemeralGroupId: null,
+    });
+    const draft = draftKeyFor(leaf.id);
+    useRuntimeStore.setState({
+      status: "ready",
+      sessionListReady: true,
+      gatewayRuntime: "opencode",
+      runtimeKind: "opencode",
+      webReadOnly: false,
+      bootstrap: vi.fn(async () => {}),
+      providers: [],
+      sessions: [],
+      currentId: null,
+      threads: { [draft]: { index: {}, loaded: true, blocks: [{ kind: "user", text: "hello" }] } },
+      sendingSessions: { [draft]: true },
+    });
+
+    renderAt("/live");
+
+    expect(await screen.findByText("Working…")).toBeInTheDocument();
+    expect(screen.queryByText("Starting the session in its folder…")).not.toBeInTheDocument();
   });
 });

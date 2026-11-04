@@ -19,6 +19,7 @@ import {
   type WorkspaceContext,
   DEFAULT_OPENCODE_URL,
   hasDefaultSessionTitle,
+  isApiStatus,
   withManualSessionTitle,
   titleExcerpt,
   TITLE_WAIT_MS,
@@ -92,6 +93,7 @@ import { deriveArtifact, deriveArtifactPresentation } from "./artifacts";
 import { findLeaf, useLayoutStore } from "./layout";
 import { provenanceInputsFromEvent, recordProvenance } from "./provenance";
 import { clearResolvedPaths } from "./artifactFile";
+import { createSessionWorkspace, sessionWorkspaceSupported } from "./workspaceManagement";
 import { imageAttachmentParts } from "./promptAttachments";
 import { recordRun, runInputFromEvent } from "./runs";
 import { splitReview } from "./review";
@@ -2057,13 +2059,33 @@ async function performTurn(
       // (~/Documents/OpenScience/sessions/<date-time>) so its files never pile
       // up in the bare base folder.
       const chosen = get().draftWorkspaces[draftSrc];
+      let isolatedWebTarget: string | null = null;
       if (isGatewayWeb) {
         if (get().webReadOnly) throw new Error("This connection is read-only.");
         if (uncertainWebCreates.has(draftSrc)) {
           throw new Error("The previous conversation creation could not be confirmed. Check saved conversations before starting a new conversation.");
         }
-        const intended = chosen ?? get().gatewayWorkspace;
+        const accountRoot = get().gatewayWorkspace;
+        // The sidebar's New action aims the account root, which on platform Web
+        // is the shared root rather than a chosen project. Treat that aim as
+        // unaimed so New still gets its own sessions/ folder; a project target
+        // (and /new, /clear inside a project) names a different folder and
+        // keeps its current one.
+        const aimed = samePath(chosen, accountRoot) ? undefined : chosen;
+        let intended = aimed ?? accountRoot;
         if (!intended) throw new Error("The workspace is unavailable. Try reconnecting.");
+        // A platform Web draft with no explicit project target gets its own
+        // folder under the account's sessions/ collection. The session is
+        // created FIRST (OpenCode accepts a not-yet-existing directory and that
+        // initializes the workspace), then the folder is materialized. Allocating
+        // before any session exists returns workspace_busy on a fresh account.
+        // Legacy standalone gateways and compatible older readers answer 404/405
+        // for the capability probe and keep the account-scoped default; any
+        // other probe failure stops the send instead of using the shared root.
+        if (!aimed && isPlatformWeb && await sessionWorkspaceSupported()) {
+          isolatedWebTarget = `${intended}/sessions/${webSessionWorkspaceName()}`;
+          intended = get().workspace ?? intended;
+        }
         const changed = !samePath(intended, get().workspace);
         if (changed) {
           cancelWebRecovery();
@@ -2121,14 +2143,14 @@ async function performTurn(
         }
       }
       const creationClient = client!;
-      const creationContext = webContextVersion;
+      let creationContext = webContextVersion;
       const creationAccount = get().gatewayUser?.id;
       const creationLayout = useLayoutStore.getState();
       const creationLeaf = creationLayout.tree && creationLayout.focusedLeafId
         ? findLeaf(creationLayout.tree, creationLayout.focusedLeafId) : null;
       if (isGatewayWeb) {
         try {
-          id = await creationClient.createSession();
+          id = await creationClient.createSession(undefined, isolatedWebTarget ?? undefined);
         } catch (err) {
           // A lost response may already have created a server session. Never replay it blindly.
           const status = err instanceof Error ? (err as { status?: unknown }).status : undefined;
@@ -2137,10 +2159,31 @@ async function performTurn(
           void get().refreshSessions();
           throw err;
         }
+        if (isolatedWebTarget) {
+          try {
+            const folder = isolatedWebTarget.slice(isolatedWebTarget.lastIndexOf("/") + 1);
+            const allocated = await createSessionWorkspace(folder);
+            if (!allocated || !samePath(allocated.directory, isolatedWebTarget))
+              throw new Error("The conversation workspace could not be prepared. Reopen it from saved conversations.");
+            cancelWebRecovery();
+            const switchContext = webContextVersion;
+            set({ webWorkspace: isolatedWebTarget, workspace: isolatedWebTarget });
+            const ready = await get().connectRetry();
+            if (!ready || switchContext !== webContextVersion || !samePath(get().workspace, isolatedWebTarget))
+              throw new Error("The conversation workspace is not ready. Reopen it from saved conversations.");
+            creationContext = webContextVersion;
+          } catch (err) {
+            // The server session exists even though its folder/reconnect did not;
+            // replaying this draft would silently create a second conversation.
+            uncertainWebCreates.add(draftSrc);
+            void get().refreshSessions();
+            throw err;
+          }
+        }
         const currentLayout = useLayoutStore.getState();
         const currentLeaf = currentLayout.tree && currentLayout.focusedLeafId
           ? findLeaf(currentLayout.tree, currentLayout.focusedLeafId) : null;
-        if (creationClient !== client || creationContext !== webContextVersion || creationAccount !== get().gatewayUser?.id ||
+        if ((!isolatedWebTarget && creationClient !== client) || creationContext !== webContextVersion || creationAccount !== get().gatewayUser?.id ||
           creationLayout.focusedLeafId !== currentLayout.focusedLeafId || creationLeaf?.sessionId !== currentLeaf?.sessionId) {
           void get().refreshSessions();
           throw new Error("The conversation context changed while creating it. Reopen it from saved conversations.");
@@ -5183,7 +5226,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       return { draftWorkspaces };
     }),
 
-  startDraft: () => set((s) => ({ ...blankDraft(s), ...forgetDraftFolder(s, DRAFT_KEY) })),
+  // An explicit New is the user's escape from an uncertain Web creation: the
+  // guard protects the abandoned attempt, not the fresh draft opened here.
+  startDraft: () => {
+    uncertainWebCreates.delete(DRAFT_KEY);
+    set((s) => ({ ...blankDraft(s), ...forgetDraftFolder(s, DRAFT_KEY) }));
+  },
 
   // Re-blank the draft VIEW without touching where the next session will live.
   // The folder is chosen at send time from the draft's own entry, but the user picks
@@ -5198,7 +5246,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   // folder; no session, database row, or file is deleted here. `key` is the
   // draft slot to reset — the pane's own `draft:<leafId>` for a tiled pane,
   // the global DRAFT_KEY for the single-pane fallback.
-  startDraftInCurrentWorkspace: (key = DRAFT_KEY) =>
+  startDraftInCurrentWorkspace: (key = DRAFT_KEY) => {
+    uncertainWebCreates.delete(key);
     set((s) => {
       const threads = { ...s.threads };
       threads[key] = {
@@ -5224,7 +5273,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         ? { ...s.draftWorkspaces, [key]: s.workspace }
         : s.draftWorkspaces;
       return { currentId: null, draftWorkspaces, threads, panes, sessionAgents };
-    }),
+    });
+  },
 
   refreshProjects: async () => {
     if (!isTauri && !isGatewayWeb) return;
@@ -5304,6 +5354,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       set({ error: "This connection is read-only." });
       return false;
     }
+    // An explicit New for this pane is the user's escape from an uncertain Web
+    // creation: the guard protects the abandoned attempt, not this fresh draft.
+    uncertainWebCreates.delete(key);
     // Aim the draft slot the composer will actually send under. "+ new session
     // in project X" opens its own pane, so that is `draft:<leafId>`, not the
     // global slot — aiming the wrong one sent the session to a dated folder.
@@ -5947,8 +6000,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       try {
         await client.deleteSession(id);
       } catch (err) {
-        set({ error: err instanceof Error ? err.message : String(err) });
-        if (isGatewayWeb) return false;
+        // `conversation_not_found` means the conversation is already gone (the
+        // gateway may have just removed a catalogue-only row), so deleting it
+        // is still a success. Any other 404 (a stale route or proxy) is a real
+        // failure and must keep the row and the error.
+        if (!(isApiStatus(err, 404) && (err as { code?: unknown }).code === "conversation_not_found")) {
+          set({ error: err instanceof Error ? err.message : String(err) });
+          if (isGatewayWeb) return false;
+        }
       }
     }
     // A queued review for a session that no longer exists would send into a
@@ -6181,6 +6240,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
 export function datedWorkspaceName(now = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}`;
+}
+
+/** A unique per-conversation folder name. The random suffix prevents two
+ *  sessions created in the same minute from sharing a workspace. */
+export function webSessionWorkspaceName(now = new Date()): string {
+  const bytes = new Uint8Array(3);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return `${datedWorkspaceName(now)}-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export interface FoldState {

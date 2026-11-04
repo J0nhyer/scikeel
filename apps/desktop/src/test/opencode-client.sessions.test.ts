@@ -357,6 +357,21 @@ describe("OpenCodeClient session edits", () => {
     expect(calls).toEqual(["/session?directory=%2Fwork%2Fprojects%2Fmy-project"]);
   });
 
+  it("creates a session in an explicit managed directory", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push(url.pathname + url.search);
+      if (url.pathname === "/session" && init?.method === "POST") {
+        return new Response(JSON.stringify({ id: "ses_new" }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const client = new OpenCodeClient({ baseUrl: BASE, directory: "/work/base", fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(await client.createSession(undefined, "/work/base/sessions/2026-11-03-2130-abcdef")).toBe("ses_new");
+    expect(calls).toEqual(["/session?directory=%2Fwork%2Fbase%2Fsessions%2F2026-11-03-2130-abcdef"]);
+  });
+
   it("creates a session without ?directory= when no directory is set", async () => {
     const calls: string[] = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

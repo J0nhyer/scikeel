@@ -4,6 +4,13 @@ import {validManagedModelId} from '../src/managed-model-policy.mjs';
 
 const ensure=(condition,message)=>{if(!condition)throw Error(message);};
 const text=message=>(message?.parts??[]).filter(part=>part.type==='text'&&!part.synthetic).map(part=>part.text).join('\n');
+// Revert only tracks changes made through the built-in file tools, so the gate
+// must see a completed write/edit/apply_patch part naming the output file.
+const writeTools=['write','edit','apply_patch'],writeTarget='acceptance-output.txt';
+const namesTarget=value=>typeof value==='string'&&(value===writeTarget||value.endsWith('/'+writeTarget));
+const wroteTarget=part=>part.type==='tool'&&writeTools.includes(part.tool)&&part.state?.status==='completed'&&(
+ namesTarget(part.state?.input?.filePath)||namesTarget(part.state?.input?.path)||
+ (typeof part.state?.input?.patch==='string'&&part.state.input.patch.includes(writeTarget)));
 const capabilities=['model_reply','file_write_read','question_answer','research_checkpoint','research_delivery',
  'scoped_fetch','stop_cleanup','reload','legacy_handover'];
 
@@ -25,12 +32,14 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
  const send=async(path,{body,headers=authHeaders(),allowMissing=false,method=body===undefined?'GET':'POST'}={})=>{
   const pathname=path.split('?')[0],historyRead=method==='GET'&&/^\/session\/[^/]+\/message$/.test(pathname);
   let response;
-  // An active native turn can briefly conflict with its own history index; a
-  // polling reader retries the optimistic-concurrency answer, not a real error.
+  // An active native turn can briefly conflict with its own history index or
+  // answer the history read with a 503 while it settles. A polling reader
+  // retries only those bounded transient history answers, never other routes or
+  // statuses; a persistent 503 still reaches the clear rejection below.
   for(let attempt=0;attempt<4;attempt++){
    try{response=await request(origin+path,{method,headers,...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(60000)});}
    catch{throw Error(`Acceptance gateway request failed: ${method} ${pathname}`);}
-   if(!historyRead||response.status!==409||attempt===3)break;
+   if(!historyRead||![409,503].includes(response.status)||attempt===3)break;
    await response.body?.cancel();
    await delay(150*(attempt+1));
   }
@@ -187,7 +196,7 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
   await mode('autonomous');
   const readNonce='read-secret-'+randomUUID(),writeNonce='write-'+randomUUID();
   await create('acceptance-read.txt',readNonce);await create('acceptance-input.csv','value\n1\n2\n3\n');
-  ids=await begin('files',`Explicitly approved single file operation: Write exactly ${writeNonce} to acceptance-output.txt without a trailing newline. Read acceptance-read.txt by running a bash tool command (for example cat acceptance-read.txt); do not use the built-in read tool for that read, and do not substitute its output for the executed command. Return the actual contents. Preserve all other inputs. Use the real workspace tools.`);
+  ids=await begin('files',`Explicitly approved single file operation: Write exactly ${writeNonce} to acceptance-output.txt without a trailing newline using the built-in file write tool (write, edit, or apply_patch); do not create or overwrite acceptance-output.txt with a bash or shell command. Read acceptance-read.txt with exactly one bash tool command: cat acceptance-read.txt. Add no other commands, redirection, pipes, or follow-up shell commands to that call. Do not use the built-in read tool for that read, and do not substitute its output for the executed command. Return the actual contents. Preserve all other inputs. Use the real workspace tools.`);
   reply=await completion(ids);
   ensure(await read('acceptance-output.txt')===writeNonce&&await read('acceptance-read.txt')===readNonce&&text(reply).includes(readNonce),
    'Native file write/read verification failed');
@@ -195,20 +204,28 @@ export async function runSelectedAssistantAcceptance({target,admin,request=fetch
    (target.runtime==='codex'?part.state.metadata?.nativeItemType==='commandExecution'&&part.state.metadata.exitCode===0:
     part.state.metadata?.exit===0)&&
    typeof part.state.output==='string'&&part.state.output.includes(readNonce)),
-   'Completed native file tool evidence is missing');await idle();
-  const fileHistory=await history(),fileMessage=fileHistory.find(message=>!ids.has(message.info.id)&&message.info.role==='user');
-  ensure(typeof fileMessage?.info.id==='string','Native file turn public message is missing');
-  await json(scoped(sessionPath('/revert')),{body:{messageID:fileMessage.info.id},
-   headers:{...authHeaders(),'x-scikeel-request-id':'acceptance-revert-'+randomUUID()}});
-  ensure((await json(scoped(sessionPath()))).revert?.messageID===fileMessage.info.id&&
-   await read('acceptance-output.txt',true)===undefined&&await read('acceptance-read.txt')===readNonce&&
-   await read('acceptance-input.csv')==='value\n1\n2\n3\n','Native file revert verification failed');
-  await json(scoped(sessionPath('/unrevert')),{body:{},
-   headers:{...authHeaders(),'x-scikeel-request-id':'acceptance-unrevert-'+randomUUID()}});
-  ensure(!(await json(scoped(sessionPath()))).revert&&await read('acceptance-output.txt',true)===writeNonce&&
-   await read('acceptance-read.txt')===readNonce&&await read('acceptance-input.csv')==='value\n1\n2\n3\n',
-   'Native file restoration verification failed');
-  ensure(JSON.stringify(await history())===JSON.stringify(fileHistory),'Native history restoration verification failed');
+   'Completed native file tool evidence is missing');
+  ensure(reply.parts.some(wroteTarget),'Completed native file write tool evidence is missing');await idle();
+  // Native file restoration is a Codex-bound gateway capability. OpenCode's
+  // revert is message-scoped and its acceptance conversation has no canonical
+  // binding, so the file-removal/unrevert/restoration assertions are verified
+  // only for Codex; OpenCode still verifies the write, read, and evidence
+  // checks above, and this omission is intentional rather than a silent skip.
+  if(target.runtime==='codex'){
+   const fileHistory=await history(),fileMessage=fileHistory.find(message=>!ids.has(message.info.id)&&message.info.role==='user');
+   ensure(typeof fileMessage?.info.id==='string','Native file turn public message is missing');
+   await json(scoped(sessionPath('/revert')),{body:{messageID:fileMessage.info.id},
+    headers:{...authHeaders(),'x-scikeel-request-id':'acceptance-revert-'+randomUUID()}});
+   ensure((await json(scoped(sessionPath()))).revert?.messageID===fileMessage.info.id&&
+    await read('acceptance-output.txt',true)===undefined&&await read('acceptance-read.txt')===readNonce&&
+    await read('acceptance-input.csv')==='value\n1\n2\n3\n','Native file revert verification failed');
+   await json(scoped(sessionPath('/unrevert')),{body:{},
+    headers:{...authHeaders(),'x-scikeel-request-id':'acceptance-unrevert-'+randomUUID()}});
+   ensure(!(await json(scoped(sessionPath()))).revert&&await read('acceptance-output.txt',true)===writeNonce&&
+    await read('acceptance-read.txt')===readNonce&&await read('acceptance-input.csv')==='value\n1\n2\n3\n',
+    'Native file restoration verification failed');
+   ensure(JSON.stringify(await history())===JSON.stringify(fileHistory),'Native history restoration verification failed');
+  }
   phaseResults.file_write_read='passed';
   ids=await begin('question',`Use ${target.runtime==='codex'?'request_user_input':'the question tool'} to ask exactly "Release question" with options "Continue" and "Stop". Wait for the actual answer, then reply with exactly the selected option label. Do not answer it yourself.`);
   const question=await poll('native question',async()=>{

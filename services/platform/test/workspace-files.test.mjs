@@ -306,3 +306,16 @@ test('lost native mutation replies record history once after identity reconcilia
  assert.equal((await f.files.receipt(f.context,'rename-a')).state,'committed');assert.equal(history,1);assert.equal(f.moves(),1);
  await f.files.receipt(f.context,'rename-a');assert.equal(history,1);
 });
+test('new session workspaces are created exactly once under the reserved sessions collection',async t=>{
+ const f=await fixture(t);
+ const first=await f.files.createSessionWorkspace(f.context,'2026-11-03-2130');
+ assert.equal(first.directory,'/owned/a/sessions/2026-11-03-2130');
+ const second=await f.files.createSessionWorkspace(f.context,'2026-11-03-2130');
+ assert.equal(second.directory,first.directory);
+ const unique=await f.files.createSessionWorkspace(f.context,'2026-11-03-2130-abcdef');
+ assert.equal(unique.directory,'/owned/a/sessions/2026-11-03-2130-abcdef');
+ assert.equal(f.payloads.get('sessions/2026-11-03-2130').isDir,true);
+ assert.equal(f.payloads.get('sessions/2026-11-03-2130-abcdef').isDir,true);
+ for(const name of ['', '../escape', 'nested/name', '2026-11-03-2130/..', '2026-11-03-2130-xyzxyz', 12])
+  await assert.rejects(f.files.createSessionWorkspace(f.context,name),{code:'invalid_name'});
+});

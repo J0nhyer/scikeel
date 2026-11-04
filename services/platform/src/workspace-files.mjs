@@ -30,6 +30,21 @@ async function defaultRemovePayload({workspaceDir,relativePath}){
 }
 export class WorkspaceFiles {
  constructor({management,native,state,tenantPolicy,admission,removePayload=defaultRemovePayload}){Object.assign(this,{management,native,state,tenantPolicy,admission,removePayload});}
+ async createSessionWorkspace(context,name){
+  if(typeof name!=='string' || !/^\d{4}-\d{2}-\d{2}-\d{4}(?:-[a-f0-9]{6})?$/.test(name))throw workspaceError('invalid_name',400);
+  const account=this.tenantPolicy.account(context),directory=account.workspaceDir+'/sessions',relative=`sessions/${name}`;
+  try{
+   await this.management.assertAccessible(context,directory);
+   await this.native.call(context,{operation:'mkdirAll',root:'workspace',path:'sessions'});
+   try{await this.native.call(context,{operation:'mkdir',root:'workspace',path:relative});}
+   catch(error){if(error.code!=='name_conflict')throw error;}
+   const stat=await this.native.call(context,{operation:'stat',root:'workspace',path:relative});
+   if(!stat?.isDir)throw workspaceError('session_workspace_unavailable',503);
+   const created=account.workspaceDir+'/'+relative;
+   await this.management.assertAccessible(context,created);
+   return {directory:created};
+  }catch(error){throw workspaceError('session_workspace_unavailable',503);}
+ }
  async scope(context,scope){
   const account=this.tenantPolicy.account(context);
   let directory=account.workspaceDir;

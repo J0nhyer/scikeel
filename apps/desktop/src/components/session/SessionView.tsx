@@ -216,6 +216,7 @@ export function SessionView({
   const permissions = useRuntimeStore((s) => s.permissions);
   const sessionParents = useRuntimeStore((s) => s.sessionParents);
   const workspace = useRuntimeStore((s) => s.workspace);
+  const gatewayWorkspace = useRuntimeStore((s) => s.gatewayWorkspace);
   const pane = useRuntimeStore((s) => s.panes[key]);
   const commands = useRuntimeStore((s) => s.commands);
   const connect = useRuntimeStore((s) => s.connect);
@@ -792,7 +793,9 @@ export function SessionView({
               {/* Tiled panes are narrow — show just the icon, not the folder name. */}
               {showToolLabels && (
                 <span className="max-w-[160px] truncate">
-                  {sessionDir ? baseName(sessionDir) : t("live.filesToggle.default")}
+                  {sessionDir
+                    ? baseName(sessionDir, isGatewayWeb ? gatewayWorkspace : null)
+                    : t("live.filesToggle.default")}
                 </span>
               )}
             </button>
@@ -1104,9 +1107,7 @@ export function SessionView({
                         LIMIT_REASONS.has(retryNotice.action?.reason ?? "")
                         ? t("live.status.limitReached")
                         : t("live.status.retrying", { attempt: Math.max(1, retryNotice.attempt) })
-                      : sending && !eid
-                        ? t("live.status.startingSession")
-                        : t("live.status.working")}
+                      : t("live.status.working")}
                 </span>
                 {!activeRequest && !retryNotice && turnStart !== null && (
                   <Elapsed start={turnStart} />

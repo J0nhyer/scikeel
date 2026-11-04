@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRuntimeStore } from "@/lib/runtime";
@@ -36,9 +36,10 @@ beforeEach(() => {
       { id: "B", title: "older question", directory: "/base/2026-07-02-0900" },
     ],
     projects: [],
+    sendingSessions: {},
   });
 });
-afterEach(() => useRuntimeStore.setState({ sessions: [], projects: [], workspace: null }));
+afterEach(() => useRuntimeStore.setState({ sessions: [], projects: [], workspace: null, sendingSessions: {} }));
 
 describe("Sidebar sessions, away from the session route", () => {
   it("clicking a session shows it instead of only rearranging panes", async () => {
@@ -64,6 +65,19 @@ describe("Sidebar sessions, away from the session route", () => {
     expect(layout.activeGroupId).not.toBe("g0");
     expect(leaves(layout.tree!).map((l) => l.sessionId)).toEqual([null]); // a draft
     expect(leaves(layout.groups[0].tree!).map((l) => l.sessionId)).toEqual(["A"]);
+  });
+
+  it("shows a session as working as soon as its send starts", async () => {
+    // The prompt POST can spend seconds in admission. The sidebar must answer
+    // the click immediately, not after the server has accepted the turn.
+    useRuntimeStore.setState({ sendingSessions: { A: true } });
+
+    renderAt("/skills");
+
+    expect(await screen.findByLabelText("Working")).toBeInTheDocument();
+
+    act(() => useRuntimeStore.setState({ sendingSessions: {} }));
+    expect(screen.queryByLabelText("Working")).not.toBeInTheDocument();
   });
 });
 

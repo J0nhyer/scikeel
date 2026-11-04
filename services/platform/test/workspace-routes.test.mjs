@@ -59,3 +59,14 @@ test('history retries use only an owned committed operation and never dispatch f
  const request={url:'/api/workspace/operations/owned/history',method:'POST',body:{operationId:'owned'},headers:{host:'local',origin:'http://local'}},context={userId:'a'},response={};await routes.handle(request,response,context);assert.equal(response.status,200);assert.deepEqual(calls[0],[context,'owned']);
  const denied={};await routes.handle({...request,body:{operationId:'different'}},denied,context);assert.equal(denied.status,400);assert.equal(calls.length,1);
 });
+test('session workspace allocation is an authenticated account mutation',async()=>{
+ const calls=[],files={createSessionWorkspace:async(...args)=>{calls.push(args);return {directory:'/owned/a/sessions/2026-11-03-2130'};}};
+ const routes=createWorkspaceRoutes({management:{},files,readJson:async request=>request.body??{},sendJson:(response,status,body)=>Object.assign(response,{status,body})});
+ const support={};await routes.handle({method:'GET',url:'/api/workspace/session-workspaces',headers:{host:'local'}},support,{userId:'a'});assert.equal(support.status,200);assert.deepEqual(support.body,{supported:true});
+ const request={method:'POST',url:'/api/workspace/session-workspaces',headers:{host:'local',origin:'http://local'},body:{name:'2026-11-03-2130'}},context={userId:'a'};
+ const response={};await routes.handle(request,response,context);assert.equal(response.status,200);assert.deepEqual(calls,[[context,'2026-11-03-2130']]);
+ const foreign={};await routes.handle({...request,headers:{...request.headers,origin:'http://foreign'}},foreign,context);assert.equal(foreign.status,403);
+ const invalid={};await routes.handle({...request,body:{name:'2026-11-03-2130',path:'elsewhere'}},invalid,context);assert.equal(invalid.status,400);
+ const readOnly={};await routes.handle(request,readOnly,{...context,readOnly:true});assert.equal(readOnly.status,403);
+ assert.equal(calls.length,1);
+});
