@@ -2871,6 +2871,37 @@ describe("per-session workspace folders", () => {
     expect(thread.blocks.some((block) => block.kind === "user" && block.text === "old question")).toBe(false);
   });
 
+  it("does not replace a live first answer when a directory update reopens the session", async () => {
+    mocks.messages = [
+      { role: "user", id: "m_user", parts: [{ id: "p_user", type: "text", text: "first question" }] },
+      { role: "assistant", id: "m_history", parts: [{ id: "p_history", type: "text", text: "OLDER ANSWER" }] },
+    ];
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_new", title: "New session", directory: "/ws/base" }],
+      currentId: "ses_new",
+      runningSessions: { ses_new: true },
+      sendingSessions: {},
+      threads: {
+        ses_new: { blocks: [{ kind: "agent", markdown: "LIVE ANSWER" }], index: { "text:p_live": 0 }, loaded: true },
+      },
+    });
+    // A title/session update can correct the locally created row's directory
+    // while the first answer is still streaming; LiveSessionPage then calls
+    // openSession again. It must not reload history over the live transcript.
+    useRuntimeStore.setState((s) => ({
+      sessions: s.sessions.map((x) => x.id === "ses_new" ? { ...x, directory: "/ws/base/sessions/s1" } : x),
+    }));
+    await useRuntimeStore.getState().openSession("ses_new");
+
+    expect(mocks.getMessages).not.toHaveBeenCalled();
+    const blocks = useRuntimeStore.getState().threads.ses_new.blocks;
+    expect(blocks.some((block) => block.kind === "agent" && block.markdown === "LIVE ANSWER")).toBe(true);
+
+    // Clear the deferred marker so this fixture cannot leak into later tests.
+    useRuntimeStore.setState({ currentId: "ses_other" });
+    mocks.fireEvent({ type: "session.idle", sessionId: "ses_new" });
+  });
+
   it("loadHistory hydrates a live-only background pane", async () => {
     mocks.messages = [{ role: "user", parts: [{ type: "text", text: "background question" }] }];
     useRuntimeStore.setState({

@@ -689,6 +689,20 @@ let opencodeClient: OpenCodeClient | null = null;
 let acpRuntime: AcpRuntime | null = null;
 let acpRuntimeAgentId: string | null = null;
 let openSessionSeq = 0;
+/** Sessions whose directory follow was deferred because a turn was still live.
+ *  A title/session update can correct a new session's directory while its first
+ *  answer is streaming; re-opening then would reconnect the stream or replace
+ *  the live transcript with an older history snapshot. The idle handler flushes
+ *  these once the turn settles. */
+const deferredSessionOpens = new Set<string>();
+function deferSessionOpen(id: string): void {
+  deferredSessionOpens.add(id);
+  while (deferredSessionOpens.size > 64) {
+    const oldest = deferredSessionOpens.values().next().value;
+    if (oldest === undefined) break;
+    deferredSessionOpens.delete(oldest);
+  }
+}
 let projectCountsGeneration = 0;
 /** Hard bound on the sessions remembered while the catalogue catches up. */
 const MAX_LOCALLY_CREATED_SESSIONS = 100;
@@ -3367,6 +3381,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     if (!sharedEventHandler)
       sharedEventHandler = (event) => {
       if (event.type === "session.deleted") {
+        deferredSessionOpens.delete(event.sessionId);
         set(state => {
           const locallyCreatedSessions = { ...state.locallyCreatedSessions };
           delete locallyCreatedSessions[event.sessionId];
@@ -3693,6 +3708,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         });
       }
       if (event.type === "session.idle") clearLiveFolds(sid);
+      // A directory follow deferred while this turn was live can run once the
+      // locks below have settled. Only do it if the user is still on the session;
+      // switching away means the next focus should follow it instead.
+      if (event.type === "session.idle" && deferredSessionOpens.delete(sid)) {
+        setTimeout(() => {
+          if (get().currentId === sid && !get().runningSessions[sid] && !get().sendingSessions[sid])
+            void get().openSession(sid);
+        }, 0);
+      }
       // A manual compaction finished: the "Context compacted" seam just folded
       // in, so subsequent turns already run on the bounded context. Clear the
       // composer spinner and confirm. Idle also clears, as a safety net: a
@@ -5050,6 +5074,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
 
   clearPlatformPresentation: () => {
     if (!isPlatformWeb) return;
+    deferredSessionOpens.clear();
     setPlatformAssistantRevision(null); setPlatformWorkspaceGeneration(null);
     useToastStore.getState().reset();
     clearWorkspaceTextDrafts();
@@ -5424,6 +5449,19 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   },
 
   openSession: async (id) => {
+    // A title/session update can correct a locally created row's directory
+    // while the first answer is still streaming; LiveSessionPage's sessionDir
+    // effect then calls openSession again. Reconnecting or replacing this live
+    // transcript with an older history snapshot would rewrite what the user
+    // already sees, so follow the directory after the turn instead. An empty
+    // thread (a cold reload) still opens and hydrates normally.
+    const thread = get().threads[id];
+    const busy = !!get().runningSessions[id] || !!get().sendingSessions[id];
+    if (get().currentId === id && busy && !!thread?.blocks.length && !thread.historyLoaded) {
+      deferSessionOpen(id);
+      return;
+    }
+    deferredSessionOpens.delete(id);
     const seq = ++openSessionSeq;
     set({ currentId: id });
     if (!client) return;
@@ -5995,6 +6033,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   },
 
   deleteSession: async (id) => {
+    deferredSessionOpens.delete(id);
     if (client) {
       try {
         await client.deleteSession(id);
