@@ -8,7 +8,8 @@
 // resets (lists, margins, img sizing) plus the theme's inherited font/colors
 // (light text in dark mode) wreck the layout. The shadow root blocks the
 // stylesheets; the base style below resets what still inherits.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
@@ -53,9 +54,9 @@ function useShadowPage(extraCss = "") {
   return { hostRef, page };
 }
 
-function RenderState({ error, loading }: { error: string | null; loading: boolean }) {
+function RenderState({ issueId, error, loading }: { issueId: string; error: string | null; loading: boolean }) {
   const { t } = useTranslation(["inspector", "common"]);
-  if (error) return <div className="p-4 text-sm text-muted">{error}</div>;
+  if (error) return <ErrorNotice issueId={issueId} summary={error} />;
   if (loading)
     return (
       <div className="flex items-center gap-2 p-4 text-sm text-muted">
@@ -73,6 +74,7 @@ export function DocxView({ bytes, scrollKey }: { bytes: ArrayBuffer; scrollKey: 
   const wrapRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const errorId = useId();
   // Reading position, restored when the same document is reopened.
   const onScroll = useScrollMemory(wrapRef, scrollKey, !loading);
 
@@ -126,7 +128,7 @@ export function DocxView({ bytes, scrollKey }: { bytes: ArrayBuffer; scrollKey: 
 
   return (
     <div ref={wrapRef} onScroll={onScroll} className="h-full overflow-auto">
-      <RenderState error={error} loading={loading} />
+      <RenderState issueId={`office:${errorId}:${error}`} error={error} loading={loading} />
       <div ref={hostRef} />
     </div>
   );
@@ -152,6 +154,7 @@ export function XlsxView({ bytes, scrollKey }: { bytes: ArrayBuffer; scrollKey: 
   const [sheets, setSheets] = useState<SheetHtml[] | null>(null);
   const [active, setActive] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const errorId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -182,7 +185,7 @@ export function XlsxView({ bytes, scrollKey }: { bytes: ArrayBuffer; scrollKey: 
   }, [page, sheet]);
   const onScroll = useScrollMemory(wrapRef, scrollKey, !!(page && sheet));
 
-  if (error || !sheets) return <RenderState error={error} loading={!sheets} />;
+  if (error || !sheets) return <RenderState issueId={`office-xlsx:${errorId}:${error}`} error={error} loading={!sheets} />;
   if (sheets.length === 0) return <div className="p-4 text-sm text-muted">{t("office.noSheets")}</div>;
   return (
     <div className="flex h-full flex-col">
@@ -226,6 +229,7 @@ export function PptxView({ bytes, scrollKey }: { bytes: ArrayBuffer; scrollKey: 
   const wrapRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const errorId = useId();
   // Reading position, restored when the same deck is reopened.
   const onScroll = useScrollMemory(wrapRef, scrollKey, !loading);
 
@@ -265,7 +269,7 @@ export function PptxView({ bytes, scrollKey }: { bytes: ArrayBuffer; scrollKey: 
 
   return (
     <div ref={wrapRef} onScroll={onScroll} className="h-full overflow-auto">
-      <RenderState error={error} loading={loading} />
+      <RenderState issueId={`office:${errorId}:${error}`} error={error} loading={loading} />
       <div ref={hostRef} />
     </div>
   );

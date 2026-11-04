@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { useTranslation } from "react-i18next";
 import { parseEigenval, type BandData } from "@/lib/bands";
 
@@ -24,10 +24,7 @@ export function BandView({ filename, bytes }: { filename: string; bytes: ArrayBu
   if (parsed.error || !parsed.data) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <div className="flex max-w-sm items-start gap-2 rounded-card border border-border bg-surface p-4 text-sm text-muted">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warn" />
-          <span>{t("band.readError", { error: parsed.error ?? t("band.unknownFormat") })}</span>
-        </div>
+        <ErrorNotice issueId={`band:${filename}:${parsed.error ?? "unknown-format"}`} summary={t("band.readError", { error: parsed.error ?? t("band.unknownFormat") })} />
       </div>
     );
   }

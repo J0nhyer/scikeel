@@ -11,6 +11,7 @@ import {
   type MoleculeStyleMode,
 } from "@/lib/molecule";
 import { cn } from "@/lib/cn";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 
 /**
  * Whether this WebView can actually give 3Dmol a WebGL context. It cannot on
@@ -238,9 +239,10 @@ export function MoleculeView({ filename, text }: { filename: string; text: strin
         {atomCount !== null && <span className="ml-2">{t("molecule.atomCount", { count: atomCount })}</span>}
       </div>
 
-      {(rendering || error) && (
+      {error && <ErrorNotice issueId={`molecule:${filename}:${error}`} summary={error} />}
+      {rendering && (
         <div className="pointer-events-none absolute bottom-3 left-3 max-w-[70%] rounded-input border border-border/70 bg-surface/95 px-3 py-1.5 text-xs text-muted shadow-card backdrop-blur">
-          {rendering ? t("molecule.renderingStructure") : error}
+          {t("molecule.renderingStructure")}
         </div>
       )}
     </div>

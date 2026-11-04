@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { Toaster } from "@/components/ui/Toaster";
 import { AnomalyMapView } from "./AnomalyMapView";
 
 const CSV = [
@@ -21,8 +22,9 @@ describe("AnomalyMapView", () => {
     expect(container.textContent).toMatch(/°[NSEW]|0°/);
   });
 
-  it("shows a friendly error for a non-grid file", () => {
-    render(<AnomalyMapView filename="bad.anom" text="hello\nworld" />);
-    expect(screen.getByText(/Could not read this anomaly grid/)).toBeInTheDocument();
+  it("shows a friendly error for a non-grid file", async () => {
+    render(<><AnomalyMapView filename="bad.anom" text="hello\nworld" /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Could not read this anomaly grid/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 });

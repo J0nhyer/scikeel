@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { useTranslation } from "react-i18next";
 import { parseDoscar, type DosData } from "@/lib/dos";
 import { cn } from "@/lib/cn";
@@ -26,10 +26,7 @@ export function DosView({ filename, bytes }: { filename: string; bytes: ArrayBuf
   if (parsed.error || !parsed.dos) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <div className="flex max-w-sm items-start gap-2 rounded-card border border-border bg-surface p-4 text-sm text-muted">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warn" />
-          <span>{t("dos.readError", { error: parsed.error ?? t("dos.unknownFormat") })}</span>
-        </div>
+        <ErrorNotice issueId={`dos:${filename}:${parsed.error ?? "unknown-format"}`} summary={t("dos.readError", { error: parsed.error ?? t("dos.unknownFormat") })} />
       </div>
     );
   }

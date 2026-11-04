@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { useTranslation } from "react-i18next";
 import { parseFits, pixelToWorld, type FitsImage, type FitsResult } from "@/lib/fits";
 import { cn } from "@/lib/cn";
@@ -61,10 +61,7 @@ export function FitsView({ filename, bytes }: { filename: string; bytes: ArrayBu
   if (parsed.error) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <div className="flex max-w-sm items-start gap-2 rounded-card border border-border bg-surface p-4 text-sm text-muted">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warn" />
-          <span>{t("fits.readError", { error: parsed.error })}</span>
-        </div>
+        <ErrorNotice issueId={`fits:${filename}:${parsed.error}`} summary={t("fits.readError", { error: parsed.error })} />
       </div>
     );
   }

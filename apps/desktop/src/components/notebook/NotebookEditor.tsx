@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -510,7 +511,7 @@ export function NotebookEditor({
       )}
       <div ref={scrollRef} onScroll={onScroll} className={cn("flex-1 overflow-y-auto", showHistory && "hidden")}>
         <div className="mx-auto max-w-3xl px-6 py-5">
-          {error && <div className="text-sm text-error">{error}</div>}
+          {error && <ErrorNotice issueId={`notebook:${path}:${error}`} summary={error} />}
           {!error && !cells && (
             <div className="flex items-center gap-2 text-sm text-muted">
               <Loader2 size={14} className="animate-spin" /> {t("files.loading")}

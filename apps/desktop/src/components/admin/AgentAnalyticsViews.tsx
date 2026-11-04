@@ -13,6 +13,7 @@ import type {
 import { analyticsClient, useAdminAnalyticsQuery } from '@/lib/adminAnalytics';
 import { analyticsKey } from '@/lib/analyticsLabels';
 import { Section } from '@/components/settings/Section';
+import { ErrorNotice } from '@/components/ui/ErrorNotice';
 import { cn } from '@/lib/cn';
 
 export const value = (n: number | null | undefined) => (n == null ? null : n.toLocaleString());
@@ -390,9 +391,7 @@ export function AgentRunDrawer({ id, onClose }: { id: string | null; onClose: ()
             {loading && !detail ? (
               <p className="text-[13px] text-muted">{t('analytics.loading')}</p>
             ) : error && !detail ? (
-              <p role="alert" className="text-[13px] text-error">
-                {t('analytics.unavailable')}
-              </p>
+              <ErrorNotice issueId={`admin-analytics-detail:${error}`} summary={t('analytics.unavailable')} />
             ) : detail ? (
               <>
                 <p className="flex flex-wrap items-center gap-2 text-[13px] font-medium">

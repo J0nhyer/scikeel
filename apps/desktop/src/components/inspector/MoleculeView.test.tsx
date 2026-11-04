@@ -1,6 +1,8 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useToastStore } from "@/lib/toast";
+import { Toaster } from "@/components/ui/Toaster";
 import { MoleculeView } from "./MoleculeView";
 
 // 3Dmol needs WebGL, which jsdom lacks — mock it and assert the wiring
@@ -30,6 +32,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
+  useToastStore.getState().reset();
 });
 
 describe("MoleculeView", () => {
@@ -80,14 +83,16 @@ describe("MoleculeView", () => {
   // TypeError at the user (#143, WebKitGTK on Linux).
   it("explains a missing WebGL context instead of letting 3Dmol throw", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
-    render(<MoleculeView filename="feh2o.xyz" text={"1\ncomment\nFe 0.0 0.0 0.0"} />);
-    expect(await screen.findByText(/WebGL/)).toBeInTheDocument();
+    render(<><MoleculeView filename="feh2o.xyz" text={"1\ncomment\nFe 0.0 0.0 0.0"} /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/WebGL/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
     expect(createViewer).not.toHaveBeenCalled();
   });
 
   it("explains a SMILES file with no parseable structures", async () => {
-    render(<MoleculeView filename="empty.smi" text={"   \n# comment\n"} />);
-    expect(await screen.findByText(/No chemical structures found/)).toBeInTheDocument();
+    render(<><MoleculeView filename="empty.smi" text={"   \n# comment\n"} /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/No chemical structures found/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
     expect(viewer.addModel).not.toHaveBeenCalled();
   });
 });

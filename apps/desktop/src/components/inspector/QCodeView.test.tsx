@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { Toaster } from "@/components/ui/Toaster";
 import { QCodeView } from "./QCodeView";
 
 const DOC = JSON.stringify({
@@ -24,8 +25,9 @@ describe("QCodeView", () => {
     expect(marks).toContain("fear the cost");
   });
 
-  it("shows a friendly error for a malformed coding file", () => {
-    render(<QCodeView filename="bad.qcode" text="{ not json" />);
-    expect(screen.getByText(/Could not read this coding file/)).toBeInTheDocument();
+  it("shows a friendly error for a malformed coding file", async () => {
+    render(<><QCodeView filename="bad.qcode" text="{ not json" /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Could not read this coding file/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 });

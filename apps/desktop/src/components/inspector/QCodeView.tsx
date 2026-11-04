@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { useTranslation } from "react-i18next";
 import { parseQCode, segmentsFor, type QCodeParsed } from "@/lib/qcode";
 import { cn } from "@/lib/cn";
@@ -37,10 +38,7 @@ export function QCodeView({ filename, text }: { filename: string; text: string }
   if (parsed.error || !parsed.doc) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <div className="flex max-w-sm items-start gap-2 rounded-card border border-border bg-surface p-4 text-sm text-muted">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warn" />
-          <span>{t("qcode.readError", { error: parsed.error ?? t("qcode.unknownFormat") })}</span>
-        </div>
+        <ErrorNotice issueId={`qcode:${filename}:${parsed.error ?? "unknown-format"}`} summary={t("qcode.readError", { error: parsed.error ?? t("qcode.unknownFormat") })} />
       </div>
     );
   }

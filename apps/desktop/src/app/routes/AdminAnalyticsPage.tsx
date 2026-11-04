@@ -16,6 +16,7 @@ import {
 } from '@/components/admin/AgentAnalyticsViews';
 import { Section } from '@/components/settings/Section';
 import { inputCls, selectCls } from '@/components/settings/inputCls';
+import { ErrorNotice } from '@/components/ui/ErrorNotice';
 import { cn } from '@/lib/cn';
 
 const windows = ['24h', '7d', '30d'] as const;
@@ -234,11 +235,11 @@ export function AdminAnalyticsPage() {
       )}
 
       {error && (
-        <div
-          role="alert"
-          className="mt-6 flex items-center justify-center gap-2 rounded-card border border-border bg-surface px-4 py-10 text-[13px] text-error"
-        >
-          {t(analyticsKey(error === 'forbidden' ? 'forbidden' : 'unavailable'))}
+        <div className="mt-6">
+          <ErrorNotice
+            issueId={`admin-analytics:${error}`}
+            summary={t(analyticsKey(error === 'forbidden' ? 'forbidden' : 'unavailable'))}
+          />
         </div>
       )}
       {!data && loading && (

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { useTranslation } from "react-i18next";
 import { parsePhaseDiagram, type PhaseDiagram } from "@/lib/phase";
 
@@ -25,10 +25,7 @@ export function PhaseView({ filename, text }: { filename: string; text: string }
   if (parsed.error || !parsed.pd) {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <div className="flex max-w-sm items-start gap-2 rounded-card border border-border bg-surface p-4 text-sm text-muted">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warn" />
-          <span>{t("phase.readError", { error: parsed.error ?? t("phase.unknownFormat") })}</span>
-        </div>
+        <ErrorNotice issueId={`phase:${filename}:${parsed.error ?? "unknown-format"}`} summary={t("phase.readError", { error: parsed.error ?? t("phase.unknownFormat") })} />
       </div>
     );
   }

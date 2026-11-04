@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Loader2, ZoomIn, ZoomOut } from "lucide-react";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { useTranslation } from "react-i18next";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -85,7 +86,7 @@ export function PdfPreview({ url }: { url: string }) {
       <button type="button" className={button} aria-label={t("filePreview.pdfZoomIn")} title={t("filePreview.pdfZoomIn")} disabled={!pdf || busy || zoom >= 2} onClick={() => setZoom((current) => Math.min(2, current + 0.25))}><ZoomIn size={16} /></button>
       {busy && <Loader2 size={14} className="shrink-0 animate-spin text-muted" />}
     </div>
-    {error && <div role="alert" className="p-4 text-sm text-error">{error}</div>}
+    {error && <ErrorNotice issueId={`pdf:${url}:${error}`} summary={error} />}
     <div className="min-w-0 overflow-auto p-3">
       <canvas ref={canvas} role="img" aria-label={t("filePreview.pdfPage", { page, total: pdf?.numPages ?? 0 })}
         aria-busy={busy} className="mx-auto block bg-white shadow-sm" hidden={!pdf || !!error} />

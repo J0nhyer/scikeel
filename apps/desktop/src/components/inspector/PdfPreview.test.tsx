@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
+import { Toaster } from "@/components/ui/Toaster";
 import { PdfPreview } from "./PdfPreview";
 
 const renderPage = vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() }));
@@ -28,8 +29,9 @@ it("renders a PDF page and supports navigation with bounded canvas size", async 
 
 it("shows a load failure instead of leaving an empty preview", async () => {
   getDocument.mockReturnValueOnce({ promise: Promise.reject(new Error("Paper is unavailable")), destroy });
-  const view = render(<PdfPreview url="/missing.pdf" />);
+  const view = render(<><PdfPreview url="/missing.pdf" /><Toaster /></>);
   expect(await screen.findByRole("alert")).toHaveTextContent("Paper is unavailable");
+  expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
   view.unmount();
   expect(destroy).toHaveBeenCalled();

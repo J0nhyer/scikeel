@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { Toaster } from "@/components/ui/Toaster";
 import { BandView } from "./BandView";
 
 const EIGENVAL = [
@@ -33,8 +34,9 @@ describe("BandView", () => {
     expect(paths.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("shows a friendly error for non-EIGENVAL bytes", () => {
-    render(<BandView filename="EIGENVAL" bytes={bytesOf("nope\n")} />);
-    expect(screen.getByText(/Could not read this EIGENVAL/)).toBeInTheDocument();
+  it("shows a friendly error for non-EIGENVAL bytes", async () => {
+    render(<><BandView filename="EIGENVAL" bytes={bytesOf("nope\n")} /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Could not read this EIGENVAL/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 });

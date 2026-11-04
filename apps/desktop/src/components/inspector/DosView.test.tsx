@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { Toaster } from "@/components/ui/Toaster";
 import { DosView } from "./DosView";
 
 const SPIN = [
@@ -32,8 +33,9 @@ describe("DosView", () => {
     expect(screen.getByRole("button", { name: /E − E_F/ })).toBeInTheDocument();
   });
 
-  it("shows a friendly error for non-DOSCAR bytes", () => {
-    render(<DosView filename="DOSCAR" bytes={bytesOf("not a doscar\n")} />);
-    expect(screen.getByText(/Could not read this DOSCAR/)).toBeInTheDocument();
+  it("shows a friendly error for non-DOSCAR bytes", async () => {
+    render(<><DosView filename="DOSCAR" bytes={bytesOf("not a doscar\n")} /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Could not read this DOSCAR/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 });

@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { Toaster } from "@/components/ui/Toaster";
 import { PhaseView } from "./PhaseView";
 
 const DOC = JSON.stringify({
@@ -25,8 +26,9 @@ describe("PhaseView", () => {
     expect(container.textContent).toContain("Li2O");
   });
 
-  it("shows a friendly error for a non-binary or malformed file", () => {
-    render(<PhaseView filename="bad.phase" text={JSON.stringify({ elements: ["A"], entries: [] })} />);
-    expect(screen.getByText(/Could not read this phase diagram/)).toBeInTheDocument();
+  it("shows a friendly error for a non-binary or malformed file", async () => {
+    render(<><PhaseView filename="bad.phase" text={JSON.stringify({ elements: ["A"], entries: [] })} /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Could not read this phase diagram/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 });

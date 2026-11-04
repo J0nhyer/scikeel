@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { Toaster } from "@/components/ui/Toaster";
 import { FitsView } from "./FitsView";
 import { FITS_IMAGE_2D_B64, FITS_SPECTRUM_1D_B64 } from "@/lib/fits.fixtures";
 
@@ -35,8 +36,9 @@ describe("FitsView", () => {
     expect(screen.getByText(/WAVE/)).toBeInTheDocument();
   });
 
-  it("shows a friendly error for a non-FITS buffer", () => {
-    render(<FitsView filename="bad.fits" bytes={new Uint8Array([1, 2, 3, 4]).buffer} />);
-    expect(screen.getByText(/Could not read this FITS file/)).toBeInTheDocument();
+  it("shows a friendly error for a non-FITS buffer", async () => {
+    render(<><FitsView filename="bad.fits" bytes={new Uint8Array([1, 2, 3, 4]).buffer} /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Could not read this FITS file/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 });

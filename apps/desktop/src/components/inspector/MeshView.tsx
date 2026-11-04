@@ -6,6 +6,7 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { extOf } from "@/lib/artifacts";
+import { ErrorNotice } from "@/components/ui/ErrorNotice";
 import { cn } from "@/lib/cn";
 
 /**
@@ -305,9 +306,10 @@ export function MeshView({ filename, bytes }: { filename: string; bytes: ArrayBu
         )}
       </div>
 
-      {(rendering || error) && (
+      {error && <ErrorNotice issueId={`mesh:${filename}:${error}`} summary={error} />}
+      {rendering && (
         <div className="pointer-events-none absolute bottom-3 left-3 max-w-[70%] rounded-input border border-border/70 bg-surface/95 px-3 py-1.5 text-xs text-muted shadow-card backdrop-blur">
-          {rendering ? t("mesh.rendering") : error}
+          {t("mesh.rendering")}
         </div>
       )}
 
