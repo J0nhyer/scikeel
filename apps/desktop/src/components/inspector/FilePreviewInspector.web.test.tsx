@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Toaster } from "@/components/ui/Toaster";
 import { FilePreviewInspector } from "./FilePreviewInspector";
 
 vi.mock("@/lib/tauri", async (original) => ({ ...(await original<typeof import("@/lib/tauri")>()), isTauri: false }));
@@ -12,8 +13,9 @@ describe("Web file preview", () => {
 
   it("shows a failed Markdown load rather than a blank preview", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: "file not found" }), { status: 404 }));
-    render(<FilePreviewInspector data={{ variant: "file", path: "notes.md", filename: "notes.md", artifact: "report" }} />);
-    expect(await screen.findByText("file not found")).toBeInTheDocument();
+    render(<><FilePreviewInspector data={{ variant: "file", path: "notes.md", filename: "notes.md", artifact: "report" }} /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent("file not found");
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
     expect(screen.queryByRole("button", { name: "History" })).not.toBeInTheDocument();
   });
 

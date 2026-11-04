@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { useUiStore } from "@/lib/store";
+import { Toaster } from "@/components/ui/Toaster";
 import { MoleculeView } from "./MoleculeView";
 import { TableChart } from "./TableChart";
 import { GenomeView } from "./GenomeView";
@@ -42,8 +43,9 @@ const SPIN = [
 
 describe("MoleculeView strings (i18n)", () => {
   it("renders the per-value style labels, reset control, and empty state in English", async () => {
-    render(<MoleculeView filename="empty.smi" text={"   \n# comment\n"} />);
-    expect(await screen.findByText(/No chemical structures found/)).toBeInTheDocument();
+    render(<><MoleculeView filename="empty.smi" text={"   \n# comment\n"} /><Toaster /></>);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/No chemical structures found/);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 
   it("renders the not-a-chemical-file message in English", () => {

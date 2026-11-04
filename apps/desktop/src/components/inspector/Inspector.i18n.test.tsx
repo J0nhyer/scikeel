@@ -9,6 +9,7 @@ import type {
   PdfInspector as PdfInspectorT,
 } from "@ai4s/shared";
 import { useUiStore } from "@/lib/store";
+import { Toaster } from "@/components/ui/Toaster";
 import { ArtifactInspector } from "./ArtifactInspector";
 import { NotebookInspector } from "./NotebookInspector";
 import { FilePreviewInspector } from "./FilePreviewInspector";
@@ -105,14 +106,15 @@ describe("FilePreviewInspector strings (i18n)", () => {
       filename: "train.csv",
       artifact: "script",
     };
-    render(<FilePreviewInspector data={data} onClose={() => {}} />);
+    render(<><FilePreviewInspector data={data} onClose={() => {}} /><Toaster /></>);
     expect(screen.getByText("script")).toBeInTheDocument();
     expect(screen.getByLabelText("History")).toBeInTheDocument();
     expect(screen.getByLabelText("Open externally")).toBeInTheDocument();
     expect(screen.getByLabelText("Close inspector")).toBeInTheDocument();
     // No Tauri sidecar in tests — the csv read comes back empty, so the file
-    // preview falls back to the "available in the desktop app" note.
-    expect(await screen.findByText("Preview is available in the desktop app.")).toBeInTheDocument();
+    // preview falls back to the "available in the desktop app" card.
+    expect(await screen.findByRole("alert")).toHaveTextContent("Preview is available in the desktop app.");
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
   });
 });
 

@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { Toaster } from "@/components/ui/Toaster";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SshSession } from "@/lib/tauri";
@@ -96,7 +97,7 @@ describe("SshSignInDialog", () => {
   });
 
   it("reports a failure with the server's last words and offers no submit", async () => {
-    render(<SshSignInDialog />);
+    render(<><SshSignInDialog /><Toaster /></>);
     open({
       host: "hpc-login",
       status: "failed",
@@ -105,7 +106,8 @@ describe("SshSignInDialog", () => {
       error: "Permission denied, please try again.",
     });
 
-    expect(await screen.findByText("Permission denied, please try again.")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Permission denied, please try again.");
+    expect(screen.getByRole("alert")).toHaveAttribute("data-error-card", "true");
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
     // Closing a failed sign-in must not re-run disconnect on a dead attempt.
     await userEvent.click(screen.getByRole("button", { name: "Close" }));
