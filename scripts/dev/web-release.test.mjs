@@ -487,7 +487,7 @@ test('an already active attested image can be reused only with identical complet
   await writeFile(join(root, 'scripts/dev/stage-sandbox-image.mjs'),
     `export * from ${JSON.stringify(new URL('./stage-sandbox-image.mjs', import.meta.url).href)};\n`);
   const runnerFiles = {};
-  for (const name of ['runner.mjs', 'file-rpc.mjs', 'cli-jobs.mjs', 'project-environment.py', 'science-environment.mjs']) {
+  for (const name of ['runner.mjs', 'file-rpc.mjs', 'cli-jobs.mjs', 'project-environment.py', 'science-environment.mjs', 'broker-config.mjs']) {
     await writeFile(join(root, 'runtime/sandbox', name), 'synthetic locked dependency bytes');
     runnerFiles['opt/scikeel/tools/' + name] = hash;
   }

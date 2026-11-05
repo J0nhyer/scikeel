@@ -18,7 +18,7 @@ def inspect(path):
                       "opt/scikeel/tools/codex-requirements.toml", "etc/codex/requirements.toml",
                       "opt/scikeel/tools/native-network.mjs", "opt/scikeel/tools/native-network.py",
                       "opt/scikeel/tools/apply_patch", "usr/local/bin/apply_patch",
-                      "opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py", "opt/scikeel/tools/science-environment.mjs", "opt/scikeel/tools/collaboration.mjs", "opt/scikeel/tools/tool-outcome.mjs"}
+                      "opt/scikeel/tools/runner.mjs", "opt/scikeel/tools/file-rpc.mjs", "opt/scikeel/tools/cli-jobs.mjs", "opt/scikeel/tools/project-environment.py", "opt/scikeel/tools/science-environment.mjs", "opt/scikeel/tools/collaboration.mjs", "opt/scikeel/tools/tool-outcome.mjs", "opt/scikeel/tools/broker-config.mjs"}
     known = set()
     total = 0
     with tarfile.open(path, mode="r|gz") as archive:

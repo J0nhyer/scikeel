@@ -86,7 +86,7 @@ async function installedImage(t, { codex = false } = {}) {
     rootfsSha256: sha, imageDigest: image.digest, python: "3.12.12", uv: "0.11.26",
     baselineLockSha256: sha, toolLockSha256: sha, uncompressedBytes: 1000000, fileCount: 100,
     provenance: { repository: "J0nhyer/scikeel", commit, workflow: "sandbox-image.yml" },
-    runnerFiles: Object.fromEntries(["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs"]
+    runnerFiles: Object.fromEntries(["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs", "broker-config.mjs"]
       .map(name => [`opt/scikeel/tools/${name}`, sha])),
     tools: Object.fromEntries(["osd", "opencode", "node", "uv", "python", "git", ...(codex ? ["codex"] : [])].map(name => [name, {
       version: name === "opencode" ? "1.18.32" : name === "uv" ? "0.11.26" : name === "python" ? "3.12.12" : name === "codex" ? "0.157.1" : "1.0.0",
