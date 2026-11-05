@@ -33,11 +33,12 @@ function subnet(value) {
   return value;
 }
 
-export function dockerEnv({ dataDir, platformUid, platformGid, frontSubnet = "172.30.0.0/24", frontPlatformIp = "172.30.0.10", imageDigest, httpPort = 8080 }) {
+export function dockerEnv({ dataDir, platformUid, platformGid, frontSubnet = "172.30.0.0/24", frontPlatformIp = "172.30.0.10", imageDigest, httpPort = 8080, catalogMigrate = "1" }) {
   const root = absolutePath(dataDir, "data directory");
   identifier(platformUid, "platform uid"); identifier(platformGid, "platform gid");
   subnet(frontSubnet); address(frontPlatformIp, "front platform IP");
   if (!Number.isSafeInteger(httpPort) || httpPort < 1 || httpPort > 65535) throw new Error("invalid local HTTP port");
+  if (!["0", "1"].includes(catalogMigrate)) throw new Error("invalid catalog migration mode");
   if (typeof imageDigest !== "string" || !DIGEST.test(imageDigest)) throw new Error("invalid worker image digest");
   const instances = `${DATA_ROOT}/workers/instances`;
   const native = `${DATA_ROOT}/cli-runtime/users`;
@@ -54,8 +55,8 @@ export function dockerEnv({ dataDir, platformUid, platformGid, frontSubnet = "17
     PLATFORM_GID: String(platformGid),
     PLATFORM_SECURE_COOKIES: "false",
     PLATFORM_MAX_RESIDENTS: "1",
-    PLATFORM_CATALOG_MIGRATE: "1",
-    PLATFORM_DISABLED_RUNTIMES: "codex",
+    PLATFORM_CATALOG_MIGRATE: catalogMigrate,
+    PLATFORM_SANDBOX_DISABLED_RUNTIMES: "codex",
     PLATFORM_SANDBOX_BACKEND: "docker",
     PLATFORM_SANDBOX_SOCKET: "/run/scikeel/sandbox.sock",
     PLATFORM_SANDBOX_IMAGE_DIGEST: imageDigest,
@@ -114,7 +115,10 @@ function envLine(value) {
 
 export async function bootstrap({ dataDir, imageDigest, output, adminUsername = "admin", adminPassword, frontSubnet, frontPlatformIp, platformUid, platformGid, httpPort = 8080 }) {
   const root = absolutePath(dataDir, "data directory");
-  const environment = dockerEnv({ dataDir: root, platformUid, platformGid, frontSubnet, frontPlatformIp, imageDigest, httpPort });
+  let catalogMigrate = "1";
+  try { await lstat(join(root, "workspace-catalog", "metadata.sqlite")); catalogMigrate = "0"; }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const environment = dockerEnv({ dataDir: root, platformUid, platformGid, frontSubnet, frontPlatformIp, imageDigest, httpPort, catalogMigrate });
   for (const relative of ["platform", "workers/instances", "cli-runtime/users", ".sandbox-state"]) {
     const path = join(root, relative);
     await mkdir(path, { recursive: true, mode: 0o700 });

@@ -17,17 +17,21 @@ async function ignore(operation) {
 }
 
 export class DockerSandbox {
+  #saving = Promise.resolve();
+
   constructor({ registry, docker, config, fetchImpl = fetch, now = Date.now, logger = () => {}, tokenFactory = () => randomBytes(32).toString("hex") }) {
     Object.assign(this, { registry, docker, config, fetchImpl, now, logger, tokenFactory });
   }
 
-  register({ instanceId, userId }) {
+  async register({ instanceId, userId }) {
     const account = this.registry.register(instanceId, userId);
+    await this.#save();
     return { instanceId: account.instanceId, generation: account.generation };
   }
 
   async start({ instanceId, generation, imageDigest }) {
     const account = this.registry.beginStart(instanceId, generation, imageDigest);
+    await this.#save();
     const config = this.config;
     const networkName = `scikeel-user-${instanceId}`;
     const containerName = `scikeel-worker-${instanceId}-g${generation}`;
@@ -117,6 +121,7 @@ export class DockerSandbox {
       await ignore(() => this.docker.networkDisconnect(networkName, config.backendContainer));
 
       this.registry.markReady(instanceId, generation);
+      await this.#save();
       this.logger({ type: "sandbox.ready", instanceId, generation });
       return {
         instanceId,
@@ -126,13 +131,30 @@ export class DockerSandbox {
         internalToken: token,
       };
     } catch (error) {
-      await ignore(() => this.docker.networkDisconnect(networkName, config.backendContainer));
-      await ignore(() => this.docker.containerStop(containerName, config.stopTimeoutSeconds));
-      await ignore(() => this.docker.containerRemove(containerName));
-      await ignore(() => this.docker.networkDisconnect(networkName, config.platformContainer));
-      await ignore(() => this.docker.networkRemove(networkName));
-      await ignore(() => rm(controlDir, { recursive: true, force: true }));
-      try { this.registry.markStopped(instanceId, generation, true); } catch { /* preserve the start error */ }
+      const failures = [];
+      const attempt = async (operation) => {
+        try { await operation(); }
+        catch (cause) { if (cause?.statusCode !== 404) failures.push(cause); }
+      };
+      await attempt(() => this.#detachIfPresent(networkName, config.backendContainer));
+      await attempt(() => this.#stopContainer(containerName));
+      await attempt(() => this.#removeContainer(containerName));
+      await attempt(() => this.#detachIfPresent(networkName, config.platformContainer));
+      await attempt(() => this.#removeNetwork(networkName));
+      await attempt(() => rm(controlDir, { recursive: true, force: true }));
+      if (failures.length) {
+        const failure = lifecycleError("cleanup_unverified");
+        failure.cause = failures[0];
+        this.logger({ type: "sandbox.start_failed", instanceId, generation, error: failure.code });
+        throw failure;
+      }
+      try { this.registry.markStopped(instanceId, generation, true); await this.#save(); }
+      catch (cause) {
+        const failure = lifecycleError("cleanup_unverified");
+        failure.cause = cause;
+        this.logger({ type: "sandbox.start_failed", instanceId, generation, error: failure.code });
+        throw failure;
+      }
       this.logger({ type: "sandbox.start_failed", instanceId, generation, error: error.message });
       throw error;
     }
@@ -147,10 +169,12 @@ export class DockerSandbox {
     const controlDir = join(this.config.stateDir, "control", `${instanceId}-g${generation}`);
     await this.#stopContainer(containerName);
     await this.#removeContainer(containerName);
+    await this.#detachIfPresent(networkName, this.config.backendContainer);
     await this.#detachIfPresent(networkName, this.config.platformContainer);
     await this.#removeNetwork(networkName);
     await rm(controlDir, { recursive: true, force: true });
     this.registry.markStopped(instanceId, generation, false);
+    await this.#save();
     this.logger({ type: "sandbox.stopped", instanceId, generation, reason });
     return { instanceId, generation, stopped: true };
   }
@@ -226,7 +250,7 @@ export class DockerSandbox {
       wrapped.cause = error;
       throw wrapped;
     }
-    await this.#saveRegistry();
+    await this.#save();
     return { retired: interrupted.length };
   }
 
@@ -245,6 +269,7 @@ export class DockerSandbox {
     const controlDir = join(this.config.stateDir, "control", `${account.instanceId}-g${account.generation}`);
     await this.#stopContainer(containerName);
     await this.#removeContainer(containerName);
+    await this.#detachIfPresent(networkName, this.config.backendContainer);
     await this.#detachIfPresent(networkName, this.config.platformContainer);
     await this.#removeNetwork(networkName);
     await rm(controlDir, { recursive: true, force: true });
@@ -264,9 +289,17 @@ export class DockerSandbox {
     for (const network of networks) {
       const id = network?.Id ?? network?.Name;
       if (typeof id !== "string" || !id) throw new Error("invalid network inventory");
+      await this.#detachIfPresent(id, this.config.backendContainer);
+      await this.#detachIfPresent(id, this.config.platformContainer);
       await this.#removeNetwork(id);
       this.logger({ type: "sandbox.orphan_removed", kind: "network", id });
     }
+  }
+
+  #save() {
+    const next = this.#saving.then(() => this.#saveRegistry());
+    this.#saving = next.catch(() => {});
+    return next;
   }
 
   async #saveRegistry() {

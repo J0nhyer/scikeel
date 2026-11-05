@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Registry } from "../src/registry.mjs";
@@ -26,6 +26,9 @@ test("stop is idempotent and stale generations are rejected", async () => {
     const r = new Registry(); r.register("user-a", "usr_a"); r.beginStart("user-a", 1, image); r.markReady("user-a", 1);
     sandbox.registry = r;
     assert.deepEqual(await sandbox.stop({ instanceId: "user-a", generation: 1, reason: "idle" }), { instanceId: "user-a", generation: 1, stopped: true });
+    const saved = JSON.parse(await readFile(join(root, "state", "registry.json"), "utf8"));
+    assert.equal(saved.accounts["user-a"].status, "stopped");
+    assert.equal(saved.accounts["user-a"].generation, 2);
     assert.equal(calls.filter(([name]) => name === "stop").length, 1);
     await sandbox.stop({ instanceId: "user-a", generation: 1, reason: "idle" });
     assert.equal(calls.filter(([name]) => name === "stop").length, 1);
@@ -74,4 +77,26 @@ test("inventory omits internal registry fields", () => {
   const registry = new Registry(); registry.register("user-a", "usr_a");
   const sandbox = new DockerSandbox({ registry, docker: {}, config: configFor("/tmp") });
   assert.deepEqual(sandbox.inventory(), { accounts: [{ instanceId: "user-a", userId: "usr_a", generation: 1, status: "registered" }] });
+});
+
+test("stop detaches both containers before removing the network", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandbox-stop-attached-"));
+  const disconnected = new Set();
+  const docker = {
+    containerStop: async () => {}, containerRemove: async () => {},
+    networkInspect: async () => ({ Containers: {
+      platform: { Name: "scikeel-platform" }, backend: { Name: "scikeel-sandbox-backend" },
+    } }),
+    networkDisconnect: async (_network, container) => { disconnected.add(container); },
+    networkRemove: async () => {
+      if (!disconnected.has("scikeel-platform") || !disconnected.has("scikeel-sandbox-backend")) {
+        throw Object.assign(new Error("network has active endpoints"), { statusCode: 403 });
+      }
+    },
+  };
+  const sandbox = new DockerSandbox({ registry: readyRegistry(), docker, config: configFor(root) });
+  try {
+    await sandbox.stop({ instanceId: "user-a", generation: 1, reason: "idle" });
+    assert.equal(disconnected.has("scikeel-sandbox-backend"), true);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

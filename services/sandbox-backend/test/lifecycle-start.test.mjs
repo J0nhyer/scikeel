@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Registry } from "../src/registry.mjs";
@@ -33,8 +33,10 @@ test("start creates an isolated worker with exact limits and binds", async () =>
   const sandbox = new DockerSandbox({ registry: new Registry(), docker: fakeDocker(calls), config, fetchImpl: async () => ({ ok: true, body: { cancel: async () => {} } }), tokenFactory: () => token });
   try {
     assert.deepEqual(await sandbox.register({ instanceId: "user-a", userId: "usr_a" }), { instanceId: "user-a", generation: 1 });
+    assert.equal(JSON.parse(await readFile(join(root, "state", "registry.json"), "utf8")).accounts["user-a"].status, "registered");
     const result = await sandbox.start({ instanceId: "user-a", generation: 1, imageDigest: image });
     assert.deepEqual(result, { instanceId: "user-a", generation: 1, endpoint: "http://scikeel-worker-user-a:4790", runnerEndpoint: "http://scikeel-worker-user-a:4791", internalToken: token });
+    assert.equal(JSON.parse(await readFile(join(root, "state", "registry.json"), "utf8")).accounts["user-a"].status, "ready");
     const create = calls.find(([name]) => name === "containerCreate")[1];
     assert.equal(create.platform, "linux/amd64");
     assert.equal(create.body.Image, image);
@@ -68,6 +70,21 @@ test("container writes use container roots while binds use host roots", async ()
     assert.equal((await stat(join(root, "container", "state", "control", "user-a-g1", "tenant.json"))).isFile(), true);
     assert.equal((await stat(join(root, "container", "native", "usr_a"))).mode & 0o777, 0o700);
     await assert.rejects(stat(join(root, "host", "state", "control", "user-a-g1", "tenant.json")));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a failed cleanup is reported unverified without marking the account stopped", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandbox-start-unverified-"));
+  const calls = [];
+  const docker = fakeDocker(calls);
+  docker.containerRemove = async () => { throw Object.assign(new Error("remove failed"), { statusCode: 500 }); };
+  const sandbox = new DockerSandbox({ registry: new Registry(), docker, config: configFor(root),
+    fetchImpl: async () => ({ ok: false, body: { cancel: async () => {} } }), tokenFactory: () => token });
+  try {
+    await sandbox.register({ instanceId: "user-a", userId: "usr_a" });
+    await assert.rejects(() => sandbox.start({ instanceId: "user-a", generation: 1, imageDigest: image }), { code: "cleanup_unverified" });
+    assert.equal(sandbox.registry.account("user-a").status, "starting");
+    assert.equal(sandbox.registry.account("user-a").generation, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

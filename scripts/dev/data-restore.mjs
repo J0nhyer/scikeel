@@ -18,6 +18,18 @@ function relativeDataPath(dataDir) {
   return parent === "/" ? basename(dataDir) : `${basename(parent)}/${basename(dataDir)}`;
 }
 
+function absolute(value, name) {
+  if (typeof value !== "string" || !isAbsolute(value) || value === "/" || value.endsWith("/")) throw new Error(`invalid ${name}`);
+  return value;
+}
+
+export function restorePaths({ archive, dataDir }) {
+  const source = absolute(archive, "restore archive");
+  const root = absolute(dataDir, "data directory");
+  if (source === root || source.startsWith(`${root}/`)) throw new Error("restore archive must be outside the data directory");
+  return { archive: source, dataDir: root };
+}
+
 function verifyArchive(archive, dataDir) {
   const listing = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" });
   if (listing.status !== 0) throw new Error((listing.stderr || "archive is unreadable").trim());
@@ -31,10 +43,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     const values = options(process.argv.slice(2));
     if (!values.archive || !values["data-dir"]) throw new Error("missing --archive or --data-dir");
-    const archive = resolve(values.archive);
-    const dataDir = resolve(values["data-dir"]);
-    if (!isAbsolute(archive) || !isAbsolute(dataDir) || dataDir === "/" || dataDir.endsWith("/"))
-      throw new Error("invalid restore path");
+    const { archive, dataDir } = restorePaths({ archive: values.archive, dataDir: values["data-dir"] });
     verifyArchive(archive, dataDir);
     let entries = [];
     try { entries = await readdir(dataDir); }
