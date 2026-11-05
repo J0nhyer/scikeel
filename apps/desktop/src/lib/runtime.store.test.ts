@@ -3126,7 +3126,7 @@ describe("subagent permission asks and long sync turns", () => {
       "pending",
       "success", // a finished step keeps its own outcome
     ]);
-    expect(blocks[blocks.length - 1]).toMatchObject({ kind: "status-line", text: "Interrupted" });
+    expect(blocks.some((block) => block.kind === "status-line" && block.text === "Interrupted")).toBe(false);
   });
 
   it("sends one system notification for each new permission request", async () => {
@@ -3233,7 +3233,7 @@ describe("stale running locks and interrupt", () => {
     ] },
   ];
 
-  it.each(["openSession", "loadHistory"] as const)("%s restores confirmed aborted history with one diagnostic", async (method) => {
+  it.each(["openSession", "loadHistory"] as const)("%s restores confirmed aborted history without a diagnostic", async (method) => {
     mocks.messages = [
       { role: "user", parts: [{ type: "text", text: "wait" }] },
       { role: "assistant", completed: 2, error: "Aborted", parts: [
@@ -3244,10 +3244,10 @@ describe("stale running locks and interrupt", () => {
     await useRuntimeStore.getState()[method]("ses_aborted");
     const state = useRuntimeStore.getState();
     expect(state.runningSessions["ses_aborted"]).toBeUndefined();
-    expect(state.threads["ses_aborted"].blocks.filter(b => b.kind === "status-line" && b.text.includes("did not finish"))).toHaveLength(1);
+    expect(state.threads["ses_aborted"].blocks.some(b => b.kind === "status-line" && b.text.includes("did not finish"))).toBe(false);
   });
 
-  it("reconciliation recovers a persisted cancellation after a missed idle", async () => {
+  it("reconciliation recovers a persisted cancellation after a missed idle without a diagnostic", async () => {
     await useRuntimeStore.getState().sendPrompt("wait");
     mocks.messages = [
       { role: "user", parts: [{ type: "text", text: "wait" }] },
@@ -3256,7 +3256,7 @@ describe("stale running locks and interrupt", () => {
     mocks.sessionRunning = false;
     await useRuntimeStore.getState().reconcileRunning();
     expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBeUndefined();
-    expect(useRuntimeStore.getState().threads["ses_new"].blocks.filter(b => b.kind === "status-line" && b.text.includes("did not finish"))).toHaveLength(1);
+    expect(useRuntimeStore.getState().threads["ses_new"].blocks.some(b => b.kind === "status-line" && b.text.includes("did not finish"))).toBe(false);
   });
 
   it.each([true, null])("does not claim persisted cancellation is the current interrupted turn with status %s", async (status) => {
@@ -3278,7 +3278,7 @@ describe("stale running locks and interrupt", () => {
     expect(state.threads["ses_stale"].blocks.find((b) => b.kind === "tool-call"))
       .toMatchObject({ status: "failed" });
     expect(state.threads["ses_stale"].blocks.some((b) =>
-      b.kind === "status-line" && b.text.includes("did not finish"))).toBe(true);
+      b.kind === "status-line" && b.text.includes("did not finish"))).toBe(false);
     expect(mocks.abortSession).not.toHaveBeenCalled();
   });
 
@@ -3342,19 +3342,25 @@ describe("stale running locks and interrupt", () => {
     expect(useRuntimeStore.getState().runningSessions["ses_new"]).toBeUndefined();
   });
 
-  it("interrupt aborts the turn, unlocks the composer and marks the thread", async () => {
+  it("interrupt aborts the turn and unlocks the composer without an interruption line", async () => {
     await useRuntimeStore.getState().sendPrompt("hi");
     await useRuntimeStore.getState().interrupt();
     expect(mocks.abortSession).toHaveBeenCalledWith("ses_new");
     const s = useRuntimeStore.getState();
     expect(s.runningSessions["ses_new"]).toBeUndefined();
     expect(s.sending).toBe(false);
-    expect(s.threads["ses_new"].blocks.slice(-1)[0]).toEqual({
-      kind: "status-line",
-      text: "Interrupted",
-      tone: "error",
-      presentation: { kind: "interruption", eventId: "stop" },
-    });
+    expect(s.abortingSessions["ses_new"]).toBeUndefined();
+    expect(s.threads["ses_new"].blocks.some((block) =>
+      block.kind === "status-line" && block.text === "Interrupted")).toBe(false);
+  });
+
+  it("ignores a Stop while an abort is already in flight", async () => {
+    await useRuntimeStore.getState().sendPrompt("hi");
+    mocks.abortSession.mockClear();
+    useRuntimeStore.setState({ abortingSessions: { ses_new: true } });
+    expect(await useRuntimeStore.getState().interrupt()).toBe(false);
+    expect(mocks.abortSession).not.toHaveBeenCalled();
+    useRuntimeStore.setState({ abortingSessions: {} });
   });
 
   it("the abort's own error/idle events add no noise after an interrupt", async () => {
@@ -3366,11 +3372,11 @@ describe("stale running locks and interrupt", () => {
     expect(useRuntimeStore.getState().threads["ses_new"].blocks).toEqual(before);
   });
 
-  it("swallows the abort's trailing error and BOTH idle events (only 'Interrupted' shows)", async () => {
+  it("swallows the abort's trailing error and BOTH idle events without a line", async () => {
     // Regression: the abort's SSE burst (an "aborted" error + two session.idle
     // events) arrives DURING the abort POST's await. If the guard is set after
     // the await, or consumed by the first idle, the thread grows a stray
-    // "Aborted" and one or two "done" lines before "Interrupted".
+    // "Aborted" or "done" line. User Stop itself adds no line either.
     await useRuntimeStore.getState().sendPrompt("hi");
     mocks.abortTrailing = [
       { type: "error", sessionId: "ses_new", message: "The message was aborted" },
@@ -3381,7 +3387,7 @@ describe("stale running locks and interrupt", () => {
     const statusLines = useRuntimeStore
       .getState()
       .threads["ses_new"].blocks.filter((b) => b.kind === "status-line");
-    expect(statusLines).toEqual([{ kind: "status-line", text: "Interrupted", tone: "error", presentation: { kind: "interruption", eventId: "stop" } }]);
+    expect(statusLines).toEqual([]);
   });
 
   it("a new turn after an interrupt folds its events normally again", async () => {

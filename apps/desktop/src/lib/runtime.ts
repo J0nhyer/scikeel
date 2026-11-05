@@ -561,6 +561,9 @@ interface RuntimeState {
   /** Sessions with an active turn (send accepted, session.idle not yet seen).
    *  Drives the composer lock and the "Working…" indicator. */
   runningSessions: Record<string, true>;
+  /** Sessions whose Stop request is still in flight. Repeated clicks are
+   *  ignored so one visible turn produces at most one abort request. */
+  abortingSessions: Record<string, true>;
   /** Durable turn interruptions loaded with each session's history. */
   interruptions: Record<string, TurnInterruption[]>;
   /** Current model-step number per running session (from `step.updated`), so the
@@ -1383,10 +1386,10 @@ const handledPresentations = new Set<string>();
  *  idempotent: each repeat raced another ssh master for the same ControlPath. */
 const relayedSignIns = new Set<string>();
 
-/** Sessions the user just interrupted: the thread already shows "Interrupted",
- *  so the abort's own trailing events (an "aborted" error and one or more
- *  session.idle events) must not add a second line. Armed before the abort POST
- *  and held across every trailing event; the next turn clears it (`turn → sid`). */
+/** Sessions the user just interrupted: the abort's own trailing events (an
+ *  "aborted" error and one or more session.idle events) must be swallowed.
+ *  User Stop itself is intentionally silent; armed before the abort POST and
+ *  held across every trailing event; the next turn clears it (`turn → sid`). */
 const interruptedSessions = new Set<string>();
 
 /** Sessions whose CURRENT turn ended in a provider/runtime error (an `error`
@@ -4317,6 +4320,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         panes: {},
         sessionAgents: {},
         runningSessions: {},
+        abortingSessions: {},
         interruptions: {},
         sendingSessions: {},
         sending: false,
@@ -4507,6 +4511,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   sending: false,
   sendingSessions: {},
   runningSessions: {},
+  abortingSessions: {},
   interruptions: {},
   stepCounts: {},
   shellTurns: {},
@@ -5097,7 +5102,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       workspace: null, webWorkspace: null, webReadOnly: true, gatewayRuntime: null, projects: [], projectsLoading: false, projectsError: null,
       projectCounts: null, projectCountsUnassigned: null, projectCountsState: "unavailable", sessionListSource: "native",
       sessions: [], locallyCreatedSessions: {}, threads: {}, panes: {}, questions: [], permissions: [], interactions: {},
-      runningSessions: {}, interruptions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},
+      runningSessions: {}, abortingSessions: {}, interruptions: {}, draftWorkspaces: {}, sessionModels: {}, sessionAgents: {}, sessionParents: {}, backgroundReviews: {},
       gatewayRuntimes: [], providers: [], defaultModel: null, error: null });
   },
 
@@ -5891,6 +5896,17 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     // answers true, so there is nothing to protect against here.
     const runtime = sid ? clientForSession(get,sid) : null;
     if (!sid || !runtime) return false;
+    // One Stop is one abort. The abort can take seconds while the runtime
+    // settles; keep the composer's Stop control disabled for that window so
+    // repeated clicks cannot queue overlapping aborts or duplicate feedback.
+    if (get().abortingSessions[sid]) return false;
+    set((s) => ({ abortingSessions: { ...s.abortingSessions, [sid]: true } }));
+    const clearAborting = () => set((s) => {
+      if (!s.abortingSessions[sid]) return {};
+      const abortingSessions = { ...s.abortingSessions };
+      delete abortingSessions[sid];
+      return { abortingSessions };
+    });
     const ownerAccount=get().gatewayUser?.id;
     const ownerGeneration=get().gatewayContext?.generation;
     const root=rootSessionOf(get().sessionParents,sid);
@@ -5900,8 +5916,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     // Arm the guard BEFORE the abort POST: the server answers an abort with its
     // own SSE burst (an "aborted" error and one or more session.idle events)
     // that streams back WHILE this POST is still awaited. If we armed it after
-    // the await, those events would race in ahead and litter the thread with
-    // "Aborted" / "done" lines before "Interrupted".
+    // the await, those events would race in ahead and litter the thread.
+    // User Stop itself adds no status line; the guard only suppresses noise.
     remember(interruptedSessions, sid);
     // Descendant subagent sessions stream their own events; the abort takes the
     // whole subtree down server-side, so their trailing events need the same
@@ -5930,6 +5946,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
       interruptedSessions.delete(sid);
       for (const id of descendants) interruptedSessions.delete(id);
       if(current() && get().currentId===sid)set({ error: err instanceof Error ? err.message : String(err) });
+      clearAborting();
       return false;
     }
     set((s) => {
@@ -5972,17 +5989,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
         threads: {
           ...s.threads,
           ...settled,
-          [sid]: {
-            ...(settled[sid] ?? cur),
-            loaded: true,
-            blocks: [
-              ...(settled[sid] ?? cur).blocks,
-              { kind: "status-line", text: "Interrupted", tone: "error", presentation: { kind: "interruption", eventId: "stop" } },
-            ],
-          },
+          // User Stop is intentionally silent: the disabled Stop control and
+          // the unlocked composer are the feedback. Do not append an
+          // "Interrupted" status line here or in history.
+          [sid]: { ...(settled[sid] ?? cur), loaded: true },
         },
       };
     });
+    clearAborting();
     return true;
   },
 
@@ -6664,12 +6678,10 @@ export function historyToThread(
     }
     return undefined;
   };
-  // A step frozen mid-run must not spin forever in history — render it quietly and,
-  // when the server confirms the session is no longer running, say once at the end
-  // that the turn was interrupted. While the turn is still live `serverIdle` is
-  // false: the final part state is only written when the turn ends, so a running
-  // step read from history is not evidence of a dead turn.
-  let interrupted = false;
+  // User Stop is intentionally silent: the composer/Stop state is the feedback,
+  // and a reload must not synthesize an "Interrupted" line from a frozen part
+  // or an aborted error. Durable service interruptions still use their own
+  // retryable status line below.
   // A user-typed "!" command is recorded as a synthetic user text plus a bash
   // tool part on the next assistant message. Render it like the live path:
   // the "! cmd" echo and the output inline — never the synthetic marker text.
@@ -6704,7 +6716,6 @@ export function historyToThread(
     if (m.role === "user") {
       shellTurn = m.parts.some((p) => p.type === "text" && p.synthetic);
       if (shellTurn) {
-        interrupted = false;
         continue;
       }
       const text = m.parts
@@ -6719,7 +6730,6 @@ export function historyToThread(
       // and the pill (not a wall of policy text) is where a goal reports itself.
       if (text === AUTO_REVIEW_PROMPT || isGoalInjectedPrompt(text)) continue;
       // The closing diagnostic belongs to the latest user turn.
-      interrupted = false;
       const command = asTypedCommand(text);
       // Tag with the message id so the row can be edited (revert + resend).
       // A "/command" echo keeps the id too — editing re-runs the command.
@@ -6766,7 +6776,6 @@ export function historyToThread(
           const normalized = normalizeToolResult(p.tool ?? "", p.state, p.callID);
           const status = normalized.status;
           const frozen = status === "running" || status === "pending";
-          if (frozen && serverIdle) interrupted = true;
           const command = str(p.state?.input?.command);
           const filePath = str(p.state?.input?.filePath) || str(p.state?.input?.path);
           const content = str(p.state?.input?.content);
@@ -6831,13 +6840,8 @@ export function historyToThread(
           if (presentation?.display === "inline") pushBlock(presentation.artifact, p.callID ? [`presentation:${p.callID}`] : []);
         }
       }
-      // Explicit Stop can finalize tool parts while persisting MessageAbortedError.
-      // That cancellation is evidence even when no frozen part remains.
-      if (serverIdle && m.error && /abort/i.test(m.error)) interrupted = true;
-      // A turn that ended in a provider/runtime error must say so on reload —
-      // its live session.error is gone (SSE reconnect, app restart) and an
-      // empty reply followed by "done" explains nothing. User-interrupted
-      // turns are not errors; the trailing "Interrupted" line covers those.
+      // User-interrupted turns are intentionally silent (no trailing line);
+      // a provider/runtime error still needs its durable explanation on reload.
       if (m.error && !/abort/i.test(m.error)) {
         // Same explanation the live line got: a restart is exactly when the user
         // no longer has the context to work out what to do about it.
@@ -6851,14 +6855,6 @@ export function historyToThread(
       }
       shellTurn = false;
     }
-  }
-  if (interrupted) {
-    blocks.push({
-      kind: "status-line",
-      text: "Interrupted — this turn did not finish. Send a new message to continue.",
-      tone: "error",
-      presentation: { kind: "interruption", eventId: `history:${messages[messages.length - 1]?.id ?? "interrupted"}` },
-    });
   }
   return { blocks, index };
 }

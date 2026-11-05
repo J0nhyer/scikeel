@@ -67,6 +67,15 @@ describe("Composer", () => {
     expect(screen.queryByLabelText("Stop")).toBeNull();
     expect(screen.getByLabelText("Send")).toBeInTheDocument();
   });
+
+  it("disables Stop while a stop request is in flight", () => {
+    const onStop = vi.fn();
+    render(<Composer onSend={vi.fn()} disabled working stopping onStop={onStop} />);
+    const stop = screen.getByLabelText("Stop");
+    expect(stop).toBeDisabled();
+    fireEvent.click(stop);
+    expect(onStop).not.toHaveBeenCalled();
+  });
 });
 
 const COMMANDS = [

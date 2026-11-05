@@ -155,6 +155,7 @@ export function Composer({
   disabled,
   working,
   sending,
+  stopping,
   onStop,
   placeholder,
   approvalMode,
@@ -190,6 +191,9 @@ export function Composer({
    *  Stop waits for `working`: aborting before the prompt is admitted would
    *  race the POST that starts the turn. */
   sending?: boolean;
+  /** A Stop request is in flight; keep the control visibly busy and disabled
+   *  so repeated clicks cannot queue further aborts. */
+  stopping?: boolean;
   onStop?: () => void;
   /** Defaults to `t("composer.placeholder.default")` ("Ask anything"). */
   placeholder?: string;
@@ -1235,12 +1239,14 @@ export function Composer({
             // Same spot, same shape, one action: the send button becomes Stop
             // while the agent works — always live, even though the input is not.
             <button
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input bg-accent text-accent-fg hover:opacity-90"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input bg-accent text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               aria-label={t("composer.stop.aria")}
+              aria-busy={stopping}
               title={t("composer.stop.title")}
+              disabled={stopping}
               onClick={onStop}
             >
-              <Square size={11} fill="currentColor" />
+              {stopping ? <Loader2 size={13} className="animate-spin" /> : <Square size={11} fill="currentColor" />}
             </button>
           ) : working || sending || webSubmitting ? (
             // A send is in flight but no turn is running yet (or a first Web

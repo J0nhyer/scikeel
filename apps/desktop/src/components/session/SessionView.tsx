@@ -232,6 +232,7 @@ export function SessionView({
   const rejectQuestion = useRuntimeStore((s) => s.rejectQuestion);
   const replyPermission = useRuntimeStore((s) => s.replyPermission);
   const interrupt = useRuntimeStore((s) => s.interrupt);
+  const aborting = useRuntimeStore((s) => (sid ? !!s.abortingSessions[sid] : false));
   const cancelAutoReview = useRuntimeStore((s) => s.cancelAutoReview);
   const stallAction = useRuntimeStore((s) => s.stallAction);
   const loadHistory = useRuntimeStore((s) => s.loadHistory);
@@ -301,6 +302,7 @@ export function SessionView({
     return accepted !== null;
   };
   const onStopResearch = () => {
+    if (sid && useRuntimeStore.getState().abortingSessions[sid]) return;
     if (collaboration.state.execution > 0) void collaboration.pause();
     if (isGatewayWeb && eid) void researchRequest(eid, { action: "stop" }).catch(() => {});
     void interrupt(sid ?? undefined);
@@ -1259,6 +1261,7 @@ export function SessionView({
               disabled={!connected || (working && !collaboration.state.pending) || webReadOnly}
               working={running && !collaboration.state.pending}
               sending={sending && !collaboration.state.pending}
+              stopping={aborting}
               onStop={onStopResearch}
               placeholder={
                 webReadOnly

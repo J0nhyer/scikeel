@@ -657,14 +657,14 @@ describe("historyToThread", () => {
     expect(historyToThread(msgs).blocks).toEqual([{ kind: "user", text: "hi" }]);
   });
 
-  it("reports one confirmed cancellation even when the runtime finalized its tool", () => {
+  it("keeps a confirmed cancellation quiet even when the runtime finalized its tool", () => {
     const msgs: HistoryMessage[] = [
       { role: "user", parts: [{ type: "text", text: "wait" }] },
       { role: "assistant", completed: 2, error: "Aborted", parts: [
         { type: "tool", tool: "bash", state: { status: "completed", input: { command: "sleep 90" } } },
       ] },
     ];
-    expect(historyToThread(msgs, undefined, true).blocks.filter(b => b.kind === "status-line" && b.tone === "error")).toHaveLength(1);
+    expect(historyToThread(msgs, undefined, true).blocks.filter(b => b.kind === "status-line" && b.tone === "error")).toHaveLength(0);
     expect(historyToThread(msgs).blocks.some(b => b.kind === "status-line")).toBe(false);
   });
 
@@ -703,7 +703,7 @@ describe("historyToThread", () => {
     expect(t.blocks[0]).not.toHaveProperty("outputSummary");
   });
 
-  it("never spins in history: frozen running/pending steps become quiet + one interrupted line", () => {
+  it("never spins in history: frozen running/pending steps become quiet without an interrupted line", () => {
     const msgs: HistoryMessage[] = [
       { role: "user", parts: [{ type: "text", text: "explore" }] },
       {
@@ -721,8 +721,7 @@ describe("historyToThread", () => {
     // reads as failed, not as still-pending.
     expect(t.blocks[1]).toMatchObject({ kind: "tool-call", status: "failed" });
     expect(t.blocks[2]).toMatchObject({ kind: "tool-call", status: "failed" });
-    const last = t.blocks[t.blocks.length - 1];
-    expect(last).toMatchObject({ kind: "status-line", tone: "error" });
+    expect(t.blocks.some((block) => block.kind === "status-line")).toBe(false);
   });
 
   it("leaves a live turn unflagged: frozen steps with serverIdle=false add no red line", () => {
