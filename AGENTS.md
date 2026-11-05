@@ -39,6 +39,8 @@ local workspace + SQLite + JSONL provenance.
   Linux AT-SPI script, Windows UI Automation script), ported from Orca (MIT).
   Staged into the bundle by `scripts/dev/build-computer-use.mjs`.
 - `docs/` — product and technical specs.
+- `docs/PRODUCTION_ENVIRONMENT.md` — live production topology and deployment
+  state for agents (Chinese).
 - `examples/bci-trends/` — the built-in demo project.
 - `scripts/` — release and dev scripts.
 
@@ -65,13 +67,28 @@ local workspace + SQLite + JSONL provenance.
 
 ## Working conventions
 
-- Default working language for discussion is Chinese; **all project files and
-  code are in English** (this is a pure-English project).
+- Default working language for discussion is Chinese. Source code, identifiers,
+  comments, commit messages, and product-facing strings remain in English.
+  Documentation, operator handoff notes, and environment inventories may be
+  written in Chinese when requested (for example,
+  `docs/PRODUCTION_ENVIRONMENT.md`).
 - Current product work targets the public multi-user gateway Web client only.
   Unless the user explicitly requests desktop work, scope product design,
   implementation, deployment, and acceptance testing to Web. Shared code must
   not intentionally break desktop builds, but desktop UX and feature parity are
   not current deliverables.
+- Runtime availability (user-confirmed on 2026-10-02): Claude is currently
+  unusable. Exclude Claude from live acceptance tests and release gates; do not
+  probe alternative Claude models or endpoints unless the user explicitly
+  confirms that Claude service has been restored. Preserve adapter compatibility
+  and deterministic tests, but do not treat Claude unavailability as a feature
+  defect or deployment blocker.
+- Internal testing operations (user-confirmed on 2026-10-05): the user is the
+  sole current user. Agents may stop or restart project-related services and
+  processes as needed for deployment, testing, or troubleshooting without
+  asking again, including active project workloads. Preserve workspace files,
+  conversations, credentials, and recoverable state; this authorization does
+  not permit deleting user data or stopping unrelated system services.
 - One progress file: `PROGRESS.md`. Append one line per real milestone,
   `YYYY-MM-DD HH:MM` + a one-sentence conclusion, newest on top. Results and
   blockers only.
@@ -89,3 +106,33 @@ local workspace + SQLite + JSONL provenance.
   equivalent verified cgroup limit. A failed build must leave the deployed Web
   bundle untouched. If the bounded build runs out of memory, optimize its
   footprint; never remove the host guard or raise it into the system reserve.
+
+## Efficient investigation and verification
+
+- Locate relevant symbols with `rg` and read bounded sections of code. Expand
+  reads only when the evidence requires more context. Reuse findings for unchanged
+  files; narrow requests when output is truncated.
+- Save complete check logs in an ignored project directory. Inspect exit status,
+  result counts, and relevant failures; read detailed output when investigating
+  a failure. Keep required tests, code review, and real-service acceptance intact.
+- Before expensive tests, builds, or releases, verify required arguments,
+  environment settings, dependencies, and package-script argument forwarding.
+  Confirm the intended test selection. Use short temporary paths inside an
+  ignored project directory, including for subprocesses; never use `/tmp`.
+- Reuse successful verification while its inputs remain unchanged. Repeat checks
+  when code or configuration changes, failures, unresolved concerns, or release
+  requirements justify another run.
+
+## Gateway Web releases
+
+- Review the changed code before publication with the code-review skill.
+- Run unit tests for affected frontend and platform behavior. Build Web output
+  only when frontend or platform changes require it.
+- Publish with `pnpm web:release run --source CHECKOUT`; confirm the platform
+  health endpoint responds after restart.
+- Routine Web publication does not require lint or type checks, Rust builds,
+  Docker or gVisor checks, image provenance or Git commit matching, browser
+  workflows, or live model calls.
+- Keep the existing bounded task limits and service recovery on failed
+  publication. Do not rebuild native agents or scientific images for Web-only
+  changes.

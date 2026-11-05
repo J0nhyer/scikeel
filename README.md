@@ -90,9 +90,10 @@ in front of the platform and enable secure session cookies. Keep worker ports pr
 
 ## Development and collaboration
 
-Project code and documentation are written in English. Follow
-[AGENTS.md](./AGENTS.md), keep changes small, and include phone-width behavior in
-Web UI reviews.
+Project code, identifiers, comments, commit messages, and product-facing strings
+are written in English. Operational handoff documentation may be written in
+Chinese when requested (see [AGENTS.md](./AGENTS.md)). Follow the project rules,
+keep changes small, and include phone-width behavior in Web UI reviews.
 
 1. Describe the problem and acceptance criteria in an Issue.
 2. Create a feature branch. Invited collaborators can push branches; other
