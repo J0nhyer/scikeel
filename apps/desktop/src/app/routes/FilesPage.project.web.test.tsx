@@ -2,7 +2,6 @@ import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/reac
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {MemoryRouter} from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
-import i18n from '@/i18n';
 import {useRuntimeStore} from '@/lib/runtime';
 import {FilesPage,SessionFilesPane} from './FilesPage';
 const entries=vi.fn(async()=>({directory:'/ws/project-a',capabilities:{create:true},entries:[{name:'result.txt',path:'result.txt',isDir:false,size:5,modified:1,revision:'a'.repeat(64),capabilities:['rename','move','delete']}]}));
@@ -32,14 +31,13 @@ it('uses an explicit account scope for the public global explorer',async()=>{
  await screen.findByText('result.txt');
  expect(entries).toHaveBeenCalledWith({kind:'account'},'');
 });
-it('names the managed workspace root in the session file pane',async()=>{
- await i18n.changeLanguage('zh-Hans');
+it('shows the real managed workspace basename in the session file pane',async()=>{
  useRuntimeStore.setState({gatewayWorkspace:'/ws/project-a'});
  try{
   render(<SessionFilesPane sessionId='ses_a' sessionDir='/ws/project-a' onClose={()=>{}}/>);
   await screen.findByText('result.txt');
-  expect(screen.getByText('工作区')).toBeInTheDocument();
- }finally{await i18n.changeLanguage('en');useRuntimeStore.setState({gatewayWorkspace:null});}
+  expect(screen.getByText('project-a')).toBeInTheDocument();
+ }finally{useRuntimeStore.setState({gatewayWorkspace:null});}
 });
 it('resolves session file actions by session ID instead of a stale focused directory',async()=>{
  entries.mockClear();render(<SessionFilesPane sessionId='ses_a' sessionDir='/ws/stale' onClose={()=>{}}/>);

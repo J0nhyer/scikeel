@@ -216,7 +216,6 @@ export function SessionView({
   const permissions = useRuntimeStore((s) => s.permissions);
   const sessionParents = useRuntimeStore((s) => s.sessionParents);
   const workspace = useRuntimeStore((s) => s.workspace);
-  const gatewayWorkspace = useRuntimeStore((s) => s.gatewayWorkspace);
   const pane = useRuntimeStore((s) => s.panes[key]);
   const commands = useRuntimeStore((s) => s.commands);
   const connect = useRuntimeStore((s) => s.connect);
@@ -794,7 +793,7 @@ export function SessionView({
               {showToolLabels && (
                 <span className="max-w-[160px] truncate">
                   {sessionDir
-                    ? baseName(sessionDir, isGatewayWeb ? gatewayWorkspace : null)
+                    ? baseName(sessionDir)
                     : t("live.filesToggle.default")}
                 </span>
               )}

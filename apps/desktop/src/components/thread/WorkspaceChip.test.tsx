@@ -69,13 +69,12 @@ describe("WorkspaceChip", () => {
     expect(screen.queryByText("base")).not.toBeInTheDocument();
   });
 
-  it("names the managed workspace root in the active language, not its folder basename", async () => {
+  it("shows the real managed workspace root basename", async () => {
     await i18n.changeLanguage("zh-Hans");
     try {
-      expect(baseName("/accounts/alice/workspace", "/accounts/alice/workspace")).toBe("工作区");
-      expect(baseName("/accounts/alice/workspace/projects/study", "/accounts/alice/workspace")).toBe(
-        "study",
-      );
+      expect(baseName("/accounts/alice/workspace")).toBe("workspace");
+      expect(baseName("/accounts/alice/workspace/projects/study")).toBe("study");
+      expect(baseName(null)).toBe("工作区");
     } finally {
       await i18n.changeLanguage("en");
     }

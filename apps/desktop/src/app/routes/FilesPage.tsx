@@ -404,7 +404,6 @@ function SessionFilesExplorer({
 }) {
   const { t } = useTranslation(["pages", "common", "nav"]);
   const workspace = useRuntimeStore((s) => s.workspace);
-  const gatewayWorkspace = useRuntimeStore((s) => s.gatewayWorkspace);
   const scope=useMemo<WorkspaceScope>(()=>({kind:"session",sessionId}),[sessionId]);
   const [managedDirectory,setManagedDirectory]=useState<string|null>(null),[canCreate,setCanCreate]=useState(false);
   const directory=managedDirectory??sessionDir;
@@ -489,7 +488,7 @@ function SessionFilesExplorer({
           className="min-w-0 truncate text-[13px] font-medium text-text"
           title={directory ?? workspace ?? undefined}
         >
-          {baseName(directory ?? workspace, isGatewayWeb ? gatewayWorkspace : null)}
+          {baseName(directory ?? workspace)}
         </span>
         <span className="shrink-0 truncate text-[11px] text-muted">
           {t("files.pane.subtitle")}
@@ -508,7 +507,7 @@ function SessionFilesExplorer({
       {crumbs.length > 0 && (
         <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-3 py-2 text-[12px]">
           <button className="rounded px-1 text-link hover:bg-surface-2" onClick={() => setDir("")}>
-            {baseName(directory ?? workspace, isGatewayWeb ? gatewayWorkspace : null)}
+            {baseName(directory ?? workspace)}
           </button>
           {crumbs.map((part, i) => {
             const to = crumbs.slice(0, i + 1).join("/");
