@@ -189,14 +189,15 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     authorize: (context, route, token) => packageGrants.authorize(context, route, token) });
   const client = new SandboxClient({ socketPath: configuration.socketPath, workerPrefix: configuration.workerPrefix ?? null });
   const admission = new HostAdmission({ mode: dockerMode ? "docker" : "legacy" });
-  const scheduler = new SandboxScheduler({maxSandboxes:maxResidents,maxJobs:1,pressure:hostPressure,admission:input=>admission.acquire({...input,shared:true})});
+  const pressure = () => hostPressure({ mode: dockerMode ? "docker" : "legacy" });
+  const scheduler = new SandboxScheduler({maxSandboxes:maxResidents,maxJobs:1,pressure,admission:input=>admission.acquire({...input,shared:true})});
   const manager = new ManagedWorkerManager({ rootDir: `${dataDir}/workers`, imageDigest: configuration.imageDigest, client, tenantPolicy,
     logger,
     instancesDir: configuration.roots?.instances,
     maxResidents,
     admitWorker: async () => {
-      const pressure=await hostPressure();
-      if(pressure.availableBytes<600*1024**2)throw capacityError('memory_reserve');
+      const observed=await pressure();
+      if(observed.availableBytes<600*1024**2)throw capacityError('memory_reserve');
       return admission.acquire({shared:true});
     },
     configureWorker: async ({ context, access }) => {
