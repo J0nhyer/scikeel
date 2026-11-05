@@ -70,6 +70,9 @@ test("inspect marks a missing container unavailable", async () => {
     const value = await sandbox.inspect({ instanceId: "user-a" });
     assert.equal(value.status, "unavailable");
     assert.equal(registry.account("user-a").generation, 2);
+    const saved = JSON.parse(await readFile(join(root, "state", "registry.json"), "utf8"));
+    assert.equal(saved.accounts["user-a"].status, "unavailable");
+    assert.equal(saved.accounts["user-a"].generation, 2);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

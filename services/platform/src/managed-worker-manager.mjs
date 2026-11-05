@@ -161,7 +161,7 @@ export class ManagedWorkerManager {
     try { inspected = await this.client.inspect({ instanceId: record.id }, { signal, timeoutMs: Math.max(1, Math.min(3000, deadline - this.now())) }); }
     catch { return this.#report(record, "unknown"); }
     if (inspected.instanceId !== record.id || !Number.isSafeInteger(inspected.generation)) return this.#report(record, "unknown");
-    if (["registered", "stopped"].includes(inspected.status)) return this.#report(record, "stopped");
+    if (["registered", "stopped", "unavailable"].includes(inspected.status)) return this.#report(record, "stopped");
     if (inspected.generation !== record.generation) return this.#report(record, "unknown");
     if (inspected.status === "starting") return this.#report(record, "starting");
     if (inspected.status !== "ready") return this.#report(record, "unknown");

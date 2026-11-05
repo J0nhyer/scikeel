@@ -88,6 +88,21 @@ test("a failed cleanup is reported unverified without marking the account stoppe
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("cleanup treats an already-stopped container as stopped", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandbox-start-304-"));
+  const calls = [];
+  const docker = fakeDocker(calls);
+  docker.containerStop = async () => { throw Object.assign(new Error("not running"), { statusCode: 304 }); };
+  const sandbox = new DockerSandbox({ registry: new Registry(), docker, config: configFor(root),
+    fetchImpl: async () => ({ ok: false, body: { cancel: async () => {} } }), tokenFactory: () => token });
+  try {
+    await sandbox.register({ instanceId: "user-a", userId: "usr_a" });
+    await assert.rejects(() => sandbox.start({ instanceId: "user-a", generation: 1, imageDigest: image }), /worker_health_timeout/);
+    assert.equal(sandbox.registry.account("user-a").status, "unavailable");
+    assert.equal(sandbox.registry.account("user-a").generation, 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("a failed health probe cleans up and increments the generation", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandbox-start-fail-"));
   const calls = [];

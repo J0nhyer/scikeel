@@ -194,6 +194,7 @@ export class DockerSandbox {
     }
     if (!running) {
       this.registry.markStopped(instanceId, account.generation, true);
+      await this.#save();
       return this.#inspectView(this.registry.account(instanceId));
     }
     let token;
@@ -203,6 +204,7 @@ export class DockerSandbox {
     } catch { /* treated as an unavailable worker */ }
     if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
       this.registry.markStopped(instanceId, account.generation, true);
+      await this.#save();
       return this.#inspectView(this.registry.account(instanceId));
     }
     let network;
@@ -211,6 +213,7 @@ export class DockerSandbox {
     } catch (error) {
       if (error?.statusCode !== 404) throw error;
       this.registry.markStopped(instanceId, account.generation, true);
+      await this.#save();
       return this.#inspectView(this.registry.account(instanceId));
     }
     const attached = Object.values(network?.Containers ?? {}).some((entry) => entry?.Name === this.config.platformContainer);
@@ -318,7 +321,7 @@ export class DockerSandbox {
 
   async #stopContainer(containerName) {
     try { await this.docker.containerStop(containerName, this.config.stopTimeoutSeconds); }
-    catch (error) { if (error?.statusCode !== 404) throw error; }
+    catch (error) { if (![304, 404].includes(error?.statusCode)) throw error; }
   }
 
   async #removeContainer(containerName) {

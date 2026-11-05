@@ -256,6 +256,17 @@ test("a managed running account is left to the revocation path", async t => {
   assert.deepEqual(outcome.blocked, []);
   assert.equal(f.manager.getWorker("user-a").status, "running");
 });
+test("a launcher-unavailable account is reported stopped and can be replaced", async (t) => {
+  const f = fixture(); t.after(() => f.manager.close());
+  await f.manager.ensureWorker({ instanceId: "user-a", userId: "a" });
+  f.records.get("user-a").status = "unavailable";
+  const report = await f.manager.workspaceStatus({ instanceId: "user-a", userId: "a" });
+  assert.equal(report.state, "stopped");
+  const worker = await f.manager.ensureWorker({ instanceId: "user-a", userId: "a" });
+  assert.equal(worker.generation, 2);
+  assert.equal(worker.status, "running");
+});
+
 test("a cleanup the host already completed is verified and does not latch the account", async t => {
   const { manager, calls, records } = fixture(); t.after(() => manager.close());
   manager.fetchImpl = async () => ({ ok: false });
