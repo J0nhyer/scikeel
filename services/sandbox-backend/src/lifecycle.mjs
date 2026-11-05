@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chown, mkdir, rm, writeFile } from "node:fs/promises";
+import { chown, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tenantLayout } from "../../../packages/shared/src/tenant-layout.mjs";
 
@@ -126,6 +126,110 @@ export class DockerSandbox {
       this.logger({ type: "sandbox.start_failed", instanceId, generation, error: error.message });
       throw error;
     }
+  }
+
+  async stop({ instanceId, generation, reason }) {
+    const account = this.registry.account(instanceId);
+    if (account.lastStoppedGeneration === generation) return { instanceId, generation, stopped: true };
+    if (account.generation !== generation || !["starting", "ready"].includes(account.status)) {
+      throw lifecycleError("stale_generation");
+    }
+    const networkName = `scikeel-user-${instanceId}`;
+    const containerName = `scikeel-worker-${instanceId}-g${generation}`;
+    const controlDir = join(this.config.stateHostDir, "control", `${instanceId}-g${generation}`);
+    await this.#stopContainer(containerName);
+    await this.#removeContainer(containerName);
+    await this.#detachIfPresent(networkName, this.config.platformContainer);
+    await this.#removeNetwork(networkName);
+    await rm(controlDir, { recursive: true, force: true });
+    this.registry.markStopped(instanceId, generation, false);
+    this.logger({ type: "sandbox.stopped", instanceId, generation, reason });
+    return { instanceId, generation, stopped: true };
+  }
+
+  async inspect({ instanceId }) {
+    let account = this.registry.account(instanceId);
+    if (account.status !== "ready") return this.#inspectView(account);
+    const networkName = `scikeel-user-${instanceId}`;
+    const workerHost = `scikeel-worker-${instanceId}`;
+    const containerName = `scikeel-worker-${instanceId}-g${account.generation}`;
+    let running = false;
+    try {
+      const container = await this.docker.containerInspect(containerName);
+      running = container?.State?.Running === true;
+    } catch (error) {
+      if (error?.statusCode !== 404) throw error;
+    }
+    if (!running) {
+      this.registry.markStopped(instanceId, account.generation, true);
+      return this.#inspectView(this.registry.account(instanceId));
+    }
+    let token;
+    try {
+      token = JSON.parse(await readFile(join(this.config.stateHostDir, "control",
+        `${instanceId}-g${account.generation}`, "runner-auth.json"), "utf8")).token;
+    } catch { /* treated as an unavailable worker */ }
+    if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
+      this.registry.markStopped(instanceId, account.generation, true);
+      return this.#inspectView(this.registry.account(instanceId));
+    }
+    let network;
+    try {
+      network = await this.docker.networkInspect(networkName);
+    } catch (error) {
+      if (error?.statusCode !== 404) throw error;
+      this.registry.markStopped(instanceId, account.generation, true);
+      return this.#inspectView(this.registry.account(instanceId));
+    }
+    const attached = Object.values(network?.Containers ?? {}).some((entry) => entry?.Name === this.config.platformContainer);
+    if (!attached) await this.#connect(networkName, this.config.platformContainer, ["broker"]);
+    account = this.registry.account(instanceId);
+    return {
+      instanceId,
+      generation: account.generation,
+      status: "ready",
+      imageDigest: account.imageDigest,
+      endpoint: `http://${workerHost}:4790`,
+      runnerEndpoint: `http://${workerHost}:4791`,
+      internalToken: token,
+    };
+  }
+
+  inventory() {
+    return {
+      accounts: this.registry.accounts.map(({ instanceId, userId, generation, status }) =>
+        ({ instanceId, userId, generation, status })),
+    };
+  }
+
+  #inspectView(account) {
+    const value = { instanceId: account.instanceId, generation: account.generation, status: account.status };
+    if (account.imageDigest) value.imageDigest = account.imageDigest;
+    return value;
+  }
+
+  async #stopContainer(containerName) {
+    try { await this.docker.containerStop(containerName, this.config.stopTimeoutSeconds); }
+    catch (error) { if (error?.statusCode !== 404) throw error; }
+  }
+
+  async #removeContainer(containerName) {
+    try { await this.docker.containerRemove(containerName); }
+    catch (error) { if (error?.statusCode !== 404) throw error; }
+  }
+
+  async #detachIfPresent(networkName, container) {
+    let network;
+    try { network = await this.docker.networkInspect(networkName); }
+    catch (error) { if (error?.statusCode === 404) return; throw error; }
+    if (Object.values(network?.Containers ?? {}).some((entry) => entry?.Name === container)) {
+      await this.docker.networkDisconnect(networkName, container);
+    }
+  }
+
+  async #removeNetwork(networkName) {
+    try { await this.docker.networkRemove(networkName); }
+    catch (error) { if (error?.statusCode !== 404) throw error; }
   }
 
   async #createNetwork(networkName, instanceId) {
