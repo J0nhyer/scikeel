@@ -95,7 +95,8 @@ export async function runtimeTask(mode, args = []) {
   if (!paths.length || paths.some(path => !path.startsWith('packages/') || path.split('/').includes('..'))) throw new Error('Invalid runtime patch paths');
   run('git', ['add', '-N', '--', ...paths], source);
   const actual = spawnSync('git', ['-c', 'core.abbrev=7', '-c', 'color.ui=false', 'diff', 'HEAD', '--binary', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', '--unified=3'], { cwd: source });
-  if (actual.status !== 0 || sha256(actual.stdout) !== networkLock.combinedPatchSha256) throw new Error('Staged runtime contains unlocked source changes');
+  if (actual.status !== 0 || sha256(actual.stdout) !== networkLock.combinedPatchSha256)
+    throw new Error(`Staged runtime contains unlocked source changes: ${sha256(actual.stdout)}`);
   if (mode === 'prepare') {
     run(bun, ['install', '--frozen-lockfile', '--ignore-scripts', '--network-concurrency', '4'], source);
     return;

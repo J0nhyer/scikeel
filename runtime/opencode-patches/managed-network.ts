@@ -2,8 +2,8 @@ import { Cause, Effect } from "effect"
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/unstable/http"
 import { makeToolOutcome, readToolError } from "./scikeel-outcome.mjs"
 
-const BROKER = "http://172.31.240.1:4792"
-const PROXY = "http://172.31.240.1:4794"
+const BROKER = process.env.SCIKEEL_BROKER_URL?.replace(/\/v1$/, "") ?? "http://172.31.240.1:4792"
+const PROXY = process.env.SCIKEEL_BROKER_PROXY_URL ?? "http://172.31.240.1:4794"
 type Call = { sessionID: string; callID?: string; toolCallID?: string; abort?: AbortSignal }
 const transientCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE"])
 export const isManaged = () => process.env.SCIKEEL_MANAGED_NETWORK_TOKEN !== undefined
