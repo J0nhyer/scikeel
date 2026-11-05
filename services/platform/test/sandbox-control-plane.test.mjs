@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateBrokerConfiguration, brokerProfile, runnerProtocol, waitManagedRuntime, validateCapacity } from "../src/sandbox-control-plane.mjs";
+import { validateBrokerConfiguration, brokerProfile, runnerProtocol, waitManagedRuntime, validateCapacity, resolveWorkerAliases } from "../src/sandbox-control-plane.mjs";
 
 const context = { userId: "a", instanceId: "user-a", generation: 1 };
 test("workspace capacity is one by default and supports only the one/two experiment", () => {
@@ -143,4 +143,15 @@ test("a runner from an older image keeps the previous contract and is not asked 
   assert.deepEqual(await runnerProtocol(access,{fetchImpl:async()=>({status:503,body:{cancel:async()=>{}}})}),{runtime:true});
   // An unreachable runner must not claim the protocol.
   assert.deepEqual(await runnerProtocol(access,{fetchImpl:async()=>{throw new Error("unreachable");}}),{runtime:false});
+});
+test("broker profile uses the docker broker host", () => {
+  const profile = brokerProfile({ config, broker: { issue: () => "a".repeat(64) }, context, model: "fixture/approved", brokerHost: "broker" });
+  assert.equal(profile.provider.fixture.options.baseURL, "http://broker:4792/v1");
+});
+test("the package mirror accepts the compose service name", () => {
+  const value = validateBrokerConfiguration({ ...config, mirrorUrl: "http://package-mirror:3141" });
+  assert.equal(value.mirrorUrl, "http://package-mirror:3141");
+});
+test("worker aliases include the resolved address", async () => {
+  assert.deepEqual(await resolveWorkerAliases("scikeel-worker-a", async () => [{ address: "172.31.5.9", family: 4 }]), ["scikeel-worker-a", "172.31.5.9"]);
 });

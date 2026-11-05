@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { lookup } from "node:dns/promises";
 import { SandboxNativeJobs } from "./sandbox-native-jobs.mjs";
 import { ManagedCodexProfile } from "./cli-profile.mjs";
 import { lstat, readFile } from "node:fs/promises";
@@ -18,6 +19,21 @@ import { PackageGrants } from "./package-grants.mjs";
 import {capacityError} from './workspace-capacity.mjs';
 
 const routeSet = new Set(["/v1/responses", "/v1/chat/completions", "/v1/messages"]);
+const brokerHostPattern = /^[A-Za-z0-9.-]{1,253}$/;
+export async function resolveWorkerAliases(hostname, lookupImpl = lookup) {
+  if (typeof hostname !== "string" || !brokerHostPattern.test(hostname)) throw new Error("invalid worker hostname");
+  let resolved;
+  try { resolved = await lookupImpl(hostname, { all: true, verbatim: true }); }
+  catch { throw new Error("worker identity unavailable"); }
+  if (!Array.isArray(resolved) || resolved.length === 0) throw new Error("worker identity unavailable");
+  const aliases = [hostname];
+  for (const entry of resolved) {
+    const address = typeof entry === "string" ? entry : entry?.address;
+    if (typeof address !== "string" || !address) throw new Error("worker identity unavailable");
+    if (!aliases.includes(address)) aliases.push(address);
+  }
+  return aliases;
+}
 export async function waitManagedRuntime(access, {directory,runtime='opencode',fetchImpl=fetch,timeoutMs=60000,delayMs=250}={}) {
   if(!['opencode','codex','claude'].includes(runtime))throw new Error('invalid managed runtime');
   const deadline=Date.now()+timeoutMs;
@@ -45,7 +61,8 @@ export async function runnerProtocol(access,{fetchImpl=fetch,timeoutMs=3000}={})
 }
 export function validateBrokerConfiguration(config) {
   if (!config || config.schema !== 1 || Object.keys(config).some((key) => !["schema", "providers", "defaultProvider", "defaultModel", "mirrorUrl", "searchProvider"].includes(key)) ||
-      config.mirrorUrl !== "http://127.0.0.1:3141" || !config.providers || Array.isArray(config.providers)) throw new Error("invalid managed broker configuration");
+      !["http://127.0.0.1:3141", "http://package-mirror:3141"].includes(config.mirrorUrl) ||
+      !config.providers || Array.isArray(config.providers)) throw new Error("invalid managed broker configuration");
   if (config.searchProvider !== undefined && config.searchProvider !== 'parallel') throw new Error('invalid managed search provider');
   for (const [name, provider] of Object.entries(config.providers)) {
     let url;
@@ -71,8 +88,9 @@ export function validateBrokerConfiguration(config) {
   if (!config.providers[config.defaultProvider]?.enabledModels.includes(config.defaultModel)) throw new Error("invalid managed default model");
   return config;
 }
-export function brokerProfile({ config, broker, context, model, profileRevision, assistantPolicy, now = Date.now() }) {
+export function brokerProfile({ config, broker, context, model, profileRevision, assistantPolicy, brokerHost = "172.31.240.1", now = Date.now() }) {
   validateBrokerConfiguration(config);
+  if (!brokerHostPattern.test(brokerHost)) throw new Error("invalid managed broker host");
   const name = config.defaultProvider; const provider = config.providers[name];
   const scope = assistantPolicy === undefined ? {} : assistantPolicy?.activeRuntime === "opencode" &&
     assistantPolicy.recoveryRequired === false && Number.isSafeInteger(assistantPolicy.revision) && assistantPolicy.revision > 0
@@ -82,7 +100,7 @@ export function brokerProfile({ config, broker, context, model, profileRevision,
   const selected = provider.enabledModels.some(id => `${name}/${id}` === model) ? model : `${name}/${config.defaultModel}`;
   return { ...(config.searchProvider ? { searchProvider: config.searchProvider } : {}), model: selected, enabled_providers: [name], provider: {
     [name]: { npm: provider.authMode === "x-api-key" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible", name,
-      options: { baseURL: "http://172.31.240.1:4792/v1", apiKey: token },
+      options: { baseURL: `http://${brokerHost}:4792/v1`, apiKey: token },
       whitelist: [...provider.enabledModels],
       models: Object.fromEntries(provider.enabledModels.map((model) => [model, { name: model,
         ...(provider.modelVariants?.[model] ? { reasoning: true,
@@ -97,7 +115,8 @@ export async function readBrokerConfiguration() {
   try { return validateBrokerConfiguration(JSON.parse(await readFile(path, "utf8"))); }
   catch { throw new Error("managed broker configuration unavailable"); }
 }
-export function managedNativeProfileResolver({ configuration, serviceProfile, broker }) {
+export function managedNativeProfileResolver({ configuration, serviceProfile, broker, brokerHost = "172.31.240.1" }) {
+  if (!brokerHostPattern.test(brokerHost)) throw new Error("invalid managed broker host");
   let revision = null, registered = false, pending = Promise.resolve();
   const unavailable = runtime => ({ runtime, status: "unavailable", enabledByProfile: false,
     models: [], defaultModel: null, catalogRevision: null });
@@ -134,7 +153,7 @@ export function managedNativeProfileResolver({ configuration, serviceProfile, br
         const token=broker.issue({...context,runtime:'codex',policyRevision:captured.turnIdentity.policyRevision,
           turnIdentity:captured.turnIdentity,provider:'scikeel-codex',profileRevision:profile.identityRevision,
           models:[selected.id],routes:['/v1/responses'],expiresAt:Date.now()+900000});
-        const configuration=Object.freeze({model:selected.id,modelToken:token,modelUrl:'http://172.31.240.1:4792/v1',
+        const configuration=Object.freeze({model:selected.id,modelToken:token,modelUrl:`http://${brokerHost}:4792/v1`,
           ...(captured.variant!=null?{effort:selected.variants[captured.variant].reasoningEffort}:{})});
         return Object.freeze({identityRevision:profile.identityRevision,configuration,
           renew:()=>broker.renew(token,context),revoke:()=>broker.revokeAndDrain(token)});
@@ -150,6 +169,9 @@ export function validateCapacity({ maxResidents = 1 } = {}) {
 export async function createSandboxControlPlane({ configuration, dataDir, config, logger = () => {}, capacity = {} }) {
   const { maxResidents } = validateCapacity(capacity);
   config = validateBrokerConfiguration(await resolveOpenCodeFreeCatalog(validateBrokerConfiguration(config ?? await readBrokerConfiguration())));
+  const brokerHost = configuration.brokerHost ?? "172.31.240.1";
+  const dockerMode = configuration.backend === "docker";
+  const brokerListenHost = dockerMode ? "0.0.0.0" : "172.31.240.1";
   let environments; let plane;
   const accounts = new Map(); const tenantPolicy = new TenantPolicy();
   const identify = (input) => {
@@ -165,8 +187,8 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
   const packageGrants = new PackageGrants();
   const packages = new PackageBroker({ mirrorUrl: config.mirrorUrl, identify,
     authorize: (context, route, token) => packageGrants.authorize(context, route, token) });
-  const client = new SandboxClient({ socketPath: configuration.socketPath });
-  const admission = new HostAdmission();
+  const client = new SandboxClient({ socketPath: configuration.socketPath, workerPrefix: configuration.workerPrefix ?? null });
+  const admission = new HostAdmission({ mode: dockerMode ? "docker" : "legacy" });
   const scheduler = new SandboxScheduler({maxSandboxes:maxResidents,maxJobs:1,pressure:hostPressure,admission:input=>admission.acquire({...input,shared:true})});
   const manager = new ManagedWorkerManager({ rootDir: `${dataDir}/workers`, imageDigest: configuration.imageDigest, client, tenantPolicy,
     logger,
@@ -178,12 +200,14 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       return admission.acquire({shared:true});
     },
     configureWorker: async ({ context, access }) => {
-      const address = new URL(access.url).hostname;
-      if (accounts.has(address)) throw new Error("sandbox identity collision");
-      accounts.set(address, { context });
+      const hostname = new URL(access.url).hostname;
+      const aliases = await resolveWorkerAliases(hostname);
+      for (const alias of aliases) if (accounts.has(alias)) throw new Error("sandbox identity collision");
+      const identity = { context };
+      for (const alias of aliases) accounts.set(alias, identity);
       const savedModel = await readManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId });
       const runtime=plane?.assistantPolicy?.(context)?.activeRuntime??'opencode';
-      const profile = brokerProfile({ config, broker: model, context, model: savedModel,
+      const profile = brokerProfile({ config, broker: model, context, model: savedModel, brokerHost,
         assistantPolicy: plane?.assistantPolicy?.(context) ?? null });
       const token = profile.provider[config.defaultProvider].options.apiKey;
       // The tenant runner announces the runtime protocol it understands. An
@@ -216,7 +240,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
         try { model.renew(token, context); }
         catch { clearInterval(timer); void manager.stopWorker(context.instanceId, {expectedGeneration:context.generation}).catch(() => {}); }
       }, 300000);
-      timer.unref(); accounts.get(address).timer = timer;
+      timer.unref(); identity.timer = timer;
     },
     revokeWorker: async (context) => {
       scheduler.invalidate(context);
@@ -229,12 +253,13 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     },
   });
   try {
-    await model.listen(); await packages.listen({ host: "172.31.240.1", port: 4793 }); await egress.listen({ host: "172.31.240.1", port: 4794 });
+    await model.listen({ host: brokerListenHost }); await packages.listen({ host: brokerListenHost, port: 4793 });
+    await egress.listen({ host: brokerListenHost, port: 4794 });
   } catch { await Promise.allSettled([model.close(), packages.close(), egress.close()]); throw new Error("managed brokers unavailable"); }
-  const files = new WorkspaceRpc({ workerManager: manager, tenantPolicy });
+  const files = new WorkspaceRpc({ workerManager: manager, tenantPolicy, workerPrefix: configuration.workerPrefix ?? null });
   environments = new SandboxEnvironments({ files, tenantPolicy, packageGrants, imageDigest: configuration.imageDigest,
     acquireMaintenance: (context) => manager.acquireMaintenance(context) });
-  const nativeProfileResolver = managedNativeProfileResolver({ configuration, broker: model,
+  const nativeProfileResolver = managedNativeProfileResolver({ configuration, broker: model, brokerHost,
     serviceProfile: new ManagedCodexProfile({ home: join(dataDir, "codex-service") }) });
   const nativeJobs=new SandboxNativeJobs({files,workerManager:manager,tenantPolicy,
     issueNativeGrant:input=>nativeProfileResolver.issueNativeGrant(input)});
