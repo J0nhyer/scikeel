@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { chown, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chown, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tenantLayout } from "../../../packages/shared/src/tenant-layout.mjs";
+import { Registry } from "./registry.mjs";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -200,6 +201,73 @@ export class DockerSandbox {
       accounts: this.registry.accounts.map(({ instanceId, userId, generation, status }) =>
         ({ instanceId, userId, generation, status })),
     };
+  }
+
+  async init() {
+    this.registry = await this.#loadRegistry();
+    const interrupted = this.registry.accounts.filter((account) => ["starting", "ready"].includes(account.status));
+    try {
+      for (const account of interrupted) {
+        await this.#retire(account);
+        this.registry.markStopped(account.instanceId, account.generation, true);
+        this.logger({ type: "sandbox.retired", instanceId: account.instanceId, generation: account.generation });
+      }
+      await this.#removeOrphans();
+    } catch (error) {
+      if (error?.code === "cleanup_unverified") throw error;
+      const wrapped = lifecycleError("cleanup_unverified");
+      wrapped.cause = error;
+      throw wrapped;
+    }
+    await this.#saveRegistry();
+    return { retired: interrupted.length };
+  }
+
+  async #loadRegistry() {
+    try {
+      return Registry.fromJSON(JSON.parse(await readFile(join(this.config.stateDir, "registry.json"), "utf8")));
+    } catch (error) {
+      if (error?.code === "ENOENT") return this.registry;
+      throw error;
+    }
+  }
+
+  async #retire(account) {
+    const networkName = `scikeel-user-${account.instanceId}`;
+    const containerName = `scikeel-worker-${account.instanceId}-g${account.generation}`;
+    const controlDir = join(this.config.stateHostDir, "control", `${account.instanceId}-g${account.generation}`);
+    await this.#stopContainer(containerName);
+    await this.#removeContainer(containerName);
+    await this.#detachIfPresent(networkName, this.config.platformContainer);
+    await this.#removeNetwork(networkName);
+    await rm(controlDir, { recursive: true, force: true });
+  }
+
+  async #removeOrphans() {
+    const containers = await this.docker.listContainers({ all: true, label: "com.scikeel.managed" });
+    if (!Array.isArray(containers)) throw new Error("invalid container inventory");
+    for (const container of containers) {
+      if (typeof container?.Id !== "string" || !container.Id) throw new Error("invalid container inventory");
+      await this.#stopContainer(container.Id);
+      await this.#removeContainer(container.Id);
+      this.logger({ type: "sandbox.orphan_removed", kind: "container", id: container.Id });
+    }
+    const networks = await this.docker.listNetworks({ label: "com.scikeel.managed" });
+    if (!Array.isArray(networks)) throw new Error("invalid network inventory");
+    for (const network of networks) {
+      const id = network?.Id ?? network?.Name;
+      if (typeof id !== "string" || !id) throw new Error("invalid network inventory");
+      await this.#removeNetwork(id);
+      this.logger({ type: "sandbox.orphan_removed", kind: "network", id });
+    }
+  }
+
+  async #saveRegistry() {
+    await mkdir(this.config.stateDir, { recursive: true, mode: 0o700 });
+    const path = join(this.config.stateDir, "registry.json");
+    const temporary = `${path}.tmp`;
+    await writeFile(temporary, JSON.stringify(this.registry.toJSON()), { mode: 0o600 });
+    await rename(temporary, path);
   }
 
   #inspectView(account) {
