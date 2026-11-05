@@ -1,0 +1,14 @@
+.git
+node_modules
+**/node_modules
+.deploy
+.local
+.superpowers
+docs
+apps/desktop/dist
+runtime/binaries
+target
+secrets
+.env
+.env.*
+*.log
