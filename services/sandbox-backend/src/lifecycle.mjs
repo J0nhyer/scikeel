@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { chown, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, chown, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tenantLayout } from "../../../packages/shared/src/tenant-layout.mjs";
 import { Registry } from "./registry.mjs";
 
@@ -22,7 +22,8 @@ export class DockerSandbox {
   }
 
   register({ instanceId, userId }) {
-    return this.registry.register(instanceId, userId);
+    const account = this.registry.register(instanceId, userId);
+    return { instanceId: account.instanceId, generation: account.generation };
   }
 
   async start({ instanceId, generation, imageDigest }) {
@@ -31,15 +32,20 @@ export class DockerSandbox {
     const networkName = `scikeel-user-${instanceId}`;
     const containerName = `scikeel-worker-${instanceId}-g${generation}`;
     const workerHost = `scikeel-worker-${instanceId}`;
-    const controlDir = join(config.stateHostDir, "control", `${instanceId}-g${generation}`);
+    const controlDir = join(config.stateDir, "control", `${instanceId}-g${generation}`);
+    const hostControlDir = join(config.stateHostDir, "control", `${instanceId}-g${generation}`);
+    const stage = (name) => this.logger({ type: "sandbox.start_stage", instanceId, generation, stage: name });
     try {
+      stage("image");
       const image = await this.docker.imageInspect(imageDigest);
       if (image?.Id !== imageDigest || image?.Architecture !== "amd64" ||
           image?.Config?.Labels?.["com.scikeel.worker"] !== "true") throw lifecycleError("image_not_ready");
 
+      stage("network");
       await this.#createNetwork(networkName, instanceId);
       await this.#connect(networkName, config.platformContainer, ["broker"]);
 
+      stage("directories");
       const token = this.tokenFactory();
       if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) throw lifecycleError("invalid_token");
 
@@ -55,7 +61,7 @@ export class DockerSandbox {
         instanceId,
         userId: account.userId,
       });
-      await this.#createTenantDirectories(hostPaths, controlDir, token, instanceId, generation, containerPaths);
+      await this.#createTenantDirectories(containerPaths, controlDir, token, instanceId, generation);
 
       const binds = [
         `${hostPaths.workspaceDir}:${containerPaths.workspaceDir}:rw`,
@@ -64,8 +70,8 @@ export class DockerSandbox {
         `${hostPaths.home}:${containerPaths.home}:rw`,
         `${hostPaths.claudeConfig}:${containerPaths.claudeConfig}:rw`,
         `${hostPaths.codexHome}:${containerPaths.codexHome}:rw`,
-        `${join(controlDir, "tenant.json")}:/opt/scikeel/tenant.json:ro`,
-        `${join(controlDir, "runner-auth.json")}:/opt/scikeel/runner-auth.json:ro`,
+        `${join(hostControlDir, "tenant.json")}:/opt/scikeel/tenant.json:ro`,
+        `${join(hostControlDir, "runner-auth.json")}:/opt/scikeel/runner-auth.json:ro`,
       ];
       const body = {
         Image: imageDigest,
@@ -101,9 +107,12 @@ export class DockerSandbox {
         NetworkingConfig: { EndpointsConfig: { [networkName]: { Aliases: [workerHost] } } },
       };
 
+      stage("create");
       await this.docker.containerCreate({ name: containerName, platform: config.workerPlatform, body });
+      stage("start_container");
       await this.docker.containerStart(containerName);
       await this.#connect(networkName, config.backendContainer);
+      stage("health");
       if (!(await this.#waitForHealth(workerHost, token))) throw lifecycleError("worker_health_timeout");
       await ignore(() => this.docker.networkDisconnect(networkName, config.backendContainer));
 
@@ -132,12 +141,10 @@ export class DockerSandbox {
   async stop({ instanceId, generation, reason }) {
     const account = this.registry.account(instanceId);
     if (account.lastStoppedGeneration === generation) return { instanceId, generation, stopped: true };
-    if (account.generation !== generation || !["starting", "ready"].includes(account.status)) {
-      throw lifecycleError("stale_generation");
-    }
+    if (account.generation !== generation) throw lifecycleError("stale_generation");
     const networkName = `scikeel-user-${instanceId}`;
     const containerName = `scikeel-worker-${instanceId}-g${generation}`;
-    const controlDir = join(this.config.stateHostDir, "control", `${instanceId}-g${generation}`);
+    const controlDir = join(this.config.stateDir, "control", `${instanceId}-g${generation}`);
     await this.#stopContainer(containerName);
     await this.#removeContainer(containerName);
     await this.#detachIfPresent(networkName, this.config.platformContainer);
@@ -167,7 +174,7 @@ export class DockerSandbox {
     }
     let token;
     try {
-      token = JSON.parse(await readFile(join(this.config.stateHostDir, "control",
+      token = JSON.parse(await readFile(join(this.config.stateDir, "control",
         `${instanceId}-g${account.generation}`, "runner-auth.json"), "utf8")).token;
     } catch { /* treated as an unavailable worker */ }
     if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
@@ -235,7 +242,7 @@ export class DockerSandbox {
   async #retire(account) {
     const networkName = `scikeel-user-${account.instanceId}`;
     const containerName = `scikeel-worker-${account.instanceId}-g${account.generation}`;
-    const controlDir = join(this.config.stateHostDir, "control", `${account.instanceId}-g${account.generation}`);
+    const controlDir = join(this.config.stateDir, "control", `${account.instanceId}-g${account.generation}`);
     await this.#stopContainer(containerName);
     await this.#removeContainer(containerName);
     await this.#detachIfPresent(networkName, this.config.platformContainer);
@@ -326,31 +333,31 @@ export class DockerSandbox {
     }
   }
 
-  async #createTenantDirectories(hostPaths, controlDir, token, instanceId, generation, containerPaths) {
-    const directories = [hostPaths.workspaceDir, hostPaths.stateDir, hostPaths.scratchDir,
-      hostPaths.home, hostPaths.claudeConfig, hostPaths.codexHome];
-    for (const directory of directories) {
+  async #createTenantDirectories(paths, controlDir, token, instanceId, generation) {
+    const derive = async (directory) => {
       await mkdir(directory, { recursive: true, mode: 0o700 });
+      await chmod(directory, 0o700);
       if (process.getuid?.() === 0) await chown(directory, this.config.workerUid, this.config.workerGid);
-    }
-    await mkdir(controlDir, { recursive: true, mode: 0o700 });
-    if (process.getuid?.() === 0) await chown(controlDir, this.config.workerUid, this.config.workerGid);
+    };
+    for (const parent of [paths.instanceRoot, dirname(paths.home)]) await derive(parent);
+    const directories = [paths.workspaceDir, paths.stateDir, paths.scratchDir,
+      paths.home, paths.claudeConfig, paths.codexHome];
+    for (const directory of directories) await derive(directory);
+    // The runner accepts only root-owned control files; 0444 keeps them
+    // readable by the non-root worker and forbids group/world writes.
+    await mkdir(controlDir, { recursive: true, mode: 0o755 });
     const tenantPath = join(controlDir, "tenant.json");
     const authPath = join(controlDir, "runner-auth.json");
     await writeFile(tenantPath, JSON.stringify({
       schema: 1,
       instanceId,
       generation,
-      workspaceDir: containerPaths.workspaceDir,
-      stateDir: containerPaths.stateDir,
-      home: containerPaths.home,
-      scratchDir: containerPaths.scratchDir,
+      workspaceDir: paths.workspaceDir,
+      stateDir: paths.stateDir,
+      home: paths.home,
+      scratchDir: paths.scratchDir,
     }), { mode: 0o444 });
-    await writeFile(authPath, JSON.stringify({ schema: 1, token }), { mode: 0o400 });
-    if (process.getuid?.() === 0) {
-      await chown(tenantPath, this.config.workerUid, this.config.workerGid);
-      await chown(authPath, this.config.workerUid, this.config.workerGid);
-    }
+    await writeFile(authPath, JSON.stringify({ schema: 1, token }), { mode: 0o444 });
   }
 
   async #waitForHealth(workerHost, token) {
@@ -369,7 +376,7 @@ export class DockerSandbox {
 
   async #probe(url, token) {
     try {
-      const response = await this.fetchImpl(url, { headers: { authorization: `Bearer ${token}` } });
+      const response = await this.fetchImpl(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000) });
       const healthy = response?.ok === true;
       try { await response?.body?.cancel?.(); } catch { /* response body is optional */ }
       return healthy;

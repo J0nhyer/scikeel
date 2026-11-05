@@ -38,6 +38,31 @@ mod linux {
         CString::new(value).map_err(|_| denied())
     }
 
+    fn fallback_open(root: &File, name: &CStr, flags: i32, mode: u64) -> io::Result<File> {
+        let value = name.to_str().map_err(|_| denied())?;
+        let parts: Vec<&str> = value.split('/').collect();
+        if value != "." && (parts.is_empty() || parts.iter().any(|part| part.is_empty() || *part == "." || *part == "..")) {
+            return Err(denied());
+        }
+        let mut current = root.try_clone()?;
+        for (index, part) in parts.iter().enumerate() {
+            let part = CString::new(*part).map_err(|_| denied())?;
+            let last = index + 1 == parts.len();
+            let open_flags = if last {
+                flags | libc::O_CLOEXEC | libc::O_NOFOLLOW
+                    | if flags & libc::O_PATH != 0 { 0 } else { libc::O_NONBLOCK }
+            } else {
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY
+            };
+            let descriptor = unsafe { libc::openat(current.as_raw_fd(), part.as_ptr(), open_flags, mode) };
+            if descriptor < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            current = unsafe { File::from_raw_fd(descriptor) };
+        }
+        Ok(current)
+    }
+
     struct Root {
         descriptor: File,
         path: PathBuf,
@@ -207,7 +232,15 @@ mod linux {
                 )
             };
             if result < 0 {
-                return Err(io::Error::last_os_error());
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ENOSYS) {
+                    return Err(error);
+                }
+                // Rosetta/amd64 emulation reports ENOSYS for openat2. Walk the
+                // already-validated relative path with O_NOFOLLOW at every
+                // component; this is stricter than RESOLVE_BENEATH and keeps
+                // the worker confined to its owned root.
+                return fallback_open(root, name, flags, mode);
             }
             // The successful syscall transfers ownership of exactly one descriptor.
             Ok(unsafe { File::from_raw_fd(result as i32) })

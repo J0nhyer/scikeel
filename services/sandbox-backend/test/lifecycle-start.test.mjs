@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Registry } from "../src/registry.mjs";
@@ -32,7 +32,7 @@ test("start creates an isolated worker with exact limits and binds", async () =>
   const config = { dataDir: root, dataHostDir: root, instancesDir: join(root, "instances"), instancesHostDir: join(root, "instances"), nativeDir: join(root, "native"), nativeHostDir: join(root, "native"), stateDir: join(root, "state"), stateHostDir: join(root, "state"), platformContainer: "scikeel-platform", backendContainer: "scikeel-sandbox-backend", workerPlatform: "linux/amd64", runtime: "runc", workerUid: 1000, workerGid: 1000, memoryBytes: 1073741824, swapBytes: 1207959552, pidsMax: 256, nanoCpus: 1000000000, healthTimeoutMs: 1000, stopTimeoutSeconds: 5 };
   const sandbox = new DockerSandbox({ registry: new Registry(), docker: fakeDocker(calls), config, fetchImpl: async () => ({ ok: true, body: { cancel: async () => {} } }), tokenFactory: () => token });
   try {
-    await sandbox.register({ instanceId: "user-a", userId: "usr_a" });
+    assert.deepEqual(await sandbox.register({ instanceId: "user-a", userId: "usr_a" }), { instanceId: "user-a", generation: 1 });
     const result = await sandbox.start({ instanceId: "user-a", generation: 1, imageDigest: image });
     assert.deepEqual(result, { instanceId: "user-a", generation: 1, endpoint: "http://scikeel-worker-user-a:4790", runnerEndpoint: "http://scikeel-worker-user-a:4791", internalToken: token });
     const create = calls.find(([name]) => name === "containerCreate")[1];
@@ -48,6 +48,26 @@ test("start creates an isolated worker with exact limits and binds", async () =>
     assert.equal(create.body.HostConfig.Runtime, "runc");
     assert.equal(create.body.HostConfig.Binds.some((bind) => bind.includes("docker.sock")), false);
     assert.equal(create.body.HostConfig.Binds.filter((bind) => bind.includes("/workspace")).length, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("container writes use container roots while binds use host roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandbox-paths-"));
+  const config = { ...configFor(root), instancesDir: join(root, "container", "instances"), instancesHostDir: join(root, "host", "instances"),
+    nativeDir: join(root, "container", "native"), nativeHostDir: join(root, "host", "native"),
+    stateDir: join(root, "container", "state"), stateHostDir: join(root, "host", "state") };
+  const calls = [];
+  const sandbox = new DockerSandbox({ registry: new Registry(), docker: fakeDocker(calls), config,
+    fetchImpl: async () => ({ ok: true, body: { cancel: async () => {} } }), tokenFactory: () => token });
+  try {
+    await sandbox.register({ instanceId: "user-a", userId: "usr_a" });
+    await sandbox.start({ instanceId: "user-a", generation: 1, imageDigest: image });
+    const create = calls.find(([name]) => name === "containerCreate")[1];
+    assert.ok(create.body.HostConfig.Binds.includes(
+      `${join(root, "host", "instances", "user-a", "workspace")}:${join(root, "container", "instances", "user-a", "workspace")}:rw`));
+    assert.equal((await stat(join(root, "container", "state", "control", "user-a-g1", "tenant.json"))).isFile(), true);
+    assert.equal((await stat(join(root, "container", "native", "usr_a"))).mode & 0o777, 0o700);
+    await assert.rejects(stat(join(root, "host", "state", "control", "user-a-g1", "tenant.json")));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

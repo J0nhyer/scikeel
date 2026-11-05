@@ -322,6 +322,25 @@ fn parse_manifest(bytes:&[u8])->Result<Value,String> {
         return Err("overlapping managed roots".into());
     }Ok(value)
 }
+fn open_manifest_fallback()->Result<File,String> {
+    let parts:Vec<&str>=MANIFEST.trim_start_matches('/').split('/').filter(|part|!part.is_empty()).collect();
+    let mut current=File::open("/").map_err(|_|"managed root unavailable")?;
+    for (index,part) in parts.iter().enumerate() {
+        let name=std::ffi::CString::new(*part).map_err(|_|"managed manifest unavailable")?;
+        let descriptor=unsafe {libc::openat(current.as_raw_fd(),name.as_ptr(),libc::O_RDONLY|libc::O_CLOEXEC|libc::O_NOFOLLOW,0)};
+        if descriptor<0 {return Err("secure managed manifest unavailable".into());}
+        let next=unsafe {File::from_raw_fd(descriptor)};
+        let info=next.metadata().map_err(|_|"managed manifest unavailable")?;
+        if info.uid()!=0 || info.mode()&0o022!=0 {return Err("untrusted managed manifest".into());}
+        if index+1==parts.len() {
+            if !info.is_file() || info.len()>65536 {return Err("untrusted managed manifest".into());}
+            return Ok(next);
+        }
+        if !info.is_dir() {return Err("untrusted managed manifest".into());}
+        current=next;
+    }
+    Err("managed manifest unavailable".into())
+}
 pub fn manifest()->Result<Value,String> {
     let path=Path::new(MANIFEST);
     for parent in path.ancestors() {
@@ -333,8 +352,15 @@ pub fn manifest()->Result<Value,String> {
     let how=How {flags:(libc::O_RDONLY|libc::O_CLOEXEC|libc::O_NONBLOCK) as u64,mode:0,resolve:0x08|0x02|0x04};
     let name=std::ffi::CString::new(&MANIFEST[1..]).unwrap();
     let descriptor=unsafe {libc::syscall(libc::SYS_openat2,root.as_raw_fd(),name.as_ptr(),&how,std::mem::size_of::<How>())};
-    if descriptor<0 {return Err("secure managed manifest unavailable".into());}
-    let file=unsafe {File::from_raw_fd(descriptor as i32)};
+    let file=if descriptor>=0 {unsafe {File::from_raw_fd(descriptor as i32)}} else {
+        // Rosetta/amd64 emulation reports ENOSYS for openat2. Fall back to a
+        // component-wise openat walk that keeps O_NOFOLLOW and the same owner
+        // and mode checks; native Linux keeps the openat2 path unchanged.
+        if std::io::Error::last_os_error().raw_os_error()!=Some(libc::ENOSYS) {
+            return Err("secure managed manifest unavailable".into());
+        }
+        open_manifest_fallback()?
+    };
     let info=file.metadata().map_err(|_|"managed manifest unavailable")?;
     if !info.is_file() || info.uid()!=0 || info.mode()&0o022!=0 || info.len()>65536 {return Err("untrusted managed manifest".into());}
     let mut bytes=Vec::new();file.take(65537).read_to_end(&mut bytes).map_err(|_|"managed manifest unavailable")?;

@@ -154,4 +154,5 @@ test("the package mirror accepts the compose service name", () => {
 });
 test("worker aliases include the resolved address", async () => {
   assert.deepEqual(await resolveWorkerAliases("scikeel-worker-a", async () => [{ address: "172.31.5.9", family: 4 }]), ["scikeel-worker-a", "172.31.5.9"]);
+  assert.deepEqual(await resolveWorkerAliases("scikeel-worker-user-usr_a", async () => [{ address: "172.31.5.9", family: 4 }]), ["scikeel-worker-user-usr_a", "172.31.5.9"]);
 });

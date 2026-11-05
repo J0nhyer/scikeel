@@ -38,7 +38,7 @@ export function workerManifest({ imageDigest, sourceImageDigest, enabledRuntimes
   };
 }
 
-async function overlayImage({ runImpl, tag, overlayDir, sourceImageDigest }) {
+async function overlayImage({ runImpl, tag, overlayDir, sourceImageDigest, osdBinary = null }) {
   const container = `scikeel-worker-import-${process.pid}`;
   try { docker(runImpl, ["rm", "-f", container]); } catch { /* no stale container */ }
   docker(runImpl, ["create", "--name", container, tag]);
@@ -47,6 +47,10 @@ async function overlayImage({ runImpl, tag, overlayDir, sourceImageDigest }) {
       const source = join(overlayDir, name);
       await lstat(source);
       docker(runImpl, ["cp", source, `${container}:/opt/scikeel/tools/${name}`]);
+    }
+    if (osdBinary) {
+      await lstat(osdBinary);
+      docker(runImpl, ["cp", osdBinary, `${container}:/opt/scikeel/tools/bin/osd`]);
     }
     docker(runImpl, ["commit",
       "--change", entrypoint,
@@ -60,7 +64,7 @@ async function overlayImage({ runImpl, tag, overlayDir, sourceImageDigest }) {
   return docker(runImpl, ["image", "inspect", "--format", "{{.Id}}", tag]);
 }
 
-export async function importWorkerImage({ rootfs, manifestPath, tag, output, runImpl = spawnSync, overlayDir = null }) {
+export async function importWorkerImage({ rootfs, manifestPath, tag, output, runImpl = spawnSync, overlayDir = null, osdBinary = null }) {
   if (typeof rootfs !== "string" || !rootfs.startsWith("/") || typeof manifestPath !== "string" || !manifestPath.startsWith("/") ||
       typeof output !== "string" || !output.startsWith("/") || typeof tag !== "string" ||
       !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/.test(tag)) throw new Error("invalid worker image import configuration");
@@ -75,7 +79,7 @@ export async function importWorkerImage({ rootfs, manifestPath, tag, output, run
   docker(runImpl, workerImportArgs({ rootfs, tag, sourceImageDigest: source.imageDigest }));
   let imageDigest = docker(runImpl, ["image", "inspect", "--format", "{{.Id}}", tag]);
   if (overlayDir !== null) {
-    imageDigest = await overlayImage({ runImpl, tag, overlayDir: resolve(overlayDir), sourceImageDigest: source.imageDigest });
+    imageDigest = await overlayImage({ runImpl, tag, overlayDir: resolve(overlayDir), sourceImageDigest: source.imageDigest, osdBinary });
   }
   if (!DIGEST.test(imageDigest)) throw new Error("invalid imported worker image ID");
   const manifest = workerManifest({ imageDigest, sourceImageDigest: source.imageDigest, enabledRuntimes: source.enabledRuntimes });
@@ -104,6 +108,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       tag: values.tag,
       output: resolve(values.output),
       overlayDir: resolve(values.overlay ?? join(repo, "runtime", "sandbox")),
+      osdBinary: values.osd ? resolve(values.osd) : null,
     });
   } catch (error) {
     console.error(error.message);

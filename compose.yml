@@ -29,6 +29,7 @@ services:
       PLATFORM_WEB_ROOT: "${PLATFORM_WEB_ROOT}"
       PLATFORM_SECURE_COOKIES: "${PLATFORM_SECURE_COOKIES}"
       PLATFORM_MAX_RESIDENTS: "${PLATFORM_MAX_RESIDENTS}"
+      PLATFORM_CATALOG_MIGRATE: "${PLATFORM_CATALOG_MIGRATE}"
       PLATFORM_ADMIN_USERNAME: "${PLATFORM_ADMIN_USERNAME}"
       PLATFORM_ADMIN_PASSWORD: "${PLATFORM_ADMIN_PASSWORD}"
       PLATFORM_DISABLED_RUNTIMES: "${PLATFORM_DISABLED_RUNTIMES}"
@@ -96,6 +97,8 @@ services:
   package-mirror:
     image: scikeel-package-mirror:local
     platform: linux/amd64
+    environment:
+      SCIKEEL_PYPI_MIRROR: "${SCIKEEL_PYPI_MIRROR}"
     volumes:
       - "package-mirror-data:/data"
     networks:

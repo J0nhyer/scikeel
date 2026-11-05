@@ -2883,7 +2883,7 @@ export class PlatformServer {
         // document and client assets can load while startup continues. A
         // script login must not spend the resident budget of an account.
         if (this.tenantPolicy && !isJsonRequest(request) && !isAnalyticsDestination(payload.next)) {
-          void (this.workspaceBootstrap?this.workspaceBootstrap.prepare(user):this.#ensureWorker(user)).catch(() => this.logger({ type: "login.preparation_failed", userId: user.id }));
+          void (this.workspaceBootstrap?this.workspaceBootstrap.prepare(user):this.#ensureWorker(user)).catch(error => this.logger({ type: "login.preparation_failed", userId: user.id, error: error?.message, code: error?.code }));
         }
         const cookies = [
           sessionCookie(
@@ -2957,7 +2957,7 @@ export class PlatformServer {
           const query=catalogQuery(path,parsed.searchParams);
           const controller=new AbortController();request.once('aborted',()=>controller.abort());
           if(path==='/api/workspace/bootstrap'){
-            void this.workspaceBootstrap.prepare(user).catch(()=>this.logger({type:'login.preparation_failed',userId:user.id}));
+            void this.workspaceBootstrap.prepare(user).catch(error=>this.logger({type:'login.preparation_failed',userId:user.id,error:error?.message,code:error?.code}));
             sendJson(response,200,await this.workspaceBootstrap.read(user,{...query,signal:controller.signal}),{'cache-control':'no-store'});
           }else{
             const value=await this.workspaceAdmission.start(user.id,async()=>{

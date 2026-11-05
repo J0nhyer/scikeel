@@ -29,7 +29,9 @@ test("stop is idempotent and stale generations are rejected", async () => {
     assert.equal(calls.filter(([name]) => name === "stop").length, 1);
     await sandbox.stop({ instanceId: "user-a", generation: 1, reason: "idle" });
     assert.equal(calls.filter(([name]) => name === "stop").length, 1);
-    await assert.rejects(() => sandbox.stop({ instanceId: "user-a", generation: 2, reason: "idle" }), { code: "stale_generation" });
+    await sandbox.stop({ instanceId: "user-a", generation: 2, reason: "idle" });
+    assert.equal(r.account("user-a").generation, 3);
+    await assert.rejects(() => sandbox.stop({ instanceId: "user-a", generation: 1, reason: "idle" }), { code: "stale_generation" });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -2,5 +2,8 @@ FROM python:3.12-slim
 
 COPY runtime/sandbox/image/package-mirror.lock /tmp/package-mirror.lock
 RUN pip install --no-cache-dir --require-hashes -r /tmp/package-mirror.lock
+COPY runtime/sandbox/image/package-mirror-configure.py /usr/local/bin/package-mirror-configure.py
+COPY runtime/sandbox/image/package-mirror-entrypoint.sh /usr/local/bin/package-mirror-entrypoint.sh
+RUN chmod 0555 /usr/local/bin/package-mirror-configure.py /usr/local/bin/package-mirror-entrypoint.sh
 
-CMD ["sh", "-c", "devpi-init --serverdir /data >/dev/null 2>&1 || true; exec devpi-server --serverdir /data --host 0.0.0.0 --port 3141 --threads 4 --connection-limit 32 --request-timeout 60"]
+CMD ["/usr/local/bin/package-mirror-entrypoint.sh"]

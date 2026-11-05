@@ -20,8 +20,9 @@ import {capacityError} from './workspace-capacity.mjs';
 
 const routeSet = new Set(["/v1/responses", "/v1/chat/completions", "/v1/messages"]);
 const brokerHostPattern = /^[A-Za-z0-9.-]{1,253}$/;
+const workerHostPattern = /^[A-Za-z0-9._-]{1,253}$/;
 export async function resolveWorkerAliases(hostname, lookupImpl = lookup) {
-  if (typeof hostname !== "string" || !brokerHostPattern.test(hostname)) throw new Error("invalid worker hostname");
+  if (typeof hostname !== "string" || !workerHostPattern.test(hostname)) throw new Error("invalid worker hostname");
   let resolved;
   try { resolved = await lookupImpl(hostname, { all: true, verbatim: true }); }
   catch { throw new Error("worker identity unavailable"); }

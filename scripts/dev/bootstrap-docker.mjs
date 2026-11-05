@@ -45,6 +45,7 @@ export function dockerEnv({ dataDir, platformUid, platformGid, frontSubnet = "17
   return {
     COMPOSE_PROJECT_NAME: "scikeel",
     LOCAL_HTTP_PORT: String(httpPort),
+    SCIKEEL_PYPI_MIRROR: "https://pypi.tuna.tsinghua.edu.cn/simple/",
     PLATFORM_DATA_DIR: DATA_ROOT,
     PLATFORM_WEB_ROOT: "/app/apps/desktop/dist",
     PLATFORM_HOST: frontPlatformIp,
@@ -53,6 +54,7 @@ export function dockerEnv({ dataDir, platformUid, platformGid, frontSubnet = "17
     PLATFORM_GID: String(platformGid),
     PLATFORM_SECURE_COOKIES: "false",
     PLATFORM_MAX_RESIDENTS: "1",
+    PLATFORM_CATALOG_MIGRATE: "1",
     PLATFORM_DISABLED_RUNTIMES: "codex",
     PLATFORM_SANDBOX_BACKEND: "docker",
     PLATFORM_SANDBOX_SOCKET: "/run/scikeel/sandbox.sock",
