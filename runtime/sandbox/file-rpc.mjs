@@ -47,8 +47,12 @@ export class FileRpc {
   execute(request, command, args, { signal } = {}) {
     return new Promise((resolve, reject) => {
       let child;
+      const env = { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" };
+      for (const key of ["SCIKEEL_BROKER_HOST", "SCIKEEL_BROKER_URL", "SCIKEEL_BROKER_PACKAGE_URL", "SCIKEEL_BROKER_EGRESS_URL"]) {
+        if (process.env[key] !== undefined) env[key] = process.env[key];
+      }
       try { child = this.spawnImpl(command, args, {
-        detached: true, env: { PATH: "/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "pipe"],
+        detached: true, env, stdio: ["pipe", "pipe", "pipe"],
       }); } catch { reject(new Error("file helper unavailable")); return; }
       let reason; let count = 0; const output = [];
       function stop(error) {
