@@ -128,3 +128,12 @@ test("file deadline includes queue wait and never repeats a mutation", async () 
   assert.ok(results.every(r=>r.status==="rejected" && r.reason.code==="workspace_rpc_timeout"));
   assert.equal(calls,1); assert.equal(f.released(),1);
 });
+test("accepts a docker runner endpoint", async () => {
+  const policy=new TenantPolicy();policy.registerAccount(context);
+  const manager={getWorker:()=>({userId:"a",generation:1,status:"running"}),
+    getWorkerAccess:()=>({runnerUrl:"http://scikeel-worker-user-a:4791",token:"a".repeat(64)}),
+    retainWorker:()=>({generation:1,release(){}})};
+  const rpc=new WorkspaceRpc({workerManager:manager,tenantPolicy:policy,workerPrefix:"scikeel-worker-",
+    fetchImpl:async()=>new Response(JSON.stringify({ok:true}))});
+  assert.deepEqual(await rpc.call(context,{operation:"list",root:"workspace",path:""}),{ok:true});
+});

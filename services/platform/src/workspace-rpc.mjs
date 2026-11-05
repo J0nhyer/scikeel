@@ -7,11 +7,22 @@ const rpcFailure = (code, statusCode, message) => Object.assign(new Error(messag
 const denied = message => rpcFailure("workspace_rpc_denied", 403, message);
 const unavailable = (message = "Workspace transport unavailable.") => rpcFailure("workspace_rpc_unavailable", 503, message);
 const generationChanged = () => rpcFailure("runtime_context_changed", 409, "Workspace generation changed.");
+export function runnerUrlAllowed(value, instanceId, workerPrefix = null) {
+  if (typeof value !== "string") return false;
+  let url;
+  try { url = new URL(value); } catch { return false; }
+  if (url.protocol !== "http:" || url.port !== "4791" || url.username || url.password ||
+      url.pathname !== "/" || url.search || url.hash) return false;
+  if (workerPrefix !== null) return url.hostname === `${workerPrefix}${instanceId}` && value === `http://${workerPrefix}${instanceId}:4791`;
+  return /^http:\/\/172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]):4791$/.test(value);
+}
 export class WorkspaceRpc {
-  constructor({ workerManager, tenantPolicy, fetchImpl=fetch, timeoutMs=20000, maxBytes=16*1024**2 }) {
+  constructor({ workerManager, tenantPolicy, fetchImpl=fetch, timeoutMs=20000, maxBytes=16*1024**2, workerPrefix=null }) {
     if(!workerManager || !tenantPolicy || typeof fetchImpl!=="function" || !Number.isSafeInteger(timeoutMs) || timeoutMs<1 || timeoutMs>30000 ||
-        !Number.isSafeInteger(maxBytes) || maxBytes<1 || maxBytes>16*1024**2) throw new Error("invalid workspace RPC configuration");
-    Object.assign(this,{workerManager,tenantPolicy,fetchImpl,timeoutMs,maxBytes});
+        !Number.isSafeInteger(maxBytes) || maxBytes<1 || maxBytes>16*1024**2 ||
+        workerPrefix!==null && (typeof workerPrefix!=="string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(workerPrefix)))
+      throw new Error("invalid workspace RPC configuration");
+    Object.assign(this,{workerManager,tenantPolicy,fetchImpl,timeoutMs,maxBytes,workerPrefix});
     this.fileQueue = new WorkspaceRpcQueue();
   }
   #owned(context) {
@@ -55,7 +66,7 @@ export class WorkspaceRpc {
     try {
       if(lease.generation!==context.generation) throw generationChanged();
       const access=this.workerManager.getWorkerAccess(context.instanceId);
-      if(!/^http:\/\/172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]):4791$/.test(access.runnerUrl??"") ||
+      if(!runnerUrlAllowed(access.runnerUrl, context.instanceId, this.workerPrefix) ||
           !/^[a-f0-9]{64}$/.test(access.token??"")) throw unavailable();
       // A file request already has a total deadline, including queue wait.
       const deadline=path==="/files" ? signal : AbortSignal.timeout(path==="/environments" ? 300000 : path==='/native-network'?125000:this.timeoutMs);
