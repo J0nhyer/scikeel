@@ -3,6 +3,7 @@ import {collaborationHooks} from "./collaboration.mjs";
 import {lstat,readFile} from "node:fs/promises";
 import {ScienceEnvironmentHooks} from "./cli-jobs.mjs";
 import {EnvironmentRpc} from "./file-rpc.mjs";
+import {brokerConfig} from "./broker-config.mjs";
 export default async function scienceEnvironment({directory},{imageDigest,collaborationToken}={}) {
   const metadata=await lstat("/opt/scikeel/tenant.json");
   if(!metadata.isFile() || metadata.uid!==0 || metadata.mode&0o022 || metadata.size>65536)
@@ -12,7 +13,7 @@ export default async function scienceEnvironment({directory},{imageDigest,collab
   let collaboration;
   if(collaborationToken){
     collaboration=collaborationHooks({token:collaborationToken});
-    const response=await fetch("http://172.31.240.1:4792/collaboration",{method:"POST",headers:{authorization:`Bearer ${collaborationToken}`,"content-type":"application/json"},body:JSON.stringify({action:"capability",sessionId:"capability"}),signal:AbortSignal.timeout(5000)});
+    const response=await fetch(`${brokerConfig().model.replace(/\/v1$/,"")}/collaboration`,{method:"POST",headers:{authorization:`Bearer ${collaborationToken}`,"content-type":"application/json"},body:JSON.stringify({action:"capability",sessionId:"capability"}),signal:AbortSignal.timeout(5000)});
     if(!response.ok)throw new Error("Collaboration runtime registration failed");
   }
   return {...(collaboration?{tool:collaboration.tool,"experimental.chat.system.transform":collaboration["experimental.chat.system.transform"]}:{}),"shell.env":(input,output)=>hooks.apply(input,output),

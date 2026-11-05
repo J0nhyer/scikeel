@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
 import {open, lstat} from 'node:fs/promises';
 import {posix} from 'node:path';
+import {brokerConfig} from './broker-config.mjs';
 
 const object=value=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.getPrototypeOf(value)===Object.prototype;
 const name=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -79,7 +80,7 @@ export async function runRequiredEffectGuard({input=process.stdin,output=process
  try{
   if(!/^[a-f0-9]{64}$/.test(token??''))throw Error('Missing scoped native grant');
   const body=await boundedJson(input,512*1024);effectRequest(body);
-  const response=await fetchImpl('http://172.31.240.1:4792/native/effect',{method:'POST',redirect:'error',
+  const response=await fetchImpl(`${brokerConfig().model.replace(/\/v1$/,'')}/native/effect`,{method:'POST',redirect:'error',
    headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(3000)});
   const result=await boundedJson(response.body,1024);
   allowed=response.ok&&exact(result,['allowed','digest'],['allowed','digest'])&&result.allowed===true&&result.digest===effectDigest(body);
