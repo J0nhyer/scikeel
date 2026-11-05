@@ -201,7 +201,7 @@ export function FilesPage({
             onClick={() => setDir("")}
             title={basePath ?? undefined}
           >
-            {baseName(basePath)}
+            {baseName(basePath, isGatewayWeb ? basePath : null)}
           </button>
           {crumbs.map((part, i) => {
             const to = crumbs.slice(0, i + 1).join("/");
@@ -339,6 +339,7 @@ export function SessionFilesPane({
 }) {
   const { t } = useTranslation(["pages", "common"]);
   const workspace = useRuntimeStore((s) => s.workspace);
+  const gatewayWorkspace = useRuntimeStore((s) => s.gatewayWorkspace);
   const locationKey = `session:${sessionId}`;
   const [dir, setDirState] = useState(() => rememberedDirectory(locationKey));
   const [entries, setEntries] = useState<DirEntry[] | null>(null);
@@ -398,7 +399,7 @@ export function SessionFilesPane({
           className="min-w-0 truncate text-[13px] font-medium text-text"
           title={sessionDir ?? workspace ?? undefined}
         >
-          {baseName(sessionDir ?? workspace)}
+          {baseName(sessionDir ?? workspace, isGatewayWeb ? gatewayWorkspace : null)}
         </span>
         <span className="shrink-0 truncate text-[11px] text-muted">
           {t("files.pane.subtitle")}
@@ -416,7 +417,7 @@ export function SessionFilesPane({
       {crumbs.length > 0 && (
         <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-3 py-2 text-[12px]">
           <button className="rounded px-1 text-link hover:bg-surface-2" onClick={() => setDir("")}>
-            {baseName(sessionDir ?? workspace)}
+            {baseName(sessionDir ?? workspace, isGatewayWeb ? gatewayWorkspace : null)}
           </button>
           {crumbs.map((part, i) => {
             const to = crumbs.slice(0, i + 1).join("/");

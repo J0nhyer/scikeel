@@ -60,7 +60,7 @@ export class CliProfileResolver {
       const catalogContent = catalogPath ? await fs.readFile(catalogPath, "utf8") : "";
       const catalog = catalogContent ? JSON.parse(catalogContent) : null;
       const local = unique([
-        ...(Array.isArray(catalog) ? catalog : Array.isArray(catalog?.models) ? catalog.models : []).map((entry) => typeof entry === "string" ? { id: entry, name: entry, variants: {} } : { id: entry.slug ?? entry.id, name: entry.display_name ?? entry.name ?? entry.slug, variants: codexVariants(entry) }),
+        ...(Array.isArray(catalog) ? catalog : Array.isArray(catalog?.models) ? catalog.models : []).map((entry) => typeof entry === "string" ? { id: entry, name: entry, variants: {} } : { id: entry.slug ?? entry.id, name: entry.display_name ?? entry.name ?? entry.slug, variants: codexVariants(entry), ...(Array.isArray(entry.input_modalities) ? { inputModalities: entry.input_modalities.filter((value) => typeof value === "string") } : {}) }),
       ]);
       const files = { main, content, catalogPath, catalogContent, authPath, auth, home, token, baseUrl, envKey, secrets: runtime === "claude"
         ? Object.entries(env).filter(([key, value]) => /(?:TOKEN|API_KEY|SECRET|PASSWORD)/i.test(key) && typeof value === "string").map(([, value]) => value)
@@ -92,7 +92,7 @@ export class CliProfileResolver {
       // Claude's --effort help and effortLevel setting do not establish which
       // levels a relay model accepts. Keep those variants hidden without a catalog.
       const models = unique([...local, ...(remote ?? []), ...(runtime === "claude" && !remoteListed ? Object.values(alias).filter(validModel).map((id) => ({ id, name: id })) : []), ...(validModel(defaultModel) && !remoteListed ? [{ id: defaultModel, name: defaultModel }] : [])])
-        .map((model) => ({ ...model, variants: local.find((item) => item.id === model.id)?.variants ?? {} }));
+        .map((model) => ({ ...model, variants: local.find((item) => item.id === model.id)?.variants ?? {}, ...(local.find((item) => item.id === model.id)?.inputModalities ? { inputModalities: local.find((item) => item.id === model.id).inputModalities } : {}) }));
       const status = remote?.length || (local.length && (!previous || previous.identityRevision === identityRevision)) ? "ready" : models.length ? "limited" : "unavailable";
       const selectedDefault = models.some((item) => item.id === defaultModel) ? defaultModel
         : models.find((item) => !item.id.includes(":batch"))?.id ?? models[0]?.id ?? null;
@@ -144,7 +144,13 @@ export class CliProfileResolver {
         await fs.mkdir(state, { recursive: true, mode: 0o700 });
         await fs.symlink(state, join(stage, history), "dir");
       }
+      const skills = join(paths.home, profile.runtime === "claude" ? ".claude" : ".agents", "skills");
+      await fs.mkdir(skills, { recursive: true, mode: 0o700 });
+      await fs.symlink(skills, join(stage, "skills"), process.platform === "win32" ? "junction" : "dir");
       await fs.rename(stage, target).catch(async (error) => { if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error; });
+      // Profiles created before skill discovery was connected need this link too.
+      await fs.symlink(skills, join(target, "skills"), process.platform === "win32" ? "junction" : "dir")
+        .catch((error) => { if (error.code !== "EEXIST") throw error; });
       return { home: paths.home, configDir: target, codexHome: target, env: files.envKey && files.token ? { [files.envKey]: files.token } : {} };
     } finally { await fs.rm(stage, { force: true, recursive: true }); }
   }

@@ -1,3 +1,4 @@
+export type { AttachmentPromptContext } from "@ai4s/shared";
 export { OpenCodeClient, ApiError, isApiStatus } from "./OpenCodeClient";
 export type { CustomProviderModality, CustomProviderModel } from "./OpenCodeClient";
 export type { AgentRuntime } from "./runtime";

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Agent analytics · SciKeel</title>
+  <link rel="stylesheet" href="/preview/agent-analytics/app.css">
+  <script type="module" src="/preview/agent-analytics/app.js"></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Return to SciKeel"><img class="brand-logo" src="/preview/agent-analytics/logo.webp" alt=""><span>Open Science</span></a>
+      <nav class="platform-navigation" aria-label="Workbench navigation"><a href="/live"><span data-icon="plus"></span>New conversation</a><a href="/projects"><span data-icon="folder"></span>Projects</a><a href="/files"><span data-icon="file"></span>Files</a><a href="/skills"><span data-icon="tools"></span>Skills</a></nav><div class="sidebar-label">AGENT ANALYTICS</div>
+      <nav class="navigation" aria-label="Analytics navigation">
+        <button class="nav-item active" data-view="overview"><span data-icon="overview"></span>Overview</button>
+        <button class="nav-item" data-view="tasks"><span data-icon="tasks"></span>Task runs<span class="nav-count" id="nav-count">—</span></button>
+        <button class="nav-item" data-view="capabilities"><span data-icon="tools"></span>Tools & models</button>
+        <button class="nav-item" data-view="interventions"><span data-icon="people"></span>Human interventions</button>
+      </nav>
+      <div class="sidebar-note"><span class="small-dot"></span>Observe. Understand. Improve.<p>Follow a research task from the first step to its final checks.</p></div>
+      <a href="/live" class="back-link"><span data-icon="back"></span>Back to workbench</a>
+      <div class="account-area">
+        <div id="account-menu" class="account-menu" hidden>
+          <div class="menu-caption">ADMIN TOOLS</div>
+          <button id="analytics-entry"><span data-icon="overview"></span>Agent analytics<span class="menu-selected">↗</span></button>
+          <a href="/settings/models"><span data-icon="settings"></span>Settings</a>
+          <a href="/live"><span data-icon="back"></span>Research workbench</a>
+        </div>
+        <button id="account-button" class="account-button" aria-label="Open account menu" aria-expanded="false" aria-controls="account-menu"><span class="avatar">A</span><span class="account-name"><strong id="account-name">Administrator</strong><small>Administrator</small></span><span data-icon="chevrons"></span></button>
+      </div>
+    </aside>
+    <main class="main" id="main">
+      <header class="page-header">
+        <div><div class="eyebrow">AGENT INTELLIGENCE <span>/</span> <span id="breadcrumb">OVERVIEW</span></div><h1 id="page-title">Agent analytics<span class="title-dot">.</span></h1><p id="page-description">Understand how research gets done, and where agents need help.</p></div>
+        <div class="header-meta"><span class="demo-badge"><span class="small-dot"></span>Demo data</span><span class="snapshot">Prototype · October 14, 2026</span></div>
+      </header>
+      <div class="demo-notice"><span data-icon="info"></span><span>Interactive design preview. Every task and metric below is simulated.</span><button id="about-button" aria-label="View metric definitions">Metric definitions<span>↗</span></button></div>
+      <div class="filters" aria-label="Analytics filters">
+        <div class="period-buttons" aria-label="Time range"><button data-period="1">24 hours</button><button data-period="7" class="selected" aria-pressed="true">7 days</button><button data-period="30">30 days</button></div>
+        <div class="filter-select"><span data-icon="people"></span><select id="account-filter" aria-label="Filter by account"><option value="all">All accounts</option><option value="ada">Ada · demo account</option><option value="noah">Noah · demo account</option><option value="mira">Mira · demo account</option></select></div>
+        <div class="filter-select"><span data-icon="tasks"></span><select id="type-filter" aria-label="Filter by task type"><option value="all">All task types</option><option>Literature review</option><option>Data analysis</option><option>Code & validation</option><option>Experiment planning</option></select></div>
+        <button class="reset-button" id="reset-filters" aria-label="Reset filters"><span data-icon="reset"></span></button>
+        <span class="range-label" id="range-label"></span>
+      </div>
+      <div id="content" aria-live="polite"></div>
+      <footer class="page-footer"><span><span class="small-dot"></span>Read-only admin preview · Demo data</span><button id="footer-definitions">Definitions & data coverage</button></footer>
+    </main>
+  </div>
+  <div id="overlay" class="overlay" hidden></div>
+  <dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-title"></dialog>
+  <dialog id="definitions-dialog" class="definitions-dialog" aria-labelledby="definitions-title"><div class="dialog-top"><div><div class="eyebrow">READING THE DATA</div><h2 id="definitions-title">A few useful distinctions.</h2></div><button class="icon-button" data-close="definitions-dialog" aria-label="Close definitions">×</button></div><div class="definitions-body"><dl><dt>Task completion</dt><dd>Completed runs divided by terminal runs: completed, failed, or cancelled. Running and paused runs are shown separately.</dd><dt>Delivery checks</dt><dd>Recorded checks on expected outputs. Passing them does not establish scientific correctness.</dd><dt>Agent time & human wait</dt><dd>Agent time excludes recorded waits for human input. Elapsed time includes both. Medians include terminal runs only.</dd><dt>Reported tokens</dt><dd>The sum of known, reported input and output tokens. Missing usage stays unknown; coverage is shown next to the total. Cost is unavailable in this preview.</dd><dt>Tool calls & skills</dt><dd>Each completed call is counted once. Skill loading is a distinct event. A repeated call is a signal to inspect, not proof of wasted work.</dd><dt>Human interventions</dt><dd>Approvals and clarifications are normal collaboration. Corrections and takeovers require an explicit user label or recorded action.</dd><dt>Model comparisons</dt><dd>Descriptive observations on the selected task mix. Different sample sizes, task types and agent settings can explain apparent differences.</dd><dt>Data boundaries</dt><dd>All records here are synthetic. The production design uses execution metadata and check outcomes; private messages, reasoning, research files and credentials stay outside analytics.</dd></dl></div></dialog>
+</body>
+</html>

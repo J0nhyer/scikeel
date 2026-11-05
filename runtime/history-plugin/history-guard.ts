@@ -96,6 +96,18 @@ function repairPart(part: Part, synthesizeCallID: () => string): void {
 // calls every export it finds as a factory, so an exported helper is invoked
 // with no arguments at load time and takes the whole module down with it.
 export const HistoryGuardPlugin = async () => ({
+  // OpenCode 1.18.32 copies an omitted webfetch timeout into permission
+  // metadata as undefined. Its HTTP encoder then rejects the whole pending
+  // permission list. Supply the normal 60-second fetch limit before the
+  // runtime builds that metadata; manual approval still gates the request.
+  "tool.execute.before": async (
+    input: { tool: string },
+    output: { args: unknown },
+  ) => {
+    if (input.tool !== "webfetch" || !output.args || typeof output.args !== "object") return;
+    const args = output.args as Record<string, unknown>;
+    if (args.timeout === undefined) args.timeout = 60;
+  },
   "experimental.chat.messages.transform": async (
     _input: unknown,
     output: { messages?: Array<{ parts?: unknown }> },

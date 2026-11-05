@@ -775,8 +775,10 @@ OSD_ATTACHMENTS_ACCEPTANCE=1 pnpm --filter @ai4s/desktop test src/test/webAttach
 Expected: 1280px/390px, ordinary HTTP origin, upload/history/download/follow-up
 checks pass and all temporary users/workers/storage are removed by teardown.
 
-- [ ] **Step 4: Verify real runtime content consumption.** For every configured
-assistant use a temporary acceptance conversation and real model. Supply an
+- [ ] **Step 4: Verify real runtime content consumption.** For every currently usable
+assistant use a temporary acceptance conversation and real model. Claude is
+user-confirmed unavailable and excluded from live acceptance and release gates
+until the user explicitly confirms service restoration. Supply an
 image with a distinctive shape/color/embedded phrase under an unrelated filename,
 a PDF with a unique sentence, and a CSV with values 2 and 4. Require evidenced
 image interpretation, the PDF sentence, and computed mean 3. Reopen and ask a
@@ -787,7 +789,7 @@ unconfigured/unsupported assistant is recorded as an explicit limitation; never
 count its skipped live test as a pass. Deterministic adapter tests still cover
 all three transport paths.
 
-- [ ] **Step 5: Deploy platform changes without interrupting active work.** Check
+- [x] **Step 5: Deploy platform changes without interrupting active work.** Check
 active managed turns and worker session status before a required platform reload.
 The current main shutdown closes CLI processes/workers, so do not restart while
 active turns exist. Validate backend plus the bundle on the isolated instance
@@ -870,3 +872,82 @@ The default execution is inline in this session using `superpowers:executing-pla
 If the user selects subagent execution, use `superpowers:subagent-driven-development`
 with disjoint write scopes and review each returned change. Both paths follow the
 same tests, memory guard, lifecycle requirements and final browser acceptance.
+
+
+## Execution result (2026-10-02)
+
+Implemented in the current integrated working tree. The original dirty-tree
+baseline is retained at `.deploy/verification/attachments-baseline.patch`; no
+unrelated changes were reset, merged, published or pushed.
+
+The feature now has private streamed originals, owner-scoped reads and download
+tickets, bounded image delivery, durable turn IDs and message metadata, Claude
+stream input and Codex native images, retained follow-up inventories, historical
+cards and previews, and fork/delete/revert ownership handling. Known text-only
+Codex models reject image turns before acceptance. Definite rejection allows a
+model change without uploading originals again. Uncertain transport is reconciled
+against native history rather than blindly repeating a message.
+
+Additional failing-first regressions cover claimed-draft removal, orphan cleanup
+following a process crash, reverted-history inventory filtering, retry after a
+model change, and first-send session binding and attachment queue recovery when
+the composer remounts. Session creation is entered into the local catalog before
+binding the pane so the Web stale-session guard cannot discard it during a list
+refresh.
+
+The final staged bundle passed the isolated HTTP browser suite at 1280px and
+390px with English/Chinese UI, clipboard and DOM drop, failed-upload retry,
+failed-prompt retention and resend, image/PDF preview, refresh restoration,
+SHA-256 original downloads and retained CSV follow-up. All heavy verification
+used the existing serialized cgroup guard. Evidence and screenshots are in
+`.deploy/verification`; the staged bundle location is recorded in
+`.deploy/attachments-build-path`.
+
+Live Codex with a configured vision model read the distinctive image, PDF phrase
+and CSV mean and then reread the retained CSV on a later turn. Claude was already
+user-confirmed unavailable and should have been excluded from live checks. The
+Claude probes were a workflow error, not an attachment feature defect or release
+blocker. Do not repeat them or probe alternative models until the user explicitly
+confirms service restoration. Deterministic Claude adapter tests pass on initial
+and resumed image turns. The installed
+OpenCode is 1.18.18 rather than the source pin 1.18.32; isolated native startup
+stalled during config loading, and the guarded pinned-binary download failed
+with a TLS EOF. Native OpenCode live acceptance remains pending; do not claim it
+passed based on the SDK or fixture tests.
+
+Production rollout completed at 17:23 Asia/Shanghai after fresh checks showed
+zero active native or managed turns. The user authorized deploying the concurrent
+login changes together. The verified attachment bundle and combined backend were
+released with prior Web and source rollback snapshots retained. Fresh combined
+platform verification passed 80 checks with two opt-in skips; isolated attachment
+acceptance passed at 1280px/390px and login acceptance at 1280px/390px/320px,
+including JavaScript-disabled login. Production through the port-80 proxy passed
+localized login, clicking the real paperclip picker, PNG/PDF/CSV uploads and
+SHA-256 original download checks at 1280px/390px, with zero page errors and no
+account model configuration changes. Evidence is in
+`.deploy/verification/attachments-login-{platform,browser,production}.log` and the
+release manifest referenced by `attachments-release-prepared-path`. Native
+OpenCode live-model verification remains pending; Claude remains excluded.
+Keep this branch and workspace intact; no merge, remote push or cleanup is
+authorized as part of the inline execution choice.
+
+
+Final automated verification: platform suite 79 passed / 2 opt-in skips;
+frontend suite 1,751 passed / 19 opt-in skips across 197 passing files. The final
+bounded build includes a successful TypeScript check, and ESLint exits zero.
+The expanded browser suite passes on both viewport widths after the first-send
+recovery fixes. Source changes remain in the working tree: an attachment-only
+review patch is saved at `.deploy/verification/attachments-implementation.patch`.
+A clean indexed apply cannot include the pre-existing research integration
+without mixing another task's hunks, so the planned implementation commit is
+pending integration of that baseline; no unrelated work was staged.
+
+The final standalone live Codex suite also exits zero with image pixel/phrase,
+PDF sentence and retained CSV follow-up assertions. Evidence:
+`.deploy/verification/attachments-live-codex-final.log`.
+
+
+User correction (2026-10-02): Claude unavailability had already been recorded in
+PROGRESS on 2026-09-29. The agent failed to apply that context. The operational
+rule is now explicit in AGENTS: no Claude live tests or alternative endpoint/model
+probes until user-confirmed restoration, and no Claude release gate.

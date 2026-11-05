@@ -1,7 +1,7 @@
 # Web Update Workflow Design
 
-Date: 2026-10-06
-Status: Design approved in conversation; specification and implementation plan requested together. Implementation is not authorized by this documentation request.
+Date: 2026-10-05 UTC (file naming follows the supplied Asia/Shanghai timezone)
+Status: Implemented and verified. Design and plan were completed first; the subsequent user instruction authorized implementation and project-service publication without another approval request. Execution evidence is recorded in the implementation plan.
 
 ## 1. Goal and scope
 
@@ -15,7 +15,7 @@ Current product acceptance targets the gateway Web client, including phone-width
 
 ## 2. Verified baseline
 
-The following observations were collected on 2026-10-06. They are observations, not permanent configuration assumptions:
+The following observations were collected on 2026-10-05 UTC. They are observations, not permanent configuration assumptions:
 
 - The host reports four CPUs, 3,399 MiB RAM, 2,047 MiB swap, and approximately 6.8 GiB free space on its 40 GiB root filesystem. One sample reported 1,602 MiB available RAM; available memory varies with live workloads.
 - The guarded task wrapper uses MemoryHigh=1850M, MemoryMax=2200M, MemorySwapMax=256M, a shared task lock, and host-pressure interruption. Do not raise these values or bypass the guard.
@@ -105,9 +105,11 @@ Keep current vendor splitting and content-hashed emitted filenames. Do not inlin
 
 All heavy stages run through package scripts and the existing verified cgroup guard. Preparation owns the shared host task lock once; internal stages inherit and verify the same guard instead of recursively acquiring the lock. Main checkout, linked worktrees, and frozen candidate sources must use the same lock location derived from the Git common root and recorded at preparation.
 
-No parallel test/build/browser jobs on this host. Close the browser before the next heavy stage. Do not stop production or running workers merely to make a build fit. Preserve memory-pressure interruption and fail without changing production.
+Execution inspection found that a running worker retains the same host lock for its lifetime. An explicit `--maintenance` option is permitted under the existing sole-user service-interruption authorization: stop the platform gracefully, acquire its released host lock, restart the platform with the existing Web root, then run bounded candidate verification while research admission is unavailable. Restore/start the original service on every exit. The default path never interrupts workers. This is lock coordination, not removal of memory protection.
 
-Deployment has a separate short global lock; it never overlaps another prepare/deploy/rollback mutation. A held lock produces a clear busy error with no hidden automatic retry loop. There is no new resident watcher or Vite development server.
+No parallel test/build/browser jobs on this host. Close the browser before the next heavy stage. Do not stop production or running workers merely to increase the available memory budget; use only the explicit, recoverable maintenance path above for the lifetime-lock conflict. Preserve memory-pressure interruption and fail without changing production.
+
+Deployment has a separate global publication lock; it never overlaps another prepare/deploy/rollback mutation. Guarded tasks acquire the publication lock before the host lock. Publication owns the publication lock only, allowing required live worker admission after preparation has released the host lock. A held lock produces a clear busy error with no hidden automatic retry loop. There is no new resident watcher or Vite development server.
 
 ### R7. Candidate acceptance
 

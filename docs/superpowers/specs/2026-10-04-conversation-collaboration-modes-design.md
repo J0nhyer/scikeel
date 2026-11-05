@@ -1,8 +1,6 @@
 # Conversation Collaboration Modes Design
 
-**Status:** Approved for Stage 1 implementation planning by the user on
-2026-10-04. The four stages are delivered separately; this document does not
-claim that product implementation or deployment has been completed.
+**Status:** Approved by the user on 2026-10-04. Stage 1 Collaborative and Stage 2 Guided are deployed in the authenticated gateway Web client. Stage 2 uses attested sandbox image `a75f591d` after local, signed-image CI and live Big Pickle acceptance. Basic Delegated and full Delegated remain later delivery stages. Release evidence is recorded in each stage's implementation plan.
 
 ## 1. Goal and scope
 
@@ -363,6 +361,4 @@ Background jobs after page closure, a fourth user-facing mode, automatic Skill
 creation, broad project-library changes, school course content, multi-user live
 editing, and unrelated runtime refactoring are outside this specification.
 
-This document is the reviewable design deliverable. After user review, the next
-Superpowers step is a Stage 1 implementation plan. No implementation or deployment
-is part of the current request.
+This approved specification is the design baseline. Stage 1 and Stage 2 have separate accepted implementation plans. The next delivery unit is a Stage 3 Basic Delegated plan; Stage 4 remains a later delivery unit.

@@ -4,6 +4,36 @@ import { OpenCodeClient } from "@ai4s/sdk";
 
 const BASE = "http://127.0.0.1:9999";
 
+describe("OpenCodeClient.isSessionRunning", () => {
+  it.each([
+    [{}, false],
+    [{ ses_live: { type: "idle" } }, false],
+    [{ ses_live: { type: "busy" } }, true],
+    [{ ses_live: { type: "retry", attempt: 2 } }, true],
+  ])("reads live status independently of unfinished history", async (statuses, running) => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL) => new Response(JSON.stringify(statuses)));
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl });
+    expect(await client.isSessionRunning("ses_live", "/research/project")).toBe(running);
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(
+      `${BASE}/session/status?directory=%2Fresearch%2Fproject`,
+    );
+  });
+
+  it.each([404, 501])("leaves unsupported runtimes unknown (%s)", async (status) => {
+    const client = new OpenCodeClient({
+      baseUrl: BASE, fetchImpl: async () => new Response("not supported", { status }),
+    });
+    expect(await client.isSessionRunning("ses_live")).toBeNull();
+  });
+
+  it.each([[], null, { ses_live: null }, { ses_live: { type: "unknown" } }])("rejects ambiguous responses", async (body) => {
+    const client = new OpenCodeClient({
+      baseUrl: BASE, fetchImpl: async () => new Response(JSON.stringify(body)),
+    });
+    await expect(client.isSessionRunning("ses_live")).rejects.toThrow(/session status/);
+  });
+});
+
 interface ServerSession {
   id: string;
   title: string;
@@ -287,5 +317,19 @@ describe("OpenCodeClient session edits", () => {
     const id = await client.createSession();
     expect(id).toBe("ses_new");
     expect(calls).toEqual(["/session"]);
+  });
+});
+
+
+describe("pending interaction recovery errors", () => {
+  it.each(["listQuestions", "listPermissions"] as const)("%s reports a broken endpoint instead of an empty list", async (method) => {
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () =>
+      new Response(JSON.stringify({ data: { message: "Expected JSON value at metadata.timeout" } }), { status: 400 }) });
+    await expect(client[method]()).rejects.toThrow(/400.*metadata.timeout/);
+  });
+
+  it.each(["listQuestions", "listPermissions"] as const)("%s tolerates an unsupported endpoint", async (method) => {
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async () => new Response("not supported", { status: 404 }) });
+    expect(await client[method]()).toEqual([]);
   });
 });

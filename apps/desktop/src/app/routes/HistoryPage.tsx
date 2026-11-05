@@ -7,12 +7,14 @@ import {
   ArchiveRestore,
   Download,
   FolderInput,
+  ListChecks,
   Loader2,
   MessageSquare,
   MoreHorizontal,
   Pencil,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import type { SessionMeta } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
@@ -75,6 +77,10 @@ export function HistoryPage() {
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null);
   const [confirmExport, setConfirmExport] = useState(false);
   const [exported, setExported] = useState<number | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     const id = setTimeout(() => setQuery(input.trim()), SEARCH_DEBOUNCE_MS);
@@ -151,6 +157,48 @@ export function HistoryPage() {
         : prev.map((s) => (s.id === id ? { ...s, ...change } : s)),
     );
 
+  const toggleSelectMode = () => {
+    setSelecting((on) => !on);
+    setSelected(new Set());
+  };
+
+  const toggleSelected = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // A selection only ever covers what is on screen now: a new search or filter
+  // starts over instead of carrying hidden rows into the next batch.
+  useEffect(() => {
+    setSelecting(false);
+    setSelected(new Set());
+  }, [query, showArchived]);
+
+  const allLoadedSelected = rows.length > 0 && rows.every((s) => selected.has(s.id));
+  const toggleAllLoaded = () =>
+    setSelected(allLoadedSelected ? new Set() : new Set(rows.map((s) => s.id)));
+
+  /** Delete every selected row one at a time — the runtime handles one session
+   *  per request, and serial calls keep a large selection from flooding it. */
+  const deleteSelected = async () => {
+    setConfirmBatchDelete(false);
+    const ids = [...selected];
+    setDeleting(true);
+    try {
+      for (const id of ids) {
+        patchRow(id, null);
+        await deleteSession(id);
+      }
+    } finally {
+      setDeleting(false);
+      setSelecting(false);
+      setSelected(new Set());
+    }
+  };
+
   const toggleArchived = async (s: SessionMeta) => {
     const archived = s.archived == null;
     if (!(await setSessionArchived(s.id, archived))) return;
@@ -222,6 +270,15 @@ export function HistoryPage() {
           <h1 className="min-w-0 flex-1 font-serif text-2xl leading-tight text-text">
             {t("history.pageHeading")}
           </h1>
+          {canWrite && rows.length > 0 && (
+            <button
+              onClick={toggleSelectMode}
+              className="flex shrink-0 items-center gap-1.5 rounded-input border border-border px-2.5 py-1.5 text-xs text-text hover:bg-surface-2"
+            >
+              {selecting ? <X size={13} /> : <ListChecks size={13} />}
+              {selecting ? t("common:actions.cancel") : t("history.select")}
+            </button>
+          )}
           {/* Export writes files into a folder the user picks — desktop only. */}
           {isTauri && canWrite && (
             <button
@@ -289,26 +346,40 @@ export function HistoryPage() {
                       className="group grid grid-cols-[minmax(0,1fr)_3.5rem_auto] items-center gap-3 px-2 py-2.5"
                     >
                       <div className="flex min-w-0 items-center gap-2">
-                        <MessageSquare size={14} className="shrink-0 text-muted" />
-                        {renamingId === s.id ? (
-                          <RenameInput
-                            defaultValue={s.title}
-                            onSubmit={(v) => {
-                              setRenamingId(null);
-                              if (v.trim() && v.trim() !== s.title) {
-                                patchRow(s.id, { title: v.trim() });
-                                void renameSession(s.id, v);
-                              }
-                            }}
-                            onCancel={() => setRenamingId(null)}
-                          />
+                        {selecting ? (
+                          <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={selected.has(s.id)}
+                              onChange={() => toggleSelected(s.id)}
+                              className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+                            />
+                            <span className="truncate text-sm text-text">{s.title}</span>
+                          </label>
                         ) : (
-                          <button
-                            onClick={() => open(s.id)}
-                            className="min-w-0 flex-1 truncate text-left text-sm text-text outline-none hover:underline"
-                          >
-                            {s.title}
-                          </button>
+                          <>
+                            <MessageSquare size={14} className="shrink-0 text-muted" />
+                            {renamingId === s.id ? (
+                              <RenameInput
+                                defaultValue={s.title}
+                                onSubmit={(v) => {
+                                  setRenamingId(null);
+                                  if (v.trim() && v.trim() !== s.title) {
+                                    patchRow(s.id, { title: v.trim() });
+                                    void renameSession(s.id, v);
+                                  }
+                                }}
+                                onCancel={() => setRenamingId(null)}
+                              />
+                            ) : (
+                              <button
+                                onClick={() => open(s.id)}
+                                className="min-w-0 flex-1 truncate text-left text-sm text-text outline-none hover:underline"
+                              >
+                                {s.title}
+                              </button>
+                            )}
+                          </>
                         )}
                         {s.archived != null && (
                           <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted ring-1 ring-border">
@@ -334,7 +405,7 @@ export function HistoryPage() {
                         {timeAgo(s.updated ?? s.created, now)}
                       </span>
 
-                      {canWrite && (
+                      {canWrite && !selecting && (
                         <DropdownMenu.Root>
                           <DropdownMenu.Trigger asChild>
                             <button
@@ -440,6 +511,35 @@ export function HistoryPage() {
             {loading ? t("history.loading") : t("history.loadMore")}
           </button>
         )}
+
+        {selecting && rows.length > 0 && (
+          <div className="sticky bottom-0 z-10 mt-6 flex items-center gap-3 border-t border-border bg-surface/95 px-2 py-3 backdrop-blur">
+            <label className="flex min-w-0 cursor-pointer items-center gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={allLoadedSelected}
+                onChange={toggleAllLoaded}
+                className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+              />
+              <span className="truncate">{t("history.selectAllLoaded")}</span>
+            </label>
+            <span className="shrink-0 whitespace-nowrap text-xs text-muted">
+              {t("history.selectedCount", { count: selected.size })}
+            </span>
+            <button
+              onClick={() => setConfirmBatchDelete(true)}
+              disabled={selected.size === 0 || deleting}
+              className="ml-auto flex shrink-0 items-center gap-1.5 rounded-input border border-border px-2.5 py-1.5 text-xs text-error hover:bg-surface-2 disabled:cursor-default disabled:opacity-40"
+            >
+              {deleting ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Trash2 size={13} />
+              )}
+              {t("confirmDelete.deleteAction")}
+            </button>
+          </div>
+        )}
       </div>
 
       {confirmExport && (
@@ -463,6 +563,16 @@ export function HistoryPage() {
             setPendingDelete(null);
           }}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {confirmBatchDelete && (
+        <ConfirmDialog
+          title={t("history.batchDeleteTitle", { count: selected.size })}
+          body={t("history.batchDeleteBody", { count: selected.size })}
+          confirmLabel={t("confirmDelete.deleteAction")}
+          onConfirm={() => void deleteSelected()}
+          onCancel={() => setConfirmBatchDelete(false)}
         />
       )}
     </div>

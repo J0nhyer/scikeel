@@ -136,6 +136,16 @@
     "change": "Change",
     "noProvidersHint": "Connect a provider below."
   },
+  "managedAgents": {
+    "title": "Agent access management",
+    "hint": "Applies to all users. Turning an Agent off hides it from assistant lists, lets running tasks finish and blocks subsequent calls. Turning it on restores it when the server configuration is available.",
+    "allow": "Allow {{runtime}}",
+    "saving": "Saving…",
+    "saved": "{{runtime}} saved.",
+    "failed": "Could not save {{runtime}}. Try again.",
+    "loadFailed": "Could not load Agent access settings.",
+    "retry": "Retry"
+  },
   "managedModels": {
     "title": "Managed CLI models",
     "hint": "Only administrators can change which Claude Code and Codex models users may select.",

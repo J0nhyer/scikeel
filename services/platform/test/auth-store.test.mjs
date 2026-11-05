@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,75 @@ async function makeStore(options = {}) {
   roots.push(root);
   return new AuthStore({ filePath: join(root, "auth.json"), ...options });
 }
+
+for (const operation of ["createSession", "revokeSession", "createUser", "setPassword", "disableUser", "expireSession"]) {
+  test(`preserves authentication state and recovers after ${operation} cannot persist`, async (t) => {
+    let timestamp = Date.now();
+    const store = await makeStore({
+      clock: () => timestamp,
+      bootstrapAdmin: { username: "admin", password: "admin-password" },
+    });
+    await store.init();
+    const user = await store.createUser({ username: "student", password: "student-password" });
+    const session = await store.createSession(user.id);
+    const before = structuredClone(store.data);
+    const diskBefore = await readFile(store.filePath, "utf8");
+    const originalWrite = fs.writeFile;
+    const failure = Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    let attempts = 0;
+    t.mock.method(fs, "writeFile", async (...args) => {
+      if (attempts++ === 0) throw failure;
+      return originalWrite(...args);
+    });
+    const mutate = {
+      createSession: () => store.createSession(user.id),
+      revokeSession: () => store.revokeSession(session.token),
+      createUser: () => store.createUser({ username: "new-user", password: "new-password" }),
+      setPassword: () => store.setPassword(user.id, "changed-password"),
+      disableUser: () => store.disableUser(user.id),
+      expireSession: () => {
+        timestamp += 8 * 24 * 60 * 60 * 1000;
+        return store.getUserBySession(session.token);
+      },
+    }[operation];
+    await assert.rejects(mutate(), (error) => error === failure);
+    assert.deepEqual(store.data, before);
+    assert.equal(await readFile(store.filePath, "utf8"), diskBefore);
+    const recovered = await store.createSession(user.id);
+    assert.ok(recovered.token);
+    assert.equal(await store.revokeSession(recovered.token), true);
+    assert.equal(await store.getUserBySession(recovered.token), null);
+    assert.ok(attempts >= 3);
+    await store.close();
+  });
+}
+
+test("password changes remain private until their file write succeeds", async (t) => {
+  const store = await makeStore({ bootstrapAdmin: { username: "admin", password: "admin-password" } });
+  await store.init();
+  const [admin] = await store.listUsers();
+  const originalWrite = fs.writeFile;
+  let releaseWrite;
+  let notifyWrite;
+  const pending = new Promise((resolve) => { notifyWrite = resolve; });
+  const gate = new Promise((resolve) => { releaseWrite = resolve; });
+  t.mock.method(fs, "writeFile", async (...args) => {
+    notifyWrite();
+    await gate;
+    return originalWrite(...args);
+  });
+  const update = store.setPassword(admin.id, "changed-password");
+  await pending;
+  try {
+    assert.ok(await store.authenticate("admin", "admin-password"));
+    assert.equal(await store.authenticate("admin", "changed-password"), null);
+  } finally {
+    releaseWrite();
+    await update;
+  }
+  assert.ok(await store.authenticate("admin", "changed-password"));
+  await store.close();
+});
 
 test("bootstraps an administrator and stores hashes instead of credentials", async () => {
   const store = await makeStore({ bootstrapAdmin: { username: "Admin", password: "correct horse battery staple" } });

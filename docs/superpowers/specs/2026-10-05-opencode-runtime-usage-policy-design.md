@@ -1,7 +1,7 @@
 # OpenCode Continuous Use Without Local Cumulative Limits
 
 Date: 2026-10-05
-Status: Proposed; awaiting written-spec approval before implementation planning.
+Status: Implemented, deployed, and verified in the public gateway Web client.
 Scope: The public multi-user gateway Web deployment using OpenCode.
 
 ## 1. Product requirement
@@ -137,3 +137,16 @@ Record deterministic verification, active deployment revision, allowed models,
 and live OpenCode continuation in `PROGRESS.md`. A restart clearing old in-memory
 counters does not prove the fix. Completion requires verifying removal of
 cumulative enforcement and continued operation of resource protections.
+
+
+## Final release verification
+
+Both requirements are deployed from `.worktrees/tenant-science-isolation` with Web root `.deploy/web-build-qwTqC2`, entry `index-B76ghCzJ.js`, SHA-256 `5e8df749e871964ef52627666e6408579de488ce4dd3b92c2f2ae5290847b4bc`. The reverse-proxy ingress served that exact asset, `/health` returned 200, and the unauthenticated entry returned 303 to login. Platform, sandbox host, and tenant volume services are active and enabled.
+
+Verification: full frontend baseline 1840 passed and 22 conditional skips; final loading-path follow-up 327 passed; full platform baseline 329 passed and three skips; final platform follow-up 66 passed. Lint, guarded typecheck/build, staged browser navigation/reload and phone-width checks passed. The full frontend baseline precedes the final cancellation status-gating refinement; the 327 follow-up cases exercise that refinement. Both spec and code reviews passed.
+
+Real deployed test1 browser acceptance passed five replies across `big-pickle` and `mimo-v2.6-flash-free`, including the previously affected saved context through a fork, consecutive new-session turns, and another turn after refresh. A manually approved 55-second harmless bash wait survived switching away and cold reload on another conversation, outlasted the lease TTL, and completed without a fabricated interruption. A separate temporary conversation exercised the actual Stop button: execution became idle, and reload displayed exactly one interruption diagnostic. Both browser runs reported zero page errors.
+
+Original transcripts, conversation identifiers/titles, user credential records and workspace file hashes were preserved. A temporary test1 platform session was issued through the supported AuthStore while the service was stopped, used privately, logged out and removed; passwords were not changed. All newly created acceptance conversations were deleted. This closes the earlier test1 acceptance gap using inherited context without adding messages to the original conversation. Provider-owned limits remain outside local quota removal.
+
+Evidence: `.deploy/verification/two-requirements/` in the root checkout; `release-manifest.json` identifies source hashes, live bundle, checks, limitations and rollback. The previous Web bundle and root-owned environment backup are retained. No merge, push, worktree removal or user-data migration was performed.

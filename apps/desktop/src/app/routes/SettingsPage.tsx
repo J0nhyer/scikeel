@@ -1877,7 +1877,7 @@ export function SettingsPage() {
         )}
 
         {/* ---- Workspace ---- */}
-        {section === "general" && (
+        {section === "general" && !isGatewayWeb && (
         <Section title={t("workspace.title")} hint={t("workspace.hint")}>
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 select-all truncate font-mono text-[13px] leading-9 text-muted">
@@ -1942,7 +1942,7 @@ export function SettingsPage() {
             repeating the same tool call with identical results (Channel B) —
             and offer Keep waiting / Stop. Never auto-interrupts. Available on
             the web too (the warning is inline there; no system notification). */}
-        {section === "general" && runtimeKind === "opencode" && (
+        {section === "general" && (isGatewayWeb || runtimeKind === "opencode") && (
           <Section
             title={t("stall.title")}
             hint={t("stall.hint") + (isGatewayWeb ? ` ${t("stall.webNote")}` : "")}
@@ -2182,7 +2182,7 @@ export function SettingsPage() {
         )}
 
         {/* ---- App updates ---- */}
-        {section === "general" && (
+        {section === "general" && !isGatewayWeb && (
         <Section title={t("updates.title")} hint={t("updates.hint")} flush>
           <div className="divide-y divide-faint">
             <Row

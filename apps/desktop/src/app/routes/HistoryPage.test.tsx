@@ -48,18 +48,25 @@ vi.mock("@/lib/runtime", async (importOriginal) => {
 const setSessionArchived = vi.fn(async () => true);
 const renameSession = vi.fn(async () => true);
 const moveSessionToWorkspace = vi.fn(async () => true);
+const deleteSession = vi.fn(async () => {});
 
 beforeEach(() => {
   vi.setSystemTime(NOW);
   queries_seen.length = 0;
-  [querySessions, getMessages, setSessionArchived, renameSession, moveSessionToWorkspace].forEach(
-    (m) => m.mockClear(),
-  );
+  [
+    querySessions,
+    getMessages,
+    setSessionArchived,
+    renameSession,
+    moveSessionToWorkspace,
+    deleteSession,
+  ].forEach((m) => m.mockClear());
   useRuntimeStore.setState({
     status: "ready",
     setSessionArchived,
     renameSession,
     moveSessionToWorkspace,
+    deleteSession,
     projects: [
       {
         id: "p1",
@@ -166,5 +173,54 @@ describe("HistoryPage", () => {
     await userEvent.click(within(submenu).getByText("BCI trends"));
 
     expect(moveSessionToWorkspace).toHaveBeenCalledWith("s2", "/work/projects/bci");
+  });
+
+  it("deletes the selected conversations in one confirmed batch", async () => {
+    const page = await openHistory();
+    await userEvent.click(page.getByRole("button", { name: "Select" }));
+    await userEvent.click(page.getByRole("checkbox", { name: "today's analysis" }));
+    await userEvent.click(page.getByRole("checkbox", { name: "yesterday's debugging" }));
+
+    expect(page.getByText("2 selected")).toBeInTheDocument();
+    await userEvent.click(page.getByRole("button", { name: "Delete" }));
+
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete 2 sessions?" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteSession).toHaveBeenCalledTimes(2));
+    expect(deleteSession).toHaveBeenNthCalledWith(1, "s1");
+    expect(deleteSession).toHaveBeenNthCalledWith(2, "s2");
+    await waitFor(() =>
+      expect(page.queryByText("today's analysis")).not.toBeInTheDocument(),
+    );
+    expect(page.queryByText("yesterday's debugging")).not.toBeInTheDocument();
+    expect(page.getByRole("button", { name: "Select" })).toBeInTheDocument();
+  });
+
+  it("selects every loaded conversation and clears the selection when the filter changes", async () => {
+    const page = await openHistory();
+    await userEvent.click(page.getByRole("button", { name: "Select" }));
+    await userEvent.click(page.getByRole("checkbox", { name: "Select loaded" }));
+
+    expect(page.getByText("3 selected")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("Show archived"));
+
+    await waitFor(() => expect(page.getByRole("button", { name: "Select" })).toBeInTheDocument());
+    expect(page.queryByText("3 selected")).not.toBeInTheDocument();
+    expect(page.queryByRole("checkbox", { name: "Select loaded" })).not.toBeInTheDocument();
+  });
+
+  it("leaves selection mode without deleting when cancelled", async () => {
+    const page = await openHistory();
+    await userEvent.click(page.getByRole("button", { name: "Select" }));
+    await userEvent.click(page.getByRole("checkbox", { name: "today's analysis" }));
+    await userEvent.click(page.getByRole("button", { name: "Cancel" }));
+
+    expect(page.queryByText("1 selected")).not.toBeInTheDocument();
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(
+      page.getByRole("button", { name: "Actions for today's analysis" }),
+    ).toBeInTheDocument();
   });
 });

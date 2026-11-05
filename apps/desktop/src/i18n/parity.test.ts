@@ -36,6 +36,15 @@ describe("locale key parity (base keys)", () => {
   });
 
   it.each(shippedLocales().map((locale) => locale.code))(
+    "%s includes Web skill loading and installation scope messages",
+    (code) => {
+      for (const key of ["skills.refresh", "skills.loading", "skills.loadFailed", "skills.retry", "skills.install.hintWorkspace", "skills.install.agentPromptWorkspace"]) {
+        expect(i18n.exists(key, { lng: code, ns: "pages" })).toBe(true);
+      }
+    },
+  );
+
+  it.each(shippedLocales().map((locale) => locale.code))(
     "%s includes the model catalog unavailable message",
     (code) => {
       expect(i18n.exists("model.catalogUnavailable", { lng: code, ns: "settings" })).toBe(true);

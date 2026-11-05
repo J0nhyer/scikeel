@@ -977,7 +977,7 @@ export function Sidebar({ project }: { project: Project }) {
         </>
         )}
 
-        {isGatewayWeb && <div className="mt-auto"><GatewayAccountMenu user={gatewayUser} showUpdateBadge={showUpdateBadge} /></div>}
+        {isGatewayWeb && <div className="mt-auto"><GatewayAccountMenu user={gatewayUser} /></div>}
 
         {pendingRemoveProject && (
           <ConfirmDialog

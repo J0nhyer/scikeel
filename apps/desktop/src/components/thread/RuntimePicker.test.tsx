@@ -4,11 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useRuntimeStore } from "@/lib/runtime";
 import { RuntimePicker } from "./RuntimePicker";
 
+const viewport = vi.hoisted(() => ({ mobile: false }));
+vi.mock("@/lib/useIsMobile", () => ({ useIsMobile: () => viewport.mobile }));
+
 describe("RuntimePicker", () => {
   const initial = useRuntimeStore.getState();
   const selectGatewayRuntime = vi.fn(async () => {});
 
   beforeEach(() => {
+    viewport.mobile = false;
     selectGatewayRuntime.mockClear();
     useRuntimeStore.setState({
       gatewayRuntime: "opencode",
@@ -69,6 +73,37 @@ describe("RuntimePicker", () => {
     render(<RuntimePicker />);
 
     expect(screen.getByRole("button", { name: /AI assistant: OpenCode/ })).toBeDisabled();
+  });
+
+  it.each([[false, "user"], [true, "user"], [false, "admin"], [true, "admin"]] as const)(
+    "hides disabled assistants and restores them after re-enabling (mobile: %s, role: %s)", async (mobile, role) => {
+      viewport.mobile = mobile;
+      const options = useRuntimeStore.getState().gatewayRuntimes;
+      act(() => useRuntimeStore.setState({ gatewayUserRole: role,
+        gatewayRuntimes: options.map((option) => ({ ...option, enabled: option.runtime === "opencode" })) }));
+      const user = userEvent.setup();
+      render(<RuntimePicker />);
+      await user.click(screen.getByRole("button", { name: "AI assistant: OpenCode" }));
+      const itemRole = mobile ? "button" : "menuitem";
+      expect(screen.getByRole(itemRole, { name: "OpenCode" })).toBeEnabled();
+      expect(screen.queryByRole(itemRole, { name: "Claude Code" })).not.toBeInTheDocument();
+      expect(screen.queryByRole(itemRole, { name: "Codex" })).not.toBeInTheDocument();
+      act(() => useRuntimeStore.setState({ gatewayRuntimes: options }));
+      expect(screen.getByRole(itemRole, { name: "Claude Code" })).toBeEnabled();
+      await user.click(screen.getByRole(itemRole, { name: "Codex" }));
+      expect(selectGatewayRuntime).toHaveBeenCalledWith("codex");
+    });
+
+  it("asks for a new selection when the current assistant is disabled without switching automatically", async () => {
+    act(() => useRuntimeStore.setState({ gatewayRuntime: "codex",
+      gatewayRuntimes: useRuntimeStore.getState().gatewayRuntimes.map((option) => ({ ...option, enabled: option.runtime !== "codex" })) }));
+    const user = userEvent.setup();
+    render(<RuntimePicker />);
+    await user.click(screen.getByRole("button", { name: "AI assistant: Select assistant" }));
+    expect(screen.queryByRole("menuitem", { name: "Codex" })).not.toBeInTheDocument();
+    expect(selectGatewayRuntime).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("menuitem", { name: "OpenCode" }));
+    expect(selectGatewayRuntime).toHaveBeenCalledWith("opencode");
   });
 
   it("does not render outside the authenticated platform", () => {

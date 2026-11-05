@@ -2,13 +2,14 @@ import { useState } from "react";
 import { FolderOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
+import { samePath } from "@/lib/workspacePath";
 import { isTauri, pickFolder } from "@/lib/tauri";
 import { datedWorkspaceName, DRAFT_KEY, useRuntimeStore } from "@/lib/runtime";
 
 /** Last path segment of the workspace folder, or "Workspace" when unknown. */
-export function baseName(path: string | null): string {
+export function baseName(path: string | null, managedRoot: string | null = null): string {
   const fallback = i18n.t("session:workspaceChip.fallbackName");
-  if (!path) return fallback;
+  if (!path || (managedRoot && samePath(path, managedRoot))) return fallback;
   return path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || fallback;
 }
 

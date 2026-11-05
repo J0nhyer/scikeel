@@ -1,7 +1,7 @@
 # Web Runtime Recovery and Model Loading Design
 
-Date: 2026-10-06  
-Status: Draft for user approval; implementation and deployment are not authorized yet.  
+Date: 2026-10-06
+Status: Approved by the user on 2026-10-06; implementation and the planned Web publication are authorized.
 Scope: Public multi-user gateway Web, including phone-width viewports.
 
 ## 1. Problem and intended outcome
@@ -27,7 +27,7 @@ Read-only inspection on October 6, 2026 identified the following:
 | Availability cache | Zen cache is module memory, with a ten-minute TTL | Refresh discards it; the check is repeated by a new page |
 | Native catalog transport | SDK `listProviders`, `getDefaultModel`, `listCommands`, `listAgents`, and `listSkills` use direct fetch reads rather than the bounded request helper | An independent catalog branch can still hang unless Web requests and body decoding are explicitly bounded |
 | Availability transport | Web `gatewayGet()` has no client cancellation deadline; the Rust upstream model probe has a five-second timeout | The browser has no explicit overall bound, even though the upstream request is bounded |
-| History publication | Both `openSession()` and `loadSession()` await `catalogInFlight` when command templates are empty | Even completed message reads can wait for model enrichment and skill scanning |
+| History publication | Both `openSession()` and `loadHistory()` await `catalogInFlight` when command templates are empty | Even completed message reads can wait for model enrichment and skill scanning |
 | Login preparation | Successful handoff requires ready connection, sessions, a `ready` catalog, and a default; `limited` is not accepted | A usable limited catalog can unnecessarily remain on the preparation screen |
 
 The inspected production service runs from `.deploy/web-releases/2026-10-05T22-03-56-047Z-ec65dd2e/source`. The relevant wait/error patterns also exist there. Several main-checkout files differ from that source and the main checkout contains extensive unrelated uncommitted changes. Execution must re-inspect the effective service source and Web assets rather than assume this recorded path remains current.
@@ -138,3 +138,5 @@ Implement in an isolated checkout based on the effective production-compatible s
 Self-review checked evidence against both inspected source locations, separated hypotheses from confirmed code behavior, preserved existing authorization/send restrictions, and covered superseded request races, cache expiry, command-only history, limited catalogs, phone widths, live-turn continuity, host limits, and production-compatible release selection.
 
 No production trace, reproduction test, performance improvement, implementation test run, or deployment is claimed by this document. The companion implementation plan is prepared next as requested. **Do not implement either artifact until the user approves.**
+
+Execution update (2026-10-06): The user approved implementation and maintenance pauses. The user subsequently excluded phone-width acceptance; this release will verify desktop Web in English and Chinese.

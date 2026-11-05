@@ -212,44 +212,47 @@ export class AuthStore {
     };
   }
 
-  #pruneExpiredSessions() {
-    const before = this.data.sessions.length;
+  #pruneExpiredSessions(data = this.data) {
+    const before = data.sessions.length;
     const timestamp = this.clock();
-    this.data.sessions = this.data.sessions.filter((session) => session.expiresAt > timestamp);
-    return before !== this.data.sessions.length;
+    data.sessions = data.sessions.filter((session) => session.expiresAt > timestamp);
+    return before !== data.sessions.length;
   }
 
-  async #persist() {
+  async #persist(data = this.data) {
     const snapshot = {
       version: STORE_VERSION,
-      users: this.data.users.map((user) => ({ ...user })),
-      sessions: this.data.sessions.map((session) => ({ ...session })),
+      users: data.users.map((user) => ({ ...user })),
+      sessions: data.sessions.map((session) => ({ ...session })),
     };
-    this.persistQueue = this.persistQueue.then(async () => {
+    const persist = async () => {
       await ensureDirectory(dirname(this.filePath));
       await writeJsonAtomic(this.filePath, snapshot);
-    });
+      this.data = snapshot;
+    };
+    this.persistQueue = this.persistQueue.then(persist, persist);
     return this.persistQueue;
   }
 
   async #exclusive(fn) {
     await this.init();
-    const run = this.operationQueue.then(fn, fn);
+    const execute = () => fn(structuredClone(this.data));
+    const run = this.operationQueue.then(execute, execute);
     this.operationQueue = run.catch(() => {});
     return run;
   }
 
   async createUser({ username, password, role = "user" } = {}) {
-    return this.#exclusive(async () => {
+    return this.#exclusive(async (data) => {
       const normalized = normalizeUsername(username);
       assertPassword(password);
       assertRole(role);
-      if (this.data.users.some((user) => user.username === normalized)) {
+      if (data.users.some((user) => user.username === normalized)) {
         throw issue("duplicate_username", "username is already in use");
       }
       const user = this.#newUser(normalized, password, role);
-      this.data.users.push(user);
-      await this.#persist();
+      data.users.push(user);
+      await this.#persist(data);
       return publicUser(user);
     });
   }
@@ -263,30 +266,30 @@ export class AuthStore {
   }
 
   async createSession(userId) {
-    return this.#exclusive(async () => {
-      const user = this.data.users.find((candidate) => candidate.id === userId);
+    return this.#exclusive(async (data) => {
+      const user = data.users.find((candidate) => candidate.id === userId);
       if (!user || user.disabled) return null;
       const token = randomBytes(32).toString("base64url");
       const createdAt = this.clock();
       const expiresAt = createdAt + this.sessionTtlMs;
-      this.data.sessions.push({
+      data.sessions.push({
         tokenHash: hashSessionToken(token),
         userId,
         createdAt,
         expiresAt,
       });
-      await this.#persist();
+      await this.#persist(data);
       return { token, expiresAt };
     });
   }
 
   async getUserBySession(token) {
     if (typeof token !== "string" || token.length < 20) return null;
-    return this.#exclusive(async () => {
-      const changed = this.#pruneExpiredSessions();
-      const session = this.data.sessions.find((candidate) => candidate.tokenHash === hashSessionToken(token));
-      const user = session ? this.data.users.find((candidate) => candidate.id === session.userId) : null;
-      if (changed) await this.#persist();
+    return this.#exclusive(async (data) => {
+      const changed = this.#pruneExpiredSessions(data);
+      const session = data.sessions.find((candidate) => candidate.tokenHash === hashSessionToken(token));
+      const user = session ? data.users.find((candidate) => candidate.id === session.userId) : null;
+      if (changed) await this.#persist(data);
       if (!session || !user || user.disabled) return null;
       return publicUser(user);
     });
@@ -294,12 +297,12 @@ export class AuthStore {
 
   async revokeSession(token) {
     if (typeof token !== "string" || token.length < 20) return false;
-    return this.#exclusive(async () => {
+    return this.#exclusive(async (data) => {
       const tokenHash = hashSessionToken(token);
-      const before = this.data.sessions.length;
-      this.data.sessions = this.data.sessions.filter((session) => session.tokenHash !== tokenHash);
-      if (before !== this.data.sessions.length) await this.#persist();
-      return before !== this.data.sessions.length;
+      const before = data.sessions.length;
+      data.sessions = data.sessions.filter((session) => session.tokenHash !== tokenHash);
+      if (before !== data.sessions.length) await this.#persist(data);
+      return before !== data.sessions.length;
     });
   }
 
@@ -314,34 +317,34 @@ export class AuthStore {
   }
 
   async setPassword(userId, password) {
-    return this.#exclusive(async () => {
+    return this.#exclusive(async (data) => {
       assertPassword(password);
-      const user = this.data.users.find((candidate) => candidate.id === userId);
+      const user = data.users.find((candidate) => candidate.id === userId);
       if (!user) throw issue("unknown_user", "user not found");
       user.passwordHash = passwordHash(password);
       user.updatedAt = new Date(this.clock()).toISOString();
       // Password rotation invalidates every existing browser login for this
       // account, including a session copied from another device.
-      this.data.sessions = this.data.sessions.filter((session) => session.userId !== user.id);
-      await this.#persist();
+      data.sessions = data.sessions.filter((session) => session.userId !== user.id);
+      await this.#persist(data);
       return publicUser(user);
     });
   }
 
   async disableUser(userId, disabled = true) {
-    return this.#exclusive(async () => {
-      const user = this.data.users.find((candidate) => candidate.id === userId);
+    return this.#exclusive(async (data) => {
+      const user = data.users.find((candidate) => candidate.id === userId);
       if (!user) throw issue("unknown_user", "user not found");
       if (disabled && user.role === "admin" && !user.disabled) {
-        const activeAdmins = this.data.users.filter((candidate) => candidate.role === "admin" && !candidate.disabled);
+        const activeAdmins = data.users.filter((candidate) => candidate.role === "admin" && !candidate.disabled);
         if (activeAdmins.length <= 1) throw issue("last_admin", "cannot disable the last active administrator");
       }
       user.disabled = Boolean(disabled);
       user.updatedAt = new Date(this.clock()).toISOString();
       if (user.disabled) {
-        this.data.sessions = this.data.sessions.filter((session) => session.userId !== user.id);
+        data.sessions = data.sessions.filter((session) => session.userId !== user.id);
       }
-      await this.#persist();
+      await this.#persist(data);
       return publicUser(user);
     });
   }

@@ -96,6 +96,80 @@ async function login(client, username, password) {
   return json(response);
 }
 
+test("localized login keeps credentials private and preserves the destination on retries", async () => {
+  const f = await makeFixture();
+  const page = await fetch(`${f.base}/login?next=${encodeURIComponent('/files?view="recent"')}`);
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get("cache-control"), "no-store");
+  const html = await page.text();
+  assert.match(html, /<html lang="zh-Hans">/);
+  assert.match(html, /name="next" value="\/files\?view=&quot;recent&quot;"/);
+  const english = await fetch(`${f.base}/login?lang=en`);
+  assert.match(await english.text(), /<html lang="en">/);
+  const username = '<img src=x onerror="alert(1)">';
+  const invalid = await fetch(`${f.base}/auth/login`, {
+    method: "POST",
+    body: new URLSearchParams({ username, password: "never-render-this-password", lang: "en", next: "/files" }),
+  });
+  assert.equal(invalid.status, 401);
+  const retry = await invalid.text();
+  assert.match(retry, /role="alert"/);
+  assert.match(retry, /value="&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;"/);
+  assert.doesNotMatch(retry, /never-render-this-password/);
+  assert.match(retry, /name="next" value="\/files"/);
+  const success = await fetch(`${f.base}/auth/login`, {
+    method: "POST", redirect: "manual",
+    body: new URLSearchParams({ username: "admin", password: "admin-password", lang: "zh-Hans", next: "/files" }),
+  });
+  assert.equal(success.status, 303);
+  assert.equal(success.headers.get("location"), "/files");
+  assert.match(success.headers.get("set-cookie"), /osd_session=/);
+});
+
+test("research tasks validate ownership, bind context to a confirmed brief, and stop on page release", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-research-platform-"));
+  const home = join(root, "admin-codex");
+  await mkdir(home, { recursive: true });
+  await writeFile(join(home, "auth.json"), '{"auth":true}');
+  await writeFile(join(home, "config.toml"), 'model = "gpt-fast"\nmodel_catalog_json = "models.json"\n');
+  await writeFile(join(home, "models.json"), JSON.stringify({ models: ["gpt-fast"] }));
+  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: home, codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
+  const f = await makeFixture({ root, cliRuntime });
+  const admin = makeClient(f.base);
+  const account = await login(admin, "admin", "admin-password");
+  await cliRuntime.setUserRuntime(account.user.id, "codex", "gpt-fast");
+  const post = (path, body) => admin.request(path, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(body) });
+  const session = await json(await post("/session", { title: "Research task" }));
+  const path = `/api/research/${session.id}`;
+  assert.equal((await fetch(`${f.base}${path}`, { headers: { accept: "application/json" } })).status, 401);
+  assert.equal((await admin.request(path)).status, 200);
+  assert.equal((await post("/api/research/ses_cli_foreign_session_fixture_1234", { action: "create" })).status, 404);
+  const created = await post(path, { action: "create", objective: "Make a traceable baseline report", mode: "guided", goal: "thesis", inputs: [], deliverables: ["report.md"], pageId: "page-test", directory: "/another/account" });
+  assert.equal(created.status, 201);
+  const task = (await json(created)).task;
+  assert.notEqual(task.directory, "/another/account");
+  assert.equal(task.authorization, "existing-runtime-workspace-policy");
+  assert.equal((await post(`/session/${session.id}/prompt_async`, { parts: [{ type: "text", text: "Begin" }] })).status, 202);
+  await admin.request("/");
+  const answer = await waitForAssistant(admin, session.id);
+  assert.match(answer.parts.find((part) => part.type === "text").text, /research-workflow/);
+  assert.match(answer.parts.find((part) => part.type === "text").text, /guided/);
+  assert.match(answer.parts.find((part) => part.type === "text").text, /Make a traceable baseline report/);
+  const history = await json(await admin.request(`/session/${session.id}/message`));
+  assert.equal(history[0].parts[0].text, "Begin");
+  assert.equal((await post(path, { action: "release", pageId: "page-test" })).status, 200);
+  assert.equal((await post(`/session/${session.id}/prompt_async`, { parts: [{ type: "text", text: "Continue" }] })).status, 409);
+  const reopened = await post(path, { action: "heartbeat", pageId: "page-new" });
+  assert.equal(reopened.status, 200);
+  const stopped = (await json(await admin.request(path))).task;
+  assert.notEqual(stopped.status, "running");
+  assert.equal(stopped.execution, 1);
+  const fork = await json(await post(`/session/${session.id}/fork`, {}));
+  await post(path, { action: "release", pageId: "page-new" });
+  f.server.researchTasks.records.clear();
+  assert.equal((await post(`/session/${fork.id}/prompt_async`, { parts: [{ type: "text", text: "Detached research review" }] })).status, 409);
+});
+
 async function waitForAssistant(client, sessionId) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const response = await client.request(`/session/${encodeURIComponent(sessionId)}/message`, {
@@ -226,6 +300,10 @@ test("does not expose worker routes without a platform session", async () => {
   const anonymous = makeClient(fixture.base);
   const response = await anonymous.request("/v1/whoami", { headers: { accept: "application/json" } });
   assert.equal(response.status, 401);
+  assert.equal(response.headers.get("x-scikeel-auth"), "session-required");
+  const withoutAccept = await anonymous.request("/v1/whoami");
+  assert.equal(withoutAccept.status, 401);
+  assert.equal(withoutAccept.headers.get("x-scikeel-auth"), "session-required");
   assert.equal(fixture.manager.listWorkers().length, 0);
 });
 
@@ -284,7 +362,11 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
   assert.equal(bootstrap.status, 303);
   const web = await admin.request("/");
   assert.equal(web.status, 200);
-  assert.match(await web.text(), /window\.__OS_WEB__=true/);
+  const webHtml = await web.text();
+  assert.match(webHtml, /window\.__OS_WEB__=true/);
+  assert.match(webHtml, /window\.__OS_PLATFORM__=true/);
+  // A reload with the bootstrap cookie does not need another token transfer.
+  assert.equal((await admin.request("/")).status, 200);
   const asset = await admin.request("/assets/app.js");
   assert.equal(asset.status, 200);
   assert.equal(await asset.text(), "console.log('web');\n");
@@ -336,6 +418,16 @@ test("keeps OpenCode per user while exposing administrator-managed Claude and Co
     }),
   });
   assert.equal(studentAdminAttempt.status, 403);
+
+  const studentSwitchAttempt = await student.request("/api/admin/runtime", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ runtime: "codex", enabled: false }),
+  });
+  assert.equal(studentSwitchAttempt.status, 403);
+  assert.equal((await json(await admin.request("/api/admin/runtime", {
+    headers: { accept: "application/json" },
+  }))).assistantEnabled.codex, true);
 
   const selectClaude = await admin.request("/api/runtime", {
     method: "POST",
@@ -557,3 +649,62 @@ function expectRuntime({ runtime, model }) {
     ],
   };
 }
+
+test("conversation attachments persist on real managed messages and reject another user", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-attachment-platform-"));
+  const home = join(root, "codex-home"); await mkdir(home);
+  await writeFile(join(home, "auth.json"), '{"auth":true}');
+  await writeFile(join(home, "config.toml"), 'model = "fixture-model"\n');
+  const cliRuntime = new CliRuntimeManager({ rootDir: join(root, "cli"), codexHome: home,
+    codexCommand: process.execPath, codexArgs: [fakeCli, "codex"] });
+  const f = await makeFixture({ root, cliRuntime }); const client = makeClient(f.base);
+  const account = await login(client, "admin", "admin-password"); await client.request("/"); await cliRuntime.setUserRuntime(account.user.id, "codex");
+  const post = (path, value) => client.request(path, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(value) });
+  const draft = await json(await post("/api/attachments/drafts", {}));
+  const upload = await client.request(`/api/attachments/upload?draftId=${draft.id}&name=data.csv`, { method: "POST", body: "value\n2\n4\n" });
+  assert.equal(upload.status, 201); const file = await upload.json();
+  const session = await json(await post("/session", { title: "Attachment fixture" }));
+  const prompt = { parts: [{ type: "text", text: "Read data.csv" }], attachmentTurn: { draftId: draft.id, turnId: "turn_fixture", attachmentIds: [file.id] } };
+  assert.equal((await post(`/session/${session.id}/prompt_async`, prompt)).status, 202);
+  let history;
+  for (let n = 0; n < 100; n++) {
+    history = await json(await client.request(`/session/${session.id}/message`));
+    if (history.length > 1) break; await new Promise((done) => setTimeout(done, 20));
+  }
+  assert.equal(history[0].attachments[0].id, file.id); assert.equal(history[0].parts[0].text, "Read data.csv");
+  assert.equal((await post(`/session/${session.id}/prompt_async`, prompt)).status, 202);
+  assert.equal((await cliRuntime.getOwnedSession(account.user.id, session.id)).session.history.filter((m) => m.info.role === "user").length, 1);
+  const follow = await post(`/session/${session.id}/prompt_async`, { parts: [{ type: "text", text: "Read it again" }], attachmentTurn: { turnId: "turn_follow", attachmentIds: [] } });
+  assert.equal(follow.status, 202);
+  await f.authStore.createUser({ username: "other", password: "other-password" }); const other = makeClient(f.base); await login(other, "other", "other-password");
+  assert.equal((await other.request(`/api/attachments?sessionId=${session.id}`)).status, 404);
+  const copy = await json(await post(`/session/${session.id}/fork`, {}));
+  const removed = await client.request(`/session/${session.id}`, { method: "DELETE" }); assert.equal(removed.status, 200);
+  assert.equal((await client.request(`/api/attachments?sessionId=${session.id}`)).status, 404);
+  const forked = await json(await client.request(`/api/attachments?sessionId=${copy.id}`)); assert.equal(forked.attachments[0].sha256, file.sha256);
+});
+
+test("login preloads public client assets without starting a workspace, and the authenticated app includes a login preparation screen", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-login-preparation-"));
+  const webRoot = join(root, "web");
+  await mkdir(join(webRoot, "assets"), { recursive: true });
+  await writeFile(join(webRoot, "index.html"), '<html><head><script type="module" src="/assets/app.js"></script><link rel="stylesheet" href="/assets/app.css"></head><body><div id="root"></div></body></html>');
+  await writeFile(join(webRoot, "assets/app.js"), 'window.fixtureClient = true;');
+  const fixture = await makeFixture({ root, webRoot });
+  const page = await fetch(fixture.base + "/login");
+  const html = await page.text();
+  assert.match(html, /rel="modulepreload" href="\/assets\/app.js"/);
+  assert.match(html, /scikeel.login.pending/);
+  const asset = await fetch(fixture.base + "/assets/app.js", { redirect: "manual" });
+  assert.equal(asset.status, 200);
+  assert.equal(await asset.text(), 'window.fixtureClient = true;');
+  assert.equal(fixture.manager.listWorkers().length, 0);
+  const unauthenticated = await fetch(fixture.base + "/v1/whoami", { redirect: "manual" });
+  assert.equal(unauthenticated.status, 401);
+  const client = makeClient(fixture.base);
+  await login(client, "admin", "admin-password");
+  await client.request("/");
+  const app = await client.request("/");
+  assert.equal(app.status, 200);
+  assert.match(await app.text(), /scikeel:login-ready/);
+});

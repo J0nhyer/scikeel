@@ -1,11 +1,12 @@
 import { useTranslation } from "react-i18next";
-import { ChevronRight, FileSearch, FlaskConical, Globe2, LineChart } from "lucide-react";
+import { ChevronRight, FileSearch, FlaskConical, Globe2, Lightbulb, LineChart } from "lucide-react";
 import { resolveLocale } from "@/i18n/config";
 import zhWorkflowPrompts from "@/i18n/locales/zh-Hans/workflow-prompts.json";
 import { installExample, isTauri } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
+import { isGatewayWeb } from "@/lib/webMode";
 
-export type WorkflowStarterId = "demo" | "analyze" | "audit" | "example-climate";
+export type WorkflowStarterId = "research-idea" | "demo" | "analyze" | "audit" | "example-climate";
 
 export interface WorkflowStarter {
   id: WorkflowStarterId;
@@ -14,11 +15,26 @@ export interface WorkflowStarter {
   prompt: string;
   /** Side effect to run before sending the prompt (e.g. install example files). */
   prepare?: () => Promise<void>;
+  webOnly?: boolean;
 }
 
-/** One-click full-workflow prompts (P0-1): a single request that carries the
- *  agent through data → code → figure → report, all inside the app. */
+/** Conversation starters for research guidance, analysis, and traceability. */
 export const WORKFLOW_STARTERS: WorkflowStarter[] = [
+  {
+    id: "research-idea",
+    icon: <Lightbulb size={17} strokeWidth={1.75} />,
+    webOnly: true,
+    prompt:
+      "Help me start a research project from an idea, whether for an undergraduate thesis or a possible paper. " +
+      "Begin with a short welcome and at most three conversational questions about my discipline, any ideas I have, " +
+      "and the materials or resources available to me. Use anything I have already told you instead of asking again, " +
+      "then wait for my answers. If I have no topic yet, help me compare two or three feasible directions after " +
+      "learning my situation. Explain how an interest becomes a research question, suggest a manageable plan " +
+      "and one concrete next step, and discuss the plan with me. Do not ask me to fill out a form or specify output " +
+      "filenames before we know what to do. When I have data, connect the next step to Analyze my data; when I " +
+      "have a draft, connect it to Audit a report for traceability. Select relevant available Skills when needed " +
+      "and explain their purpose. Do not invent data, citations, results, or claims of novelty.",
+  },
   {
     id: "demo",
     icon: <FlaskConical size={17} strokeWidth={1.75} />,
@@ -80,6 +96,7 @@ export function WorkflowStarters({ onPick }: { onPick: (prompt: string) => void 
   // `starters.${id}.title` template, so each card's copy is looked up by id
   // from this literal-keyed map instead.
   const starterCopy: Record<string, { title: string; description: string }> = {
+    "research-idea": { title: t("starters.research-idea.title"), description: t("starters.research-idea.description") },
     demo: { title: t("starters.demo.title"), description: t("starters.demo.description") },
     analyze: { title: t("starters.analyze.title"), description: t("starters.analyze.description") },
     audit: { title: t("starters.audit.title"), description: t("starters.audit.description") },
@@ -102,7 +119,7 @@ export function WorkflowStarters({ onPick }: { onPick: (prompt: string) => void 
         </div>
 
         <div className="mt-7 overflow-hidden rounded-card border border-border bg-surface shadow-card">
-          {WORKFLOW_STARTERS.map((s) => (
+          {WORKFLOW_STARTERS.filter((s) => !s.webOnly || isGatewayWeb).map((s) => (
             <button
               key={s.id}
               onClick={() => {

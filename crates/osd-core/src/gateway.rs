@@ -665,8 +665,8 @@ fn v1(stream: &mut TcpStream, req: &Request, ctx: &Ctx, rest: &str) {
         // client can safely put in an <iframe>/<img> src. A GET (not a POST) so
         // a read-only token can still preview files.
         ("GET", ["fs", "ticket"]) => match fs_resolve(ctx, req) {
-            Ok(full) => {
-                let payload = serde_json::json!({ "ticket": issue_ticket(ctx, full) });
+            Ok((full, path)) => {
+                let payload = serde_json::json!({ "ticket": issue_ticket(ctx, full), "path": path });
                 respond_json(stream, 200, &payload.to_string());
             }
             Err(e) => respond_json(stream, 404, &err_json(&e)),
@@ -982,18 +982,26 @@ fn fs_list(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
 
 /// The workspace file a `path` (+ `root`/`dir` scope) query names, sandboxed by
 /// `fs_base` + `resolve_under`.
-fn fs_resolve(ctx: &Ctx, req: &Request) -> Result<PathBuf, String> {
+fn fs_resolve(ctx: &Ctx, req: &Request) -> Result<(PathBuf, String), String> {
     let rel = req.query_get("path").unwrap_or_default();
     let base = fs_base(ctx, req)?;
+    resolve_file_reference(&base, &rel)
+}
+
+fn resolve_file_reference(base: &Path, rel: &str) -> Result<(PathBuf, String), String> {
+    let base = base.canonicalize().map_err(|e| e.to_string())?;
     // Resolve by basename like the desktop preview server: agent prose often
     // names a file without its directory ("figure1.png" for "figures/figure1.png").
-    let located = locate_under(&base, &rel).unwrap_or(rel);
-    resolve_under(&base, &located)
+    let located = locate_under(&base, rel).unwrap_or_else(|| rel.to_string());
+    let full = resolve_under(&base, &located)?;
+    let path = full.strip_prefix(&base).map_err(|e| e.to_string())?
+        .to_string_lossy().replace('\\', "/");
+    Ok((full, path))
 }
 
 fn fs_read(stream: &mut TcpStream, req: &Request, ctx: &Ctx) {
     match fs_resolve(ctx, req) {
-        Ok(full) => send_file(stream, &full),
+        Ok((full, _)) => send_file(stream, &full),
         Err(e) => respond_json(stream, 404, &err_json(&e)),
     }
 }
@@ -1467,6 +1475,26 @@ pub fn regenerate_gateway_token(env: &Env, state: &GatewayState) -> Result<Gatew
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_reference_paths_deduplicate_aliases_and_preserve_distinct_files() {
+        let root = std::env::temp_dir().join(format!("gw-file-reference-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("demo_analysis")).unwrap();
+        std::fs::write(root.join("demo_analysis/report.md"), "report").unwrap();
+        let full = resolve_file_reference(&root, "demo_analysis/report.md").unwrap();
+        let bare = resolve_file_reference(&root, "report.md").unwrap();
+        assert_eq!(full, bare);
+        assert_eq!(full.1, "demo_analysis/report.md");
+
+        std::fs::write(root.join("report.md"), "different report").unwrap();
+        let root_report = resolve_file_reference(&root, "report.md").unwrap();
+        assert_ne!(full.0, root_report.0);
+        assert_eq!(root_report.1, "report.md");
+        assert!(resolve_file_reference(&root, "missing.md").is_err());
+        assert!(resolve_file_reference(&root, "../outside.md").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// A gateway record with `port` set, in a throwaway data dir.
     fn env_with_recorded_port(name: &str, port: Option<u16>) -> (Env, PathBuf) {

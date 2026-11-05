@@ -9,7 +9,7 @@
 **Tech Stack:** React, TypeScript, Zustand, Radix, lucide, existing SDK, Node platform services, Rust descriptor-relative managed file policy, Vitest, Playwright and guarded package scripts.
 
 **Spec:** `docs/superpowers/specs/2026-10-13-web-project-file-management-design.md`.
-**Status:** Proposed. No implementation or deployment has started. Recoverable deletion and exclusion of permanent purge require user approval.
+**Status:** User requested continued execution on 2026-10-13. Checkpoint A is in progress in `.worktrees/web-project-file-management-20261013` / `feat/web-project-file-management-20261013`, based on `d9f003d`. Focused verification passed 18 platform and 24 frontend tests plus guarded lint/typecheck; full suites are running. Required browser/live gates and native-runtime lifecycle compatibility are still pending; no deployment changed.
 
 ---
 
@@ -19,7 +19,7 @@
 - Checkpoint B adds Tasks 7-10: native primitives, journaled files, uploads and file UI.
 - Checkpoint C adds Tasks 11-12: conditional text editing and final integration.
 - Each checkpoint must be independently usable, tested and reviewed before publishing. Do not label B/C delivered with only A implemented.
-- Primary checkout is dirty and contains account recovery and other unrelated work. Before product edits, use an approved isolated workspace based on the effective published sources; do not wholesale merge main or another feature branch. Documentation in this turn is the only authorized change.
+- Primary checkout is dirty and contains account recovery and other unrelated work. Before product edits, use an approved isolated workspace based on the effective published sources; do not wholesale merge main or another feature branch. Continued execution is authorized; do not delete real user data or publish an incomplete checkpoint.
 - At execution time re-read `AGENTS.md`, active release and platform WorkingDirectory. The inspected release IDs below are evidence, not immutable assumptions.
 - Run all frontend/platform/native tests and builds through guarded package scripts. Run heavy jobs serially. A production worker holding the task lock may require authorized maintenance; do not bypass the lock.
 - Exclude live Claude. Do not activate Codex to satisfy this feature's tests. Deterministic Codex compatibility tests are mandatory while live service is unavailable.
@@ -280,4 +280,4 @@ it("keeps the draft after a revision conflict", async () => {
 
 Self-review checks: every spec acceptance ID is mapped; all mutations resolve trusted scope; project paths stay stable; native image changes are explicit; old routes cannot bypass lifecycle; operation ID and revision wire names match across tasks; unknown execution/recovery state fails closed; no permanent-delete task contradicts the initial safety boundary.
 
-The spec and plan are ready for user review. Review the recoverable deletion assumption first, then approve inline execution beginning with checkpoint A. No agent delegation, implementation, deployment or real data deletion is authorized by these documents alone.
+Execution is in progress following the user's continuation request. Do not dispatch agents or deploy solely because this document exists. Preserve the checkpoint review and data-retention boundaries.

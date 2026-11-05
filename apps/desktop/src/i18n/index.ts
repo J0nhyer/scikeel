@@ -1,7 +1,7 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 
-import { DEFAULT_LOCALE, detectInitialLocale } from "./config";
+import { DEFAULT_LOCALE, detectInitialLocale, localeMeta } from "./config";
 
 // Statically bundled: the whole UI string set across 7 languages is a few KB,
 // so it ships in the main chunk. Revisit lazy-loading only if this grows large.
@@ -82,9 +82,16 @@ const resources = {
   ko: { common: koCommon, nav: koNav, settings: koSettings, runs: koRuns, session: koSession, inspector: koInspector, errors: koErrors, pages: koPages },
 } as const;
 
+const initialLocale = detectInitialLocale();
+if (typeof document !== "undefined") {
+  document.documentElement.lang = initialLocale;
+  document.documentElement.dir = localeMeta(initialLocale)?.dir ?? "ltr";
+}
+
 void i18n.use(initReactI18next).init({
+  initAsync: false,
   resources,
-  lng: detectInitialLocale(),
+  lng: initialLocale,
   fallbackLng: DEFAULT_LOCALE,
   defaultNS: "common",
   ns: NAMESPACES,

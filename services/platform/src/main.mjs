@@ -59,6 +59,7 @@ const workerManager = new WorkerManager({
 });
 const cliRuntime = new CliRuntimeManager({
   rootDir: join(dataDir, "cli-runtime"),
+  resourcesDir: env("OSD_RESOURCES") || null,
   // OpenCode remains every user's default. Claude Code and Codex are optional
   // per-user selections; no environment variable may flip the whole platform.
   runtime: "opencode",

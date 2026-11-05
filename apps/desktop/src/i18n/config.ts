@@ -56,8 +56,15 @@ export function resolveLocale(candidate: string | null | undefined): string {
  *  language → default. Persistence is owned by the store; this only seeds it. */
 export function detectInitialLocale(): string {
   if (typeof window === "undefined") return DEFAULT_LOCALE;
-  const saved = window.localStorage.getItem(LOCALE_KEY);
-  if (saved) return resolveLocale(saved);
+  try {
+    const saved = window.localStorage.getItem(LOCALE_KEY);
+    if (saved) return resolveLocale(saved);
+  } catch {
+    // Browser privacy settings can block storage; still render the UI.
+  }
+  // The public platform login defaults to Chinese. Use the same first-run
+  // language; an explicit saved preference always takes precedence.
+  if ((window as Window & { __OS_PLATFORM__?: boolean }).__OS_PLATFORM__) return "zh-Hans";
   const nav = typeof navigator !== "undefined" ? navigator.language : null;
   return resolveLocale(nav);
 }

@@ -1,3 +1,4 @@
+import type { AttachmentPromptContext, ConversationAttachment } from "@ai4s/shared";
 import type {
   AgentInfo,
   CommandInfo,
@@ -708,6 +709,26 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     if (!res.ok) throw await this.apiError(res, "Failed to delete session");
   }
 
+  async isSessionRunning(sessionId: string, directory?: string): Promise<boolean | null> {
+    const query = directory
+      ? `?${new URLSearchParams({ directory })}`
+      : this.dirQuery();
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/session/status${query}`, {
+      headers: this.headers(),
+    });
+    if (res.status === 404 || res.status === 501) return null;
+    if (!res.ok) throw await this.apiError(res, "Failed to load session status");
+    const statuses: unknown = await res.json();
+    if (!statuses || typeof statuses !== "object" || Array.isArray(statuses)) {
+      throw new Error("Invalid session status response");
+    }
+    if (!Object.prototype.hasOwnProperty.call(statuses, sessionId)) return false;
+    const status = (statuses as Record<string, { type?: string } | null>)[sessionId];
+    if (status?.type === "idle") return false;
+    if (status?.type === "busy" || status?.type === "retry") return true;
+    throw new Error("Unknown session status");
+  }
+
   /** Load a session's message history. */
   async getMessages(sessionId: string): Promise<HistoryMessage[]> {
     const res = await this.fetchWithTimeout(
@@ -725,6 +746,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
         cost?: number;
         tokens?: RawTokens;
       };
+      attachments?: ConversationAttachment[];
       parts: HistoryMessage["parts"];
     }>;
     return arr.map((m) => {
@@ -732,6 +754,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
       const usage = toUsage(m.info.tokens, m.info.cost);
       return {
         role: m.info.role,
+        ...(m.attachments ? { attachments: m.attachments } : {}),
         ...(m.info.id ? { id: m.info.id } : {}),
         completed: m.info.time?.completed,
         created: m.info.time?.created,
@@ -1310,6 +1333,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     model?: string | null,
     variant?: string | null,
     files?: PromptFile[],
+    attachmentContext?: AttachmentPromptContext,
   ): Promise<void> {
     const m = parseModel(model);
     const res = await this.fetchWithTimeout(
@@ -1330,6 +1354,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
               url: f.url,
             })),
           ],
+          ...(attachmentContext ? { attachmentTurn: attachmentContext } : {}),
           ...(agent ? { agent } : {}),
           ...(m ? { model: m } : {}),
           system: ARTIFACT_PRESENTATION_SYSTEM,
@@ -1368,7 +1393,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/question${this.dirQuery()}`, {
       headers: this.headers(),
     });
-    if (!res.ok) return [];
+    if (res.status === 404 || res.status === 501) return [];
+    if (!res.ok) throw await this.apiError(res, "Failed to load questions");
     const arr = (await res.json()) as Array<{
       id: string;
       sessionID: string;
@@ -1405,7 +1431,8 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/permission${this.dirQuery()}`, {
       headers: this.headers(),
     });
-    if (!res.ok) return [];
+    if (res.status === 404 || res.status === 501) return [];
+    if (!res.ok) throw await this.apiError(res, "Failed to load permissions");
     // Same dual field names as the SSE event: `permission`/`patterns` (V2)
     // with `action`/`resources` as the legacy fallback.
     const arr = (await res.json()) as Array<{

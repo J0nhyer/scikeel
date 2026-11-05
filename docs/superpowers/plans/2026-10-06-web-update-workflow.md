@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Node ESM, pnpm, TypeScript, ESLint, Vitest, esbuild, Vite, fixture PlatformServer/browser acceptance, Linux systemd/flock/cgroup v2, JSON manifests, and existing scientific-image attestation tooling. No new dependencies or services.
 
-**Specification:** `docs/superpowers/specs/2026-10-06-web-update-workflow-design.md` (spec commit `3313816`). The user requested spec and plan together; this document does not begin implementation or deployment.
+**Specification:** `docs/superpowers/specs/2026-10-06-web-update-workflow-design.md` (spec commit `3313816`). The spec and plan were completed before implementation. The subsequent user instruction authorized continuous implementation, testing, and project-service publication without another approval request.
 
 ---
 
@@ -323,8 +323,9 @@ Set required acceptance flags explicitly and reject a report in which required c
 ## Task 7: Publish with identity checks and verified rollback
 
 **Create:** `scripts/dev/web-release-deploy.mjs`.
-**Modify:** `scripts/dev/web-release.mjs`, `scripts/dev/web-release.test.mjs`.
+**Modify:** `scripts/dev/web-release.mjs`, `scripts/dev/web-release.test.mjs`, `scripts/dev/prepare-science-image.mjs`.
 
+- [ ] Extend future signed image manifests with the sorted source-input hash list so Python/Rust/tool-input changes are bound to the candidate rather than only a different digest. Existing unchanged installed images remain reusable after measured runner/tool/skill checks.
 - [ ] Implement and test the transaction using injected operations before any live service mutation:
 
 ```js
@@ -409,4 +410,141 @@ Pin the current and previous successful release directories as well as resolved 
 
 Self-review: every specification requirement maps to tasks and failure-oriented evidence. Source freezing, dependency identity, guard inheritance, cache outputs, build/check counts, fixture browser lifecycle, effective configuration precedence, stale publication and rollback failures are explicitly covered. No dependency install, higher memory limit, parallel heavy job, new resident service, automatic cleanup, push/merge, or Claude live gate is included.
 
-Implementation has not begun. Recommended execution is sequential inline work using `superpowers:executing-plans`, with a checkpoint after candidate preparation and before the first live publication. Report concrete prepared artifacts at that checkpoint; reuse existing user authorization for project-service restarts and do not add repetitive confirmation prompts.
+Implementation authorized by the subsequent user instruction to proceed directly after planning. Recommended execution is sequential inline work using `superpowers:executing-plans`, with a checkpoint after candidate preparation and before the first live publication. Report concrete prepared artifacts at that checkpoint; reuse existing user authorization for project-service restarts and do not add repetitive confirmation prompts.
+
+
+## Execution adjustment: production admission lock
+
+Observed during implementation: a running worker holds `desktop-task.lock` for
+its lifetime, so a normal guarded build cannot start while it exists. Add
+`scripts/dev/web-release-maintenance.mjs` and explicit `--maintenance` to
+prepare/run/resume under the pre-existing sole-user interruption authorization.
+The controller owns the publication lock, gracefully stops the project platform,
+acquires the released host lock, restarts the same platform, and runs package
+scripts in the existing verified cgroup limits with host-pressure monitoring.
+Every exit starts/restores the original platform. Default prepare remains
+non-interrupting and fails visibly on a busy host. Publication owns only the
+publication lock, preventing competing builds while allowing live OpenCode
+worker admission. Regression evidence must include restore-on-failure, actual
+inherited FLOCK proof, required browser/transaction gates, and unchanged served
+bundle during failed preparation.
+
+
+## Implementation record
+
+The implementation follows the authorized sequence. The detailed checkboxes above
+are the original pre-implementation instructions, not a claim that every example
+or suggested per-task commit was executed verbatim. Work was consolidated into
+local commits `f9eea14` (workflow) and `2313061` (recovery retention), on branch
+`feat/web-update-workflow`; no push or merge was performed.
+
+| Task | Implemented outcome | Evidence |
+| --- | --- | --- |
+| 0 | Isolated production-compatible implementation worktree; original dirty sources preserved | `tool-install-before/`, `main-tool-install-before/`, and before/after install manifests |
+| 1 | Content identities, atomic stage records, guarded Node regression entry | 37 workflow/cache regressions, no skipped tests |
+| 2 | Explicit source, immutable source/dependency views, effective service inspection | Dirty/untracked/symlink/mutation regressions; actual production source and bundle identities |
+| 3 | Conservative selection; registered UI leaf, translation parity, platform/security widening | UI and authentication/API probes below; policy regressions |
+| 4 | Shared bounded execution; desktop and Web build profiles | Actual `pnpm build` and `pnpm web:build`, staged only; desktop log includes ACP bundling, Web log excludes it |
+| 5 | Complete immutable vendor cache including Monaco CSS and workers | Cold build and warm hits; dependency/content/CSS/worker/failure regressions |
+| 6 | Sequential resumable candidate preparation and required browser gates | Full bootstrap, a real failed-stage resume, and 1280px/390px candidate acceptance |
+| 7 | Authenticated served hashes, fixed backend source, recovery and rollback | Successful bootstrap publication, real failed-publication recovery, and stopped-service UI rollback |
+| 8 | Read-only storage report, protected recovery backups, operator guidance and timings | Storage regression and dry-run; timing table below; final state checks below |
+
+Production integration applies narrow changes onto the active checkout. Its
+existing collaboration runner measurement and real unanswered-checkpoint CI step
+are retained. These active uncommitted product prerequisites are not copied into
+the older implementation branch. No tenant data, unrelated service, dependency
+installation, image build, or live Claude probe is involved.
+
+Observed integration failures were fixed and reviewed before continuing:
+
+- Frozen verification initially needed the approved pnpm store in Vite's allowed
+  filesystem roots; generated Python caches also needed exclusion from source
+  identity. A recorded failed candidate then resumed through vendor, bundle, and
+  browser acceptance without rerunning its passed frontend/platform suites.
+- Root-private managed drop-ins require elevated `systemctl cat` for inspection.
+  A real failed publication retained the old bundle; verified recovery succeeded
+  after this fix and a bounded HTTP readiness wait were added. Readiness retries
+  only `/health`, not arbitrary requests or acceptance failures.
+- A rollback can retain another candidate's private recovery source. All entries
+  with recovery data are conservatively pinned even without a current pointer.
+  Prune remains dry-run only.
+
+### Measured representative changes
+
+Both probes append one newline to a selected authoring file, freeze/test the
+result, and restore the original bytes in `finally`. They measure the workflow
+for those change classifications; they are not substantive feature benchmarks.
+The UI probe publishes and rolls back; the API probe prepares without publishing.
+
+| Case | Preparation | Complete command | Verification |
+| --- | ---: | ---: | --- |
+| Full bootstrap after readiness fixes | 536.3 s | Preparation plus separate 18.1 s publication | 1,844 frontend passes, 332 platform passes, 36 workflow/cache passes, four required browser scenarios |
+| Registered `WorkflowStarters.tsx` UI leaf | 98.4 s | 121.7 s, including publication | Eight selected UI tests, lint, one typecheck, warm vendor cache, one Web bundle, app acceptance at both widths |
+| `services/platform/src/auth-store.mjs` API/authentication path | 244.8 s | 246.9 s preparation command | Full platform suite, lint, one typecheck, warm vendor cache, app/login/session browser scenarios |
+| Service stopped before UI rollback | n/a | 3.0 s recovery | Previous managed release pointer, running platform, authenticated old asset hashes |
+
+The historical full-suite observations were approximately 281 s frontend and
+121 s platform; they did not measure a complete release. The improved leaf/API
+paths intentionally omit unaffected suites. The numbers therefore establish
+actual selected coverage and elapsed time, not equal-coverage speedups against an
+unmeasured historical end-to-end release.
+
+Cold vendor preparation took 6.5 s in one bootstrap and a later warm hit took
+5.3 s, including content identity validation. The larger observed savings come
+from avoiding unrelated suites and duplicate typechecking/ACP work. Existing
+cgroup limits remain 1850M high, 2200M maximum, 256M swap; no limit was increased.
+
+Evidence is retained under
+`.worktrees/web-update-workflow/.deploy/verification/web-update-workflow/`
+(logs and probe reports), with install backups and tenant-state evidence under
+shared `.deploy/verification/web-update-workflow/`. Browser prerequisites are in
+the ignored shared `.deploy/web-release-settings.json`; no credential is included
+in this document or public release manifests.
+
+### Final acceptance
+
+The final `web:release run --maintenance --full` completed successfully and
+published release `2026-10-06T06-23-09-639Z-4a0d3d0f`. Preparation took 567.1 s;
+its prepared-to-online-verification timestamp interval was 20.7 s (this interval
+includes handoff and is not an isolated publication benchmark). It passed lint,
+one typecheck, 37 workflow/cache regressions, 1,844 frontend tests, 332 platform
+tests, and four required browser scenarios. Existing conditional full-suite
+skips remain 24 frontend and three platform; required browser scenarios have zero
+skips. The final warm vendor identity check took 8.9 s; the bundle took 16.0 s.
+
+The resulting 183 Web files are byte-for-byte identical to the original served
+bundle, not merely its entry JavaScript. The active measured scientific image is
+unchanged. A fresh `inspect` reports a known published baseline, no changed source
+paths, and no deployment required. The current manifest hash matches its pointer;
+the current release and four entries with private recovery data are pinned.
+
+The protected tenant check is identical before and after: 57 workspace,
+attachment and collaboration files, five user identities, and logical
+session/message/part/todo/permission table identities in five OpenCode databases.
+No model turn was required for these UI/tooling-only publications. Tenant evidence
+files stay private; only aggregate results appear here. The platform is running,
+and the original authoring UI/API probe bytes are restored.
+
+Operator entry from `/opt/open-science-desktop`:
+
+```bash
+pnpm web:release run --source /opt/open-science-desktop/.worktrees/tenant-science-isolation --maintenance
+```
+
+`--maintenance` pauses research execution while bounded preparation runs. Omit it
+when interruption is unwanted; a running worker holding the host lock will then
+cause a clear busy failure. The explicitly selected authoring source is retained;
+the active platform uses a fixed release source. Changes made only to the main
+checkout are not silently substituted for this production-compatible source.
+
+The existing CI workflow now emits optional measured `sourceInputs` for future
+image-input changes. No new scientific image or CI run was produced on this host;
+changed-image acceptance remains dependent on an installed CI-attested artifact.
+Native macOS/Windows builds were not run on this Linux host. Existing desktop and
+Web package build entry points both passed here under the unchanged resource
+limits, with staging enabled so they could not overwrite the served bundle.
+
+Local commits and the implementation worktree are preserved for review. Nothing
+was pushed, merged, or deleted. The requested spec and plan are also updated in
+the main checkout, alongside the narrow installed workflow changes.

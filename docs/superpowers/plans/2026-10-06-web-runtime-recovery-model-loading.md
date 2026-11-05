@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-06-web-runtime-recovery-model-loading-design.md`.
 
-**Status:** Draft for user review. No task has been implemented. Approval is required before code edits, tests that change runtime state, or deployment.
+**Status:** Approved, implemented and published on 2026-10-06. Desktop staged and live acceptance passed; phone-width acceptance was excluded by the user.
 
 ## 1. Execution boundaries and file map
 
@@ -282,7 +282,7 @@ Expected: correct automatic/manual retry behavior, usable limited catalogs, fail
 
 Add isolated scenarios for transient required-context/session failure, catalog-only retry, read-only context, valid/expired public cache, stale callbacks after switch, command expansion, login limited-catalog handoff, and ongoing turn continuity including Stop. Use mock models and deterministic events; no Claude endpoint or alternative model probes. Close browsers, timers, sockets and streams in `finally` blocks.
 
-- [ ] **2. Register acceptance unconditionally for session verification.** Current `browserStage()` chooses continuity *or* refresh, so adding a test alone is insufficient. When `groups.includes("session")`, require the new recovery file, add it to `tests`, and set `environment.OSD_RECOVERY_ACCEPTANCE = "1"`. Preserve continuity/refresh coverage and add the recovery test even when continuity exists. Missing browser configuration, missing recovery file, or a skipped required scenario must fail preparation. Extend release workflow fixtures to assert this registration and fail-on-skip behavior.
+- [x] **2. Register acceptance unconditionally for session verification.** Current `browserStage()` chooses continuity *or* refresh, so adding a test alone is insufficient. When `groups.includes("session")`, require the new recovery file, add it to `tests`, and set `environment.OSD_RECOVERY_ACCEPTANCE = "1"`. Preserve continuity/refresh coverage and add the recovery test even when continuity exists. Missing browser configuration, missing recovery file, or a skipped required scenario must fail preparation. Extend release workflow fixtures to assert this registration and fail-on-skip behavior.
 
 The registration fragment is:
 
@@ -295,7 +295,7 @@ tests.push(recovery);
 environment.OSD_RECOVERY_ACCEPTANCE = '1';
 ```
 
-- [ ] **3. Run guarded checks in sequence.**
+- [x] **3. Run guarded checks in sequence.**
 
 ```bash
 pnpm release:test
@@ -308,13 +308,13 @@ pnpm web:release prepare --source "$task_checkout"
 
 Here `task_checkout` is the absolute checkout created and verified in Task 1; set it once to that concrete directory. Release preparation builds one staged bundle and runs configured browser scenarios against it, under existing shared locks/cgroup limits. Confirm the recovery scenario executed rather than skipped. Because `runtime.ts` affects live behavior, accept the existing conservative selection and required non-Claude live checks; do not weaken the selector or skip required verification to save time. Record test counts, timing, candidate/source/asset hashes, and failures without secrets. Before/after browser comparison must use equivalent deterministic fixtures.
 
-- [ ] **4. Verify image/source and host safety.** Confirm changed paths are the reviewed frontend/release-check paths; source/image identity must still match the current baseline and require no new scientific image. If image inputs or backend prerequisites changed, stop and revise scope. A failed guarded build does not replace live assets; no direct Vite/Vitest/Cargo or parallel heavy jobs are permitted. Suggested commit: `test: require Web refresh recovery acceptance`.
+- [x] **4. Verify image/source and host safety.** Confirm changed paths are the reviewed frontend/release-check paths; source/image identity must still match the current baseline and require no new scientific image. If image inputs or backend prerequisites changed, stop and revise scope. A failed guarded build does not replace live assets; no direct Vite/Vitest/Cargo or parallel heavy jobs are permitted. Suggested commit: `test: require Web refresh recovery acceptance`.
 
 ## Task 7: Publish the verified candidate and confirm the user's outcome
 
 **Files:** Existing release manifest/verification artifacts and `PROGRESS.md` only.
 
-- [ ] **1. Publish only after plan approval and successful preparation.** The approval to implement this plan authorizes its described Web publication; any later user deployment restriction takes precedence. Use the exact successful candidate's ID, never a rebuild or the dirty main source:
+- [x] **1. Publish only after plan approval and successful preparation.** The approval to implement this plan authorizes its described Web publication; any later user deployment restriction takes precedence. Use the exact successful candidate's ID, never a rebuild or the dirty main source:
 
 ```bash
 pnpm web:release deploy --release "$task_release_id"
@@ -322,9 +322,9 @@ pnpm web:release deploy --release "$task_release_id"
 
 Set `task_release_id` from the successful preparation manifest. Confirm effective source/Web hashes, current release identity and health. This design needs no worker restart or scientific image replacement. Use the release workflow's verified rollback if publication/health/required acceptance fails; report rollback failure explicitly.
 
-- [ ] **2. Validate production recovery.** Use the existing authorized test account/session without copying credentials into artifacts. Verify five warm reloads, an existing conversation's correct model/workspace, and one non-Claude OpenCode continuity scenario across reload with Stop functional. Use a temporary acceptance session only if a real turn is necessary; preserve original conversations/files and do not delete verification/user data automatically. Do not simulate outages by altering unrelated services. Report monotonic median/max reload timings and a trace proving optional enrichment is outside readiness. Separate cold-worker startup from warm reload measurements.
+- [x] **2. Validate production recovery.** Use the existing authorized test account/session without copying credentials into artifacts. Verify five warm reloads, an existing conversation's correct model/workspace, and one non-Claude OpenCode continuity scenario across reload with Stop functional. Use a temporary acceptance session only if a real turn is necessary; preserve original conversations/files and do not delete verification/user data automatically. Do not simulate outages by altering unrelated services. Report monotonic median/max reload timings and a trace proving optional enrichment is outside readiness. Separate cold-worker startup from warm reload measurements.
 
-- [ ] **3. Record actual results and limitations.** Prepend one dated English milestone to `PROGRESS.md`, newest first. Final report identifies published candidate/source/assets, tests, observed timing, preserved user data, and any unreproduced original failure. No improvement or completion claim is made unless automatic restoration and model/history readiness were actually verified.
+- [x] **3. Record actual results and limitations.** Prepend one dated English milestone to `PROGRESS.md`, newest first. Final report identifies published candidate/source/assets, tests, observed timing, preserved user data, and any unreproduced original failure. No improvement or completion claim is made unless automatic restoration and model/history readiness were actually verified.
 
 ## 2. Coverage and self-review
 
@@ -339,4 +339,15 @@ Set `task_release_id` from the successful preparation manifest. Confirm effectiv
 | R7 auth/state/model/platform boundaries | Tasks 2, 4, 5, 6, 7 |
 | R8 evidence, exact bundle, bounded release and rollback | Tasks 1, 6, 7 |
 
-Self-review checked task ordering, current file names, gateway/helper signatures including the SDK read-options argument, shared worktree locks, complete-response deadlines, cache schema consistency, command promise behavior, competing recovery cancellation, authoritative failure/send rules, no new live Claude probes, and mandatory release registration. Browser acceptance must not disappear behind the existing continuity-or-refresh branch. All execution checkboxes remain unchecked. This plan and the spec await the user's approval.
+Self-review checked task ordering, current file names, gateway/helper signatures including the SDK read-options argument, shared worktree locks, complete-response deadlines, cache schema consistency, command promise behavior, competing recovery cancellation, authoritative failure/send rules, no new live Claude probes, and mandatory release registration. Browser acceptance must not disappear behind the existing continuity-or-refresh branch. The user approved implementation and publication. Execution deviations and measured outcomes are recorded below.
+
+Execution update (2026-10-06): The user approved implementation and maintenance pauses. The user subsequently excluded phone-width acceptance; this release will verify desktop Web in English and Chinese.
+
+Execution evidence: The deployed-source baseline was verified file by file in the isolated worktree. Deterministic red/green tests cover connection ownership, required context, complete-response deadlines, independent history/catalog readiness, advisory caching and model-only retries. The original production manual-reconnect symptom was not independently traced; the old exact bundle failed the deferred-optional-endpoint reproduction. Desktop English/Chinese recovery passes against the staged bundle (1041-1250 ms models, 1044-1254 ms history), including transient context recovery, online/visibility retries and model-only retries without stream replacement. A subsequent regression exposed background running-status discovery delaying connection; its red/green test passes with discovery detached during restoration. Final frozen-candidate and live-production verification passed.
+
+Final release evidence (2026-10-06):
+- Candidate: `2026-10-06T14-15-30-645Z-55c2dfe7`; source fingerprint `b8c3d47518698f8b07cd1ed412cb3c69e2d116445f5c33f5bf8e3f8622b25ae4`; delivered Web fingerprint `565893b3bc0fe656bd3c88899584f74a84fed0c65c1a46e18b8a3bd89f17459e`; entry SHA-256 `30a1422f9b02c1864beed9519a87db07e70b0efeee0bb3572e66356903f06448`.
+- Guarded lint/typecheck, 40 workflow/cache tests, 1,879 frontend tests, 334 platform tests, and five required exact-bundle desktop browser scenarios passed. Ordinary suites skip opt-in live/browser tests; required staged acceptance had zero pending/skipped tests. Preparation took 521 seconds in the bounded serialized workflow; the existing scientific image and platform source remain unchanged.
+- Published candidate passed a real non-Claude `opencode/big-pickle` response. `pnpm web:recovery:live` then passed five warm reloads of its retained conversation with the same explicit model and verified workspace: models median/max 1,024/1,459 ms; history median/max 1,029/1,463 ms. No Connect click was needed. A subsequent real turn survived refresh and Stop returned a successful worker acknowledgement. Test credentials stayed in memory; no original conversations or files were deleted.
+- Deferred optional catalogs remained outside readiness in the staged English/Chinese scenario; transient required-context recovery, failed-tab online/visibility recovery, and model-only retry with an unchanged event stream passed.
+- Deviations: phone widths were excluded at the user's request; the original exact production manual-reconnect incident and pre-change five-warm-reload measurements were not captured, so no numerical before/after improvement is claimed. Reproduction and fixes are consolidated into a local reviewable commit. Original proposed granular test/commit checkboxes are not assertions that every proposed case was run verbatim.

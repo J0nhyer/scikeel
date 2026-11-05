@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRuntimeStore } from "@/lib/runtime";
-import { WorkspaceChip } from "./WorkspaceChip";
+import { baseName, WorkspaceChip } from "./WorkspaceChip";
 import { DRAFT_KEY } from "@/lib/runtime";
 
 // workspacePath reflects the folder setWorkspace last persisted, like the real bridge.
@@ -112,5 +112,16 @@ describe("WorkspaceChip", () => {
     useRuntimeStore.setState({ currentId: "ses_1", workspace: "/ws/2026-07-04-0900" });
     const { container } = render(<WorkspaceChip />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+
+describe("workspace display names", () => {
+  it("uses the localized label for the managed root", () => {
+    expect(baseName("/tenant/workspace", "/tenant/workspace")).toBe("Workspace");
+  });
+
+  it("preserves actual project names, including a project named workspace", () => {
+    expect(baseName("/tenant/workspace/project/workspace", "/tenant/workspace")).toBe("workspace");
   });
 });

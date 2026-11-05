@@ -1,9 +1,9 @@
 # Web Project and Workspace File Management Design
 
 **Date:** 2026-10-13
-**Status:** Proposed for user review. Documentation only; not authorization to implement, deploy, or delete data.
+**Status:** User requested continued execution after the spec/plan on 2026-10-13. Checkpoint A implementation is in progress in an isolated workspace; nothing has been deployed. Synthetic tests may exercise recoverable deletion; no real user data may be deleted.
 **Scope:** Public multi-user gateway Web, including 1280, 390 and 320 pixel viewports. Preserve desktop compilation and existing runtime adapters.
-**Policy assumption:** The user requested a spec followed by a plan without answering the deletion-policy question. This draft uses recoverable project and file deletion. Confirm this assumption before implementation.
+**Policy:** Continued execution uses the previously recommended recoverable project/file deletion boundary. Permanent purge remains excluded.
 
 ## 1. Goal and Delivery Boundaries
 
@@ -161,6 +161,6 @@ Test destructive scenarios only on dedicated synthetic fixtures, never real user
 
 ## 7. Approval and Compatibility
 
-Before execution, approve the recoverable deletion policy and the explicit exclusion of permanent purge. The plan may be written now as requested, but implementation remains unapproved. Preserve the separately developed account/workspace recovery changes and coordinate dirty-editor guards with their current contract; do not merge either branch wholesale into the primary dirty checkout.
+The user requested continued execution after reviewing the spec/plan; implement recoverable deletion with permanent purge excluded. Publication still requires its own checkpoint review. Preserve the separately developed account/workspace recovery changes and coordinate dirty-editor guards with their current contract; do not merge either branch wholesale into the primary dirty checkout.
 
 Legacy projects without lifecycle records are active. Existing already-unregistered folders remain ordinary folders; do not invent lost project IDs or infer deletion timestamps. Restore cannot recover metadata that an old removal already destroyed without a verified backup. Storage schema changes are additive/versioned and old code must not silently run without lifecycle guards after trash is used. A rollback must either retain those guards on the prior bundle/backend or place the account in maintenance/read-only mode until a compatible version returns; never expose trashed projects through an incompatible old server.

@@ -577,3 +577,41 @@ build pass:
 
 The implementation remains on the feature branch for user acceptance before
 merging into `master`.
+
+## Approved follow-up: minimal administrator Agent switches (2026-10-01)
+
+This follow-up supersedes the earlier deferral of assistant-level switches.
+Append an administrator-only Agent access section to the Web Models page.
+It contains exactly two immediate-save switches: Claude Code and Codex.
+The switches control platform-wide authorization, not connectivity, model lists,
+credentials, or per-user access. OpenCode keeps its existing behavior.
+
+Read and write the existing `/api/admin/runtime` endpoint using
+`assistantEnabled` and `{ runtime, enabled }`. Do not infer authorization from
+the catalog's effective `enabled` value. Disable controls while loading or
+saving; failed saves restore the previous switch value and show a concise error.
+A failed initial load keeps controls disabled and offers retry. Successful saves
+refresh the current administrator's existing assistant/model choices. Other
+users receive updated choices through existing refresh paths; backend checks
+enforce the setting on subsequent calls without waiting for UI refresh.
+
+Explain that settings apply to all users, running turns finish normally, and
+disabled assistants disappear from user-facing assistant lists and cannot start
+subsequent turns. If the selected assistant is disabled, ask the user to select
+an available assistant without retaining its name in the selector. Preserve conversation
+history and files, without automatic assistant switching or a service restart.
+Keep the existing phone-compatible settings rows and shared switch style.
+
+### Implementation and verification
+
+1. Add a focused `ManagedAgentsCard` component and mount it only for Web admins
+   in `GatewayModelsPanel`. Extend the shared `Switch` with an optional disabled
+   prop; keep its existing default behavior.
+2. Add English and Simplified Chinese copy, with the existing English fallback
+   for other locales. Use generic localized failures, without server secrets.
+3. Test initial authorization separately from service availability, immediate
+   save, pending-state locking, failed-save rollback, load retry, catalog refresh,
+   and admin-only rendering. Reuse platform authorization/persistence tests.
+4. Run guarded focused tests, platform tests, typecheck, lint, and bounded Web
+   build. Check the production bundle at 1280px and 390px with intercepted toggle
+   writes, verify ordinary-user visibility, and leave live access settings intact.

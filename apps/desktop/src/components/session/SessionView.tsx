@@ -1,3 +1,4 @@
+import type { AttachmentPromptContext } from "@ai4s/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -46,6 +47,7 @@ import { GoalPill } from "@/components/thread/GoalPill";
 import { GOAL_RESUME_NUDGE } from "@/lib/goalPrompts";
 import { baseName } from "@/components/thread/WorkspaceChip";
 import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
+import { researchRequest } from "@/lib/research";
 import { SplitMenu } from "@/components/session/SplitMenu";
 import {
   ContextMenu,
@@ -204,6 +206,7 @@ export function SessionView({
   const permissions = useRuntimeStore((s) => s.permissions);
   const sessionParents = useRuntimeStore((s) => s.sessionParents);
   const workspace = useRuntimeStore((s) => s.workspace);
+  const gatewayWorkspace = useRuntimeStore((s) => s.gatewayWorkspace);
   const pane = useRuntimeStore((s) => s.panes[key]);
   const commands = useRuntimeStore((s) => s.commands);
   const connect = useRuntimeStore((s) => s.connect);
@@ -249,7 +252,7 @@ export function SessionView({
   // The platform marks the transport ready just before its first session list
   // arrives. Keep a restored/stale conversation read-only in that gap so it
   // cannot send to an id that belongs to another CLI or no longer exists.
-  const waitingForWebSessions = isGatewayWeb && !sessionListReady;
+  const waitingForWebSessions = isGatewayWeb && !sessionListReady && status !== "error" && status !== "offline";
   const connected = !waitingForWebSessions && (status === "ready" || switching);
   const connecting = waitingForWebSessions || (status === "connecting" && !switching);
   const displayStatus = waitingForWebSessions ? "connecting" : switching ? "ready" : status;
@@ -273,9 +276,15 @@ export function SessionView({
     const created = dockSession(leafId, edge, null);
     if (created && folder) aimDraft(draftKeyFor(created), folder);
   };
-  const onSend = async (text: string, attachments?: string[]) => {
+  const onSend = async (text: string, attachments?: string[], context?: AttachmentPromptContext) => {
     pinEphemeral();
-    bindIfCreated(await sendPrompt(text, sid ?? undefined, draftKey, attachments));
+    const accepted = await sendPrompt(text, sid ?? undefined, draftKey, attachments, undefined, context);
+    bindIfCreated(accepted);
+    return accepted !== null;
+  };
+  const onStopResearch = () => {
+    if (isGatewayWeb && eid) void researchRequest(eid, { action: "stop" }).catch(() => {});
+    void interrupt(sid ?? undefined);
   };
   const onRunShell = async (command: string) => {
     pinEphemeral();
@@ -743,6 +752,7 @@ export function SessionView({
                 "flex items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-surface-2",
                 showFiles ? "bg-surface-2 text-text" : "text-muted",
               )}
+              aria-label={sessionDir ? baseName(sessionDir, isGatewayWeb ? gatewayWorkspace : null) : t("live.filesToggle.default")}
               title={`${t("live.filesToggle.title")}${sessionDir ? ` — ${sessionDir}` : ""}`}
               aria-pressed={showFiles}
             >
@@ -750,7 +760,7 @@ export function SessionView({
               {/* Tiled panes are narrow — show just the icon, not the folder name. */}
               {showToolLabels && (
                 <span className="max-w-[160px] truncate">
-                  {sessionDir ? baseName(sessionDir) : t("live.filesToggle.default")}
+                  {sessionDir ? baseName(sessionDir, isGatewayWeb ? gatewayWorkspace : null) : t("live.filesToggle.default")}
                 </span>
               )}
             </button>
@@ -831,7 +841,7 @@ export function SessionView({
             </>
           )}
           {/* The green "ready" dot is noise per pane — only surface trouble. */}
-          {displayStatus !== "ready" && <ConnBadge status={displayStatus} />}
+          {displayStatus !== "ready" && (!isGatewayWeb || !connecting) && <ConnBadge status={displayStatus} />}
           {!compactNotebooks && uniqueNotebooks.map((nb) => (
             <button
               key={nb.path}
@@ -899,7 +909,7 @@ export function SessionView({
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
           )}
-          {!connected && (
+          {!connected && (!isGatewayWeb || !connecting) && (
             <button
               onClick={connect}
               disabled={connecting}
@@ -911,13 +921,14 @@ export function SessionView({
           )}
         </div>
 
-        {inspectorFillsPane ? (
+        {inspectorFillsPane && (
           // Tiled pane: the inspector fills the pane (chat/composer hidden), so a
           // narrow pane isn't squeezed and nothing overflows. Its own header's
           // close (and the pressed folder/runs toggle) returns to the chat.
           <div className="min-h-0 flex-1 overflow-hidden">{inspectorNode}</div>
-        ) : (
-          <>
+        )}
+        {(!inspectorFillsPane || isGatewayWeb) && (
+          <div className={inspectorFillsPane ? "hidden" : "contents"}>
         {finding && (
           <FindBar
             scope={chatRef}
@@ -958,7 +969,7 @@ export function SessionView({
             style={zoom !== 1 ? { zoom } : undefined}
             className="mx-auto flex max-w-[760px] flex-col gap-4 px-8 pt-6"
           >
-            {!connected && !connecting && (
+            {!connected && !connecting && !isGatewayWeb && (
               <div className="rounded-card border border-border bg-surface p-5 shadow-card">
                 <div className="text-sm font-medium text-text">{t("live.runtime.title")}</div>
                 <p className="mt-1 text-sm text-muted">
@@ -982,13 +993,17 @@ export function SessionView({
               >
                 <div className="flex items-center gap-2 text-sm font-medium text-text">
                   <Loader2 size={13} className="animate-spin text-muted" />
-                  {t("live.starting.title")}
+                  {t(isGatewayWeb
+                    ? status === "ready" ? "live.starting.titleSessionsWeb" : "live.starting.titleWeb"
+                    : "live.starting.title")}
                 </div>
                 <p className="mt-1 text-sm text-muted">
                   {/* The browser client waits on a gateway running on someone
                       else's machine — the local first-launch permission prompt
                       is not what is holding it up. */}
-                  {t(isGatewayWeb ? "live.starting.bodyWeb" : "live.starting.body")}
+                  {t(isGatewayWeb
+                    ? status === "ready" ? "live.starting.bodySessionsWeb" : "live.starting.bodyWeb"
+                    : "live.starting.body")}
                 </p>
               </div>
             )}
@@ -1190,7 +1205,7 @@ export function SessionView({
               commands={composerCommands}
               disabled={!connected || working || webReadOnly}
               working={running}
-              onStop={() => void interrupt(sid ?? undefined)}
+              onStop={onStopResearch}
               placeholder={
                 webReadOnly
                   ? t("live.placeholder.readOnly")
@@ -1236,7 +1251,7 @@ export function SessionView({
             />
           </div>
         </div>
-          </>
+          </div>
         )}
       </div>
 
@@ -1344,7 +1359,7 @@ function ConnBadge({ status }: { status: RuntimeStatus }) {
   return (
     <span
       className={cn("flex items-center gap-1.5 text-xs", tone)}
-      title={t("live.connBadge.title", { status: t(`live.connBadge.status.${status}`) })}
+      title={t(isGatewayWeb ? "live.connBadge.titleWeb" : "live.connBadge.title", { status: t(`live.connBadge.status.${status}`) })}
     >
       <span
         className={cn(
@@ -1353,7 +1368,7 @@ function ConnBadge({ status }: { status: RuntimeStatus }) {
           status === "connecting" && "animate-pulse",
         )}
       />
-      {status !== "ready" && t("live.connBadge.title", { status: t(`live.connBadge.status.${status}`) })}
+      {status !== "ready" && t(isGatewayWeb ? "live.connBadge.titleWeb" : "live.connBadge.title", { status: t(`live.connBadge.status.${status}`) })}
     </span>
   );
 }

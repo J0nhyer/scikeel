@@ -38,10 +38,19 @@ venv/
 .eslintcache
 .superpowers/
 .worktrees/
-docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/specs/
+docs/superpowers/specs/*
+!docs/superpowers/specs/2026-10-21-simple-web-release-design.md
+!docs/superpowers/specs/2026-10-22-web-workspace-availability-design.md
+!docs/superpowers/plans/
+docs/superpowers/plans/*
+!docs/superpowers/plans/2026-10-21-simple-web-release.md
+!docs/superpowers/plans/2026-10-22-web-workspace-availability.md
 
 # Local runtime & secrets (never commit)
 .ai4s-workbench/
+.claude/
 secrets/
 *.key
 .env

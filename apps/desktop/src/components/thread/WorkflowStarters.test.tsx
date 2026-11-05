@@ -8,6 +8,8 @@ import { WORKFLOW_STARTERS, WorkflowStarters, workflowStarterPrompt } from "./Wo
 // promise from a rejecting spy, which vitest then reports as unhandled.
 const installCalls: string[] = [];
 let failInstall = false;
+const webMode = vi.hoisted(() => ({ isGatewayWeb: true }));
+vi.mock("@/lib/webMode", () => webMode);
 vi.mock("@/lib/tauri", () => ({
   isTauri: true,
   installExample: async (name: string) => {
@@ -23,6 +25,7 @@ describe("WorkflowStarters", () => {
   beforeEach(() => {
     installCalls.length = 0;
     failInstall = false;
+    webMode.isGatewayWeb = true;
   });
 
   it("renders one card per starter workflow, including the climate example", () => {
@@ -34,7 +37,30 @@ describe("WorkflowStarters", () => {
     expect(screen.getByText("Analyze my data")).toBeInTheDocument();
     expect(screen.getByText("Audit a report for traceability")).toBeInTheDocument();
     expect(screen.getByText("Explore an example: climate trends")).toBeInTheDocument();
-    expect(WORKFLOW_STARTERS).toHaveLength(4);
+    expect(screen.getByText("Start from a research idea")).toBeInTheDocument();
+    expect(WORKFLOW_STARTERS).toHaveLength(5);
+  });
+
+  it("starts student guidance as a Chinese conversation without example setup or a task form", async () => {
+    await act(async () => { await i18n.changeLanguage("zh-Hans"); });
+    const onPick = vi.fn();
+    render(<WorkflowStarters onPick={onPick} />);
+    await userEvent.click(screen.getByRole("button", { name: /从想法开始科研/ }));
+    await waitFor(() => expect(onPick).toHaveBeenCalledTimes(1));
+    const prompt = onPick.mock.calls[0][0];
+    expect(prompt).toContain("专业");
+    expect(prompt).toContain("最多三个");
+    expect(prompt).toContain("分析我的数据");
+    expect(prompt).toContain("不要要求我先填写表单");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(installCalls).toHaveLength(0);
+  });
+
+  it("preserves the existing desktop starter choices", () => {
+    webMode.isGatewayWeb = false;
+    render(<WorkflowStarters onPick={() => {}} />);
+    expect(screen.queryByText("Start from a research idea")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button")).toHaveLength(4);
   });
 
   it("sends the full-workflow prompt on click", async () => {
