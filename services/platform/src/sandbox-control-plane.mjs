@@ -111,7 +111,11 @@ export function brokerProfile({ config, broker, context, model, profileRevision,
 export async function readBrokerConfiguration() {
   const path = "/etc/scikeel/model-brokers.json";
   const metadata = await lstat(path);
-  if (!metadata.isFile() || metadata.uid !== 0 || (metadata.mode & 0o022) || metadata.size > 65536) throw new Error("untrusted managed broker configuration");
+  // The systemd platform reads a root-owned seal; the containerized platform
+  // runs as the live data owner and receives a 0600 bind mount owned by it.
+  const owner = process.getuid?.();
+  if (!metadata.isFile() || (metadata.uid !== 0 && metadata.uid !== owner) || (metadata.mode & 0o022) || metadata.size > 65536)
+    throw new Error("untrusted managed broker configuration");
   try { return validateBrokerConfiguration(JSON.parse(await readFile(path, "utf8"))); }
   catch { throw new Error("managed broker configuration unavailable"); }
 }

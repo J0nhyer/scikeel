@@ -33,16 +33,18 @@ function subnet(value) {
   return value;
 }
 
-export function dockerEnv({ dataDir, platformUid, platformGid, frontSubnet = "172.30.0.0/24", frontPlatformIp = "172.30.0.10", imageDigest }) {
+export function dockerEnv({ dataDir, platformUid, platformGid, frontSubnet = "172.30.0.0/24", frontPlatformIp = "172.30.0.10", imageDigest, httpPort = 8080 }) {
   const root = absolutePath(dataDir, "data directory");
   identifier(platformUid, "platform uid"); identifier(platformGid, "platform gid");
   subnet(frontSubnet); address(frontPlatformIp, "front platform IP");
+  if (!Number.isSafeInteger(httpPort) || httpPort < 1 || httpPort > 65535) throw new Error("invalid local HTTP port");
   if (typeof imageDigest !== "string" || !DIGEST.test(imageDigest)) throw new Error("invalid worker image digest");
   const instances = `${DATA_ROOT}/workers/instances`;
   const native = `${DATA_ROOT}/cli-runtime/users`;
   const state = `${DATA_ROOT}/.sandbox-state`;
   return {
     COMPOSE_PROJECT_NAME: "scikeel",
+    LOCAL_HTTP_PORT: String(httpPort),
     PLATFORM_DATA_DIR: DATA_ROOT,
     PLATFORM_WEB_ROOT: "/app/apps/desktop/dist",
     PLATFORM_HOST: frontPlatformIp,
@@ -108,9 +110,9 @@ function envLine(value) {
   return /[\s#'"]/.test(value) ? JSON.stringify(value) : value;
 }
 
-export async function bootstrap({ dataDir, imageDigest, output, adminUsername = "admin", adminPassword, frontSubnet, frontPlatformIp, platformUid, platformGid }) {
+export async function bootstrap({ dataDir, imageDigest, output, adminUsername = "admin", adminPassword, frontSubnet, frontPlatformIp, platformUid, platformGid, httpPort = 8080 }) {
   const root = absolutePath(dataDir, "data directory");
-  const environment = dockerEnv({ dataDir: root, platformUid, platformGid, frontSubnet, frontPlatformIp, imageDigest });
+  const environment = dockerEnv({ dataDir: root, platformUid, platformGid, frontSubnet, frontPlatformIp, imageDigest, httpPort });
   for (const relative of ["platform", "workers/instances", "cli-runtime/users", ".sandbox-state"]) {
     const path = join(root, relative);
     await mkdir(path, { recursive: true, mode: 0o700 });
@@ -160,6 +162,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       frontPlatformIp: values["front-platform-ip"],
       platformUid: Number(values.uid ?? process.getuid?.() ?? 1000),
       platformGid: Number(values.gid ?? process.getgid?.() ?? 1000),
+      httpPort: Number(values["http-port"] ?? 8080),
     });
   } catch (error) {
     console.error(error.message);

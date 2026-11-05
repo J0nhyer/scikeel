@@ -1,0 +1,13 @@
+services:
+  platform:
+    volumes:
+      - "./services/platform/src:/app/services/platform/src:ro"
+      - "./packages/sdk/src:/app/packages/sdk/src:ro"
+      - "./packages/shared/src:/app/packages/shared/src:ro"
+      - "./runtime/sandbox:/app/runtime/sandbox:ro"
+      - "./runtime/skills:/app/runtime/skills:ro"
+
+  sandbox-backend:
+    volumes:
+      - "./services/sandbox-backend/src:/app/services/sandbox-backend/src:ro"
+      - "./packages/shared/src/tenant-layout.mjs:/app/packages/shared/src/tenant-layout.mjs:ro"
