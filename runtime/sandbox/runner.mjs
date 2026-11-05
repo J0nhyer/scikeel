@@ -30,7 +30,7 @@ export class TenantRunner {
     this.server.on("connect", (_req, socket) => socket.destroy()); this.server.on("upgrade", (_req, socket) => socket.destroy());
   }
   async listen({ host, port = 4791 }) {
-    if (!/^(?:127\.0\.0\.[12]|172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]))$/.test(host ?? "")) throw new Error("invalid tenant bind address");
+    if (!/^(?:0\.0\.0\.0|127\.0\.0\.[12]|172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]))$/.test(host ?? "")) throw new Error("invalid tenant bind address");
     await new Promise((done, reject) => {
       const error = (reason) => { this.server.off("listening", ready); reject(reason); };
       const ready = () => { this.server.off("error", error); done(); };
@@ -145,7 +145,7 @@ export class TenantGateway {
   #child;
   constructor({ manifest, token, address, port = 4790, spawnImpl = spawn }) {
     this.manifest = validateManifest(manifest);
-    if (!/^[a-f0-9]{64}$/.test(token ?? "") || !/^(?:127\.0\.0\.[12]|172\.31\.240\.\d{1,3})$/.test(address ?? "") ||
+    if (!/^[a-f0-9]{64}$/.test(token ?? "") || !/^(?:0\.0\.0\.0|127\.0\.0\.[12]|172\.31\.240\.\d{1,3})$/.test(address ?? "") ||
         !Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("invalid gateway identity");
     Object.assign(this, { token, address, port, spawnImpl });
   }
@@ -193,9 +193,10 @@ export class TenantGateway {
     });
     this.#child = child; let failed = false; child.once("error", () => failed = true);
     const deadline = Date.now() + 20000;
+    const healthHost = this.address === "0.0.0.0" ? "127.0.0.1" : this.address;
     while (Date.now() < deadline && !failed && child.exitCode === null && child.signalCode === null) {
       try {
-        const response = await fetch(`http://${this.address}:${this.port}/v1/health`, { headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(500) });
+        const response = await fetch(`http://${healthHost}:${this.port}/v1/health`, { headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(500) });
         if (response.ok) return;
       } catch {}
       await new Promise((done) => setTimeout(done, 100));

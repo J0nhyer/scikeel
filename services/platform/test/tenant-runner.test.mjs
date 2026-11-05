@@ -38,6 +38,13 @@ test("runner listens on the assigned alternate address used by production accept
   const response=await fetch(`http://127.0.0.2:${runner.server.address().port}/health`);
   assert.equal(response.status,200);
 });
+test("tenant runner can bind the docker wildcard address", async (t) => {
+  const runner = new TenantRunner({ manifest, token });
+  t.after(() => runner.close());
+  const address = await runner.listen({ host: "0.0.0.0", port: 0 });
+  assert.equal(address.address, "0.0.0.0");
+  assert.doesNotThrow(() => new TenantGateway({ manifest, token, address: "0.0.0.0" }));
+});
 test("runner authenticates fixed workspace RPC before dispatch and rejects foreign generations", async (t) => {
   const calls = [];
   const runner = new TenantRunner({ manifest, token, files: { call: async (request) => { calls.push(request); return { text: "owned" }; } } });
