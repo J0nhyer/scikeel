@@ -1,6 +1,7 @@
 import { posix } from "node:path";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
+import { tenantLayout } from "../../../packages/shared/src/tenant-layout.mjs";
 
 function exact(value, keys) {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
@@ -24,16 +25,11 @@ export function deriveTenantLayout({ roots, record, image }) {
   const values = Object.values(roots).map(root);
   if (values.length !== 3 || values.some((value, index) => values.some((other, second) => index !== second &&
       (value === other || value.startsWith(`${other}/`))))) throw new Error("configured roots overlap");
-  const accountRoot = posix.join(roots.instances, instanceId);
-  const nativeRoot = posix.join(roots.native, userId);
-  const workspaceDir = posix.join(accountRoot, "workspace");
-  const stateDir = posix.join(accountRoot, "state");
-  const home = posix.join(nativeRoot, "home");
-  const scratchDir = posix.join(accountRoot, "scratch");
-  const sources = [workspaceDir, stateDir, home, posix.join(nativeRoot, "claude-config"),
-    posix.join(nativeRoot, "codex-home"), scratchDir];
+  const paths = tenantLayout({ instancesDir: roots.instances, nativeDir: roots.native, instanceId, userId });
+  const sources = [paths.workspaceDir, paths.stateDir, paths.home, paths.claudeConfig, paths.codexHome, paths.scratchDir];
   return Object.freeze({ schema: 1, instanceId, userId, imageDigest: image.digest,
-    imageRoot: posix.join(roots.images, image.digest.slice(7), "rootfs"), workspaceDir, stateDir, home, scratchDir,
+    imageRoot: posix.join(roots.images, image.digest.slice(7), "rootfs"),
+    workspaceDir: paths.workspaceDir, stateDir: paths.stateDir, home: paths.home, scratchDir: paths.scratchDir,
     mounts: sources.map((source) => Object.freeze({ source, destination: source,
       options: Object.freeze(["bind", "rw", "nosuid", "nodev"]) })) });
 }
