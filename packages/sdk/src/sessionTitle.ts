@@ -27,6 +27,13 @@ export function titleExcerpt(parts: unknown): string | undefined {
   return chars.length ? chars.length > 60 ? chars.slice(0, 59).join("") + "…" : chars.join("") : undefined;
 }
 
+/** Explicit title for a brand-new conversation, derived only from the first
+ *  visible thing the user sent. Undefined means there is nothing the user
+ *  would recognize and the runtime's existing title behavior should run. */
+export function firstTurnTitle(text: string): string | undefined {
+  return titleExcerpt([{ type: "text", text }]);
+}
+
 type FirstMessage = { fallback?: string; created?: number };
 
 /** Derived from durable messages; no model calls or session writes. */

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { SessionTitleReader, titleExcerpt } from "../../../../packages/sdk/src/sessionTitle";
+import { firstTurnTitle, SessionTitleReader, titleExcerpt } from "../../../../packages/sdk/src/sessionTitle";
 import { OpenCodeClient, type SessionMeta } from "@ai4s/sdk";
 
 const stamp = 1_790_000_000_000;
@@ -63,6 +63,12 @@ describe("recoverable title presentation", () => {
     expect(titleExcerpt([{ type: "file", filename: "measurements.csv", url: "data:text/plain;base64,secret" }])).toBe("measurements.csv");
     expect(titleExcerpt([{ type: "text", text: "secret", synthetic: true }])).toBeUndefined();
     expect(titleExcerpt([{ type: "text", text: "🧪".repeat(80) }])).toBe("🧪".repeat(59) + "…");
+  });
+
+  it("derives a new conversation title only from the visible first message", () => {
+    expect(firstTurnTitle("  Compare\n spike sorting methods  ")).toBe("Compare spike sorting methods");
+    expect(firstTurnTitle("   ")).toBeUndefined();
+    expect(firstTurnTitle("🧪".repeat(80))).toBe("🧪".repeat(59) + "…");
   });
 });
 

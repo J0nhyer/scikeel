@@ -372,6 +372,22 @@ describe("OpenCodeClient session edits", () => {
     expect(calls).toEqual(["/session?directory=%2Fwork%2Fbase%2Fsessions%2F2026-11-03-2130-abcdef"]);
   });
 
+  it("sends the first-turn excerpt as the session creation title", async () => {
+    let body: unknown;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(String(input)).pathname === "/session" && init?.method === "POST") {
+        body = JSON.parse(String(init.body));
+        return new Response(JSON.stringify({ id: "ses_new" }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    await client.createSession("Compare spike sorting", "/work/base/sessions/one");
+    expect(body).toEqual({ title: "Compare spike sorting" });
+  });
+
   it("creates a session without ?directory= when no directory is set", async () => {
     const calls: string[] = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

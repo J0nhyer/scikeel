@@ -49,5 +49,5 @@ export {
   type PromptFile,
 } from "./types";
 
-export { hasDefaultSessionTitle, titleExcerpt, TITLE_WAIT_MS, withManualSessionTitle } from "./sessionTitle";
+export { firstTurnTitle, hasDefaultSessionTitle, titleExcerpt, TITLE_WAIT_MS, withManualSessionTitle } from "./sessionTitle";
 export type { SessionTitlePresentation } from "./types";

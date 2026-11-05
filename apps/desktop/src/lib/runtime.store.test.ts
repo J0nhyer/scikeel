@@ -6023,6 +6023,17 @@ describe("Web project directory ownership", () => {
     expect(useRuntimeStore.getState().workspace).toBe("/ws/project-a");
     expect(mocks.sendPromptSpy).toHaveBeenCalledTimes(1);
   });
+  it("titles a new platform Web OpenCode conversation from its first message", async () => {
+    platformWeb();
+    platformAccount();
+    await useRuntimeStore.getState().startDraftInWorkspace("/ws/project-a", "draft:title");
+    await useRuntimeStore.getState().sendPrompt("  Compare\nspike sorting  ", undefined, "draft:title");
+    expect(mocks.createSessionSpy).toHaveBeenCalledWith("Compare spike sorting");
+    expect(mocks.createSessionDirectorySpy).toHaveBeenCalledWith("/ws/project-a");
+    const created = useRuntimeStore.getState().sessions.find((session) => session.id === "ses_new");
+    expect(created?.title).toBe("Compare spike sorting");
+    expect(created?.titlePresentation).toBeUndefined();
+  });
   it("does not create a shared-root conversation when the isolation probe fails", async () => {
     platformWeb();
     mocks.sessionWorkspaceSupported.mockResolvedValue(true);

@@ -18,6 +18,7 @@ import {
   type WorkspaceFailure,
   type WorkspaceContext,
   DEFAULT_OPENCODE_URL,
+  firstTurnTitle,
   hasDefaultSessionTitle,
   isApiStatus,
   withManualSessionTitle,
@@ -2162,9 +2163,17 @@ async function performTurn(
       const creationLayout = useLayoutStore.getState();
       const creationLeaf = creationLayout.tree && creationLayout.focusedLeafId
         ? findLeaf(creationLayout.tree, creationLayout.focusedLeafId) : null;
+      // A platform Web OpenCode conversation gets the user's own first words as
+      // its title at creation. That is the title the user can recognize, and it
+      // avoids a second, full-context title model call before the first answer.
+      // Goal nudges are internal words, not the user's, so they keep the
+      // runtime's existing title path instead of becoming the visible title.
+      const explicitTitle = isPlatformWeb && get().gatewayRuntime === "opencode" && showEcho
+        ? firstTurnTitle(echo)
+        : undefined;
       if (isGatewayWeb) {
         try {
-          id = await creationClient.createSession(undefined, isolatedWebTarget ?? undefined);
+          id = await creationClient.createSession(explicitTitle, isolatedWebTarget ?? undefined);
         } catch (err) {
           // A lost response may already have created a server session. Never replay it blindly.
           const status = err instanceof Error ? (err as { status?: unknown }).status : undefined;
@@ -2246,12 +2255,16 @@ async function performTurn(
         if (isGatewayWeb && !s.sessions.some((session) => session.id === id)) {
           const created: SessionMeta = {
             id: id!,
-            title: "New session",
-            titlePresentation: {
-              status: "pending" as const,
-              fallback: titleExcerpt([{ type: "text", text: echo }]),
-              pendingUntil: Date.now() + TITLE_WAIT_MS,
-            },
+            title: explicitTitle ?? "New session",
+            // An explicit excerpt is already the final title; only the older
+            // default-title path shows a pending "Generating title…" state.
+            ...(explicitTitle ? {} : {
+              titlePresentation: {
+                status: "pending" as const,
+                fallback: titleExcerpt([{ type: "text", text: echo }]),
+                pendingUntil: Date.now() + TITLE_WAIT_MS,
+              },
+            }),
             directory: s.workspace ?? undefined,
             created: Date.now(),
             updated: Date.now(),

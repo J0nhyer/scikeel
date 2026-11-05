@@ -75,6 +75,15 @@ test("default model updates only accept a model key without raw config or direct
   assert.throws(() => validateRuntimeInput(route, { body: { model: "research/approved" }, query: new URLSearchParams("directory=/owned/project") }), { statusCode: 400 });
 });
 
+test("session creation forwards an explicit first-turn title", () => {
+  const route = classifyRuntimeRoute("POST", "/session");
+  assert.equal(route?.operation, "sessionCreate");
+  assert.equal(validateRuntimeInput(route, { body: { title: "Compare spike sorting methods" } }).body.title,
+    "Compare spike sorting methods");
+  assert.throws(() => validateRuntimeInput(route, { body: { title: "Compare spike sorting methods", userId: "peer" } }),
+    { statusCode: 400 });
+});
+
 test("title recovery reads only a fixed message inside an owned session", () => {
   const route = classifyRuntimeRoute("GET", "/session/ses_a/message/msg_first");
   assert.equal(route?.operation, "sessionMessageRead");
