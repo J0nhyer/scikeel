@@ -176,6 +176,7 @@ export function Composer({
   compacting,
   acceptsHandoff = true,
   visible = true,
+  emptyState = false,
 }: {
   /** `attachments` are the chip file names, omitted when there are none. The
    *  text already names them; the list lets the send attach the images too. */
@@ -220,6 +221,9 @@ export function Composer({
   /** Show the draft workspace-folder chip. Only the draft pane opts in — in a
    *  split layout the other panes already have a bound session/folder. */
   showWorkspaceChip?: boolean;
+  /** Empty-session view: keep the heavier agent/approval/compaction controls
+   *  out until the first turn; the model and reasoning controls stay. */
+  emptyState?: boolean;
   /** This pane's draft slot, so the folder chip names THIS draft's destination. */
   draftKey?: string;
   /** Workspace folder the `@` picker lists files from; omit to offer none. */
@@ -1077,7 +1081,7 @@ export function Composer({
             exists (its folder then shows in the header's Files toggle). */}
         {showWorkspaceChip && <WorkspaceChip draftKey={draftKey} />}
         {collaborationControl && <div className="max-w-full shrink-0">{collaborationControl}</div>}
-        {agentMode && onAgentModeChange && !collaborationControl && (
+        {agentMode && onAgentModeChange && !collaborationControl && !emptyState && (
           <div className="relative shrink-0" ref={agentRef}>
             {agentOpen && (
               <div
@@ -1133,7 +1137,7 @@ export function Composer({
             </button>
           </div>
         )}
-        {approvalMode && onApprovalModeChange && !isGatewayWeb && (
+        {approvalMode && onApprovalModeChange && !isGatewayWeb && !emptyState && (
           <div className="relative shrink-0" ref={approvalRef}>
             {approvalOpen && (
               <div
@@ -1189,7 +1193,7 @@ export function Composer({
         {/* Model picker + send kept together, pushed right (and wrapping as a
             unit) so the send button is always reachable on a narrow pane. */}
         <div className={cn("ml-auto flex min-w-0 items-center gap-1.5", isGatewayWeb && "max-w-full flex-wrap justify-end")}>
-          {onCompactContext && (
+          {onCompactContext && !emptyState && (
             <button
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
               aria-label={t("composer.compact.aria")}
@@ -1228,7 +1232,7 @@ export function Composer({
           )}
           {showModelPicker && (
             <>
-              {isGatewayWeb ? <WebModelPicker sessionId={modelSessionId} compact={compactToolbar} />
+              {isGatewayWeb ? <WebModelPicker sessionId={modelSessionId} compact={compactToolbar || emptyState} />
                 : <ModelPicker sessionId={modelSessionId} compact={compactToolbar} />}
             </>
           )}

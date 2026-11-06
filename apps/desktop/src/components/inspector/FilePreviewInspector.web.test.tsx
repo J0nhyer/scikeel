@@ -19,6 +19,23 @@ describe("Web file preview", () => {
     expect(screen.queryByRole("button", { name: "History" })).not.toBeInTheDocument();
   });
 
+  it("hides the desktop-only large-file probe in the web client", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "text too large" }), { status: 413 }),
+    );
+    render(
+      <FilePreviewInspector
+        data={{ variant: "file", path: "huge.md", filename: "huge.md", artifact: "report" }}
+      />,
+    );
+    expect(await screen.findByText(/huge\.md is too large to preview/)).toBeInTheDocument();
+    // The probe is a native (Tauri) command; a button that silently does
+    // nothing must not be offered over the web.
+    expect(
+      screen.queryByRole("button", { name: /Inspect without loading/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("previews Markdown and downloads a fresh ticket in its owning session without opening a tab", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ ticket: "preview" })))

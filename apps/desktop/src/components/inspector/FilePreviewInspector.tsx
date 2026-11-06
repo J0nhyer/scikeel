@@ -1,6 +1,6 @@
 import { ErrorNotice } from "../ui/ErrorNotice";
 import { StateNotice } from "../ui/StateNotice";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Code2,
   Download,
@@ -38,6 +38,7 @@ import { FileEditor } from "@/components/code-editor/FileEditor";
 import { MarkdownToolbar } from "@/components/code-editor/MarkdownToolbar";
 import { recordProvenance } from "@/lib/provenance";
 import { MarkdownViewer } from "@/components/markdown-viewer/MarkdownViewer";
+import { normalizeMarkdownAssetPath } from "@/lib/markdownImages";
 import { ProvenancePanel } from "./ProvenancePanel";
 import { TablePreview } from "./TablePreview";
 import { TableChart } from "./TableChart";
@@ -118,6 +119,26 @@ export function FilePreviewInspector({
     activeWorkspace !== null &&
     !samePath(workspaceDirectory, activeWorkspace);
   const kind = previewKindForName(data.filename);
+
+  // A markdown document's images are written relative to the DOCUMENT, not the
+  // workspace root (`demo_analysis/report.md` → `figure1.png`,
+  // `paper/paper.md` → `../figures/plot.png`). Resolve each one through the
+  // same ticket path as a directly opened image.
+  const markdownDirectory = useMemo(() => {
+    const slash = data.path.lastIndexOf("/");
+    return slash >= 0 ? data.path.slice(0, slash) : "";
+  }, [data.path]);
+  const markdownImages = useMemo(() => {
+    if (kind !== "markdown") return undefined;
+    return {
+      cacheKey: ["file", data.root ?? "", workspaceDirectory ?? "", markdownDirectory].join("\u0000"),
+      resolve: async (src: string) => {
+        const path = normalizeMarkdownAssetPath(markdownDirectory, src);
+        return path ? previewUrl(path, data.root, workspaceDirectory) : null;
+      },
+    };
+  }, [kind, markdownDirectory, data.root, workspaceDirectory]);
+
   const needsUrl = kind === "pdf" || kind === "image" || kind === "html" || kind === "video";
   const needsText =
     kind === "table" || kind === "text" || kind === "html" || kind === "markdown" ||
@@ -526,6 +547,7 @@ export function FilePreviewInspector({
             filename={data.filename}
             path={data.path}
             language={data.language}
+            markdownImages={markdownImages}
           />
         )}
       </div>
@@ -558,6 +580,7 @@ function Body({
   filename,
   path,
   language,
+  markdownImages,
 }: {
   kind: PreviewKind;
   url: string | null;
@@ -571,6 +594,10 @@ function Body({
   filename: string;
   path: string;
   language?: string;
+  markdownImages?: {
+    cacheKey: string;
+    resolve: (src: string) => Promise<string | null>;
+  };
 }) {
   const { t } = useTranslation(["inspector", "common"]);
   // Editing means you see the TEXT, whatever the file usually renders as.
@@ -720,7 +747,13 @@ function Body({
       // broken box rather than as a page.
       <div className="flex min-h-full flex-col px-6 py-8">
         <div className="mx-auto w-full max-w-[760px] flex-1 rounded-sm bg-white px-12 py-11 shadow-[0_1px_4px_rgba(0,0,0,.25)] max-sm:px-6 max-sm:py-7">
-          <MarkdownViewer variant="document">{text}</MarkdownViewer>
+          <MarkdownViewer
+            variant="document"
+            resolveImage={markdownImages?.resolve}
+            imageCacheKey={markdownImages?.cacheKey}
+          >
+            {text}
+          </MarkdownViewer>
         </div>
       </div>
     ) : (
@@ -983,7 +1016,9 @@ export function PreviewError({
         <div className="mb-1 font-medium text-text">{t("filePreview.tooLarge", { filename })}</div>
         <p className="mb-3">{t("filePreview.tooLargeBody")}</p>
         <div className="flex flex-wrap gap-2">
-          {path && (
+          {/* The large-file probe is a native command. The web client can only
+              download or preview, so it must not offer a button that no-ops. */}
+          {path && isTauri && (
             <button
               className="inline-flex items-center gap-1.5 rounded-input border border-border bg-surface-2 px-2.5 py-1.5 text-[13px] text-text hover:bg-surface disabled:opacity-60"
               onClick={() => void inspect()}

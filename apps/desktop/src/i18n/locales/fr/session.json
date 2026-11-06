@@ -267,6 +267,11 @@
     "newSession": "Nouvelle session",
     "heading": "Que devrions-nous explorer ?",
     "subheading": "Décrivez votre analyse ci-dessous — ou partez de l'un de ces exemples.",
+    "chips": {
+      "analyze": "Analyser mes données",
+      "research-idea": "Transformer une idée en plan",
+      "demo": "Lancer un exemple complet"
+    },
     "demo": {
       "title": "Exécuter une analyse de démonstration, de bout en bout",
       "description": "Simuler un jeu de données, ajuster un modèle, et produire une figure et un rapport traçable."

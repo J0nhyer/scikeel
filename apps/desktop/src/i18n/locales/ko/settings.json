@@ -68,7 +68,7 @@
     },
     "campusDecoration": {
       "label": "캠퍼스 장식",
-      "hint": "빈 대화에만 교훈과 선 장식을 표시합니다."
+      "hint": "빈 대화에서만 선 장식을 표시합니다."
     }
   },
   "language": {

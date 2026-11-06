@@ -13,3 +13,10 @@ it("responds to campus appearance and its persisted decoration preference", () =
   expect(screen.queryByTestId("campus-empty-decoration")).toBeNull();
   expect(localStorage.getItem("scikeel.campus-decoration.v1")).toBe("0");
 });
+it("keeps the campus decoration without the motto", () => {
+  useUiStore.setState({ theme: "cdut", campusDecoration: true });
+  render(<EmptySessionDecoration />);
+  const decoration = screen.getByTestId("campus-empty-decoration");
+  expect(decoration).toBeInTheDocument();
+  expect(decoration.querySelector("[data-campus-motto]")).toBeNull();
+});

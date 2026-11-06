@@ -1,12 +1,16 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { clearMarkdownImageCache } from "@/lib/markdownImages";
 import { renderBlock } from "./BlockList";
 
-vi.mock("@/lib/tauri", () => ({ isTauri: false }));
+vi.mock("@/lib/tauri", () => ({ isTauri: false, openExternal: vi.fn() }));
 vi.mock("@/lib/webMode", () => ({ isGatewayWeb: true, isPlatformWeb: false, gatewayToken: () => null, gatewayOrigin: () => "http://localhost" }));
 
 describe("Web answer document links", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    clearMarkdownImageCache();
+  });
 
   it("offers existing documents while keeping planned and missing files as prose", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
@@ -63,5 +67,43 @@ describe("Web answer document links", () => {
     await screen.findByRole("button", { name: "report.md" });
     view.rerender(renderBlock(block, 0, handlers, undefined, "/session-b"));
     await waitFor(() => expect(screen.queryByRole("button", { name: "report.md" })).not.toBeInTheDocument());
+  });
+});
+
+describe("Web answer images", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    clearMarkdownImageCache();
+  });
+
+  it("resolves a workspace-relative image in an answer", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/fs/ticket") {
+        return new Response(JSON.stringify({ ticket: `ticket-${url.searchParams.get("path")}` }));
+      }
+      return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+    });
+
+    render(
+      renderBlock(
+        { kind: "agent", markdown: "![Dose response](demo_analysis/figure1.png)" },
+        0,
+        {},
+        undefined,
+        "/session/workspace",
+      ),
+    );
+
+    const image = await screen.findByRole("img");
+    expect(image).toHaveAttribute(
+      "src",
+      "http://localhost/v1/fs/read?ticket=ticket-demo_analysis%2Ffigure1.png",
+    );
+    const ticketCall = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input)))
+      .find((url) => url.pathname === "/v1/fs/ticket");
+    expect(ticketCall?.searchParams.get("dir")).toBe("/session/workspace");
+    expect(ticketCall?.searchParams.get("path")).toBe("demo_analysis/figure1.png");
   });
 });

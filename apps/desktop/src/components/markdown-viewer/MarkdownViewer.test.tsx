@@ -1,5 +1,6 @@
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clearMarkdownImageCache } from "@/lib/markdownImages";
 import { MarkdownViewer } from "./MarkdownViewer";
 
 const { openExternalMock } = vi.hoisted(() => ({
@@ -13,6 +14,7 @@ vi.mock("@/lib/tauri", () => ({
 describe("MarkdownViewer", () => {
   beforeEach(() => {
     openExternalMock.mockReset();
+    clearMarkdownImageCache();
   });
 
   it("renders inline and block LaTeX via KaTeX", () => {
@@ -118,5 +120,68 @@ describe("MarkdownViewer", () => {
 
     expect(link.dispatchEvent(click)).toBe(false);
     expect(openExternalMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves a relative image against the document that references it", async () => {
+    const resolveImage = vi.fn(async () => "http://files.test/figure1.png");
+    render(
+      <MarkdownViewer resolveImage={resolveImage} imageCacheKey="notes">
+        {"![dose response](figure1.png)"}
+      </MarkdownViewer>,
+    );
+
+    const image = await screen.findByRole("img");
+    expect(image).toHaveAttribute("src", "http://files.test/figure1.png");
+    expect(image).toHaveAttribute("alt", "dose response");
+    expect(resolveImage).toHaveBeenCalledWith("figure1.png");
+  });
+
+  it("does not resolve remote or data images", async () => {
+    const resolveImage = vi.fn(async () => "http://files.test/wrong.png");
+    render(
+      <MarkdownViewer resolveImage={resolveImage}>
+        {"![remote](https://example.com/a.png)\n\n![inline](data:image/png;base64,iVBORw0KGgo=)"}
+      </MarkdownViewer>,
+    );
+
+    const images = await screen.findAllByRole("img");
+    expect(images[0]).toHaveAttribute("src", "https://example.com/a.png");
+    expect(images[1].getAttribute("src")).toMatch(/^data:image\/png;base64,/);
+    expect(resolveImage).not.toHaveBeenCalled();
+  });
+
+  it("strips a non-image data URL instead of loading it", () => {
+    const { container } = render(
+      <MarkdownViewer>{"![x](data:text/html;base64,PHNjcmlwdD4=)"}</MarkdownViewer>,
+    );
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("shows the image's alt text when its path cannot be resolved", async () => {
+    const resolveImage = vi.fn(async () => null);
+    render(
+      <MarkdownViewer resolveImage={resolveImage}>
+        {"![missing figure](missing.png)"}
+      </MarkdownViewer>,
+    );
+
+    expect(await screen.findByText("missing figure")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("leaves a relative image alone when no resolver is configured", () => {
+    render(<MarkdownViewer>{"![plot](figure1.png)"}</MarkdownViewer>);
+    expect(screen.getByRole("img")).toHaveAttribute("src", "figure1.png");
+  });
+
+  it("keeps an image in the text flow instead of forcing its own block", async () => {
+    const resolveImage = vi.fn(async () => "http://files.test/icon.png");
+    render(
+      <MarkdownViewer resolveImage={resolveImage}>
+        {"![icon](icon.png) stays inline"}
+      </MarkdownViewer>,
+    );
+
+    expect(await screen.findByRole("img")).toHaveClass("inline-block");
   });
 });

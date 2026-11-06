@@ -68,7 +68,7 @@
     },
     "campusDecoration": {
       "label": "Decoración del campus",
-      "hint": "Mostrar el lema y las líneas solo en conversaciones vacías."
+      "hint": "Mostrar el motivo de líneas solo en conversaciones vacías."
     }
   },
   "language": {

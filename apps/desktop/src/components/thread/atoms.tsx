@@ -1,5 +1,5 @@
 import { ConversationAttachmentCard } from "./ConversationAttachmentCard";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, Loader2, Paperclip, Pencil, RotateCcw, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { copyText } from "@/lib/clipboard";
@@ -18,7 +18,8 @@ import { MessageMeta } from "./MessageMeta";
 import { cn } from "@/lib/cn";
 import { MarkdownViewer } from "@/components/markdown-viewer/MarkdownViewer";
 import { extractArtifactRefs, refToArtifactBlock } from "@/lib/artifacts";
-import { resolveArtifactPath } from "@/lib/artifactFile";
+import { previewUrl, resolveArtifactPath } from "@/lib/artifactFile";
+import { normalizeMarkdownAssetPath } from "@/lib/markdownImages";
 import { useThrottledValue } from "@/lib/useThrottledValue";
 import { HSCROLL_ATTR } from "@/lib/wheelChain";
 import { HOVER_HOST } from "@/lib/hoverTracking";
@@ -215,6 +216,19 @@ export const AgentMessage = memo(function AgentMessage({
   workspaceDirectory?: string;
 }) {
   const { t } = useTranslation(["session", "common"]);
+  // Chat has no document directory to anchor an image to; the workspace root
+  // is the path the agent writes relative to. Resolved through the same file
+  // ticket as the Files browser, so an answer can show the figure it created.
+  const markdownImages = useMemo(() => {
+    if (!workspaceDirectory) return undefined;
+    return {
+      cacheKey: ["chat", workspaceDirectory].join("\u0000"),
+      resolve: async (src: string) => {
+        const path = normalizeMarkdownAssetPath("", src);
+        return path ? previewUrl(path, undefined, workspaceDirectory) : null;
+      },
+    };
+  }, [workspaceDirectory]);
   const [copied, setCopied] = useState(false);
   // While the agent streams, `markdown` grows on every token and re-parsing the
   // whole message (react-markdown + KaTeX) each time is the main live CPU cost
@@ -259,7 +273,12 @@ export const AgentMessage = memo(function AgentMessage({
     // Marked so a text selection inside an ANSWER (never a tool log or the
     // user's own message) can offer follow-up actions — see SelectionActions.
     <div {...{ [HOVER_HOST]: "" }} data-agent-message className="relative">
-      <MarkdownViewer>{shown}</MarkdownViewer>
+      <MarkdownViewer
+        resolveImage={markdownImages?.resolve}
+        imageCacheKey={markdownImages?.cacheKey}
+      >
+        {shown}
+      </MarkdownViewer>
       {refs.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
           {refs.map((path) => (

@@ -40,7 +40,7 @@
     },
     "campusDecoration": {
       "label": "Campus decoration",
-      "hint": "Show the motto and line motif only on empty conversations."
+      "hint": "Show the line motif only on empty conversations."
     }
   },
   "language": {

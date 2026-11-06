@@ -40,7 +40,7 @@
     },
     "campusDecoration": {
       "label": "校园装饰",
-      "hint": "仅在空白会话中显示校训与线条装饰。"
+      "hint": "仅在空白会话中显示线条装饰。"
     }
   },
   "language": {

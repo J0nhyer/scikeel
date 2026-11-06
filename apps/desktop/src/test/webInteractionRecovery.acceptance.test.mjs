@@ -157,7 +157,7 @@ test.skipIf(!process.env.OSD_INTERACTION_BROWSER)('Web answers retain drafts acr
       } finally {await context.close();}
     }
 
-    for(const width of [1280,360])for(const title of ['Start from a research idea','Run a demo analysis, end to end','Analyze my data','Audit a report for traceability','Explore an example: climate trends',null]) {
+    for(const width of [1280,360])for(const title of ['Turn an idea into a plan','Run a complete example','Analyze my data',null]) {
       const context=await browser.newContext({viewport:{width,height:900}});
       try {
         await context.addInitScript(()=>localStorage.setItem('ai4s.locale','en'));
