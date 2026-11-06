@@ -161,6 +161,7 @@ try {
     try { sessionStorage.removeItem('scikeel.login.pending'); } catch {}
   };
   document.addEventListener('scikeel:login-ready', handoff, { once: true });
+  document.addEventListener('scikeel:login-recovery', handoff, { once: true });
   document.addEventListener('scikeel:login-error', () => {
     shadow.innerHTML = '<style>' + styles + '</style><div class="scikeel-loading"><div class="scikeel-loading-error" role="alert"><p>' +
       (locale === 'en' ? 'Service resources are busy. Please try again shortly.' : '当前服务资源紧张，请稍后重试。') +

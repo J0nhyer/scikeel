@@ -667,6 +667,28 @@ describe("platform connection context", () => {
       expect(mocks.sendPromptSpy).not.toHaveBeenCalled();expect(mocks.abortSession).not.toHaveBeenCalled();
     } finally {useRuntimeStore.getState().suspendPlatformBrowser();await pending;vi.useRealTimers();}
   });
+  it("maps a confirm-restart workspace failure to a restartable report", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const failure = { code: "runtime_unresponsive", error: "The workspace runtime is not responding", stage: "runtime",
+      action: "confirm_restart", retryable: true, context: { instanceId: "user-a", generation: 1 }, retryAfterMs: 0 };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/v1/whoami")
+      ? new Response(JSON.stringify(failure), { status: 503 })
+      : response(String(input)));
+    vi.stubGlobal("fetch", fetchMock);
+    let pending: Promise<boolean>;
+    try {
+      pending = useRuntimeStore.getState().connectRetry(1);
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(await pending).toBe(false);
+      expect(useRuntimeStore.getState().gatewayWorkspaceReport).toMatchObject({
+        state: "unresponsive", canRestart: true, context: { instanceId: "user-a", generation: 1 },
+      });
+    } finally {
+      useRuntimeStore.getState().suspendPlatformBrowser();
+      await pending!;
+      vi.useRealTimers();
+    }
+  });
   it("stops the boot retry loop on a terminal busy result", async () => {
     vi.useFakeTimers({toFake:["setTimeout","clearTimeout","performance"]});
     const fetchMock=vi.fn(async()=>new Response(JSON.stringify({

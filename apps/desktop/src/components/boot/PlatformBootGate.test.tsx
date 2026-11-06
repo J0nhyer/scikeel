@@ -106,4 +106,14 @@ describe("managed Web boot gate", () => {
     render(<PlatformBootGate><div>workbench</div></PlatformBootGate>);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
+
+  it("shows the workspace recovery card instead of the generic busy surface", () => {
+    useRuntimeStore.setState({ status: "error",
+      gatewayWorkspaceReport: { context: { instanceId: "user-a", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 } });
+    render(<PlatformBootGate><div>workbench</div></PlatformBootGate>);
+    expect(screen.getByText("live.recovery.states.unresponsive")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "live.recovery.retry" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "live.recovery.restart" })).toBeInTheDocument();
+    expect(screen.queryByText("Service resources are busy. Please try again shortly.")).not.toBeInTheDocument();
+  });
 });

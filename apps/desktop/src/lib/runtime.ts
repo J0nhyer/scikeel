@@ -2984,8 +2984,12 @@ export function contextLimitFor(state: RuntimeState, key: string): number {
 
 export const useRuntimeStore = create<RuntimeState>((set, get) => {
   const reportFailure = (failure: WorkspaceFailure | null): WorkspaceReport => ({
-    context: failure?.context ?? null, state: failure?.code === "workspace_capacity_unavailable" ? "capacity" : "unknown",
-    activity: "unknown", canRestart: false, retryAfterMs: failure?.retryAfterMs ?? 0,
+    context: failure?.context ?? null,
+    state: failure?.code === "workspace_capacity_unavailable" ? "capacity"
+      : failure?.action === "confirm_restart" ? "unresponsive" : "unknown",
+    activity: "unknown",
+    canRestart: failure?.action === "confirm_restart" && !!failure?.context && failure.retryAfterMs === 0,
+    retryAfterMs: failure?.retryAfterMs ?? 0,
   });
   const waitForCapacity = async (owner: NonNullable<typeof webRecovery>): Promise<boolean> => {
     if (lastConnectFailure?.code !== "workspace_capacity_unavailable" || !lastConnectFailure.retryable || lastConnectFailure.action !== "wait") return false;

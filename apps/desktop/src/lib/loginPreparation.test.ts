@@ -132,3 +132,18 @@ it("does not expose return-to-login while normal preparation is pending", async 
   expect(signOut).not.toHaveBeenCalled();
   stop();
 });
+
+it("hands off to the SPA when a structured workspace report is available", () => {
+  const recovery = vi.fn(); const failure = vi.fn();
+  document.addEventListener("scikeel:login-recovery", recovery, { once: true });
+  document.addEventListener("scikeel:login-error", failure);
+  const stop = installLoginPreparation(source);
+  current = { ...current, status: "error",
+    gatewayWorkspaceReport: { context: { instanceId: "user-a", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 } };
+  listener(current);
+  expect(recovery).toHaveBeenCalledOnce();
+  expect(failure).not.toHaveBeenCalled();
+  expect(unsubscribe).toHaveBeenCalledOnce();
+  document.removeEventListener("scikeel:login-error", failure);
+  stop();
+});
