@@ -344,7 +344,7 @@
       "paneMenu": "Session actions"
     },
     "filesToggle": {
-      "default": "Files",
+      "default": "Folder",
       "title": "Browse this session's folder beside the chat"
     },
     "runsToggle": {

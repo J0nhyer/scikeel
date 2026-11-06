@@ -51,7 +51,7 @@
     "explorerUnavailableWeb": "文件浏览器在桌面应用中可用。",
     "selectFilePrompt": "选择一个文件以在此处预览。",
     "pane": {
-      "subtitle": "此会话的文件夹",
+      "title": "文件夹",
       "closeAria": "关闭文件"
     },
     "contextMenu": {

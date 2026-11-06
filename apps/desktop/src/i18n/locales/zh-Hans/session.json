@@ -344,7 +344,7 @@
       "paneMenu": "会话操作"
     },
     "filesToggle": {
-      "default": "文件",
+      "default": "文件夹",
       "title": "在聊天旁浏览此会话的文件夹"
     },
     "runsToggle": {

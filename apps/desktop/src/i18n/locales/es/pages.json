@@ -51,7 +51,7 @@
     "explorerUnavailableWeb": "El explorador de archivos está disponible en la app de escritorio.",
     "selectFilePrompt": "Selecciona un archivo para previsualizarlo aquí.",
     "pane": {
-      "subtitle": "carpeta de esta sesión",
+      "title": "Carpeta",
       "closeAria": "Cerrar archivos"
     },
     "contextMenu": {

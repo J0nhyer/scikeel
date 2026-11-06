@@ -49,7 +49,6 @@ import { LiveLine, latestLine } from "@/components/thread/LiveLine";
 import { Composer } from "@/components/thread/Composer";
 import { GoalPill } from "@/components/thread/GoalPill";
 import { GOAL_RESUME_NUDGE } from "@/lib/goalPrompts";
-import { baseName } from "@/components/thread/WorkspaceChip";
 import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
 import { EmptySessionDecoration } from "./EmptySessionDecoration";
 import { collaborationPollingEnabled, useCollaboration } from "@/lib/collaboration";
@@ -791,14 +790,9 @@ export function SessionView({
               aria-pressed={showFiles}
             >
               <FolderOpen size={13} />
-              {/* Tiled panes are narrow — show just the icon, not the folder name. */}
-              {showToolLabels && (
-                <span className="max-w-[160px] truncate">
-                  {sessionDir
-                    ? baseName(sessionDir)
-                    : t("live.filesToggle.default")}
-                </span>
-              )}
+              {/* Tiled panes are narrow — show just the icon, not the label. The
+                  label stays generic; the folder path lives in the title. */}
+              {showToolLabels && <span>{t("live.filesToggle.default")}</span>}
             </button>
           )}
           {collaboration.state.delivery && <ResearchDeliveryStatus key={`${eid}:${collaboration.state.execution}`} delivery={collaboration.state.delivery} />}

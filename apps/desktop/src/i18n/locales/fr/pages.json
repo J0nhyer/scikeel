@@ -51,7 +51,7 @@
     "explorerUnavailableWeb": "L'explorateur de fichiers est disponible dans l'application de bureau.",
     "selectFilePrompt": "Sélectionnez un fichier pour le prévisualiser ici.",
     "pane": {
-      "subtitle": "le dossier de cette session",
+      "title": "Dossier",
       "closeAria": "Fermer les fichiers"
     },
     "contextMenu": {

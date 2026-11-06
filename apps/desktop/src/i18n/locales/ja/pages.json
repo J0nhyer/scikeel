@@ -51,7 +51,7 @@
     "explorerUnavailableWeb": "ファイルエクスプローラーはデスクトップアプリで利用可能です。",
     "selectFilePrompt": "ファイルを選択するとここにプレビューが表示されます。",
     "pane": {
-      "subtitle": "このセッションのフォルダ",
+      "title": "フォルダー",
       "closeAria": "ファイルを閉じる"
     },
     "contextMenu": {
