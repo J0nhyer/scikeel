@@ -1457,6 +1457,13 @@ export class PlatformServer {
         }
       }
     }
+    // The managed OpenCode runtime has no durable turn interruptions. Answer
+    // the optional client read with an empty list instead of forwarding it to
+    // a worker path that rejects it or returning a repeating 404.
+    if (this.tenantPolicy && request.method === "GET" &&
+        /^\/session\/[A-Za-z0-9_-]{1,128}\/interruptions$/.test((request.url ?? "").split("?")[0])) {
+      sendJson(response, 200, { interruptions: [] }); return;
+    }
     // This branch is enabled only for explicitly migrated managed accounts.
     // It never invokes the legacy host CLI adapters.
     const crossRevertRoute=request.method==='POST'&&(request.url??'').split('?')[0].match(/^\/session\/([A-Za-z0-9_-]+)\/(revert|unrevert)$/);
@@ -2362,6 +2369,7 @@ export class PlatformServer {
   }
 
   async #researchApi(request, response, user, sessionId) {
+    let body;
     try {
       if (request.method === "GET") {
         sendJson(response, 200, { task: await this.researchTasks.refresh(user.id, sessionId) });
@@ -2371,7 +2379,7 @@ export class PlatformServer {
         sendJson(response, 405, { error: "method not allowed" }, { allow: "GET, POST" });
         return;
       }
-      const body = await this.#readPayload(request, response);
+      body = await this.#readPayload(request, response);
       if (!body) return;
       this.#requireWriteContext(request, user);
       let task;
@@ -2387,7 +2395,15 @@ export class PlatformServer {
       else if (body.action === "release") task = await this.researchTasks.release(user.id, sessionId, body.pageId);
       else task = await this.researchTasks.action(user.id, sessionId, body);
       sendJson(response, body.action === "create" ? 201 : 200, { task });
-    } catch (error) { sendJson(response, error.status ?? 400, { error: error.message }); }
+    } catch (error) {
+      // A plain conversation has no research task; leave/heartbeat/stop are
+      // idempotent no-ops there rather than repeated 404s in the client.
+      if (error?.status === 404 && error.message === "research task not found" &&
+          ["stop", "release", "heartbeat"].includes(body?.action)) {
+        sendJson(response, 200, { task: null }); return;
+      }
+      sendJson(response, error.status ?? 400, { error: error.message });
+    }
   }
 
   async #pendingRequest(context,id,operation,access,directory) {
