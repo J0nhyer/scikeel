@@ -150,8 +150,30 @@ export class ManagedWorkerManager {
     if (this.#closed) throw recoveryError("workspace_status_unknown");
     if (registered.generation !== inspected.generation) throw recoveryError("workspace_status_unknown");
     record.generation = inspected.generation;
+    record.observed = true;
     // Observation grants no broker authority and must not reconfigure a live runtime.
     if (["ready", "starting", "unavailable"].includes(inspected.status)) record.status = "unavailable";
+  }
+  /** Retire a live account this process only observed. The launcher's own
+   *  endpoint and token are used for a read-only idle probe; the account is
+   *  stopped only when every session is idle and the stop is verified. */
+  async #retireObservedIdle(record) {
+    let inspected;
+    try { inspected = await this.client.inspect({ instanceId: record.id }, { timeoutMs: 3000 }); }
+    catch { return false; }
+    if (inspected?.instanceId !== record.id || inspected.generation !== record.generation ||
+        inspected.status !== "ready" || typeof inspected.endpoint !== "string" ||
+        typeof inspected.internalToken !== "string") return false;
+    const probe = { ...record, url: inspected.endpoint, token: inspected.internalToken, status: "running" };
+    try { if ((await this.#idleState(probe)).state !== "idle") return false; }
+    catch { return false; }
+    const context = this.#context(record);
+    try { await this.client.stop({ instanceId: record.id, generation: record.generation, reason: "managed-retire" }); }
+    catch { throw recoveryError("workspace_cleanup_unverified", { context }); }
+    if (!(await this.#retired(record.id))) throw recoveryError("workspace_cleanup_unverified", { context });
+    record.generation = null; record.status = "stopped"; record.observed = false;
+    delete record.token; delete record.url; delete record.runnerUrl;
+    return true;
   }
   async #probe(context, { signal, deadline }) {
     const record = this.#workers.get(context.instanceId);
@@ -247,6 +269,10 @@ export class ManagedWorkerManager {
       this.#checkCapacityScope(record, expectedGeneration);
       if (record.cleanupUnverified) throw recoveryError("workspace_cleanup_unverified", { context: this.#context(record) });
       await this.#observe(record);
+      if (record.observed) {
+        if (!allowRecovery) throw recoveryError("workspace_recovery_required", { context: this.#context(record) });
+        if (await this.#retireObservedIdle(record)) return this.#start(record);
+      }
       if (record.generation === null) {
         if (!allowRecovery) throw recoveryError("workspace_recovery_required");
         return this.#start(record);
@@ -290,7 +316,7 @@ export class ManagedWorkerManager {
         try { response = await this.fetchImpl(`${record.url}/v1/health`, { headers: { authorization: `Bearer ${record.token}` }, signal: AbortSignal.timeout(5000) }); }
         finally { this.logger({ type: "workspace.startup_stage", stage: "health", generation: record.generation, elapsedMs: Math.round(performance.now() - healthStarted) }); }
         if (!response.ok) throw unavailable("managed worker health unavailable");
-        this.tenantPolicy.registerAccount(context); record.status = "running";
+        this.tenantPolicy.registerAccount(context); record.status = "running"; record.observed = false;
         try { this.onWorkerReady?.({ context, access: { url:record.url, token:record.token } }); } catch { /* Passive observation is optional. */ }
         return this.getWorker(instanceId);
       } catch (error) {

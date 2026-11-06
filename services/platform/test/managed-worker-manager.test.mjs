@@ -456,12 +456,17 @@ test("replacement invokes local interruption hooks around verified cleanup exact
   assert.deepEqual(events, [["before", 1], ["after", 1], ["configure", 2]]);
 });
 
-test("fresh manager cannot reconfigure a live launcher generation as cold startup", async t => {
+test("fresh manager retires a live idle generation and configures only the replacement", async t => {
   const f = fixture(); t.after(() => f.manager.close());
   f.records.set("user-a", { instanceId: "user-a", generation: 1, status: "ready", endpoint: "http://172.31.240.2:4790", runnerEndpoint: "http://172.31.240.2:4791", internalToken: "b".repeat(64) });
-  let configured = 0; f.manager.configureWorker = async () => { configured++; };
-  await assert.rejects(f.manager.ensureWorker({ instanceId: "user-a", userId: "a" }));
-  assert.equal(configured, 0); assert.equal(f.calls.filter(([op]) => op === "start").length, 0);
+  const configuredGenerations = [];
+  f.manager.configureWorker = async ({ context }) => { configuredGenerations.push(context.generation); };
+  const worker = await f.manager.ensureWorker({ instanceId: "user-a", userId: "a" });
+  assert.deepEqual(configuredGenerations, [2]);
+  assert.deepEqual(f.calls.filter(([op]) => op === "stop").map(([, args]) => args),
+    [{ instanceId: "user-a", generation: 1, reason: "managed-retire" }]);
+  assert.equal(worker.status, "running");
+  assert.equal(worker.generation, 2);
 });
 
 test("writes cannot join an in-flight read replacement", async t => {
@@ -532,4 +537,51 @@ test("retiredGeneration requires the same stopped account above the cancelled ge
   assert.equal(await f.manager.retiredGeneration("missing", 1, "a"), false);
   f.manager.client.inventory = async () => ({ accounts: null });
   assert.equal(await f.manager.retiredGeneration("user-a", 3, "a"), false);
+});
+
+test("an observed idle orphan is retired and replaced on recovery admission", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  f.records.set("user-a", { instanceId: "user-a", userId: "a", generation: 4, status: "ready" });
+  f.manager.fetchImpl = async () => ({ ok: true, json: async () => ({}) }); // every session idle
+  const worker = await f.manager.ensureWorker({ instanceId: "user-a", userId: "a" });
+  assert.deepEqual(f.calls.filter(([op]) => op === "stop").map(([, args]) => args),
+    [{ instanceId: "user-a", generation: 4, reason: "managed-retire" }]);
+  assert.equal(f.calls.filter(([op]) => op === "start").length, 1);
+  assert.equal(worker.status, "running");
+  assert.equal(worker.generation, 5);
+});
+
+test("a busy observed orphan is not stopped", async t => {
+  let now = 1000;
+  const f = fixture({ now: () => now }); t.after(() => f.manager.close());
+  f.records.set("user-a", { instanceId: "user-a", userId: "a", generation: 4, status: "ready" });
+  f.manager.fetchImpl = async () => ({ ok: true, json: async () => ({ ses: { type: "busy" } }) });
+  await assert.rejects(f.manager.ensureWorker({ instanceId: "user-a", userId: "a" }),
+    error => error.code === "workspace_unreachable");
+  now += 1100;
+  await assert.rejects(f.manager.ensureWorker({ instanceId: "user-a", userId: "a" }),
+    error => error.code === "runtime_unresponsive");
+  assert.equal(f.calls.filter(([op]) => op === "stop").length, 0);
+  assert.equal(f.calls.filter(([op]) => op === "start").length, 0);
+});
+
+test("recovery-disabled admission never stops an observed orphan", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  f.records.set("user-a", { instanceId: "user-a", userId: "a", generation: 4, status: "ready" });
+  await assert.rejects(f.manager.ensureWorker({ instanceId: "user-a", userId: "a", allowRecovery: false }),
+    error => error.code === "workspace_recovery_required");
+  assert.equal(f.calls.filter(([op]) => op === "stop").length, 0);
+  assert.equal(f.calls.filter(([op]) => op === "start").length, 0);
+});
+
+test("an unverified orphan stop fails closed", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  f.records.set("user-a", { instanceId: "user-a", userId: "a", generation: 4, status: "ready" });
+  f.manager.fetchImpl = async () => ({ ok: true, json: async () => ({}) });
+  const stop = f.manager.client.stop;
+  f.manager.client.stop = async () => { throw new Error("stop refused"); };
+  try {
+    await assert.rejects(f.manager.ensureWorker({ instanceId: "user-a", userId: "a" }),
+      error => error.code === "workspace_cleanup_unverified");
+  } finally { f.manager.client.stop = stop; }
 });
