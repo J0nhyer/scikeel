@@ -17,6 +17,7 @@ import { WorkspaceRpc } from "./workspace-rpc.mjs";
 import { SandboxEnvironments } from "./sandbox-environments.mjs";
 import { PackageGrants } from "./package-grants.mjs";
 import {capacityError} from './workspace-capacity.mjs';
+import { provisionWorkerAssets } from "./worker-assets.mjs";
 
 const routeSet = new Set(["/v1/responses", "/v1/chat/completions", "/v1/messages"]);
 const reasoningLevels = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra", "enabled", "disabled"]);
@@ -235,6 +236,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
       const profile = brokerProfile({ config, broker: model, context, model: savedModel, brokerHost,
         assistantPolicy: plane?.assistantPolicy?.(context) ?? null });
       const token = profile.provider[config.defaultProvider].options.apiKey;
+      await provisionWorkerAssets({ dataDir, roots: configuration.roots, context });
       // The tenant runner announces the runtime protocol it understands. An
       // installed image without it keeps the previous contract: the runner
       // selects the runtime itself and readiness follows its own endpoint.

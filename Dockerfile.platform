@@ -18,6 +18,7 @@ COPY packages/sdk packages/sdk
 COPY packages/shared packages/shared
 COPY runtime/sandbox runtime/sandbox
 COPY runtime/skills runtime/skills
+COPY runtime/fonts runtime/fonts
 
 ENV NODE_ENV=production
 EXPOSE 4790
