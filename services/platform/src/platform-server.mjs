@@ -2365,7 +2365,7 @@ export class PlatformServer {
         else throw Object.assign(new Error("Invalid collaboration action"),{status:400});
       }
       sendJson(response,200,{state,available:this.collaborationAvailable(user.id,worker.generation)});
-    }catch(e){sendJson(response,e.status??e.statusCode??503,{error:e.status||e.statusCode?e.message:"Collaboration unavailable; retry"});}
+    }catch(e){ const status=e.status??e.statusCode??503; const code=typeof e.code==="string"&&/^[a-z][a-z0-9_]{0,79}$/.test(e.code)?e.code:null; const retryAfterMs=Number.isSafeInteger(e.failure?.retryAfterMs)&&e.failure.retryAfterMs>0?e.failure.retryAfterMs:0; const retryable=retryAfterMs>0||e.retryable===true||e.failure?.retryable===true; this.logger({type:"collaboration.request_failed",sessionId,method:request.method,status,code:code??"unknown"}); sendJson(response,status,{error:e.status||e.statusCode?e.message:"Collaboration unavailable; retry",...(code?{code,retryable,retryAfterMs}:{})},retryAfterMs?{"retry-after":String(Math.ceil(retryAfterMs/1000))}:{}); }
   }
 
   async #researchApi(request, response, user, sessionId) {

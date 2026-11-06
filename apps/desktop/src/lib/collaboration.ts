@@ -2,7 +2,7 @@ import { toast } from "./toast";
 import { useRuntimeStore } from "./runtime";
 import i18n from "@/i18n";
 import { useCallback, useEffect, useState, useRef } from "react";
-import { gatewayOrigin, isGatewayWeb } from "./webMode";
+import { gatewayOrigin, isGatewayWeb, setPlatformWorkspaceGeneration } from "./webMode";
 import { researchPageId } from "./research";
 export type CollaborationMode = "guided" | "collaborative" | "delegated" | "autonomous";
 export interface ResearchDecision {
@@ -67,7 +67,7 @@ export async function collaborationRequest(
         },
       );
       const value = await response.json();
-      if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`);
+      if (!response.ok) { let message = `HTTP ${response.status}`; let code: string | undefined; let retryAfterMs = 0; if (value && typeof value === "object") { if ("error" in value && typeof value.error === "string") message = value.error; if ("code" in value && typeof value.code === "string") code = value.code; if ("retryAfterMs" in value && typeof value.retryAfterMs === "number" && value.retryAfterMs > 0) retryAfterMs = value.retryAfterMs; } if (retryAfterMs === 0) { const header = response.headers.get("retry-after"); const headerMs = header !== null && /^\d+$/.test(header) ? Number(header) * 1000 : 0; if (headerMs > 0) retryAfterMs = headerMs; } const err = new Error(message) as Error & { status?: number; code?: string; retryAfterMs?: number }; err.status = response.status; if (code !== undefined) err.code = code; if (retryAfterMs > 0) err.retryAfterMs = retryAfterMs; throw err; }
       return value;
     })()]);
   } finally { clearTimeout(timer); }
@@ -147,11 +147,19 @@ export function useCollaboration(sessionId: string | null, enabled: boolean) {
     const accountId = useRuntimeStore.getState().gatewayUser?.id ?? null;
     let observedRevision = -1;
     let observed: { execution: number; status: string | undefined } | null = null;
+    let failures = 0;
+    let beatFailures = 0;
+    let lastStaleAt = 0;
+    let pollTimer: number | undefined;
+    let beatTimer: number | undefined;
+    const onStale = (e: unknown): void => { if (!(e instanceof Error)) return; const code = "code" in e ? e.code : undefined; const status = "status" in e ? e.status : undefined; if (code === "stale_workspace_context" || (status === 409 && e.message.includes("Workspace has changed"))) { const now = Date.now(); if (now - lastStaleAt < 30000) return; lastStaleAt = now; setPlatformWorkspaceGeneration(null); const state = useRuntimeStore.getState(); if (typeof state.connectRetry === "function") void state.connectRetry().catch(() => {}); } };
+    const scheduleRead = (delay: number) => { if (!active) return; window.clearTimeout(pollTimer); pollTimer = window.setTimeout(() => void read(), delay); };
     const read = async () => {
       try {
         const value = await collaborationRequest(sessionId);
+        failures = 0;
         if (active) {
-          if (value.state.revision < observedRevision) return;
+          if (value.state.revision < observedRevision) { scheduleRead(2000); return; }
           observedRevision = value.state.revision;
           const status = value.state.delivery?.status;
           if (observed && status === "completed" && (observed.execution !== value.state.execution || observed.status !== "completed")) {
@@ -167,19 +175,30 @@ export function useCollaboration(sessionId: string | null, enabled: boolean) {
           apply(value);
           setError(null);
         }
+        scheduleRead(2000);
       } catch (e) {
+        failures += 1;
+        onStale(e);
         if (active) setError(e instanceof Error ? e.message : String(e));
+        const retryMs = typeof e === "object" && e !== null && "retryAfterMs" in e && typeof e.retryAfterMs === "number" && e.retryAfterMs > 0 ? e.retryAfterMs : 0;
+        scheduleRead(Math.max(retryMs, Math.min(2000 * 2 ** Math.max(0, failures - 1), 30000)));
       }
     };
     void read();
-    const poll = window.setInterval(() => void read(), 2000);
-    const beat = () =>
-      void collaborationRequest(sessionId, {
-        action: "heartbeat",
-        pageId: researchPageId,
-      }).catch(() => {});
-    beat();
-    const heart = window.setInterval(beat, 10000);
+    const scheduleBeat = (delay: number) => { if (!active) return; window.clearTimeout(beatTimer); beatTimer = window.setTimeout(() => void beat(), delay); };
+    const beat = async () => {
+      let retryMs = 0;
+      try {
+        await collaborationRequest(sessionId, { action: "heartbeat", pageId: researchPageId });
+        beatFailures = 0;
+      } catch (e) {
+        beatFailures += 1;
+        onStale(e);
+        retryMs = typeof e === "object" && e !== null && "retryAfterMs" in e && typeof e.retryAfterMs === "number" && e.retryAfterMs > 0 ? e.retryAfterMs : 0;
+      }
+      scheduleBeat(Math.max(retryMs, Math.min(10000 * 2 ** Math.max(0, beatFailures - 1), 60000)));
+    };
+    void beat();
     const release = () =>
       void collaborationRequest(
         sessionId,
@@ -190,8 +209,8 @@ export function useCollaboration(sessionId: string | null, enabled: boolean) {
     return () => {
       active = false;
       sequence.current = generation + 1;
-      window.clearInterval(poll);
-      window.clearInterval(heart);
+      window.clearTimeout(pollTimer);
+      window.clearTimeout(beatTimer);
       window.removeEventListener("pagehide", release);
       const users = (pageUsers.get(sessionId) ?? 1) - 1;
       if (users > 0) pageUsers.set(sessionId, users);

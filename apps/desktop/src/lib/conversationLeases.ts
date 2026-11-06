@@ -8,6 +8,8 @@ const HEARTBEAT_MS = 10_000;
 interface Lease {
   running: boolean;
   pending: Promise<void> | null;
+  failures: number;
+  nextBeatAt: number;
 }
 
 /** Keep running OpenCode turns leased independently of mounted session panes.
@@ -42,10 +44,11 @@ export function useConversationLeases(): void {
     };
     const heartbeat = (sessionId: string, lease: Lease) => {
       if (hidden || disposed || !lease.running || lease.pending) return;
+      if (Date.now() < lease.nextBeatAt) return;
       // Keep even the initial acquisition alive across a fast navigation.
       // At most one heartbeat per session is in flight; retry on the next tick.
       lease.pending = collaborationRequest(sessionId, { action: "heartbeat", pageId }, true)
-        .then(() => {}, () => {})
+        .then((value) => { lease.failures = 0; lease.nextBeatAt = Date.now() + HEARTBEAT_MS; return value; }, (e) => { lease.failures += 1; const retryMs = typeof e === "object" && e !== null && "retryAfterMs" in e && typeof e.retryAfterMs === "number" && e.retryAfterMs > 0 ? e.retryAfterMs : 0; lease.nextBeatAt = Date.now() + Math.max(retryMs, Math.min(HEARTBEAT_MS * 2 ** Math.max(0, lease.failures - 1), 60000)); return undefined; })
         .then(() => {
           lease.pending = null;
           // An ended turn must release AFTER an in-flight heartbeat, otherwise
@@ -79,7 +82,7 @@ export function useConversationLeases(): void {
         const existing = leases.get(sessionId);
         if (existing) existing.running = true;
         else {
-          const lease: Lease = { running: true, pending: null };
+          const lease: Lease = { running: true, pending: null, failures: 0, nextBeatAt: 0 };
           leases.set(sessionId, lease);
           heartbeat(sessionId, lease);
         }

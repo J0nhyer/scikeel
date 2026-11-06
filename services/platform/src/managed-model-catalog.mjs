@@ -33,7 +33,7 @@ export async function saveManagedDefaultModel({ root, userId, model }) {
 
 const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const label = (value, fallback) => typeof value === "string" && value.length > 0 && value.length <= 512 ? value : fallback;
-const unavailable = () => Object.assign(new Error("OpenCode model catalog unavailable"), { statusCode: 503 });
+const unavailable = () => Object.assign(new Error("OpenCode model catalog unavailable"), { statusCode: 503, code: "model_catalog_unavailable", retryable: true });
 
 // This opaque lifetime identity binds the immutable administrator configuration
 // snapshot, including credential changes, without publishing a secret digest.
