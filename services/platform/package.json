@@ -10,7 +10,7 @@
     "test:workspace-capacity:live": "node ../../scripts/dev/safe-desktop-task.mjs web-capacity-live"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "dependencies": {
     "better-sqlite3": "12.9.0",
