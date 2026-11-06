@@ -32,3 +32,17 @@ test("compose forwards the sandbox disabled-runtime policy", async () => {
   assert.match(compose, /PLATFORM_SANDBOX_DISABLED_RUNTIMES:/);
   assert.doesNotMatch(compose, /PLATFORM_DISABLED_RUNTIMES:/);
 });
+
+test("the local worker override disables blocked model metadata fetches", () => {
+  const patched = patchedWorkerJobs('const env = { PATH: "unchanged" };\nreturn env;\n');
+  assert.match(patched, /OPENCODE_DISABLE_MODELS_FETCH = "1"/);
+  assert.match(patched, /OPENCODE_DISABLE_AUTOUPDATE = "1"/);
+  assert.match(patched, /PATH: "unchanged"/);
+});
+
+test("the local worker override patches the real runtime source", async () => {
+  const source = await readFile(new URL("../../runtime/sandbox/cli-jobs.mjs", import.meta.url), "utf8");
+  const patched = patchedWorkerJobs(source);
+  assert.match(patched, /OPENCODE_DISABLE_MODELS_FETCH = "1"/);
+  assert.match(patched, /OMP_NUM_THREADS: "4"/);
+});

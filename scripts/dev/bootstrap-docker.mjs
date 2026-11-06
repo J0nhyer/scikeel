@@ -120,8 +120,11 @@ function defaultSecret() {
 
 export function patchedWorkerJobs(source) {
   if (typeof source !== "string") throw new Error("invalid worker runtime source");
-  return source.replace(/(OMP_NUM_THREADS|OPENBLAS_NUM_THREADS|MKL_NUM_THREADS|NUMEXPR_NUM_THREADS): "1"/g,
+  const patched = source.replace(/(OMP_NUM_THREADS|OPENBLAS_NUM_THREADS|MKL_NUM_THREADS|NUMEXPR_NUM_THREADS): "1"/g,
     '$1: "4"');
+  if (patched.includes("OPENCODE_DISABLE_MODELS_FETCH") || !patched.includes("return env;")) return patched;
+  return patched.replace("return env;",
+    'env.OPENCODE_DISABLE_MODELS_FETCH = "1";\nenv.OPENCODE_DISABLE_AUTOUPDATE = "1";\nreturn env;');
 }
 
 function envLine(value) {
