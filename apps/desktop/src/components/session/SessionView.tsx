@@ -187,6 +187,7 @@ export function SessionView({
   // own below (#34).
   const status = useRuntimeStore((s) => s.status);
   const gatewayWorkspaceReport = useRuntimeStore((s) => s.gatewayWorkspaceReport);
+  const gatewayWorkspaceFailure = useRuntimeStore((s) => s.gatewayWorkspaceFailure);
   const switching = useRuntimeStore((s) => s.switching);
   const sessionListReady = useRuntimeStore((s) => s.sessionListReady);
   const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
@@ -1222,7 +1223,7 @@ export function SessionView({
             style={zoom !== 1 ? { zoom } : undefined}
             className="pointer-events-auto relative mx-auto w-full max-w-[760px] space-y-3 px-8"
           >
-            {error && focused && <StateNotice issueId={`runtime:${eid ?? key}:${error}`} summary={t("common:notification.problem")} detail={error} />}
+            {error && focused && !gatewayWorkspaceFailure && <StateNotice issueId={`runtime:${eid ?? key}:${error}`} summary={t("common:notification.problem")} detail={error} />}
             <ComposerNotices
               decisionInputError={decisionInputError}
               collaborationError={collaboration.error}

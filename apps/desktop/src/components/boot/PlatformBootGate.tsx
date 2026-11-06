@@ -63,7 +63,7 @@ export function PlatformBootGate({ children }: { children: ReactNode }) {
           {recovery ? (
             <div className="w-full max-w-md rounded-card border border-border bg-surface p-4 shadow-card">
               <WorkspaceRecoveryActions report={gatewayWorkspaceReport}
-                waiting={gatewayWorkspaceReport.state === "capacity"} />
+                waiting={gatewayWorkspaceReport.state === "capacity" && status !== "error"} />
             </div>
           ) : (
             <div role="alert" className="flex max-w-sm flex-col items-center gap-4 text-center">

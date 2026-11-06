@@ -116,4 +116,26 @@ describe("managed Web boot gate", () => {
     expect(screen.getByRole("button", { name: "live.recovery.restart" })).toBeInTheDocument();
     expect(screen.queryByText("Service resources are busy. Please try again shortly.")).not.toBeInTheDocument();
   });
+
+  it("makes retry available after the capacity window ends", () => {
+    useRuntimeStore.setState({ status: "error",
+      gatewayWorkspaceReport: { context: null, state: "capacity", activity: "unknown", canRestart: false, retryAfterMs: 0 } });
+    render(<PlatformBootGate><div>workbench</div></PlatformBootGate>);
+    expect(screen.getByText("live.recovery.states.capacity")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "live.recovery.retry" })).toBeEnabled();
+  });
+
+  it("renders the recovery card after a cold-login handoff removes the preparing attribute", () => {
+    document.documentElement.setAttribute("data-scikeel-login-preparing", "");
+    useRuntimeStore.setState({ status: "connecting", sessionListReady: false, gatewayCatalogState: "loading" });
+    render(<PlatformBootGate><div>workbench</div></PlatformBootGate>);
+    expect(screen.queryByText("live.recovery.states.unresponsive")).not.toBeInTheDocument();
+    act(() => {
+      useRuntimeStore.setState({ status: "error",
+        gatewayWorkspaceReport: { context: { instanceId: "user-a", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 } });
+      document.documentElement.removeAttribute("data-scikeel-login-preparing");
+      document.dispatchEvent(new Event("scikeel:login-recovery"));
+    });
+    expect(screen.getByText("live.recovery.states.unresponsive")).toBeInTheDocument();
+  });
 });
