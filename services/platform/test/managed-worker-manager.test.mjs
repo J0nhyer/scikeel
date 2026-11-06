@@ -585,3 +585,16 @@ test("an unverified orphan stop fails closed", async t => {
       error => error.code === "workspace_cleanup_unverified");
   } finally { f.manager.client.stop = stop; }
 });
+
+test("a stop that does not retire the observed orphan fails closed without starting", async t => {
+  const f = fixture(); t.after(() => f.manager.close());
+  f.records.set("user-a", { instanceId: "user-a", userId: "a", generation: 4, status: "ready" });
+  f.manager.fetchImpl = async () => ({ ok: true, json: async () => ({}) });
+  const stop = f.manager.client.stop;
+  f.manager.client.stop = async (args) => { f.calls.push(["stop", args]); return { ...args, stopped: true }; };
+  try {
+    await assert.rejects(f.manager.ensureWorker({ instanceId: "user-a", userId: "a" }),
+      error => error.code === "workspace_cleanup_unverified");
+    assert.equal(f.calls.filter(([op]) => op === "start").length, 0);
+  } finally { f.manager.client.stop = stop; }
+});
