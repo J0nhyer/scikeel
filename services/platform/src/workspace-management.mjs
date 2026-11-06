@@ -19,7 +19,7 @@ export async function historicalSessionRoots(context,gateway) {
 }
 
 export class WorkspaceManagement {
-  constructor({state,tenantPolicy,gateway,admission,resolveSession,sessionRoots=async()=>[],assertNoFollow=async()=>{}}) {Object.assign(this,{state,tenantPolicy,gateway,admission,resolveSession,sessionRoots,assertNoFollow});}
+  constructor({state,tenantPolicy,gateway,admission,resolveSession,sessionRoots=async()=>[],deleteProjectSessions=async()=>{},assertNoFollow=async()=>{}}) {Object.assign(this,{state,tenantPolicy,gateway,admission,resolveSession,sessionRoots,deleteProjectSessions,assertNoFollow});}
   async roots(context) {
     const roots=[...(await this.allProjects(context)).map(project=>project.path),
       ...this.tenantPolicy.sessions(context).map(session=>session.directory),...await this.sessionRoots(context)];
@@ -116,6 +116,9 @@ export class WorkspaceManagement {
         if(Object.values(data.uploads??{}).some(upload=>!['cancelled','committed'].includes(upload.state) && (upload.destination===prefix || upload.destination.startsWith(prefix+'/'))))throw workspaceError('upload_pending');
         if(Object.keys(data.operations).length>=this.state.maxOperations)throw workspaceError('workspace_metadata_full',507);
       }
+      // Sessions are the project's most visible content; delete them before
+      // dropping the project index so a retry can still name the folder.
+      await this.deleteProjectSessions(context,project);
       await this.gateway(context,`/v1/projects/${id}`,'DELETE');
       const normalized={kind:'removeProject',project};
       await this.state.update(context.userId,next=>{

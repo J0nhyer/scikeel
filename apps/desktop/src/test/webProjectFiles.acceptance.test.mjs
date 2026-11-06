@@ -193,7 +193,7 @@ test.skipIf(!process.env.OSD_PROJECT_FILES_ACCEPTANCE && !process.env.OSD_PROJEC
     for(let index=0;index<105;index++)payloads.set('projects/a/zzz-page-'+String(index).padStart(3,'0')+'.txt',{identity:'page-'+index,revision:nextRevision(),isDir:false,size:0,text:''});
     await page.goto(fileView);await page.getByRole('button',{name:'a',exact:true}).click();await page.getByRole('button',{name:'Load more',exact:true}).click();
     await page.getByRole('button',{name:'File actions: zzz-page-104.txt',exact:true}).waitFor();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1)).toBe(true);
-    await page.goto(origin+'/projects');await menu().click();await page.getByRole('menuitem',{name:'Remove',exact:true}).click();
+    await page.goto(origin+'/projects');await menu().click();await page.getByRole('menuitem',{name:'Delete',exact:true}).click();
     await page.getByRole('alertdialog').getByRole('button',{name:'Cancel',exact:true}).click();
     expect(projects.length).toBe(1);
     expect(await page.getByRole('button',{name:'Trash',exact:true}).count()).toBe(0);

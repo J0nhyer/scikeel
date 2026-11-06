@@ -37,9 +37,10 @@ async function fixture(t){
   const context={userId:'a',instanceId:'user-a',generation:1};
   const tenantPolicy=new TenantPolicy({accounts:[{...context,workspaceDir:'/owned/a'}]});
   const projects=[{id:'123456789abcdef0',name:'A',path:'/owned/a/projects/a',pinned:false,createdAt:1}];
-  let busy=false;let mutations=0;
+  let busy=false;let mutations=0;const deleted=[];
   const state=new WorkspaceState({dataDir});
   const management=new WorkspaceManagement({state,tenantPolicy,admission:new WorkspaceAdmission({resolveExecution:async()=>busy}),
+    deleteProjectSessions:async(_context,project)=>{deleted.push({id:project.id,remaining:projects.length});},
     gateway:async(_context,path,method='GET',body)=>{
       if(path==='/v1/projects')return structuredClone(projects);
       if(method==='PATCH'){projects[0].name=body.name;mutations++;return {ok:true};}
@@ -47,7 +48,7 @@ async function fixture(t){
       if(path==='/v1/fs/list?root=workspace&path=&dir=%2Fowned%2Fa%2Fprojects%2Fa')return [{name:'result.txt',path:'result.txt',isDir:false}];
       throw new Error('unexpected gateway request');
     }});
-  return {management,context,projects,state,busy:value=>busy=value,mutations:()=>mutations};
+  return {management,context,projects,state,deleted,busy:value=>busy=value,mutations:()=>mutations};
 }
 test('rename preserves project ID/path and rejects invalid names',async t=>{
   const f=await fixture(t);await f.management.patchProject(f.context,f.projects[0].id,{name:'Renamed'});
@@ -56,7 +57,7 @@ test('rename preserves project ID/path and rejects invalid names',async t=>{
   assert.equal(f.mutations(),1);
   assert.equal((await f.state.open('a')).projects[f.projects[0].id].project.name,'Renamed');
 });
-test('remove drops only the project index and leaves its files accessible',async t=>{
+test('remove deletes the project sessions before dropping the index',async t=>{
   const f=await fixture(t);const [p]=await f.management.listProjects(f.context);
   const receipt=await f.management.removeProject(f.context,p.id,{operationId:'op-a',expectedRevision:p.revision});
   assert.equal(receipt.state,'committed');
@@ -64,6 +65,15 @@ test('remove drops only the project index and leaves its files accessible',async
   assert.equal(f.projects.length,0);
   assert.equal((await f.state.open('a')).projects[p.id],undefined);
   await f.management.assertAccessible(f.context,p.path+'/nested');
+  assert.deepEqual(f.deleted,[{id:p.id,remaining:1}]);
+});
+test('a failed project session deletion aborts removal and keeps the project retryable',async t=>{
+  const f=await fixture(t);const [p]=await f.management.listProjects(f.context);
+  f.management.deleteProjectSessions=async()=>{throw new Error('sessions offline');};
+  await assert.rejects(f.management.removeProject(f.context,p.id,{operationId:'op-a',expectedRevision:p.revision}),/sessions offline/);
+  assert.equal(f.projects.length,1);
+  assert.equal(f.mutations(),0);
+  assert.equal((await f.management.listProjects(f.context)).length,1);
 });
 test('a failed project removal leaves no pending receipt that can block the account',async t=>{
   const f=await fixture(t),gateway=f.management.gateway;const [project]=await f.management.listProjects(f.context);

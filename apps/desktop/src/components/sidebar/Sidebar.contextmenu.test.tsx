@@ -68,17 +68,19 @@ describe("sidebar right-click menus", () => {
     expect(menu.getByText("New session")).toBeInTheDocument();
     expect(menu.getByText("Open folder")).toBeInTheDocument();
     expect(menu.getByText("Pin")).toBeInTheDocument();
-    expect(menu.getByText("Remove")).toBeInTheDocument();
+    expect(menu.getByText("Delete")).toBeInTheDocument();
     // A session's actions have no business on a project.
     expect(menu.queryByText("Archive")).not.toBeInTheDocument();
   });
 
-  it("removing a project asks first — it is destructive", async () => {
+  it("deleting a project asks first and names the conversations it removes", async () => {
     renderAt("/skills");
     const menu = await menuOn("BCI trends");
-    await userEvent.click(menu.getByText("Remove"));
+    await userEvent.click(menu.getByText("Delete"));
 
-    expect(await screen.findByRole("alertdialog")).toHaveTextContent("Remove BCI trends?");
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Delete BCI trends?");
+    expect(dialog).toHaveTextContent("All conversations in this project will be deleted. This cannot be undone.");
   });
 
   it("the rail opts out of text selection so a right-click leaves no highlight", () => {

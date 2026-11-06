@@ -504,7 +504,8 @@ export class PlatformServer {
         tenantPolicy,admission:this.workspaceAdmission,sessionRoots:async context=>[
           ...await historicalSessionRoots(context,(owner,path)=>this.#workspaceGateway(owner,path)),
           ...(cliRuntime?[...(await cliRuntime.ensureUser(context.userId)).sessions.values()].map(session=>session.directory):[])
-        ],resolveSession:async(context,id)=>id.startsWith("ses_cli_") && cliRuntime?(await cliRuntime.ensureUser(context.userId)).sessions.get(id)??Promise.reject(workspaceError("session_not_found",404)):this.sessionAuthority.ensure(context,id),gateway:(context,path,method,body)=>this.#workspaceGateway(context,path,method,body)});
+        ],resolveSession:async(context,id)=>id.startsWith("ses_cli_") && cliRuntime?(await cliRuntime.ensureUser(context.userId)).sessions.get(id)??Promise.reject(workspaceError("session_not_found",404)):this.sessionAuthority.ensure(context,id),gateway:(context,path,method,body)=>this.#workspaceGateway(context,path,method,body),
+        deleteProjectSessions:(context,project)=>this.#deleteProjectSessions(context,project)});
       this.workspaceProxyRequests=new Set();
       if(workspaceFiles)this.workspaceManagement.assertNoFollow=async(context,directory)=>{
         const path=directory.slice(tenantPolicy.account(context).workspaceDir.length+1);
@@ -1188,6 +1189,92 @@ export class PlatformServer {
     return true;
   }
 
+  /** Delete every conversation filed under a project folder before the project
+   *  index is dropped. Workspace admission has already refused removal while a
+   *  turn is running, so these conversations are idle. */
+  async #deleteProjectSessions(context,project) {
+    const account=this.tenantPolicy.account(context);
+    const directory=this.tenantPolicy.directory(context,project.path);
+    const owner={...context,workspaceDir:account.workspaceDir,directory};
+    let rows;
+    if(this.conversationRouter){
+      rows=await this.conversationRouter.list(owner,{directory,limit:10000});
+    }else{
+      // Older platforms may run without the conversation router. Fall back to
+      // the runtimes' own inventories, which is also what the project views
+      // group by directory.
+      rows=(await historicalSessions(context,(ctx,path)=>this.#workspaceGateway(ctx,path)))
+        .filter(row=>row.directory===directory);
+      if(this.cliRuntime){
+        const state=await this.cliRuntime.ensureUser(context.userId);
+        for(const session of state.sessions.values())
+          if(session.directory===directory)rows.push({id:session.publicConversationId??session.id});
+      }
+    }
+    const ids=[...new Set(rows.map(row=>row.id).filter(id=>typeof id==='string'))];
+    for(const id of ids){
+      try{await this.#removeOwnedSession(context,id);}
+      catch(error){
+        if(error.code==='conversation_not_found'||error.code==='unknown_session'||error.statusCode===404)continue;
+        throw error;
+      }
+    }
+  }
+
+  /** Delete one owned conversation and every record that can still surface it:
+   *  CLI session, canonical tree, native transcript and attachments. Shared by
+   *  the single-session route and project deletion so both clean up alike. */
+  async #removeOwnedSession(context,sessionId,access=this.workerManager.getWorkerAccess(context.instanceId)) {
+    const account=this.tenantPolicy.account(context),owner={...context,workspaceDir:account.workspaceDir,directory:account.workspaceDir};
+    let cliTree=[];
+    if(this.cliRuntime?.ownedSessionTree){
+      try{cliTree=await this.cliRuntime.ownedSessionTree(context.userId,sessionId);}
+      catch(error){if(error.code!=="unknown_session")throw error;}
+    }
+    let canonicalRoot=null,canonicalTree=[];
+    for(const id of new Set([sessionId,...cliTree.map(session=>session.publicConversationId)].filter(Boolean))){
+      try{canonicalTree=await this.conversations.conversationTree(owner,id);canonicalRoot=id;break;}
+      catch(error){if(error.code!=="conversation_not_found")throw error;}
+    }
+    const nativeIds=new Set();
+    if(canonicalTree.length){
+      for(const row of canonicalTree){
+        if(row.historicalSource?.runtime==="opencode")nativeIds.add(row.historicalSource.sessionId);
+        for(const binding of row.bindings??[])if(binding.runtime==="opencode")nativeIds.add(binding.nativeSessionId);
+      }
+    }else if(!cliTree.length)nativeIds.add(sessionId);
+    const keys=new Set([sessionId,...nativeIds]);
+    let removed=false;
+    if(cliTree.length && this.cliRuntime?.removeOwnedSessionTree){
+      for(const session of await this.cliRuntime.removeOwnedSessionTree(context.userId,sessionId)){
+        keys.add(session.id);if(session.publicConversationId)keys.add(session.publicConversationId);
+      }
+      removed=true;
+    }
+    for(const nativeId of nativeIds){
+      if(!access)throw workspaceError("workspace_unavailable",503);
+      if(await this.#deleteNativeSession(context,access,nativeId))removed=true;
+    }
+    for(const row of canonicalTree)keys.add(row.id);
+    for(const key of keys)await this.attachments.deleteSession(context.userId,key);
+    if(canonicalRoot){
+      for(const row of await this.conversations.removeTree(owner,canonicalRoot))keys.add(row.id);
+      removed=true;
+    }
+    if(this.workspaceCatalog){
+      const ids=[...keys];
+      // A catalogue-only row is still a conversation the user sees in
+      // History: removing it is the deletion, even when no canonical, CLI or
+      // native record survives behind it.
+      for(let index=0;index<ids.length;index+=256)
+        if((await this.workspaceCatalog.removeConversations(context.userId,ids.slice(index,index+256))).removed)removed=true;
+    }
+    for(const [key,record] of this.openCodeTurns)if(keys.has(record?.turn?.owner?.sessionId))this.openCodeTurns.delete(key);
+    for(const [key,held] of this.promptAdmissions)if(keys.has(held?.owner?.sessionId))this.promptAdmissions.delete(key);
+    for(const key of keys)this.tenantPolicy.removeSession(context,key);
+    return removed;
+  }
+
   async #deleteOwnedSession(request,response,access,user,worker,sessionId) {
     const expectedOrigin=`${this.secureCookies?"https":"http"}://${request.headers.host}`;
     if(request.headers.origin!==expectedOrigin||request.headers["sec-fetch-site"]==="cross-site"){
@@ -1198,48 +1285,7 @@ export class PlatformServer {
       sendJson(response,403,{error:"approval required"});return;
     }
     try {
-      const account=this.tenantPolicy.account(context),owner={...context,workspaceDir:account.workspaceDir,directory:account.workspaceDir};
-      let cliTree=[];
-      try{cliTree=await this.cliRuntime.ownedSessionTree(user.id,sessionId);}
-      catch(error){if(error.code!=="unknown_session")throw error;}
-      let canonicalRoot=null,canonicalTree=[];
-      for(const id of new Set([sessionId,...cliTree.map(session=>session.publicConversationId)].filter(Boolean))){
-        try{canonicalTree=await this.conversations.conversationTree(owner,id);canonicalRoot=id;break;}
-        catch(error){if(error.code!=="conversation_not_found")throw error;}
-      }
-      const nativeIds=new Set();
-      if(canonicalTree.length){
-        for(const row of canonicalTree){
-          if(row.historicalSource?.runtime==="opencode")nativeIds.add(row.historicalSource.sessionId);
-          for(const binding of row.bindings??[])if(binding.runtime==="opencode")nativeIds.add(binding.nativeSessionId);
-        }
-      }else if(!cliTree.length)nativeIds.add(sessionId);
-      const keys=new Set([sessionId,...nativeIds]);
-      let removed=false;
-      if(cliTree.length){
-        for(const session of await this.cliRuntime.removeOwnedSessionTree(user.id,sessionId)){
-          keys.add(session.id);if(session.publicConversationId)keys.add(session.publicConversationId);
-        }
-        removed=true;
-      }
-      for(const nativeId of nativeIds)if(await this.#deleteNativeSession(context,access,nativeId))removed=true;
-      for(const row of canonicalTree)keys.add(row.id);
-      for(const key of keys)await this.attachments.deleteSession(user.id,key);
-      if(canonicalRoot){
-        for(const row of await this.conversations.removeTree(owner,canonicalRoot))keys.add(row.id);
-        removed=true;
-      }
-      if(this.workspaceCatalog){
-        const ids=[...keys];
-        // A catalogue-only row is still a conversation the user sees in
-        // History: removing it is the deletion, even when no canonical, CLI or
-        // native record survives behind it.
-        for(let index=0;index<ids.length;index+=256)
-          if((await this.workspaceCatalog.removeConversations(user.id,ids.slice(index,index+256))).removed)removed=true;
-      }
-      for(const [key,record] of this.openCodeTurns)if(keys.has(record?.turn?.owner?.sessionId))this.openCodeTurns.delete(key);
-      for(const [key,held] of this.promptAdmissions)if(keys.has(held?.owner?.sessionId))this.promptAdmissions.delete(key);
-      for(const key of keys)this.tenantPolicy.removeSession(context,key);
+      const removed=await this.#removeOwnedSession(context,sessionId,access);
       if(!removed){sendJson(response,404,{error:"conversation not found",code:"conversation_not_found"});return;}
       sendJson(response,200,true);
     } catch(error) {
