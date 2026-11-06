@@ -42,6 +42,22 @@ import {WorkspaceBootstrap} from './workspace-bootstrap.mjs';
 import {WorkspaceCatalogImporter} from './workspace-catalog-import.mjs';
 import {waitManagedRuntime} from './sandbox-control-plane.mjs';
 
+export const RESEARCH_REQUEST_TIMEOUT_MS = 15000;
+
+/** Rate-limit identical background monitor failures so one slow worker does
+ *  not write the same timeout to the log on every two-second tick. */
+export function createMonitorErrorLogger({ now = Date.now, write, intervalMs = 60000 } = {}) {
+  if (typeof write !== "function" || !Number.isSafeInteger(intervalMs) || intervalMs < 0)
+    throw new Error("invalid monitor logger");
+  let message = null; let at = 0;
+  return (error) => {
+    const next = error?.message ?? String(error);
+    const time = now();
+    if (next === message && time - at < intervalMs) return;
+    message = next; at = time; write(next);
+  };
+}
+
 const SESSION_COOKIE = "osd_session";
 const BOOTSTRAP_COOKIE = "osd_worker_bootstrap";
 const DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024;
@@ -689,11 +705,12 @@ export class PlatformServer {
     if (this.server?.listening) return this.address();
     if (this.listenPromise) return this.listenPromise;
     await this.init();
+    const monitorLog = createMonitorErrorLogger({
+      write: message => this.logger({ type: "research.monitor_error", error: message }),
+    });
     this.researchTimer = setInterval(() => {
       if (this.researchTick) return;
-      this.researchTick = Promise.all([this.researchTasks.tick(),this.collaboration.tick(),this.answerAutomaticToolPermissions(),this.#settleOpenCodeTurns()]).catch((error) => {
-        this.logger({ type: "research.monitor_error", error: error.message });
-      }).finally(() => { this.researchTick = null; });
+      this.researchTick = Promise.all([this.researchTasks.tick(),this.collaboration.tick(),this.answerAutomaticToolPermissions(),this.#settleOpenCodeTurns()]).catch(monitorLog).finally(() => { this.researchTick = null; });
     }, 2000);
     this.researchTimer.unref();
     this.attachmentTimer = setInterval(() => {
@@ -1915,7 +1932,7 @@ export class PlatformServer {
     const result = await fetch(url, {
       method, headers: { authorization: `Basic ${workerBasicToken(access.token)}`, "content-type": "application/json" },
       ...(body === undefined ? {} : {body:JSON.stringify(body)}),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(RESEARCH_REQUEST_TIMEOUT_MS),
     });
     const text=await result.text();completed?.();
     if (!result.ok) throw Object.assign(new Error("research session is unavailable"), { status: result.status });

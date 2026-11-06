@@ -10,7 +10,7 @@ import { AuthStore } from "../src/auth-store.mjs";
 import { CliRuntimeManager } from "../src/cli-runtime.mjs";
 import { ConversationState } from "../src/conversation-state.mjs";
 import { CliProfileResolver } from "../src/cli-profile.mjs";
-import { PlatformServer } from "../src/platform-server.mjs";
+import { PlatformServer, createMonitorErrorLogger } from "../src/platform-server.mjs";
 import { WorkerManager } from "../src/worker-manager.mjs";
 import { TenantPolicy } from "../src/tenant-policy.mjs";
 import { WorkspaceRpc } from "../src/workspace-rpc.mjs";
@@ -2606,4 +2606,18 @@ test("recent no-follow integration serializes project/background reads and an em
   assert.deepEqual(attachmentResponses.map(r=>r.status),[200,200,200,202]);await Promise.all(attachmentResponses.map(r=>r.text()));
   assert.equal(peak,1);assert.equal(f.forwarded(),2);assert.ok([...writes.values()][0].equals(bytes));
   assert.equal((await f.server.attachments.list(f.user.id,"owned")).attachments[0].sha256,file.sha256);
+});
+
+test("identical monitor failures are logged at most once per interval", () => {
+  let now = 1000; const lines = [];
+  const log = createMonitorErrorLogger({ now: () => now, write: message => lines.push(message), intervalMs: 60000 });
+  log(new Error("The operation was aborted due to timeout"));
+  now += 2000; log(new Error("The operation was aborted due to timeout"));
+  now += 60000; log(new Error("The operation was aborted due to timeout"));
+  now += 2000; log(new Error("different failure"));
+  assert.deepEqual(lines, [
+    "The operation was aborted due to timeout",
+    "The operation was aborted due to timeout",
+    "different failure",
+  ]);
 });
