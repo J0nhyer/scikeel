@@ -246,6 +246,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
           authorization: `Bearer ${access.token}`, "content-type": "application/json" },
           body: JSON.stringify({ instanceId: context.instanceId, generation: context.generation, profile, imageDigest:configuration.imageDigest,
             ...(protocol.runtime?{runtime}:{}) }), signal: AbortSignal.timeout(15000) });
+        await response.body?.cancel();
         if (!response.ok) throw new Error("managed profile unavailable");
       } finally {
         logger({ type: "workspace.startup_stage", stage: "profile", generation: context.generation, elapsedMs: Math.round(performance.now() - profileStarted) });
