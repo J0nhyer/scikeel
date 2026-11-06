@@ -34,6 +34,9 @@ export async function researchRequest(sessionId: string, payload?: unknown, keep
     ...(payload === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }),
     keepalive,
   });
+  // A plain conversation has no research task: that is a normal state, not an
+  // error. The caller keeps its panel closed instead of surfacing a fetch 404.
+  if (result.status === 404) return null;
   const body = await result.json();
   if (!result.ok) throw new Error(body.error ?? `HTTP ${result.status}`);
   return body.task;

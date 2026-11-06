@@ -308,6 +308,7 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   private readonly accountWideSessions: boolean;
   private readonly workspaceCatalogRoot: string | null;
   private catalogHistoryUnsupported = false;
+  private interruptionsUnsupported = false;
   private readonly workspaceAcknowledgement: boolean;
   private workspaceAcknowledged: (() => void) | null = null;
   private acknowledgeWorkspace(raw: OpenCodeRawEvent): void {
@@ -1074,11 +1075,14 @@ export class OpenCodeClient extends BaseAgentRuntime implements AgentRuntime {
   }
 
   async getInterruptions(sessionId: string): Promise<TurnInterruption[]> {
+    // Runtimes without durable interruptions answer 404. Remember that so a
+    // polling caller does not repeat the same 404 on every history refresh.
+    if (this.interruptionsUnsupported) return [];
     const res = await this.fetchWithTimeout(
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/interruptions`,
       { headers: this.headers() },
     );
-    if (res.status === 404) return [];
+    if (res.status === 404) { this.interruptionsUnsupported = true; return []; }
     if (!res.ok) throw await this.apiError(res, "Failed to load interruptions");
     const body = await res.json() as { interruptions?: TurnInterruption[] };
     return Array.isArray(body.interruptions) ? body.interruptions : [];
