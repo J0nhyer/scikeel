@@ -1,83 +1,63 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
-import { WORKFLOW_STARTERS, WorkflowStarters, workflowStarterPrompt } from "./WorkflowStarters";
-
-// Plain closures instead of vi.fn: tinyspy's result tracking derives an extra
-// promise from a rejecting spy, which vitest then reports as unhandled.
-const installCalls: string[] = [];
-let failInstall = false;
-const webMode = vi.hoisted(() => ({ isGatewayWeb: true }));
-vi.mock("@/lib/webMode", () => webMode);
-vi.mock("@/lib/tauri", () => ({
-  isTauri: true,
-  installExample: async (name: string) => {
-    installCalls.push(name);
-    if (failInstall) throw new Error("resource missing");
-    return name;
-  },
-}));
+import {
+  HOME_STARTER_IDS,
+  WORKFLOW_STARTERS,
+  WorkflowStarterChips,
+  WorkflowStarters,
+  workflowStarterPrompt,
+} from "./WorkflowStarters";
 
 describe("WorkflowStarters", () => {
   afterEach(async () => { await act(async () => { await i18n.changeLanguage("en"); }); });
 
-  beforeEach(() => {
-    installCalls.length = 0;
-    failInstall = false;
-    webMode.isGatewayWeb = true;
+  it("renders the heading on its own", () => {
+    render(<WorkflowStarters />);
+    expect(screen.getByText("What should we look into?")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
 
-  it("renders one card per starter workflow, including the climate example", () => {
-    render(<WorkflowStarters onPick={() => {}} />);
-    // Titles are i18n-translated (session:starters.<id>.title); WORKFLOW_STARTERS
-    // itself no longer carries display copy, only ids/prompts — assert the
-    // rendered English text directly.
-    expect(screen.getByText("Run a demo analysis, end to end")).toBeInTheDocument();
-    expect(screen.getByText("Analyze my data")).toBeInTheDocument();
-    expect(screen.getByText("Audit a report for traceability")).toBeInTheDocument();
-    expect(screen.getByText("Explore an example: climate trends")).toBeInTheDocument();
-    expect(screen.getByText("Start from a research idea")).toBeInTheDocument();
-    expect(WORKFLOW_STARTERS).toHaveLength(5);
+  it("centers the heading in the area above the composer", () => {
+    render(<WorkflowStarters bottomInset={160} />);
+    expect(screen.getByText("What should we look into?").parentElement).toHaveStyle({ bottom: "160px" });
   });
 
-  it("starts student guidance as a Chinese conversation without example setup or a task form", async () => {
-    await act(async () => { await i18n.changeLanguage("zh-Hans"); });
-    const onPick = vi.fn();
-    render(<WorkflowStarters onPick={onPick} />);
-    await userEvent.click(screen.getByRole("button", { name: /从想法开始科研/ }));
-    await waitFor(() => expect(onPick).toHaveBeenCalledTimes(1));
-    const prompt = onPick.mock.calls[0][0];
-    expect(prompt).toContain("专业");
-    expect(prompt).toContain("最多三个");
-    expect(prompt).toContain("分析我的数据");
-    expect(prompt).toContain("不要要求我先填写表单");
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    expect(installCalls).toHaveLength(0);
+  it("renders three compact starter chips", () => {
+    render(<WorkflowStarterChips onPick={() => {}} />);
+
+    expect(screen.getByRole("button", { name: /Analyze my data/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Turn an idea into a plan/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Run a complete example/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("button")).toHaveLength(3);
+
+    expect(screen.queryByText("Audit a report for traceability")).toBeNull();
+    expect(screen.queryByText("Explore an example: climate trends")).toBeNull();
+    expect(HOME_STARTER_IDS).toEqual(["analyze", "research-idea", "demo"]);
   });
 
-  it("preserves the existing desktop starter choices", () => {
-    webMode.isGatewayWeb = false;
-    render(<WorkflowStarters onPick={() => {}} />);
-    expect(screen.queryByText("Start from a research idea")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button")).toHaveLength(4);
+  it("keeps audit available to the command palette without putting it on the homepage", () => {
+    expect(WORKFLOW_STARTERS).toHaveLength(4);
+    expect(WORKFLOW_STARTERS.some((starter) => starter.id === "audit")).toBe(true);
+    expect(HOME_STARTER_IDS).not.toContain("audit");
   });
 
   it("sends the full-workflow prompt on click", async () => {
     const onPick = vi.fn();
-    render(<WorkflowStarters onPick={onPick} />);
-    await userEvent.click(screen.getByText("Run a demo analysis, end to end"));
+    render(<WorkflowStarterChips onPick={onPick} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /Run a complete example/ }));
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(expect.stringContaining("figure1.png")));
     expect(onPick.mock.calls[0][0]).toContain("report.md");
-    expect(installCalls).toHaveLength(0);
   });
 
   it("sends Chinese requests and confirms deliverable languages in a Chinese session", async () => {
     await act(async () => { await i18n.changeLanguage("zh-Hans"); });
     const onPick = vi.fn();
-    render(<WorkflowStarters onPick={onPick} />);
+    render(<WorkflowStarterChips onPick={onPick} />);
 
-    await userEvent.click(screen.getByText("分析我的数据"));
+    await userEvent.click(screen.getByRole("button", { name: /分析我的数据/ }));
     await waitFor(() => expect(onPick).toHaveBeenCalledTimes(1));
     expect(onPick.mock.calls[0][0]).toContain("请主要用中文与我交流");
     expect(onPick.mock.calls[0][0]).toContain("中文、英文还是双语");
@@ -94,6 +74,12 @@ describe("WorkflowStarters", () => {
     expect(workflowStarterPrompt("audit", "en")).toContain("traceability-review");
   });
 
+  it("uses the short Chinese heading", async () => {
+    await act(async () => { await i18n.changeLanguage("zh-Hans"); });
+    render(<WorkflowStarters />);
+    expect(screen.getByText("想研究点什么？")).toBeInTheDocument();
+  });
+
   it("resolves Chinese locale variants and preserves English prompts for other locales", () => {
     for (const starter of WORKFLOW_STARTERS) {
       for (const locale of ["zh", "zh-CN", "zh-Hans", "ZH-hans"]) {
@@ -103,25 +89,5 @@ describe("WorkflowStarters", () => {
         expect(workflowStarterPrompt(starter.id, locale)).toBe(starter.prompt);
       }
     }
-  });
-
-  it("installs the example files before sending the climate prompt", async () => {
-    const onPick = vi.fn();
-    render(<WorkflowStarters onPick={onPick} />);
-
-    await userEvent.click(screen.getByText("Explore an example: climate trends"));
-    await waitFor(() => expect(onPick).toHaveBeenCalledTimes(1));
-    expect(installCalls).toEqual(["climate-trends"]);
-    expect(onPick.mock.calls[0][0]).toContain("gistemp_global_means.csv");
-  });
-
-  it("does not send the prompt when the example install fails", async () => {
-    failInstall = true;
-    const onPick = vi.fn();
-    render(<WorkflowStarters onPick={onPick} />);
-
-    await userEvent.click(screen.getByText("Explore an example: climate trends"));
-    await waitFor(() => expect(installCalls).toHaveLength(1));
-    expect(onPick).not.toHaveBeenCalled();
   });
 });

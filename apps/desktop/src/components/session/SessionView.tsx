@@ -50,7 +50,7 @@ import { LiveLine, latestLine } from "@/components/thread/LiveLine";
 import { Composer } from "@/components/thread/Composer";
 import { GoalPill } from "@/components/thread/GoalPill";
 import { GOAL_RESUME_NUDGE } from "@/lib/goalPrompts";
-import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
+import { WorkflowStarterChips, WorkflowStarters } from "@/components/thread/WorkflowStarters";
 import { EmptySessionDecoration } from "./EmptySessionDecoration";
 import { collaborationPollingEnabled, useCollaboration } from "@/lib/collaboration";
 import { ComposerNotices } from "./ComposerNotices";
@@ -700,6 +700,8 @@ export function SessionView({
     </>
   );
 
+  const showEmptyState = connected && isEmpty && !eid && !webReadOnly && !historyLoading;
+
   return (
     <ContextMenu items={paneMenu} label={t("live.header.paneMenu")}>
     <div className="flex h-full min-w-0">
@@ -987,9 +989,8 @@ export function SessionView({
           // blocks and tool output each carry their own horizontal scroller.
           className="relative isolate flex-1 overflow-y-auto overflow-x-hidden"
         >
-          {connected && isEmpty && !eid && !webReadOnly && !historyLoading && (
-            <EmptySessionDecoration bottomInset={composerH + 12} />
-          )}
+          {showEmptyState && <EmptySessionDecoration />}
+          {showEmptyState && <WorkflowStarters bottomInset={composerH + 12} />}
           {/* Zoom the CHAT content (not the scroll box or the composer). */}
           <div
             ref={chatContentRef}
@@ -1049,9 +1050,6 @@ export function SessionView({
               </div>
             )}
 
-            {connected && isEmpty && !eid && !webReadOnly && !historyLoading && (
-              <WorkflowStarters onPick={(p) => void onSend(p)} />
-            )}
             {historyLoading && <ThreadSkeleton />}
             {!historyLoading && thread && (
               <BlockList
@@ -1251,7 +1249,11 @@ export function SessionView({
                 onPermission={(id, reply) => void replyPermission(id, reply)}
               />
             )}
+            {showEmptyState && (
+              <WorkflowStarterChips onPick={(p) => void onSend(p)} />
+            )}
             <Composer
+              emptyState={showEmptyState}
               onSend={onSend}
               onRunShell={(c) => void onRunShell(c)}
               onRunCommand={(n, a) => void onRunCommand(n, a)}

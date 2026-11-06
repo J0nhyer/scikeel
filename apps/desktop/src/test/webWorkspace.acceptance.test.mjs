@@ -40,9 +40,9 @@ test.skipIf(!process.env.OSD_RESEARCH_DEPLOYED_ACCEPTANCE)("renders the deployed
         await page.goto(`${pageOrigin}/live`);
         if (pageOrigin !== origin) expect(await page.evaluate(() => isSecureContext)).toBe(false);
         await page.locator("textarea").waitFor({ state: "visible" });
-        const idea = page.getByRole("button", { name: chinese ? /从想法开始科研/ : /Start from a research idea/ });
+        const idea = page.getByRole("button", { name: chinese ? /把想法变成计划/ : /Turn an idea into a plan/ });
         await idea.waitFor({ state: "visible" });
-        expect(await idea.locator("..").getByRole("button").count()).toBe(5);
+        expect(await idea.locator("..").getByRole("button").count()).toBe(3);
         expect(await page.getByRole("button", { name: chinese ? "开始一个科研任务" : "Start a research task", exact: true }).count()).toBe(0);
         expect(await page.getByLabel(chinese ? "科研目标" : "Research objective", { exact: true }).count()).toBe(0);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -99,9 +99,9 @@ test.skipIf(!process.env.OSD_RESEARCH_STARTER_ACCEPTANCE)("starts research guida
           if (/\/api\/research\//.test(request.url())) researchWrites++;
         });
         await page.goto(`${pageOrigin}/live`);
-        const idea = page.getByRole("button", { name: chinese ? /从想法开始科研/ : /Start from a research idea/ });
+        const idea = page.getByRole("button", { name: chinese ? /把想法变成计划/ : /Turn an idea into a plan/ });
         await idea.waitFor({ state: "visible" });
-        expect(await idea.locator("..").getByRole("button").count()).toBe(5);
+        expect(await idea.locator("..").getByRole("button").count()).toBe(3);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         await mkdir(resolve("../../.deploy/verification"), { recursive: true });
         await page.screenshot({ path: resolve(`../../.deploy/verification/research-starter-${width}-${chinese ? "zh" : "en"}.png`), fullPage: true });

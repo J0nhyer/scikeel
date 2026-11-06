@@ -267,6 +267,11 @@
     "newSession": "Nueva sesión",
     "heading": "¿Qué deberíamos investigar?",
     "subheading": "Describe tu análisis a continuación, o empieza con una de estas opciones.",
+    "chips": {
+      "analyze": "Analizar mis datos",
+      "research-idea": "Convertir una idea en un plan",
+      "demo": "Ejecutar un ejemplo completo"
+    },
     "demo": {
       "title": "Ejecutar un análisis de demostración de principio a fin",
       "description": "Simula un conjunto de datos, ajusta un modelo y produce una figura y un informe trazable."

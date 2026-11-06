@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { renderAt } from "@/test/render";
 import { useUiStore } from "@/lib/store";
 import { Composer } from "./Composer";
-import { WorkflowStarters } from "./WorkflowStarters";
+import { WorkflowStarterChips, WorkflowStarters } from "./WorkflowStarters";
 
 // COPYCAT RULE: useUiStore is module-global; reset the locale after each test
 // so this suite never bleeds a non-English locale into other test files.
@@ -15,16 +15,34 @@ describe("Composer strings (i18n)", () => {
     expect(screen.getByPlaceholderText("Ask anything")).toBeInTheDocument();
     expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Approve for me");
   });
+
+  it("hides the heavier controls on an empty session", () => {
+    render(
+      <Composer
+        onSend={() => {}}
+        emptyState
+        approvalMode="approve"
+        onApprovalModeChange={() => {}}
+      />,
+    );
+    expect(screen.queryByLabelText("Approval mode")).toBeNull();
+  });
 });
 
 describe("WorkflowStarters strings (i18n)", () => {
-  it("renders the welcome copy and a starter card's title/description in English", () => {
-    render(<WorkflowStarters onPick={() => {}} />);
+  it("renders the welcome heading and compact starter chips in English", () => {
+    render(
+      <>
+        <WorkflowStarters />
+        <WorkflowStarterChips onPick={() => {}} />
+      </>,
+    );
     expect(screen.getByText("What should we look into?")).toBeInTheDocument();
-    expect(screen.getByText("Run a demo analysis, end to end")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Run a complete example/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Turn an idea into a plan/ })).toBeInTheDocument();
     expect(
-      screen.getByText("Simulate a dataset, fit a model, and produce a figure and a traceable report."),
-    ).toBeInTheDocument();
+      screen.queryByText("Simulate a dataset, fit a model, and produce a figure and a traceable report."),
+    ).toBeNull();
   });
 });
 
