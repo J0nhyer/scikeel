@@ -255,7 +255,7 @@ export function ProjectsPage() {
                               onSelect={() => setConfirmRemove(p)}
                               className="flex cursor-pointer items-center gap-2 rounded-input px-2 py-1.5 text-error outline-none data-[highlighted]:bg-surface-2"
                             >
-                              {t("projects.remove")}
+                              {t("projects.delete")}
                             </DropdownMenu.Item>
                           </DropdownMenu.Content>
                         </DropdownMenu.Portal>
@@ -347,13 +347,9 @@ export function ProjectsPage() {
 
       {confirmRemove && (
         <ConfirmDialog
-          title={t("projects.removeTitle", { name: confirmRemove.name })}
-          body={t(
-            confirmRemove.importMode === "copy"
-              ? "projects.removeCopyBody"
-              : "projects.removeBody",
-          )}
-          confirmLabel={t("projects.remove")}
+          title={t("projects.deleteTitle", { name: confirmRemove.name })}
+          body={t("projects.deleteBody")}
+          confirmLabel={t("projects.delete")}
           onConfirm={() => {
             void deleteProject(confirmRemove.id);
             setConfirmRemove(null);

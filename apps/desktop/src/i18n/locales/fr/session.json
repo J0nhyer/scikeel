@@ -336,7 +336,7 @@
       "paneMenu": "Actions de la session"
     },
     "filesToggle": {
-      "default": "Fichiers",
+      "default": "Dossier",
       "title": "Parcourir le dossier de cette session à côté du chat"
     },
     "runsToggle": {

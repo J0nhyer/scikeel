@@ -1,4 +1,4 @@
-import { act, screen } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderAt } from "@/test/render";
 import { draftKeyFor, useRuntimeStore } from "@/lib/runtime";
@@ -163,5 +163,18 @@ describe("Web immediate processing state", () => {
 
     expect(await screen.findByText("Working…")).toBeInTheDocument();
     expect(screen.queryByText("Starting the session in its folder…")).not.toBeInTheDocument();
+  });
+});
+
+describe("a session pane after losing the workspace", () => {
+  it("shows the recovery card without the generic connection notice", async () => {
+    webMode.enabled = true;
+    useRuntimeStore.setState({ status: "error", error: "gateway unavailable",
+      gatewayWorkspaceFailure: { code: "runtime_unresponsive", error: "The workspace runtime is not responding", stage: "runtime",
+        action: "confirm_restart", retryable: true, context: { instanceId: "user-a", generation: 1 }, retryAfterMs: 0 },
+      gatewayWorkspaceReport: { context: { instanceId: "user-a", generation: 1 }, state: "unresponsive", activity: "unknown", canRestart: true, retryAfterMs: 0 } });
+    renderAt("/live");
+    await waitFor(() => expect(screen.getByText(/工作区运行时未响应|The workspace runtime is not responding/)).toBeInTheDocument());
+    expect(screen.queryByText(/^(Attention needed|需要处理)$/)).not.toBeInTheDocument();
   });
 });

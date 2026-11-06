@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 describe("Web workspace folder label", () => {
-  it("shows the real managed-root basename in the session header", async () => {
+  it("shows the generic Folder label in the session header", async () => {
     webMode.enabled = true;
     useLayoutStore.getState().reset("ses_a");
     useRuntimeStore.setState({
@@ -43,6 +43,7 @@ describe("Web workspace folder label", () => {
     const files = await screen.findByTitle(
       /Browse this session's folder beside the chat — \/tenant\/workspace/,
     );
-    expect(files).toHaveTextContent("workspace");
+    expect(files).toHaveTextContent("Folder");
+    expect(files).not.toHaveTextContent("workspace");
   });
 });

@@ -51,7 +51,7 @@
     "explorerUnavailableWeb": "Der Datei-Explorer ist in der Desktop-App verfügbar.",
     "selectFilePrompt": "Wählen Sie eine Datei, um sie hier anzuzeigen.",
     "pane": {
-      "subtitle": "Ordner dieser Sitzung",
+      "title": "Ordner",
       "closeAria": "Dateien schließen"
     },
     "contextMenu": {

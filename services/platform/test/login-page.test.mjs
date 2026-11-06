@@ -73,3 +73,15 @@ test("a normal reload without a pending login is not gated", () => {
     assert.equal(dom.window.document.documentElement.hasAttribute("data-scikeel-login-preparing"), false);
   } finally { dom.window.close(); }
 });
+
+test("a structured workspace recovery hands off the login overlay", () => {
+  const dom = preparation("en");
+  try {
+    const { document, Event } = dom.window;
+    assert(document.getElementById("scikeel-login-preparation"));
+    document.dispatchEvent(new Event("scikeel:login-recovery"));
+    assert.equal(document.getElementById("scikeel-login-preparation"), null);
+    assert.equal(document.documentElement.hasAttribute("data-scikeel-login-preparing"), false);
+    assert.equal(document.getElementById("root").inert, false);
+  } finally { dom.window.close(); }
+});

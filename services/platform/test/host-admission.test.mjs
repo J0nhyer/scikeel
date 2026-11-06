@@ -40,3 +40,17 @@ test("host pressure comes from available kernel memory rather than total memory"
   assert.ok(Number.isSafeInteger(pressure.availableBytes));
   assert.equal(pressure.buildActive, false);
 });
+test("docker mode uses available memory and tolerates missing PSI", async () => {
+  const root = await mkdtemp(join(tmpdir(), "host-admission-"));
+  const files = new Map([["/proc/meminfo", "MemAvailable: 2097152 kB\n"], [`${root}/memory.max`, "2147483648\n"], [`${root}/memory.current`, "536870912\n"]]);
+  try {
+    const result = await hostPressure({ mode: "docker", cgroupRoot: root, readFileImpl: async (path) => { if (files.has(path)) return files.get(path); const error = new Error("missing"); error.code = "ENOENT"; throw error; } });
+    assert.equal(result.availableBytes, 1610612736);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+test("docker admission returns a no-op lease without flock", async () => {
+  const calls = [];
+  const admission = new HostAdmission({ mode: "docker", pressureImpl: async (options) => { calls.push(options); } });
+  const lease = await admission.acquire(); lease.release(); lease.release();
+  assert.deepEqual(calls, [{ mode: "docker" }]);
+});

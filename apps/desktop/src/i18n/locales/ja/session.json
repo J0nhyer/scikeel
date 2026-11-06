@@ -336,7 +336,7 @@
       "paneMenu": "セッションの操作"
     },
     "filesToggle": {
-      "default": "ファイル",
+      "default": "フォルダー",
       "title": "チャットの横でこのセッションのフォルダを参照"
     },
     "runsToggle": {

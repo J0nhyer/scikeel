@@ -20,7 +20,6 @@ const base = {
   collaborationErrorScope: "ses_1",
   pendingDecision: null,
   paused: false,
-  pausedKey: "ses_1:1",
   busy: false,
   onDismissDecisionInputError: vi.fn(),
   onRetryCollaboration: vi.fn(),
@@ -47,7 +46,7 @@ describe("composer notices", () => {
     expect(screen.getByText("Answer the research decision first.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Close notification" }));
     expect(onDismissDecisionInputError).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: "Show error" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show error" })).not.toBeInTheDocument();
 
     view.rerender(
       <>
@@ -91,25 +90,6 @@ describe("composer notices", () => {
     expect(screen.queryByText("Answer the research decision first.")).not.toBeInTheDocument();
   });
 
-  it("closes the paused notice for the current pause", async () => {
-    const view = render(<><ComposerNotices {...base} paused /><Toaster /></>);
-    expect(screen.getByText("Execution is paused. Saving an answer does not restart it.")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Close notification" }));
-    expect(screen.queryByText("Execution is paused. Saving an answer does not restart it.")).not.toBeInTheDocument();
-
-    view.rerender(<><ComposerNotices {...base} paused={false} /><Toaster /></>);
-    view.rerender(<><ComposerNotices {...base} paused /><Toaster /></>);
-    expect(screen.getByText("Execution is paused. Saving an answer does not restart it.")).toBeInTheDocument();
-  });
-
-  it("shows the paused notice again for a different paused execution", async () => {
-    const view = render(<><ComposerNotices {...base} paused /><Toaster /></>);
-    await userEvent.click(screen.getByRole("button", { name: "Close notification" }));
-    expect(screen.queryByText("Execution is paused. Saving an answer does not restart it.")).not.toBeInTheDocument();
-    view.rerender(<><ComposerNotices {...base} paused pausedKey="ses_1:2" /><Toaster /></>);
-    expect(screen.getByText("Execution is paused. Saving an answer does not restart it.")).toBeInTheDocument();
-  });
-
   it("closes a collaboration sync failure completely instead of leaving a retry behind", async () => {
     render(
       <>
@@ -125,7 +105,7 @@ describe("composer notices", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Network error");
     await userEvent.click(screen.getByRole("button", { name: "Close notification" }));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show error" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show error" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 

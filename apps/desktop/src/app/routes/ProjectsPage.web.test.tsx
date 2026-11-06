@@ -35,12 +35,12 @@ it("offers project-page entry even for an empty project", async () => {
     expect(enter).toHaveBeenCalledWith("/ws/a", expect.stringMatching(/^draft:/));
   } finally { useRuntimeStore.setState({ startDraftInWorkspace: original }); }
 });
-it('offers a reachable Web project actions menu including Rename and Remove',async()=>{
+it('offers a reachable Web project actions menu including Rename and Delete',async()=>{
   useRuntimeStore.setState({projects:[{id:'123456789abcdef0',name:'A',path:'/ws/a',createdAt:1,imported:false,pinned:false}],sessions:[],webReadOnly:false});
   renderAt('/projects');
   await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));
   expect(await screen.findByRole('menuitem',{name:'Rename'})).toBeInTheDocument();
-  expect(screen.getByRole('menuitem',{name:'Remove'})).toBeInTheDocument();
+  expect(screen.getByRole('menuitem',{name:'Delete'})).toBeInTheDocument();
   expect(screen.queryByRole('button',{name:'Trash'})).not.toBeInTheDocument();
 });
 

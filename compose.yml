@@ -1,0 +1,120 @@
+name: scikeel
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    platform: linux/amd64
+    depends_on:
+      - platform
+    ports:
+      - "127.0.0.1:${LOCAL_HTTP_PORT}:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - front
+    restart: unless-stopped
+
+  platform:
+    image: scikeel-platform:local
+    platform: linux/amd64
+    container_name: scikeel-platform
+    user: "${PLATFORM_UID}:${PLATFORM_GID}"
+    depends_on:
+      - sandbox-backend
+      - package-mirror
+    environment:
+      PLATFORM_HOST: "${PLATFORM_HOST}"
+      PLATFORM_PORT: "${PLATFORM_PORT}"
+      PLATFORM_DATA_DIR: "${PLATFORM_DATA_DIR}"
+      PLATFORM_WEB_ROOT: "${PLATFORM_WEB_ROOT}"
+      PLATFORM_SECURE_COOKIES: "${PLATFORM_SECURE_COOKIES}"
+      PLATFORM_MAX_RESIDENTS: "${PLATFORM_MAX_RESIDENTS}"
+      PLATFORM_CATALOG_MIGRATE: "${PLATFORM_CATALOG_MIGRATE}"
+      PLATFORM_ADMIN_USERNAME: "${PLATFORM_ADMIN_USERNAME}"
+      PLATFORM_ADMIN_PASSWORD: "${PLATFORM_ADMIN_PASSWORD}"
+      PLATFORM_SANDBOX_DISABLED_RUNTIMES: "${PLATFORM_SANDBOX_DISABLED_RUNTIMES}"
+      PLATFORM_MANAGED_SANDBOX: "1"
+      PLATFORM_SANDBOX_BACKEND: "${PLATFORM_SANDBOX_BACKEND}"
+      PLATFORM_SANDBOX_SOCKET: "${PLATFORM_SANDBOX_SOCKET}"
+      PLATFORM_SANDBOX_IMAGE_DIGEST: "${PLATFORM_SANDBOX_IMAGE_DIGEST}"
+      PLATFORM_SANDBOX_WORKER_IMAGE_MANIFEST: "${PLATFORM_SANDBOX_WORKER_IMAGE_MANIFEST}"
+      PLATFORM_SANDBOX_INSTANCES_DIR: "${PLATFORM_SANDBOX_INSTANCES_DIR}"
+      PLATFORM_SANDBOX_NATIVE_DIR: "${PLATFORM_SANDBOX_NATIVE_DIR}"
+      PLATFORM_SANDBOX_BROKER_HOST: "${PLATFORM_SANDBOX_BROKER_HOST}"
+    volumes:
+      - "${SANDBOX_DATA_HOST_DIR}:${PLATFORM_DATA_DIR}"
+      - "${SANDBOX_INSTANCES_HOST_DIR}:${PLATFORM_SANDBOX_INSTANCES_DIR}"
+      - "${SANDBOX_NATIVE_HOST_DIR}:${PLATFORM_SANDBOX_NATIVE_DIR}"
+      - "./apps/desktop/dist:${PLATFORM_WEB_ROOT}:ro"
+      - "./.deploy/worker-image.json:${PLATFORM_SANDBOX_WORKER_IMAGE_MANIFEST}:ro"
+      - "./secrets/model-brokers.json:/etc/scikeel/model-brokers.json:ro"
+      - "sandbox-run:/run/scikeel"
+    networks:
+      front:
+        ipv4_address: "${FRONT_PLATFORM_IP}"
+      control: {}
+    restart: unless-stopped
+
+  sandbox-backend:
+    image: scikeel-sandbox-backend:local
+    platform: linux/amd64
+    container_name: scikeel-sandbox-backend
+    user: "0:0"
+    environment:
+      SANDBOX_DATA_DIR: "${SANDBOX_DATA_DIR}"
+      SANDBOX_DATA_HOST_DIR: "${SANDBOX_DATA_HOST_DIR}"
+      SANDBOX_INSTANCES_DIR: "${SANDBOX_INSTANCES_DIR}"
+      SANDBOX_INSTANCES_HOST_DIR: "${SANDBOX_INSTANCES_HOST_DIR}"
+      SANDBOX_NATIVE_DIR: "${SANDBOX_NATIVE_DIR}"
+      SANDBOX_NATIVE_HOST_DIR: "${SANDBOX_NATIVE_HOST_DIR}"
+      SANDBOX_STATE_DIR: "${SANDBOX_STATE_DIR}"
+      SANDBOX_STATE_HOST_DIR: "${SANDBOX_STATE_HOST_DIR}"
+      SANDBOX_SOCKET: "${PLATFORM_SANDBOX_SOCKET}"
+      SANDBOX_DOCKER_SOCKET: "/var/run/docker.sock"
+      SANDBOX_PLATFORM_CONTAINER: "${SANDBOX_PLATFORM_CONTAINER}"
+      SANDBOX_BACKEND_CONTAINER: "${SANDBOX_BACKEND_CONTAINER}"
+      SANDBOX_WORKER_PLATFORM: "${SANDBOX_WORKER_PLATFORM}"
+      SANDBOX_DOCKER_RUNTIME: "${SANDBOX_DOCKER_RUNTIME}"
+      SANDBOX_WORKER_UID: "${SANDBOX_WORKER_UID}"
+      SANDBOX_WORKER_GID: "${SANDBOX_WORKER_GID}"
+      SANDBOX_CONTROL_GID: "${SANDBOX_CONTROL_GID}"
+      SANDBOX_WORKER_MEMORY: "${SANDBOX_WORKER_MEMORY}"
+      SANDBOX_WORKER_SWAP: "${SANDBOX_WORKER_SWAP}"
+      SANDBOX_WORKER_PIDS: "${SANDBOX_WORKER_PIDS}"
+      SANDBOX_WORKER_CPUS: "${SANDBOX_WORKER_CPUS}"
+      SANDBOX_HEALTH_TIMEOUT_MS: "${SANDBOX_HEALTH_TIMEOUT_MS}"
+      SANDBOX_STOP_TIMEOUT_SECONDS: "${SANDBOX_STOP_TIMEOUT_SECONDS}"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "${SANDBOX_DATA_HOST_DIR}:${SANDBOX_DATA_DIR}"
+      - "${SANDBOX_INSTANCES_HOST_DIR}:${SANDBOX_INSTANCES_DIR}"
+      - "${SANDBOX_NATIVE_HOST_DIR}:${SANDBOX_NATIVE_DIR}"
+      - "sandbox-run:/run/scikeel"
+    networks:
+      - control
+    restart: unless-stopped
+
+  package-mirror:
+    image: scikeel-package-mirror:local
+    platform: linux/amd64
+    environment:
+      SCIKEEL_PYPI_MIRROR: "${SCIKEEL_PYPI_MIRROR}"
+    volumes:
+      - "package-mirror-data:/data"
+    networks:
+      - front
+    restart: unless-stopped
+
+networks:
+  front:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "${FRONT_SUBNET}"
+  control:
+    driver: bridge
+    internal: true
+
+volumes:
+  sandbox-run:
+  package-mirror-data:

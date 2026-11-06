@@ -38,6 +38,14 @@ it("scopes the recent list and its legacy fallback to the active project", async
   expect(calls[1]).toBe("/session?directory=%2Fws%2Fa");
 });
 
+it("remembers an unsupported interruptions endpoint instead of polling it", async () => {
+  const fetchImpl = vi.fn(async () => new Response("{}", { status: 404 }));
+  const client = new OpenCodeClient({ baseUrl: BASE, directory: "/ws/a", fetchImpl });
+  expect(await client.getInterruptions("ses_a")).toEqual([]);
+  expect(await client.getInterruptions("ses_a")).toEqual([]);
+  expect(fetchImpl).toHaveBeenCalledOnce();
+});
+
 it("fails an incomplete project list rather than hiding its sessions", async () => {
   const client = new OpenCodeClient({ baseUrl: BASE, fetchImpl: async (input) =>
     new URL(String(input)).searchParams.get("directory") === "/ws/a"

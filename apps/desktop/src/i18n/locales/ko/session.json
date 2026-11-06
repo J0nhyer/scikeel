@@ -336,7 +336,7 @@
       "paneMenu": "세션 작업"
     },
     "filesToggle": {
-      "default": "파일",
+      "default": "폴더",
       "title": "대화 옆에서 이 세션의 폴더 탐색"
     },
     "runsToggle": {

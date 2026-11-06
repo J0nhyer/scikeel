@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {isDeepStrictEqual} from 'node:util';
 import { FileRpc, fileRequest, EnvironmentRpc, environmentRequest, managementStatuses } from "./file-rpc.mjs";
 import { buildJobEnvironment, CliJobs, jobRequest } from "./cli-jobs.mjs";
+import { brokerConfig } from "./broker-config.mjs";
 
 function validateManifest(value) {
   if (!value || value.schema !== 1 || !/^[A-Za-z0-9_-]{1,64}$/.test(value.instanceId ?? "") || !Number.isSafeInteger(value.generation) || value.generation < 1 ||
@@ -29,7 +30,7 @@ export class TenantRunner {
     this.server.on("connect", (_req, socket) => socket.destroy()); this.server.on("upgrade", (_req, socket) => socket.destroy());
   }
   async listen({ host, port = 4791 }) {
-    if (!/^(?:127\.0\.0\.[12]|172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]))$/.test(host ?? "")) throw new Error("invalid tenant bind address");
+    if (!/^(?:0\.0\.0\.0|127\.0\.0\.[12]|172\.31\.240\.(?:[2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4]))$/.test(host ?? "")) throw new Error("invalid tenant bind address");
     await new Promise((done, reject) => {
       const error = (reason) => { this.server.off("listening", ready); reject(reason); };
       const ready = () => { this.server.off("error", error); done(); };
@@ -124,7 +125,7 @@ function validateProfile(value) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || Object.keys(value.provider).join(",") !== name || !provider ||
       Object.keys(provider).sort().join(",") !== ["npm", "name", "options", "models", "whitelist"].sort().join(",") || provider.name !== name ||
       !["@ai-sdk/openai-compatible", "@ai-sdk/anthropic"].includes(provider.npm) ||
-      Object.keys(provider.options ?? {}).sort().join(",") !== "apiKey,baseURL" || provider.options.baseURL !== "http://172.31.240.1:4792/v1" ||
+      Object.keys(provider.options ?? {}).sort().join(",") !== "apiKey,baseURL" || provider.options.baseURL !== brokerConfig().model ||
       !/^[a-f0-9]{64}$/.test(provider.options.apiKey ?? "") || !provider.models || Array.isArray(provider.models) ||
       Object.entries(provider.models).some(([model, entry]) => !validModelProfile(model, entry)) ||
       !Array.isArray(provider.whitelist) || provider.whitelist.length !== Object.keys(provider.models).length ||
@@ -144,7 +145,7 @@ export class TenantGateway {
   #child;
   constructor({ manifest, token, address, port = 4790, spawnImpl = spawn }) {
     this.manifest = validateManifest(manifest);
-    if (!/^[a-f0-9]{64}$/.test(token ?? "") || !/^(?:127\.0\.0\.[12]|172\.31\.240\.\d{1,3})$/.test(address ?? "") ||
+    if (!/^[a-f0-9]{64}$/.test(token ?? "") || !/^(?:0\.0\.0\.0|127\.0\.0\.[12]|172\.31\.240\.\d{1,3})$/.test(address ?? "") ||
         !Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("invalid gateway identity");
     Object.assign(this, { token, address, port, spawnImpl });
   }
@@ -182,17 +183,20 @@ export class TenantGateway {
     };
     await writeFile(temporary, JSON.stringify(configured), { flag: "wx", mode: 0o600 });
     await rename(temporary, `${config}/opencode.json`);
+    const brokers = brokerConfig();
     const child = this.spawnImpl("/opt/scikeel/tools/bin/osd", ["server", "--managed", "--bind-address", this.address,
       "--port", String(this.port), "--workspace", manifest.workspaceDir, "--state-dir", manifest.stateDir,
       "--resources", "/opt/scikeel/tools/resources", "--token", this.token], {
-      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir, SCIKEEL_SESSION_TITLE_POLICY: "conversation-v1", OPENCODE_WEBSEARCH_PROVIDER: searchProvider, OPENCODE_ENABLE_PARALLEL: searchProvider === "parallel" ? "1" : undefined, SCIKEEL_MANAGED_NETWORK_TOKEN: profile?.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey }, detached: true,
+      cwd: manifest.workspaceDir, env: { ...env, OSD_STATE_DIR: manifest.stateDir, SCIKEEL_SESSION_TITLE_POLICY: "conversation-v1", OPENCODE_WEBSEARCH_PROVIDER: searchProvider, OPENCODE_ENABLE_PARALLEL: searchProvider === "parallel" ? "1" : undefined, SCIKEEL_MANAGED_NETWORK_TOKEN: profile?.provider?.[profile.enabled_providers?.[0]]?.options?.apiKey,
+        SCIKEEL_BROKER_HOST: brokers.host, SCIKEEL_BROKER_URL: brokers.model, SCIKEEL_BROKER_PROXY_URL: brokers.egress, SCIKEEL_BROKER_PACKAGE_URL: brokers.packageBase }, detached: true,
       stdio: ["ignore", "ignore", process.env.SCIKEEL_CI_DIAGNOSTICS === "1" ? "inherit" : "ignore"],
     });
     this.#child = child; let failed = false; child.once("error", () => failed = true);
     const deadline = Date.now() + 20000;
+    const healthHost = this.address === "0.0.0.0" ? "127.0.0.1" : this.address;
     while (Date.now() < deadline && !failed && child.exitCode === null && child.signalCode === null) {
       try {
-        const response = await fetch(`http://${this.address}:${this.port}/v1/health`, { headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(500) });
+        const response = await fetch(`http://${healthHost}:${this.port}/v1/health`, { headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(500) });
         if (response.ok) return;
       } catch {}
       await new Promise((done) => setTimeout(done, 100));

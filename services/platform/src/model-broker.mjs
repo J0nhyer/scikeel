@@ -1,7 +1,7 @@
 import { isToolCallId, makeToolOutcome, readToolError, serializeToolError } from "../../../packages/sdk/src/tool-outcome.mjs";
 import { createHash, randomBytes } from "node:crypto";
-import { createServer, request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, createServer, request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -104,6 +104,10 @@ function wait(operation, signal) {
 }
 export class ModelBroker {
   #providers = new Map(); #grants = new Map(); #operations = new Set(); #expiredRequests = new Map();
+  // One bounded keep-alive pool per administrator-owned provider. Reusing a
+  // connection avoids a fresh TCP/TLS handshake (and TLS session) on every
+  // model turn, while provider names keep tenants' requests separated.
+  #agents = new Map();
   #assistantPolicy; #executionAuthority; #revokedAssistantRevisions = new Map();
   constructor({ providers, identify, now = Date.now, timeoutMs, firstByteTimeoutMs, idleTimeoutMs, totalTimeoutMs,
     maxBodyBytes = 2 * 1024 ** 2, maxResponseBytes = 16 * 1024 ** 2, maxConnections = 4,
@@ -134,6 +138,15 @@ export class ModelBroker {
     this.server.on("clientError", (_error, socket) => socket.destroy());
     this.server.on("connect", (_req, socket) => socket.destroy());
     this.server.on("upgrade", (_req, socket) => socket.destroy());
+  }
+  #agent(name, url) {
+    const current = this.#agents.get(name);
+    if (current && current.protocol === url.protocol) return current;
+    if (current) current.destroy();
+    const options = { keepAlive: true, maxSockets: Math.max(1, this.maxConnections), maxFreeSockets: Math.min(2, this.maxConnections) };
+    const agent = url.protocol === "https:" ? new HttpsAgent(options) : new HttpAgent(options);
+    this.#agents.set(name, agent);
+    return agent;
   }
   #inferenceAllowed(capability) {
     if (capability.bridgeOnly === true || capability.inferenceRevoked === true) return false;
@@ -196,6 +209,8 @@ export class ModelBroker {
   revokeProvider(name) {
     const current = this.#providers.get(name);
     if (current) current.revoked = true;
+    const agent = this.#agents.get(name);
+    if (agent) { agent.destroy(); this.#agents.delete(name); }
     const revoked = new Set();
     for (const [key, grant] of this.#grants) if (grant.provider === name) { this.#grants.delete(key); revoked.add(key); }
     for (const operation of this.#operations) if (revoked.has(operation.grantKey))
@@ -272,6 +287,8 @@ export class ModelBroker {
   async close() {
     this.#grants.clear(); this.#expiredRequests.clear();
     for (const operation of this.#operations) operation.controller.abort(failure("model_broker_stopped", 503));
+    for (const agent of this.#agents.values()) agent.destroy();
+    this.#agents.clear();
     this.server.closeAllConnections();
     if (this.server.listening) await new Promise((resolve) => this.server.close(resolve));
   }
@@ -440,7 +457,8 @@ export class ModelBroker {
         }
       }
       firstByteTimer = setTimeout(() => expire("model_first_byte_timeout", this.firstByteTimeoutMs), this.firstByteTimeoutMs);
-      const upstreamRequest = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, { method: "POST", headers, signal: controller.signal, agent: false });
+      const upstreamRequest = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, { method: "POST", headers, signal: controller.signal,
+        agent: this.#agent(capability.provider, url) });
       const upstream = await new Promise((resolve, reject) => {
         upstreamRequest.once("response", resolve); upstreamRequest.once("error", reject); upstreamRequest.end(payload);
       });

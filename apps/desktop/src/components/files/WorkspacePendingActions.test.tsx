@@ -42,3 +42,25 @@ it('labels committed history failures and offers history-only retry rather than 
  api.list.mockResolvedValue({items:[history],nextCursor:null});render(<WorkspacePendingActions/>);expect(await screen.findByText('Saved; history recording failed.')).toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'Retry history: source.txt'}));await waitFor(()=>expect(api.retry).toHaveBeenCalledOnce());expect(api.retry.mock.calls[0][0].retry.path).toBe('/api/workspace/operations/move-a/history');
 });
+it('does not render an empty pending-operations section while a listing error is shown',async()=>{
+ api.list.mockResolvedValue({});render(<><WorkspacePendingActions/><Toaster/></>);
+ expect(await screen.findByRole('alert')).toHaveTextContent('Pending operations are unavailable');
+ expect(screen.queryByRole('heading',{name:'Pending operations'})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Close notification'}));
+ expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+ expect(screen.queryByRole('heading',{name:'Pending operations'})).not.toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'Show error'})).not.toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'Retry'})).not.toBeInTheDocument();
+});
+it('retries a failed listing and clears the notice once the workspace is healthy',async()=>{
+ vi.useFakeTimers();
+ try{
+  api.list.mockRejectedValueOnce(new Error('The workspace runtime is not responding')).mockResolvedValue({items:[],nextCursor:null});
+  render(<><WorkspacePendingActions/><Toaster/></>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
+  expect(screen.getByRole('alert')).toHaveTextContent('The workspace runtime is not responding');
+  await act(async()=>{await vi.advanceTimersByTimeAsync(10_000);});
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(api.list).toHaveBeenCalledTimes(2);
+ }finally{vi.useRealTimers();}
+});

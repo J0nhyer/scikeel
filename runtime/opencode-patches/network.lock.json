@@ -2,7 +2,7 @@
   "schema": 1,
   "policy": "call-scope-v1",
   "upstreamCommit": "545f51d26cc39a907d2867492d498d9607ea5fa4",
-  "patchSha256": "36bd9262ef3a39910abac5c43f65a338dea065df09989035168bef7012e634f6",
-  "combinedPatchSha256": "423dcb8bdea200448a8e47745c0e7cbe431313340387f0ad899ce2f23d7f0db6",
+  "patchSha256": "e96fb6ad858c7086bff55fecfe9d787540f7827390b27c80c2b974c9e39166b0",
+  "combinedPatchSha256": "e5cc8bc9d6b49511fe24b481ff01dce2fe237847247b88d0098758a4cfd1f294",
   "outcomeSha256": "1e6cbdd25601d5c266f7398a8962fce675b15a67fa67525510f69bf8db667565"
 }

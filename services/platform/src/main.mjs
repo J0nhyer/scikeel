@@ -1,3 +1,4 @@
+import "./fetch-polyfill.mjs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -138,6 +139,7 @@ const platform = new PlatformServer({
   networkEgress: controlPlane?.egress,
   searchProvider: controlPlane?.searchProvider,
   runtimeCatalog: controlPlane?.runtimeCatalog,
+  defaultVariantFor: controlPlane?.defaultVariantFor,
   saveRuntimeDefaultModel: controlPlane?.saveRuntimeDefaultModel,
   environments: controlPlane?.environments,
   workspaceFiles: controlPlane?.files,

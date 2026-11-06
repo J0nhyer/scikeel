@@ -16,7 +16,8 @@ const diagnosticReasons = new Set(["network_resource_collision", "network_tool_u
   "bundle_write_failed", "test_destination_failed", "unmount_failed", "staging_cleanup_failed", "network_namespace_unavailable",
   "network_command_timeout", "network_policy_changed", "network_not_ready", "quota_unavailable", "quota_not_enforced",
   "quota_backing_not_reserved", "host_reserve_insufficient", "controllers_unavailable", "sandbox_readiness_failed",
-  "image_not_ready", "wrong_image_variant", "stale_generation", "already_started", "unknown_instance", "cleanup_unverified"]);
+  "image_not_ready", "wrong_image_variant", "stale_generation", "already_started", "unknown_instance", "cleanup_unverified",
+  "docker_unavailable", "worker_health_timeout", "container_cleanup_failed", "network_cleanup_failed", "platform_attach_failed"]);
 function clientError(message, code, reason) {
   return Object.assign(new Error(message), { code, ...(reason ? { reason } : {}) });
 }
@@ -49,11 +50,18 @@ function validateInventory(result) {
     instances.add(account.instanceId);users.add(account.userId);
   }
 }
-function endpoint(value, port) {
+function endpoint(value, port, expectedHost = null) {
   if (typeof value !== "string") throw new Error("invalid launcher endpoint");
   let url;
   try { url = new URL(value); } catch { throw new Error("invalid launcher endpoint"); }
-  // The launcher allocates addresses only from the dedicated, internal subnet.
+  if (expectedHost !== null) {
+    if (url.protocol !== "http:" || url.hostname !== expectedHost || url.port !== String(port) ||
+        value !== `http://${expectedHost}:${port}` ||
+        url.username || url.password || url.pathname !== "/" || url.search || url.hash)
+      throw new Error("invalid launcher endpoint");
+    return url.hostname;
+  }
+  // The legacy launcher allocates addresses only from the dedicated, internal subnet.
   const match = /^172\.31\.240\.(\d{1,3})$/.exec(url.hostname);
   const octet = match && Number(match[1]);
   if (url.protocol !== "http:" || !match || octet < 2 || octet > 254 || url.port !== String(port) ||
@@ -63,10 +71,11 @@ function endpoint(value, port) {
   return url.hostname;
 }
 export class SandboxClient {
-  constructor({ socketPath, timeoutMs = 30000 } = {}) {
-    if (!isAbsolute(socketPath ?? "") || socketPath.includes("\0") || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000)
+  constructor({ socketPath, timeoutMs = 30000, workerPrefix = null } = {}) {
+    if (!isAbsolute(socketPath ?? "") || socketPath.includes("\0") || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 ||
+        workerPrefix !== null && (typeof workerPrefix !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(workerPrefix)))
       throw new Error("invalid launcher client configuration");
-    this.socketPath = socketPath; this.timeoutMs = timeoutMs;
+    this.socketPath = socketPath; this.timeoutMs = timeoutMs; this.workerPrefix = workerPrefix;
   }
   async call(op, args, options = {}) {
     const requestedTimeout = options.timeoutMs ?? this.timeoutMs;
@@ -74,6 +83,8 @@ export class SandboxClient {
     const timeoutMs = Math.min(this.timeoutMs, requestedTimeout);
     options.signal?.throwIfAborted();
     const request = launcherRequest(op, args, randomUUID());
+    const expectedHost = this.workerPrefix !== null && ["start", "inspect"].includes(op)
+      ? this.workerPrefix + args.instanceId : null;
     const data = JSON.stringify(request) + "\n";
     if (Buffer.byteLength(data) > MAX_FRAME) throw new Error("launcher request exceeds limit");
     return new Promise((resolve, reject) => {
@@ -121,7 +132,8 @@ export class SandboxClient {
           if (op === "inspect" && !["registered", "starting", "ready", "stopped", "unavailable"].includes(result.status))
             throw new Error("invalid launcher inspection response");
           if (op === "start" || (op === "inspect" && result.status === "ready")) {
-            if (endpoint(result.endpoint, 4790) !== endpoint(result.runnerEndpoint, 4791)) throw new Error("foreign launcher runner endpoint");
+            if (endpoint(result.endpoint, 4790, expectedHost) !== endpoint(result.runnerEndpoint, 4791, expectedHost))
+              throw new Error("foreign launcher runner endpoint");
           }
           if (Object.hasOwn(result, "internalToken") && !/^[a-f0-9]{64}$/.test(result.internalToken)) throw new Error("invalid launcher internal token");
           if (op === "stop" && result.stopped !== true) throw new Error("invalid launcher stop response");

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { isWorkspaceReport } from "@ai4s/sdk";
 import { useRuntimeStore } from "@/lib/runtime";
 import { isPlatformWeb } from "@/lib/webMode";
+import { WorkspaceRecoveryActions } from "@/components/session/WorkspaceRecoveryActions";
 import { LoadingSurface } from "./LoadingSurface";
 
 const BOOT_TIMEOUT_MS = 90_000;
@@ -12,6 +14,7 @@ const BOOT_TIMEOUT_MS = 90_000;
 export function PlatformBootGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation("session");
   const status = useRuntimeStore(state => state.status);
+  const gatewayWorkspaceReport = useRuntimeStore(state => state.gatewayWorkspaceReport);
   const sessionListReady = useRuntimeStore(state => state.sessionListReady);
   const gatewayCatalogState = useRuntimeStore(state => state.gatewayCatalogState);
   const ready = status === "ready" && sessionListReady &&
@@ -51,22 +54,30 @@ export function PlatformBootGate({ children }: { children: ReactNode }) {
     }
   };
 
+  const recovery = isWorkspaceReport(gatewayWorkspaceReport) && gatewayWorkspaceReport.state !== "healthy";
   if (failed) {
     return (
       <>
         {children}
-        <div className="loading-surface fixed inset-0 z-[100] flex items-center justify-center bg-bg text-text">
-          <div role="alert" className="flex max-w-sm flex-col items-center gap-4 text-center">
-            <p className="text-sm text-muted">{t("live.boot.busy")}</p>
-            <button
-              type="button"
-              disabled={retrying}
-              onClick={() => void retry()}
-              className="min-h-10 rounded-input border border-border px-4 text-sm disabled:opacity-50"
-            >
-              {t("live.boot.retry")}
-            </button>
-          </div>
+        <div className="loading-surface fixed inset-0 z-[100] flex items-center justify-center bg-bg p-4 text-text">
+          {recovery ? (
+            <div className="w-full max-w-md rounded-card border border-border bg-surface p-4 shadow-card">
+              <WorkspaceRecoveryActions report={gatewayWorkspaceReport}
+                waiting={gatewayWorkspaceReport.state === "capacity" && status !== "error"} />
+            </div>
+          ) : (
+            <div role="alert" className="flex max-w-sm flex-col items-center gap-4 text-center">
+              <p className="text-sm text-muted">{t("live.boot.busy")}</p>
+              <button
+                type="button"
+                disabled={retrying}
+                onClick={() => void retry()}
+                className="min-h-10 rounded-input border border-border px-4 text-sm disabled:opacity-50"
+              >
+                {t("live.boot.retry")}
+              </button>
+            </div>
+          )}
         </div>
       </>
     );

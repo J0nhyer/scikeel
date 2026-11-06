@@ -5,24 +5,50 @@ import { posix } from "node:path";
 import { capacityError } from "./workspace-capacity.mjs";
 
 const unavailable = () => Object.assign(new Error("host resource capacity unavailable"), { statusCode: 503, retryable: true });
-export async function hostPressure() {
-  const [memory, pressure] = await Promise.all([readFile("/proc/meminfo", "utf8"), readFile("/proc/pressure/memory", "utf8")]);
-  const availableBytes = Number(memory.match(/^MemAvailable:\s+(\d+)/m)?.[1]) * 1024;
-  const fullAvg10 = Number(pressure.match(/^full avg10=([\d.]+)/m)?.[1]);
-  if (!Number.isSafeInteger(availableBytes) || !Number.isFinite(fullAvg10)) throw new Error("invalid host memory observation");
+export async function hostPressure({ mode = "legacy", readFileImpl = readFile, cgroupRoot = "/sys/fs/cgroup" } = {}) {
+  if (!["legacy", "docker"].includes(mode)) throw new Error("invalid host pressure mode");
+  const memory = await readFileImpl("/proc/meminfo", "utf8");
+  let availableBytes = Number(memory.match(/^MemAvailable:\s+(\d+)/m)?.[1]) * 1024;
+  if (!Number.isSafeInteger(availableBytes)) throw new Error("invalid host memory observation");
+  let pressure;
+  try { pressure = await readFileImpl("/proc/pressure/memory", "utf8"); }
+  catch (error) { if (mode !== "docker" || error.code !== "ENOENT") throw error; }
+  const fullAvg10 = pressure === undefined ? 0 : Number(pressure.match(/^full avg10=([\d.]+)/m)?.[1]);
+  if (!Number.isFinite(fullAvg10)) throw new Error("invalid host memory observation");
+  if (mode === "docker") {
+    const optional = async (name) => {
+      try { return await readFileImpl(posix.join(cgroupRoot, name), "utf8"); }
+      catch (error) { if (error.code === "ENOENT") return null; throw error; }
+    };
+    const maximum = await optional("memory.max");
+    const current = await optional("memory.current");
+    if (maximum !== null && maximum.trim() !== "max" && current !== null) {
+      const max = Number(maximum.trim());
+      const used = Number(current.trim());
+      if (!Number.isSafeInteger(max) || !Number.isSafeInteger(used) || max < 1 || used < 0)
+        throw new Error("invalid cgroup memory observation");
+      availableBytes = Math.min(availableBytes, Math.max(0, max - used));
+    }
+  }
   if (fullAvg10 > 12) throw capacityError("memory_pressure", { fullAvg10, availableBytes });
   // The atomic lock, not this observation, excludes heavy builds.
   return { availableBytes, buildActive: false };
 }
 export class HostAdmission {
-  constructor({ lockPath = "/opt/open-science-desktop/.deploy/desktop-task.lock" } = {}) {
+  constructor({ mode = "legacy", lockPath = "/opt/open-science-desktop/.deploy/desktop-task.lock", pressureImpl = hostPressure } = {}) {
+    if (!["legacy", "docker"].includes(mode)) throw new Error("invalid host admission mode");
+    if (typeof pressureImpl !== "function") throw new Error("invalid host admission pressure");
     if (typeof lockPath !== "string" || !lockPath.startsWith("/") || lockPath === "/" || posix.normalize(lockPath) !== lockPath || /[\0\\]/.test(lockPath))
       throw new Error("invalid host admission lock");
-    this.lockPath = lockPath;
+    this.mode = mode; this.lockPath = lockPath; this.pressureImpl = pressureImpl;
   }
   async acquire({ signal,shared=false } = {}) {
     if(typeof shared!=='boolean')throw new Error('invalid host admission mode');
     if (signal?.aborted) throw new Error("host admission cancelled");
+    if (this.mode === "docker") {
+      await this.pressureImpl({ mode: "docker" });
+      return { release() {} };
+    }
     const file = await open(this.lockPath, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     const info = await file.stat();
     if (!info.isFile()) { await file.close(); throw unavailable(); }

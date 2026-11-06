@@ -879,7 +879,7 @@ export function Sidebar({ project }: { project: Project }) {
                           danger
                           onSelect={() => setPendingRemoveProject(p)}
                         >
-                          {t("projects.remove")}
+                          {t("projects.delete")}
                         </ContextMenuItem>
                         </>}
                       </>
@@ -1058,13 +1058,9 @@ export function Sidebar({ project }: { project: Project }) {
 
         {pendingRemoveProject && (
           <ConfirmDialog
-            title={t("projects.removeTitle", { name: pendingRemoveProject.name })}
-            body={t(
-              pendingRemoveProject.importMode === "copy"
-                ? "projects.removeCopyBody"
-                : "projects.removeBody",
-            )}
-            confirmLabel={t("projects.remove")}
+            title={t("projects.deleteTitle", { name: pendingRemoveProject.name })}
+            body={t("projects.deleteBody")}
+            confirmLabel={t("projects.delete")}
             onConfirm={() => {
               void deleteProject(pendingRemoveProject.id);
               setPendingRemoveProject(null);

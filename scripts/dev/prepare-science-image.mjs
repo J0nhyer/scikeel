@@ -123,7 +123,7 @@ print(json.dumps(out))`;
   const digest = await sha256(archive);
   validateNetworkRuntime(sessionTitleRuntime.networkRuntime, JSON.parse(await readFile(join(sourceRoot, "runtime/opencode-patches/network.lock.json"), "utf8")));
   const runnerFiles = {};
-  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs", "collaboration.mjs", "tool-outcome.mjs"])
+  if (variant === "production") for (const name of ["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs", "collaboration.mjs", "tool-outcome.mjs", "broker-config.mjs"])
     runnerFiles[`opt/scikeel/tools/${name}`] = await sha256(join(context, "tools", name));
   const manifest = { schema: 1, sourceInputs, sessionTitleRuntime, ...(codexRuntime ? { codexRuntime } : {}), name: "science-v1", variant, architecture: "linux/amd64",
     rootfsSha256: digest, imageDigest: `sha256:${digest}`, python: tools.python.version, uv: tools.uv.version,

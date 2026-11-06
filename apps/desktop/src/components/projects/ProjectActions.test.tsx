@@ -23,11 +23,14 @@ it('focuses a rename opened from a transformed sidebar menu and returns focus af
  await waitFor(()=>expect(trigger).toHaveFocus());
  expect(patch).not.toHaveBeenCalled();
 });
-it('focuses the remove action and dismisses it with Escape without a mutation',async()=>{
+it('focuses the delete action and dismisses it with Escape without a mutation',async()=>{
  render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
  const trigger=screen.getByRole('button',{name:'Project actions: A'});
- await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Remove'}));
+ await userEvent.click(trigger);await userEvent.click(screen.getByRole('menuitem',{name:'Delete'}));
  await waitFor(()=>expect(screen.getByRole('button',{name:'Cancel'})).toHaveFocus());
+ const dialog=screen.getByRole('alertdialog');
+ expect(dialog).toHaveTextContent('Delete A?');
+ expect(dialog).toHaveTextContent('All conversations in this project will be deleted. This cannot be undone.');
  await userEvent.keyboard('{Escape}');
  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
  await waitFor(()=>expect(trigger).toHaveFocus());expect(remove).not.toHaveBeenCalled();
@@ -44,10 +47,10 @@ it('rename failure retains input and dialog, then retry updates once',async()=>{
   await userEvent.click(within(dialog).getByRole('button',{name:'Save'}));
   expect(patch).toHaveBeenCalledTimes(2);
 });
-it('remove cancellation changes nothing and read-only menus disable mutations',async()=>{
+it('delete cancellation changes nothing and read-only menus disable mutations',async()=>{
   render(<MemoryRouter><ProjectActions project={project}/></MemoryRouter>);
   await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));
-  await userEvent.click(screen.getByRole('menuitem',{name:'Remove'}));
+  await userEvent.click(screen.getByRole('menuitem',{name:'Delete'}));
   await userEvent.click(screen.getByRole('button',{name:'Cancel'}));expect(remove).not.toHaveBeenCalled();
   act(()=>useRuntimeStore.setState({webReadOnly:true}));
   await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));
@@ -68,17 +71,17 @@ it('uses a fresh operation ID after correcting a rejected project name',async()=
  await screen.findByText('Invalid name');expect(screen.getByText('Invalid name')).toHaveAttribute('data-error-card','true');fireEvent.change(screen.getByRole('textbox'),{target:{value:'Corrected'}});await userEvent.click(screen.getByRole('button',{name:'Save'}));
  expect(patch.mock.calls[0][2]).not.toBe(patch.mock.calls[1][2]);
 });
-it('confirmed project removal keeps working panes and drafts because it deletes nothing',async()=>{
+it('confirmed project deletion keeps working panes and drafts outside the project',async()=>{
  const mine=makeLeaf(null),other=makeLeaf(null);
  const groups=[mine,other].map((tree,index)=>({id:'remove-group-'+index,name:'Draft',tree,focusedLeafId:tree.id,zoomedLeafId:null}));
  useLayoutStore.setState({groups,activeGroupId:groups[1].id,tree:other,focusedLeafId:other.id});
  useRuntimeStore.setState({draftWorkspaces:{['draft:'+mine.id]:project.path,['draft:'+other.id]:'/ws/b'}});
  remove.mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce({state:'committed'});
  render(<><MemoryRouter><ProjectActions project={project}/></MemoryRouter><Toaster/></>);
- await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));await userEvent.click(screen.getByRole('menuitem',{name:'Remove'}));
- await userEvent.click(screen.getByRole('button',{name:'Remove'}));expect(await screen.findByText('Offline')).toBeInTheDocument();expect(screen.getByText('Offline')).toHaveAttribute('data-error-card','true');
+ await userEvent.click(screen.getByRole('button',{name:'Project actions: A'}));await userEvent.click(screen.getByRole('menuitem',{name:'Delete'}));
+ await userEvent.click(screen.getByRole('button',{name:'Delete'}));expect(await screen.findByText('Offline')).toBeInTheDocument();expect(screen.getByText('Offline')).toHaveAttribute('data-error-card','true');
  expect(useLayoutStore.getState().groups[0].tree).toEqual(mine);
- await userEvent.click(screen.getByRole('button',{name:'Remove'}));
+ await userEvent.click(screen.getByRole('button',{name:'Delete'}));
  expect(useLayoutStore.getState().groups.flatMap(group=>group.tree?[group.tree]:[])).toEqual([mine,other]);
  expect(useRuntimeStore.getState().draftWorkspaces).toEqual({['draft:'+mine.id]:project.path,['draft:'+other.id]:'/ws/b'});
 });

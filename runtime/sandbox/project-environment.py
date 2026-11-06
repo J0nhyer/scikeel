@@ -12,13 +12,32 @@ import shutil
 import stat
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 BASE = '/opt/scikeel/science/bin/python'
 UV = '/opt/scikeel/tools/bin/uv'
 PACKAGE_ORIGIN = '172.31.240.1:4793'
+if os.environ.get('SCIKEEL_BROKER_PACKAGE_URL'):
+    PACKAGE_ORIGIN = urlsplit(os.environ['SCIKEEL_BROKER_PACKAGE_URL']).netloc or PACKAGE_ORIGIN
 LIBC = ctypes.CDLL(None, use_errno=True)
 class How(ctypes.Structure):
     _fields_ = [('flags', ctypes.c_uint64), ('mode', ctypes.c_uint64), ('resolve', ctypes.c_uint64)]
+
+def fallback_open(parent, name, flags):
+    parts = name.split('/')
+    if not name or name.startswith('/') or any(part in ['', '.', '..'] for part in parts):
+        raise ValueError('invalid relative environment path')
+    current = parent
+    for index, part in enumerate(parts):
+        last = index + 1 == len(parts)
+        open_flags = flags if last else (os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY)
+        if last:
+            open_flags |= os.O_NOFOLLOW
+        next_descriptor = os.open(part, open_flags, dir_fd=current)
+        if current != parent:
+            os.close(current)
+        current = next_descriptor
+    return current
 
 def secure(parent, name, directory=False):
     if not name or name.startswith('/') or any(part in ['', '..'] for part in name.split('/')):
@@ -27,7 +46,9 @@ def secure(parent, name, directory=False):
     how = How(flags=flags, resolve=0x08 | 0x02 | 0x04)
     descriptor = LIBC.syscall(437, parent, name.encode(), ctypes.byref(how), ctypes.sizeof(how))
     if descriptor < 0:
-        raise OSError(ctypes.get_errno(), 'secure environment path unavailable')
+        if ctypes.get_errno() != 38:
+            raise OSError(ctypes.get_errno(), 'secure environment path unavailable')
+        descriptor = fallback_open(parent, name, flags)
     info = os.fstat(descriptor)
     if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
         os.close(descriptor)

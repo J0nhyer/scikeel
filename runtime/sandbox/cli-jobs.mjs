@@ -4,6 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import { posix } from "node:path";
 import {nativeTools, validateNativeTool, verifyManagedCodexRuntime} from './native-tools.mjs';
 import {NativeNetworkRpc,networkStepRequest} from './native-network.mjs';
+import {brokerConfig} from './broker-config.mjs';
 
 function path(value) {
   if (typeof value !== "string" || !value.startsWith("/") || value === "/" || /[\0\\]/.test(value) ||
@@ -16,7 +17,8 @@ export function buildJobEnvironment({ privateHome, projectDir, environment, brok
       environment.python !== (environment.kind === "base" ? "/opt/scikeel/science/bin/python" : `${projectDir}/.venv/bin/python`))
     throw new Error("unverified Python environment");
   const allowed = new Set(["modelUrl", "modelToken", "packageToken", "egressToken"]);
-  if (Object.keys(brokers).some((key) => !allowed.has(key)) || (brokers.modelUrl !== undefined && brokers.modelUrl !== "http://172.31.240.1:4792/v1") ||
+  const configured = brokerConfig();
+  if (Object.keys(brokers).some((key) => !allowed.has(key)) || (brokers.modelUrl !== undefined && brokers.modelUrl !== configured.model) ||
       ["modelToken", "packageToken", "egressToken"].some((key) => brokers[key] !== undefined && !/^[a-f0-9]{64}$/.test(brokers[key])))
     throw new Error("untrusted job broker configuration");
   const env = { PATH: `${posix.dirname(environment.python)}:/opt/scikeel/tools/bin:/usr/local/bin:/usr/bin:/bin`,
@@ -24,15 +26,19 @@ export function buildJobEnvironment({ privateHome, projectDir, environment, brok
     XDG_CONFIG_HOME: `${privateHome}/.config`, XDG_CACHE_HOME: `${privateHome}/.cache`, XDG_DATA_HOME: `${privateHome}/.local/share`,
     MPLCONFIGDIR: `${privateHome}/.cache/matplotlib`, UV_PYTHON_DOWNLOADS: "never", UV_LINK_MODE: "copy",
     PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", OMP_NUM_THREADS: "1", OPENBLAS_NUM_THREADS: "1", MKL_NUM_THREADS: "1", NUMEXPR_NUM_THREADS: "1",
-    NO_PROXY: "localhost,127.0.0.1,172.31.240.1", no_proxy: "localhost,127.0.0.1,172.31.240.1" };
-  const proxy = brokers.egressToken ? `http://scikeel:${brokers.egressToken}@172.31.240.1:4794` : "http://172.31.240.1:4794";
+    NO_PROXY: `localhost,127.0.0.1,${configured.host}`, no_proxy: `localhost,127.0.0.1,${configured.host}` };
+  const proxy = brokers.egressToken
+    ? `http://scikeel:${brokers.egressToken}@${new URL(configured.egress).host}`
+    : configured.egress;
   env.HTTP_PROXY = env.HTTPS_PROXY = env.http_proxy = env.https_proxy = proxy;
   if (brokers.packageToken) {
-    env.UV_INDEX_URL = env.PIP_INDEX_URL = `http://scikeel:${brokers.packageToken}@172.31.240.1:4793/root/pypi/+simple/`;
+    const index = new URL(`${configured.packageBase.replace(/\/$/, "")}/root/pypi/+simple/`);
+    index.username = "scikeel"; index.password = brokers.packageToken;
+    env.UV_INDEX_URL = env.PIP_INDEX_URL = index.toString();
     env.PIP_DISABLE_PIP_VERSION_CHECK = "1";
   }
   if (brokers.modelToken) {
-    env.OPENAI_API_KEY = brokers.modelToken; env.OPENAI_BASE_URL = "http://172.31.240.1:4792/v1";
+    env.OPENAI_API_KEY = brokers.modelToken; env.OPENAI_BASE_URL = configured.model;
   }
   return env;
 }
@@ -122,7 +128,7 @@ export class CodexAppServer {
     await this.verifyRuntime();
     signal?.throwIfAborted();
     const args=["app-server","--listen","stdio://","-c",'model_provider="scikeel"',"-c",
-      'model_providers.scikeel={name="SciKeel",base_url="http://172.31.240.1:4792/v1",env_key="OPENAI_API_KEY",wire_api="responses"}',
+      `model_providers.scikeel={name="SciKeel",base_url="${brokerConfig().model}",env_key="OPENAI_API_KEY",wire_api="responses"}`,
       "-c",'approval_policy="on-request"',"-c",'sandbox_mode="workspace-write"',"-c",'web_search="disabled"',
       '-c','notify=[]','-c','features.shell_snapshot=false','-c','features.shell_snapshot_v2=false',
       '-c','features.plugins=false','-c','features.recommended_plugins=false','-c','features.default_mode_request_user_input=true'];
@@ -353,7 +359,7 @@ export function jobRequest(value) {
     const grant=value.nativeProfile,turn=value.turnIdentity;
     const turnFields=['userId','instanceId','generation','conversationId','execution','requestId','policyRevision','runtime'];
     if(!grant||typeof grant!=='object'||Array.isArray(grant)||Object.keys(grant).some(key=>!['model','modelToken','modelUrl','effort'].includes(key))||
-        grant.model!==value.model||!/^[a-f0-9]{64}$/.test(grant.modelToken??'')||grant.modelUrl!=='http://172.31.240.1:4792/v1'||
+        grant.model!==value.model||!/^[a-f0-9]{64}$/.test(grant.modelToken??'')||grant.modelUrl!==brokerConfig().model||
         grant.effort!==undefined&&(typeof grant.effort!=='string'||!/^[a-z][a-z0-9_-]{0,31}$/.test(grant.effort))||
         !/^[A-Za-z0-9_-]{1,128}$/.test(value.identityRevision??'')||!turn||typeof turn!=='object'||Array.isArray(turn)||
         Object.keys(turn).sort().join(',')!==turnFields.sort().join(',')||turn.runtime!=='codex'||turn.conversationId!==value.sessionId||

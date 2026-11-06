@@ -161,7 +161,7 @@
     "explorerUnavailableWeb": "The file explorer is available in the desktop app.",
     "selectFilePrompt": "Select a file to preview it here.",
     "pane": {
-      "subtitle": "this session's folder",
+      "title": "Folder",
       "closeAria": "Close files"
     },
     "contextMenu": {

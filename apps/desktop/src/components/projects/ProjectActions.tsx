@@ -43,6 +43,7 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
     if(!current)throw new Error(t('projects.unavailable'));
     await removeWorkspaceProject(project.id,current.revision,operation.current);
     if(!mounted.current)return;
+    void useRuntimeStore.getState().refreshSessions();
     navigate('/projects');
   };
   const item='cursor-pointer rounded-input px-3 py-2 text-sm outline-none data-[highlighted]:bg-surface-2 data-[disabled]:opacity-40';
@@ -54,12 +55,12 @@ export function ProjectActions({project,onNewSession}:{project:ProjectInfo;onNew
         <DropdownMenu.Item className={item} onSelect={()=>navigate('/files?project='+encodeURIComponent(project.id))}>{t('projects.openFiles')}</DropdownMenu.Item>
         <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={openRename}>{t('projects.rename')}</DropdownMenu.Item>
         <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={()=>void run(()=>patchWorkspaceProject(project.id,{pinned:!project.pinned}))}>{t(project.pinned?'projects.unpin':'projects.pin')}</DropdownMenu.Item>
-        <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={openRemove}>{t('projects.remove')}</DropdownMenu.Item>
+        <DropdownMenu.Item className={item} disabled={readOnly||busy} onSelect={openRemove}>{t('projects.delete')}</DropdownMenu.Item>
       </DropdownMenu.Content></DropdownMenu.Portal>
     </DropdownMenu.Root>
     {dialog==='rename' && <NameProjectDialog returnFocusRef={trigger} defaultName={project.name} title={t('projects.rename')} subtitle={t('projects.nameSubtitle')} busy={busy} inputDisabled={uncertain} cancelDisabled={uncertain} onCancel={()=>{if(!busy && !uncertain)setDialog(null);}} onSave={rename}/>}
-    {dialog==='remove' && <ManagementDialog role="alertdialog" title={t('projects.removeTitle',{name:project.name})} description={t('projects.removeBody')} onClose={()=>setDialog(null)} dismissible={!busy} initialFocusRef={cancel} returnFocusRef={trigger} className="w-[360px]">
-      <div className="mt-4 flex justify-end gap-2"><button ref={cancel} disabled={busy} onClick={()=>setDialog(null)} className="rounded border border-border px-3 py-2 text-sm">{t('common:actions.cancel')}</button><button disabled={busy||readOnly} onClick={()=>void run(remove)} className="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">{t('projects.remove')}</button></div>
+    {dialog==='remove' && <ManagementDialog role="alertdialog" title={t('projects.deleteTitle',{name:project.name})} description={t('projects.deleteBody')} onClose={()=>setDialog(null)} dismissible={!busy} initialFocusRef={cancel} returnFocusRef={trigger} className="w-[360px]">
+      <div className="mt-4 flex justify-end gap-2"><button ref={cancel} disabled={busy} onClick={()=>setDialog(null)} className="rounded border border-border px-3 py-2 text-sm">{t('common:actions.cancel')}</button><button disabled={busy||readOnly} onClick={()=>void run(remove)} className="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50">{t('projects.delete')}</button></div>
     </ManagementDialog>}
   </>;
 }

@@ -336,7 +336,7 @@
       "paneMenu": "Acciones de la sesión"
     },
     "filesToggle": {
-      "default": "Archivos",
+      "default": "Carpeta",
       "title": "Explora la carpeta de esta sesión junto al chat"
     },
     "runsToggle": {

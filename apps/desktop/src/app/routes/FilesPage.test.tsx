@@ -100,6 +100,7 @@ describe("FilesPage", () => {
     );
     await userEvent.click(await screen.findByText("data"));
     expect(await screen.findByText("genes.bed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Folder" })).toBeInTheDocument();
     first.unmount();
 
     render(

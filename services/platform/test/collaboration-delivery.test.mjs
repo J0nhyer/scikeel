@@ -281,3 +281,11 @@ test("delivery mode and paused execution keep distinct errors",async(t)=>{
   await f.store.pause(f.owner);
   await assert.rejects(f.prepare(),{code:"delivery_execution_paused",status:409});
 });
+
+test("the plugin state reader refuses idle or paused executions", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.store.pluginState(f.owner)).phase, "running");
+  await f.store.pause(f.owner);
+  await assert.rejects(f.store.pluginState(f.owner), /paused/);
+  await assert.rejects(f.store.pluginState({ ...f.owner, sessionId: "ses_other" }), /paused/);
+});

@@ -7,6 +7,9 @@ import {ErrorNotice} from '@/components/ui/ErrorNotice';
 import {listPendingWorkspaceOperations,retryPendingWorkspaceOperation,type PendingWorkspaceOperation} from '@/lib/workspaceManagement';
 
 type View={owner:string;items:PendingWorkspaceOperation[];nextCursor:string|null;error?:string};
+/** A failed listing that stays visible must re-check on its own: the runtime
+ *  can recover while the page is idle, and a dismissed card leaves no control. */
+const ERROR_RETRY_MS=10_000;
 export function WorkspacePendingActions(){
  const {t}=useTranslation(['nav','common']),account=useRuntimeStore(state=>state.gatewayUser?.id),context=useRuntimeStore(state=>state.gatewayContext),readOnly=useRuntimeStore(state=>state.webReadOnly);
  const owner=JSON.stringify([account,context?.instanceId,context?.generation]);
@@ -29,7 +32,7 @@ export function WorkspacePendingActions(){
     for(const operation of result.resolved??[])if(operation.receipt.state==='committed')invalidate(operation);
     setView(previous=>({owner,items:cursor && previous.owner===owner?[...previous.items.filter(item=>!result.items.some(next=>next.operationId===item.operationId)),...result.items]:result.items,nextCursor:result.nextCursor,...(previous.owner===owner && result.items.length && previous.error?{error:previous.error}:{})}));
     if(result.items.length)timer=setTimeout(()=>void load(),5000);
-   }catch(error){if(current())setView(previous=>({...(previous.owner===owner?previous:{owner,items:[],nextCursor:null}),error:error instanceof Error?error.message:String(error)}));}
+   }catch(error){if(current()){setView(previous=>({...(previous.owner===owner?previous:{owner,items:[],nextCursor:null}),error:error instanceof Error?error.message:String(error)}));timer=setTimeout(()=>void load(),ERROR_RETRY_MS);}}
    finally{loading=false;}
   };
   loadRef.current=load;void load();const refresh=()=>void load();
@@ -46,7 +49,11 @@ export function WorkspacePendingActions(){
   }catch(error){if(current())setView(previous=>({...previous,error:error instanceof Error?error.message:String(error)}));}
   finally{if(current())setBusy(null);}
  };
- if(!isPlatformWeb || view.owner!==owner || (!view.items.length && !view.error))return null;
+ if(!isPlatformWeb || view.owner!==owner)return null;
+ const notice=view.error?<ErrorNotice issueId={`pending:${view.error}`} summary={view.error} action={{label:t('common:notification.retry'),run:()=>loadRef.current?.()}} dismissFully/>:null;
+ // No rows: the notice owns the whole area (the caller retries on its own), so
+ // an empty "Pending operations" heading never outlives the list it describes.
+ if(!view.items.length)return notice;
  const icon='flex h-8 w-8 shrink-0 items-center justify-center rounded hover:bg-surface-2 disabled:opacity-40';
  return <section aria-label={t('fileManagement.pendingOperations')} className='max-h-40 shrink-0 overflow-y-auto border-b border-border px-3 py-2 text-sm'>
   <h2 className='text-xs font-medium text-muted'>{t('fileManagement.pendingOperations')}</h2>
@@ -55,6 +62,6 @@ export function WorkspacePendingActions(){
    {operation.retry && <button type='button' className={icon} disabled={readOnly||busy!==null} aria-label={t(operation.code==='history_failed'?'fileManagement.retryHistory':'fileManagement.retryOperation',{name:operation.path})} title={t(operation.code==='history_failed'?'fileManagement.retryHistory':'fileManagement.retryOperation',{name:operation.path})} onClick={()=>void retry(operation)}><RotateCcw size={15}/></button>}
   </div>)}
   {view.nextCursor && <button type='button' className={icon} aria-label={t('fileManagement.moreOperations')} title={t('fileManagement.moreOperations')} onClick={()=>void loadRef.current?.(view.nextCursor??undefined)}><ChevronDown size={15}/></button>}
-  {view.error && <ErrorNotice issueId={`pending:${view.error}`} summary={view.error} action={{label:t('common:notification.retry'),run:()=>loadRef.current?.()}} />}
+  {notice}
  </section>;
 }

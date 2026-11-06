@@ -31,12 +31,13 @@ it('uses an explicit account scope for the public global explorer',async()=>{
  await screen.findByText('result.txt');
  expect(entries).toHaveBeenCalledWith({kind:'account'},'');
 });
-it('shows the real managed workspace basename in the session file pane',async()=>{
+it('shows the generic Folder label in the session file pane',async()=>{
  useRuntimeStore.setState({gatewayWorkspace:'/ws/project-a'});
  try{
   render(<SessionFilesPane sessionId='ses_a' sessionDir='/ws/project-a' onClose={()=>{}}/>);
   await screen.findByText('result.txt');
-  expect(screen.getByText('project-a')).toBeInTheDocument();
+  expect(screen.getByText('Folder')).toBeInTheDocument();
+  expect(screen.queryByText('project-a')).not.toBeInTheDocument();
  }finally{useRuntimeStore.setState({gatewayWorkspace:null});}
 });
 it('resolves session file actions by session ID instead of a stale focused directory',async()=>{

@@ -90,7 +90,7 @@ const server = createServer(async (request, response) => {
       if(native[2]==='children'){response.end('[]');return;}
       if(native[2]==='abort'){response.end('true');return;}
       if(['prompt_async','message'].includes(native[2])&&request.method==='POST'){
-        owned.history.push({info:{id:body.messageID,role:'user',sessionID:owned.session.id},parts:body.parts,fixtureSystem:body.system,fixturePermission:owned.session.permission});
+        owned.history.push({info:{id:body.messageID,role:'user',sessionID:owned.session.id},parts:body.parts,fixtureSystem:body.system,fixturePermission:owned.session.permission,fixtureVariant:body.variant});
         if(!body.noReply)owned.history.push({info:{id:`msg_answer_${owned.history.length}`,role:'assistant',sessionID:owned.session.id,time:{completed:1}},parts:[{type:'text',text:'OpenCode continued with actual fixture history'}]});
         response.writeHead(202);response.end('{}');return;
       }
@@ -113,7 +113,7 @@ const server = createServer(async (request, response) => {
     if(match[2]==="prompt_async" && request.method==="POST") {
       const buffers=[];for await(const chunk of request)buffers.push(chunk);
       const body=JSON.parse(Buffer.concat(buffers).toString());
-      managedHistory.push({info:{id:body.messageID,role:"user"},parts:body.parts,fixtureSystem:body.system,fixturePermission:managedPermission});
+      managedHistory.push({info:{id:body.messageID,role:"user"},parts:body.parts,fixtureSystem:body.system,fixturePermission:managedPermission,fixtureVariant:body.variant});
       response.writeHead(202);response.end("{}");return;
     }
   }

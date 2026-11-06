@@ -12,7 +12,7 @@ import {workspaceError} from '../src/workspace-state.mjs';
 test('actual platform routes retain project payload, hide archived runtime lists, block old access and restore',async t=>{
   const root=await mkdtemp(join(tmpdir(),'workspace-platform-'));
   const project={id:'123456789abcdef0',name:'A',path:root+'/workspace/projects/a',createdAt:1,pinned:false,imported:false};
-  const payload='retained bytes';let upstreamReads=0,projectResponse='normal',chunksSent=0,releaseCreate,createStarted,projectVisible=true;
+  const payload='retained bytes';let upstreamReads=0,projectResponse='normal',chunksSent=0,releaseCreate,createStarted,projectVisible=true,sessionsVisible=true;
   const upstream=createServer(async(req,res)=>{
     const url=new URL(req.url,'http://worker');res.setHeader('content-type','application/json');
     if(url.pathname==='/v1/projects'){
@@ -30,8 +30,12 @@ test('actual platform routes retain project payload, hide archived runtime lists
       let body='';for await(const chunk of req)body+=chunk;project.name=JSON.parse(body).name;return res.end('{"ok":true}');
     }
     if(url.pathname==='/v1/projects/'+project.id && req.method==='DELETE'){projectVisible=false;return res.end('{"ok":true}');}
-    if(['/session','/experimental/session'].includes(url.pathname))return res.end(JSON.stringify([{id:'ses_a',directory:project.path,title:'private title'}]));
-    if(url.pathname==='/session/ses_a')return res.end(JSON.stringify({id:'ses_a',directory:project.path}));
+    if(['/session','/experimental/session'].includes(url.pathname))return res.end(JSON.stringify(sessionsVisible?[{id:'ses_a',directory:project.path,title:'private title'}]:[]));
+    if(url.pathname==='/session/ses_a'){
+      if(req.method==='DELETE'){sessionsVisible=false;return res.end('true');}
+      if(!sessionsVisible){res.statusCode=404;return res.end('{}');}
+      return res.end(JSON.stringify({id:'ses_a',directory:project.path}));
+    }
     if(['/session/ses_a/message','/session/ses_a/children'].includes(url.pathname))return res.end('[]');
     if(url.pathname==='/session/ses_a/abort')return res.end('true');
     if(['/session/status','/permission','/question'].includes(url.pathname))return res.end(url.pathname==='/session/status'?'{}':'[]');
@@ -60,9 +64,12 @@ test('actual platform routes retain project payload, hide archived runtime lists
   assert.notEqual(ticket.ticket,'raw-worker-ticket');
   const removed=await request('/api/workspace/projects/'+p.id+'/remove','POST',{operationId:'op-remove',expectedRevision:p.revision});assert.equal(removed.status,200);
   assert.deepEqual(await (await request('/v1/projects')).json(),[]);
-  assert.equal((await request('/session?directory='+encodeURIComponent(project.path))).status,200);
-  assert.equal((await request('/session/ses_a')).status,200);
+  assert.deepEqual(await (await request('/session?directory='+encodeURIComponent(project.path))).json(),[]);
+  assert.equal((await request('/session/ses_a')).status,404);
   assert.equal((await request('/api/workspace/sessions/ses_a/state')).status,404);
+  // Later subtests exercise runtime routes, not the deleted project; restore
+  // the worker fixture they share.
+  sessionsVisible=true;
   assert.equal((await request('/v1/fs/read?ticket='+ticket.ticket)).status,200);assert.equal(upstreamReads,1);
   assert.equal((await request('/v1/projects/'+p.id,'DELETE',{})).status,409);
   assert.equal((await request('/v1/projects/'+p.id,'PATCH',{name:'Changed through old route'})).status,404);

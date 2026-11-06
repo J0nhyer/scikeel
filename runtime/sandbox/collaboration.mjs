@@ -1,4 +1,5 @@
 import { readToolError, ToolOutcomeError } from "./tool-outcome.mjs";
+import { brokerConfig } from "./broker-config.mjs";
 /** Trusted plugin options carry only the existing scoped broker token. */
 export function collaborationHooks({ token, request: provided }) {
   if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token))
@@ -6,7 +7,7 @@ export function collaborationHooks({ token, request: provided }) {
   const request =
     provided ??
     (async (sessionId, body, signal) => {
-      const response = await fetch("http://172.31.240.1:4792/collaboration", {
+      const response = await fetch(`${brokerConfig().model.replace(/\/v1$/, "")}/collaboration`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,

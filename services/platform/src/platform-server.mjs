@@ -42,6 +42,22 @@ import {WorkspaceBootstrap} from './workspace-bootstrap.mjs';
 import {WorkspaceCatalogImporter} from './workspace-catalog-import.mjs';
 import {waitManagedRuntime} from './sandbox-control-plane.mjs';
 
+export const RESEARCH_REQUEST_TIMEOUT_MS = 15000;
+
+/** Rate-limit identical background monitor failures so one slow worker does
+ *  not write the same timeout to the log on every two-second tick. */
+export function createMonitorErrorLogger({ now = Date.now, write, intervalMs = 60000 } = {}) {
+  if (typeof write !== "function" || !Number.isSafeInteger(intervalMs) || intervalMs < 0)
+    throw new Error("invalid monitor logger");
+  let message = null; let at = 0;
+  return (error) => {
+    const next = error?.message ?? String(error);
+    const time = now();
+    if (next === message && time - at < intervalMs) return;
+    message = next; at = time; write(next);
+  };
+}
+
 const SESSION_COOKIE = "osd_session";
 const BOOTSTRAP_COOKIE = "osd_worker_bootstrap";
 const DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024;
@@ -328,6 +344,8 @@ export class PlatformServer {
     networkEgress = null,
     searchProvider = undefined,
     runtimeCatalog = null,
+    defaultVariantFor = null,
+    collaborationOwnerTtlMs = 5000,
     saveRuntimeDefaultModel = null,
     environments = null,
     workspaceFiles = null,
@@ -496,6 +514,13 @@ export class PlatformServer {
       },
     });
     this.runtimeCatalog = runtimeCatalog;
+    this.defaultVariantFor = defaultVariantFor;
+    // A model call asks for collaboration state once per turn and often once
+    // per tool. The owner's ancestry cannot change without a session move, so
+    // a brief cache removes the repeated worker round trip while staying
+    // bounded to the current worker generation.
+    this.collaborationOwnerTtlMs = collaborationOwnerTtlMs;
+    this.collaborationOwners = new Map();
     this.saveRuntimeDefaultModel = saveRuntimeDefaultModel;
     this.environments = environments;
     if (enableWorkspaceManagement && tenantPolicy) {
@@ -504,7 +529,8 @@ export class PlatformServer {
         tenantPolicy,admission:this.workspaceAdmission,sessionRoots:async context=>[
           ...await historicalSessionRoots(context,(owner,path)=>this.#workspaceGateway(owner,path)),
           ...(cliRuntime?[...(await cliRuntime.ensureUser(context.userId)).sessions.values()].map(session=>session.directory):[])
-        ],resolveSession:async(context,id)=>id.startsWith("ses_cli_") && cliRuntime?(await cliRuntime.ensureUser(context.userId)).sessions.get(id)??Promise.reject(workspaceError("session_not_found",404)):this.sessionAuthority.ensure(context,id),gateway:(context,path,method,body)=>this.#workspaceGateway(context,path,method,body)});
+        ],resolveSession:async(context,id)=>id.startsWith("ses_cli_") && cliRuntime?(await cliRuntime.ensureUser(context.userId)).sessions.get(id)??Promise.reject(workspaceError("session_not_found",404)):this.sessionAuthority.ensure(context,id),gateway:(context,path,method,body)=>this.#workspaceGateway(context,path,method,body),
+        deleteProjectSessions:(context,project)=>this.#deleteProjectSessions(context,project)});
       this.workspaceProxyRequests=new Set();
       if(workspaceFiles)this.workspaceManagement.assertNoFollow=async(context,directory)=>{
         const path=directory.slice(tenantPolicy.account(context).workspaceDir.length+1);
@@ -679,11 +705,12 @@ export class PlatformServer {
     if (this.server?.listening) return this.address();
     if (this.listenPromise) return this.listenPromise;
     await this.init();
+    const monitorLog = createMonitorErrorLogger({
+      write: message => this.logger({ type: "research.monitor_error", error: message }),
+    });
     this.researchTimer = setInterval(() => {
       if (this.researchTick) return;
-      this.researchTick = Promise.all([this.researchTasks.tick(),this.collaboration.tick(),this.answerAutomaticToolPermissions(),this.#settleOpenCodeTurns()]).catch((error) => {
-        this.logger({ type: "research.monitor_error", error: error.message });
-      }).finally(() => { this.researchTick = null; });
+      this.researchTick = Promise.all([this.researchTasks.tick(),this.collaboration.tick(),this.answerAutomaticToolPermissions(),this.#settleOpenCodeTurns()]).catch(monitorLog).finally(() => { this.researchTick = null; });
     }, 2000);
     this.researchTimer.unref();
     this.attachmentTimer = setInterval(() => {
@@ -731,6 +758,7 @@ export class PlatformServer {
   }
 
   async close() {
+    this.collaborationOwners.clear();
     await this.workspaceOwners?.close();
     clearInterval(this.researchTimer);
     clearInterval(this.attachmentTimer);
@@ -1188,6 +1216,92 @@ export class PlatformServer {
     return true;
   }
 
+  /** Delete every conversation filed under a project folder before the project
+   *  index is dropped. Workspace admission has already refused removal while a
+   *  turn is running, so these conversations are idle. */
+  async #deleteProjectSessions(context,project) {
+    const account=this.tenantPolicy.account(context);
+    const directory=this.tenantPolicy.directory(context,project.path);
+    const owner={...context,workspaceDir:account.workspaceDir,directory};
+    let rows;
+    if(this.conversationRouter){
+      rows=await this.conversationRouter.list(owner,{directory,limit:10000});
+    }else{
+      // Older platforms may run without the conversation router. Fall back to
+      // the runtimes' own inventories, which is also what the project views
+      // group by directory.
+      rows=(await historicalSessions(context,(ctx,path)=>this.#workspaceGateway(ctx,path)))
+        .filter(row=>row.directory===directory);
+      if(this.cliRuntime){
+        const state=await this.cliRuntime.ensureUser(context.userId);
+        for(const session of state.sessions.values())
+          if(session.directory===directory)rows.push({id:session.publicConversationId??session.id});
+      }
+    }
+    const ids=[...new Set(rows.map(row=>row.id).filter(id=>typeof id==='string'))];
+    for(const id of ids){
+      try{await this.#removeOwnedSession(context,id);}
+      catch(error){
+        if(error.code==='conversation_not_found'||error.code==='unknown_session'||error.statusCode===404)continue;
+        throw error;
+      }
+    }
+  }
+
+  /** Delete one owned conversation and every record that can still surface it:
+   *  CLI session, canonical tree, native transcript and attachments. Shared by
+   *  the single-session route and project deletion so both clean up alike. */
+  async #removeOwnedSession(context,sessionId,access=this.workerManager.getWorkerAccess(context.instanceId)) {
+    const account=this.tenantPolicy.account(context),owner={...context,workspaceDir:account.workspaceDir,directory:account.workspaceDir};
+    let cliTree=[];
+    if(this.cliRuntime?.ownedSessionTree){
+      try{cliTree=await this.cliRuntime.ownedSessionTree(context.userId,sessionId);}
+      catch(error){if(error.code!=="unknown_session")throw error;}
+    }
+    let canonicalRoot=null,canonicalTree=[];
+    for(const id of new Set([sessionId,...cliTree.map(session=>session.publicConversationId)].filter(Boolean))){
+      try{canonicalTree=await this.conversations.conversationTree(owner,id);canonicalRoot=id;break;}
+      catch(error){if(error.code!=="conversation_not_found")throw error;}
+    }
+    const nativeIds=new Set();
+    if(canonicalTree.length){
+      for(const row of canonicalTree){
+        if(row.historicalSource?.runtime==="opencode")nativeIds.add(row.historicalSource.sessionId);
+        for(const binding of row.bindings??[])if(binding.runtime==="opencode")nativeIds.add(binding.nativeSessionId);
+      }
+    }else if(!cliTree.length)nativeIds.add(sessionId);
+    const keys=new Set([sessionId,...nativeIds]);
+    let removed=false;
+    if(cliTree.length && this.cliRuntime?.removeOwnedSessionTree){
+      for(const session of await this.cliRuntime.removeOwnedSessionTree(context.userId,sessionId)){
+        keys.add(session.id);if(session.publicConversationId)keys.add(session.publicConversationId);
+      }
+      removed=true;
+    }
+    for(const nativeId of nativeIds){
+      if(!access)throw workspaceError("workspace_unavailable",503);
+      if(await this.#deleteNativeSession(context,access,nativeId))removed=true;
+    }
+    for(const row of canonicalTree)keys.add(row.id);
+    for(const key of keys)await this.attachments.deleteSession(context.userId,key);
+    if(canonicalRoot){
+      for(const row of await this.conversations.removeTree(owner,canonicalRoot))keys.add(row.id);
+      removed=true;
+    }
+    if(this.workspaceCatalog){
+      const ids=[...keys];
+      // A catalogue-only row is still a conversation the user sees in
+      // History: removing it is the deletion, even when no canonical, CLI or
+      // native record survives behind it.
+      for(let index=0;index<ids.length;index+=256)
+        if((await this.workspaceCatalog.removeConversations(context.userId,ids.slice(index,index+256))).removed)removed=true;
+    }
+    for(const [key,record] of this.openCodeTurns)if(keys.has(record?.turn?.owner?.sessionId))this.openCodeTurns.delete(key);
+    for(const [key,held] of this.promptAdmissions)if(keys.has(held?.owner?.sessionId))this.promptAdmissions.delete(key);
+    for(const key of keys)this.tenantPolicy.removeSession(context,key);
+    return removed;
+  }
+
   async #deleteOwnedSession(request,response,access,user,worker,sessionId) {
     const expectedOrigin=`${this.secureCookies?"https":"http"}://${request.headers.host}`;
     if(request.headers.origin!==expectedOrigin||request.headers["sec-fetch-site"]==="cross-site"){
@@ -1198,48 +1312,7 @@ export class PlatformServer {
       sendJson(response,403,{error:"approval required"});return;
     }
     try {
-      const account=this.tenantPolicy.account(context),owner={...context,workspaceDir:account.workspaceDir,directory:account.workspaceDir};
-      let cliTree=[];
-      try{cliTree=await this.cliRuntime.ownedSessionTree(user.id,sessionId);}
-      catch(error){if(error.code!=="unknown_session")throw error;}
-      let canonicalRoot=null,canonicalTree=[];
-      for(const id of new Set([sessionId,...cliTree.map(session=>session.publicConversationId)].filter(Boolean))){
-        try{canonicalTree=await this.conversations.conversationTree(owner,id);canonicalRoot=id;break;}
-        catch(error){if(error.code!=="conversation_not_found")throw error;}
-      }
-      const nativeIds=new Set();
-      if(canonicalTree.length){
-        for(const row of canonicalTree){
-          if(row.historicalSource?.runtime==="opencode")nativeIds.add(row.historicalSource.sessionId);
-          for(const binding of row.bindings??[])if(binding.runtime==="opencode")nativeIds.add(binding.nativeSessionId);
-        }
-      }else if(!cliTree.length)nativeIds.add(sessionId);
-      const keys=new Set([sessionId,...nativeIds]);
-      let removed=false;
-      if(cliTree.length){
-        for(const session of await this.cliRuntime.removeOwnedSessionTree(user.id,sessionId)){
-          keys.add(session.id);if(session.publicConversationId)keys.add(session.publicConversationId);
-        }
-        removed=true;
-      }
-      for(const nativeId of nativeIds)if(await this.#deleteNativeSession(context,access,nativeId))removed=true;
-      for(const row of canonicalTree)keys.add(row.id);
-      for(const key of keys)await this.attachments.deleteSession(user.id,key);
-      if(canonicalRoot){
-        for(const row of await this.conversations.removeTree(owner,canonicalRoot))keys.add(row.id);
-        removed=true;
-      }
-      if(this.workspaceCatalog){
-        const ids=[...keys];
-        // A catalogue-only row is still a conversation the user sees in
-        // History: removing it is the deletion, even when no canonical, CLI or
-        // native record survives behind it.
-        for(let index=0;index<ids.length;index+=256)
-          if((await this.workspaceCatalog.removeConversations(user.id,ids.slice(index,index+256))).removed)removed=true;
-      }
-      for(const [key,record] of this.openCodeTurns)if(keys.has(record?.turn?.owner?.sessionId))this.openCodeTurns.delete(key);
-      for(const [key,held] of this.promptAdmissions)if(keys.has(held?.owner?.sessionId))this.promptAdmissions.delete(key);
-      for(const key of keys)this.tenantPolicy.removeSession(context,key);
+      const removed=await this.#removeOwnedSession(context,sessionId,access);
       if(!removed){sendJson(response,404,{error:"conversation not found",code:"conversation_not_found"});return;}
       sendJson(response,200,true);
     } catch(error) {
@@ -1383,6 +1456,13 @@ export class PlatformServer {
           sendJson(response,200,visible);return;
         }
       }
+    }
+    // The managed OpenCode runtime has no durable turn interruptions. Answer
+    // the optional client read with an empty list instead of forwarding it to
+    // a worker path that rejects it or returning a repeating 404.
+    if (this.tenantPolicy && request.method === "GET" &&
+        /^\/session\/[A-Za-z0-9_-]{1,128}\/interruptions$/.test((request.url ?? "").split("?")[0])) {
+      sendJson(response, 200, { interruptions: [] }); return;
     }
     // This branch is enabled only for explicitly migrated managed accounts.
     // It never invokes the legacy host CLI adapters.
@@ -1567,8 +1647,8 @@ export class PlatformServer {
             executionAdmission.identity.userId===user.id&&executionAdmission.identity.conversationId===sessionId&&
             this.cliRuntime.assistantPolicy.isExecutionCurrent(executionAdmission.identity);
           if (owner.runtime !== task.runtime&&!nativeHandover || resolve(owner.directory) !== task.directory) throw Object.assign(new Error("research task belongs to a different assistant or workspace"), { status: 409 });
-          promptBody = await this.researchTasks.prepare(user.id, sessionId, body, owner,
-            nativeResearch?{onPrepared:nativeResearch.prepared,...(nativeHandover?{nativeHandover:executionAdmission.identity}:{})}:undefined);
+          promptBody = this.#applyDefaultVariant(await this.researchTasks.prepare(user.id, sessionId, body, owner,
+            nativeResearch?{onPrepared:nativeResearch.prepared,...(nativeHandover?{nativeHandover:executionAdmission.identity}:{})}:undefined));
           serializedBody = JSON.stringify(promptBody);
         } catch (error) {
           sendJson(response, error.status ?? 400, { error: error.message });
@@ -1585,6 +1665,7 @@ export class PlatformServer {
         preparedAttachments = await this.attachmentTurns.prepare(user, owner, promptBody);
         if (preparedAttachments?.replayAccepted) { sendJson(response, 202, {}); return; }
         if (preparedAttachments) promptBody = preparedAttachments.body;
+        this.#applyDefaultVariant(promptBody);
         serializedBody = JSON.stringify(promptBody);
         if (preparedAttachments) {
           response.once("finish", () => { void preparedAttachments.finish(response.statusCode < 400).catch(() => {}); });
@@ -1858,7 +1939,7 @@ export class PlatformServer {
     const result = await fetch(url, {
       method, headers: { authorization: `Basic ${workerBasicToken(access.token)}`, "content-type": "application/json" },
       ...(body === undefined ? {} : {body:JSON.stringify(body)}),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(RESEARCH_REQUEST_TIMEOUT_MS),
     });
     const text=await result.text();completed?.();
     if (!result.ok) throw Object.assign(new Error("research session is unavailable"), { status: result.status });
@@ -1867,6 +1948,15 @@ export class PlatformServer {
     };
     return this.workspaceManagement && !["GET","HEAD"].includes(method) && !stopping
       ?this.#runtimeWrite({userId:task.userId,instanceId:worker.id,generation:worker.generation},run):run();
+  }
+  /** Fill an omitted reasoning variant from the administrator's per-model
+   * default, so a Web turn does not silently inherit the provider's heaviest
+   * default. An explicit turn choice always wins. */
+  #applyDefaultVariant(body) {
+    if (!body || body.variant != null || !this.defaultVariantFor) return body;
+    const variant = this.defaultVariantFor(body.model?.providerID, body.model?.modelID);
+    if (variant) body.variant = variant;
+    return body;
   }
   async #researchOwner(user, sessionId, access, worker) {
     if (this.cliRuntime?.isManaged(user.id)) {
@@ -1886,7 +1976,7 @@ export class PlatformServer {
           ancestry.push(row);id=row.parentID;
         }
         this.tenantPolicy.registerSessionList(context,ancestry);
-        return {...owner,sessionId,directory:ancestry[0].directory,runtime:this.cliRuntime.runtimeForUser(user.id)};
+        return {...owner,sessionId,directory:ancestry[0].directory,runtime:this.cliRuntime.runtimeForUser(user.id),parentID:ancestry[0].parentID ?? null};
       }
       if(this.tenantPolicy) {
         const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
@@ -1903,7 +1993,8 @@ export class PlatformServer {
         // Validate the entire owned chain before granting authority for a child.
         this.tenantPolicy.registerSessionList(context,ancestry);
       }
-      return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime };
+      return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime,
+        parentID: session.publicParentId ?? session.parentId ?? null };
     }
     if(this.openCodeConversations&&this.tenantPolicy){
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation},account=this.tenantPolicy.account(context);
@@ -1918,7 +2009,7 @@ export class PlatformServer {
         }
         await this.workspaceManagement?.assertAccessible(context,target.conversation.directory);
         this.tenantPolicy.registerSessionList(context,ancestry);
-        return {...owner,sessionId:target.conversation.id,directory:target.conversation.directory,runtime:'opencode'};
+        return {...owner,sessionId:target.conversation.id,directory:target.conversation.directory,runtime:'opencode',parentID:target.conversation.parentId ?? null};
       }
     }
     if(this.tenantPolicy) {
@@ -1937,7 +2028,8 @@ export class PlatformServer {
       const registered=this.tenantPolicy.session(context,sessionId);
       if(this.tenantPolicy.directory(context,session.directory)!==registered.directory)throw Object.assign(new Error("research session changed"),{status:409});
     }
-    return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: "opencode", revertMessageID: session.revert?.messageID };
+    return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: "opencode", revertMessageID: session.revert?.messageID,
+      parentID: session.parentID ?? null };
   }
   #admissionKey(kind,owner) {
     return JSON.stringify([kind,owner.userId,owner.instanceId,owner.generation,owner.sessionId,owner.execution]);
@@ -2022,8 +2114,35 @@ export class PlatformServer {
   }
 
   async #collaborationOwner(user,sessionId,access,worker) {
+    const context = { userId: user.id, instanceId: worker.id, generation: worker.generation };
+    const cacheKey = JSON.stringify([context.userId, context.instanceId, context.generation, sessionId]);
+    const cached = this.collaborationOwners.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      try {
+        const known = this.tenantPolicy?.session(context, sessionId);
+        if (!known || known.directory === cached.owner.directory) return cached.owner;
+      } catch { return cached.owner; }
+    }
+    const remember = (owner) => {
+      if (this.collaborationOwnerTtlMs > 0) {
+        const now = Date.now();
+        if (this.collaborationOwners.size >= 1024) {
+          for (const [key, value] of this.collaborationOwners) if (value.expiresAt <= now) this.collaborationOwners.delete(key);
+          if (this.collaborationOwners.size >= 1024) this.collaborationOwners.delete(this.collaborationOwners.keys().next().value);
+        }
+        this.collaborationOwners.set(cacheKey, { owner, expiresAt: now + this.collaborationOwnerTtlMs });
+      }
+      return owner;
+    };
     let owner=await this.#researchOwner(user,sessionId,access,worker);
     for(let depth=0;depth<20;depth++) {
+      // Owner resolution already knows the direct parent for current runtimes;
+      // reading the session again here duplicates that worker round trip.
+      if (owner.parentID === null) return remember(owner);
+      if (typeof owner.parentID === "string") {
+        owner=await this.#researchOwner(user,owner.parentID,access,worker);
+        continue;
+      }
       let info;
       try {
         info=await this.#workerResearchRequest(owner,`/session/${encodeURIComponent(owner.sessionId)}`);
@@ -2037,9 +2156,9 @@ export class PlatformServer {
             if(conversation?.parentId){owner=await this.#researchOwner(user,conversation.parentId,access,worker);continue;}
           }catch{/* An adopted root has no canonical parent record. */}
         }
-        return owner;
+        return remember(owner);
       }
-      if(!info.parentID)return owner;
+      if(!info.parentID)return remember(owner);
       owner=await this.#researchOwner(user,info.parentID,access,worker);
     }
     throw new Error("Collaboration ancestry unavailable");
@@ -2200,7 +2319,7 @@ export class PlatformServer {
       body={...body,execution:(await this.collaboration.get(owner)).execution};
     }
     if(body.action==="checkpoint")return {state:await this.collaboration.checkpoint(owner,body)};
-    if(body.action==="state")return {state:await this.collaboration.get(owner)};
+    if(body.action==="state")return {state:await this.collaboration.pluginState(owner)};
     if(body.action==="delivery") {
       if (body.callId) {
         const part = await this.runningToolPart(context, body.sessionId, body.callId);
@@ -2250,6 +2369,7 @@ export class PlatformServer {
   }
 
   async #researchApi(request, response, user, sessionId) {
+    let body;
     try {
       if (request.method === "GET") {
         sendJson(response, 200, { task: await this.researchTasks.refresh(user.id, sessionId) });
@@ -2259,7 +2379,7 @@ export class PlatformServer {
         sendJson(response, 405, { error: "method not allowed" }, { allow: "GET, POST" });
         return;
       }
-      const body = await this.#readPayload(request, response);
+      body = await this.#readPayload(request, response);
       if (!body) return;
       this.#requireWriteContext(request, user);
       let task;
@@ -2275,7 +2395,15 @@ export class PlatformServer {
       else if (body.action === "release") task = await this.researchTasks.release(user.id, sessionId, body.pageId);
       else task = await this.researchTasks.action(user.id, sessionId, body);
       sendJson(response, body.action === "create" ? 201 : 200, { task });
-    } catch (error) { sendJson(response, error.status ?? 400, { error: error.message }); }
+    } catch (error) {
+      // A plain conversation has no research task; leave/heartbeat/stop are
+      // idempotent no-ops there rather than repeated 404s in the client.
+      if (error?.status === 404 && error.message === "research task not found" &&
+          ["stop", "release", "heartbeat"].includes(body?.action)) {
+        sendJson(response, 200, { task: null }); return;
+      }
+      sendJson(response, error.status ?? 400, { error: error.message });
+    }
   }
 
   async #pendingRequest(context,id,operation,access,directory) {
@@ -2344,6 +2472,8 @@ export class PlatformServer {
       const checkedBody = {...body};
       if(operation.operation==="sessionPrompt_async"){delete checkedBody.attachmentTurn;delete checkedBody.collaborationRevision;}
       const input = validateRuntimeInput(operation, { query: parsed.searchParams, body:checkedBody, headers: request.headers });
+      if (request.method === "POST" && ["sessionPrompt_async", "sessionMessage"].includes(operation.operation))
+        this.#applyDefaultVariant(body);
       let directory = this.tenantPolicy.directory(context, input.directory);
       let sessionId = operation.identifiers.sessionId ?? body.sessionID;
       if (["questionReply","questionReject","permissionReply"].includes(operation.operation)) {
@@ -2447,6 +2577,7 @@ export class PlatformServer {
           body=attachmentTurn.body;
 
         }
+        this.#applyDefaultVariant(body);
         validateRuntimeInput(operation,{query:parsed.searchParams,body,headers:request.headers});
       }
       parsed.searchParams.delete("token");
@@ -2883,7 +3014,7 @@ export class PlatformServer {
         // document and client assets can load while startup continues. A
         // script login must not spend the resident budget of an account.
         if (this.tenantPolicy && !isJsonRequest(request) && !isAnalyticsDestination(payload.next)) {
-          void (this.workspaceBootstrap?this.workspaceBootstrap.prepare(user):this.#ensureWorker(user)).catch(() => this.logger({ type: "login.preparation_failed", userId: user.id }));
+          void (this.workspaceBootstrap?this.workspaceBootstrap.prepare(user):this.#ensureWorker(user)).catch(error => this.logger({ type: "login.preparation_failed", userId: user.id, error: error?.message, code: error?.code }));
         }
         const cookies = [
           sessionCookie(
@@ -2957,7 +3088,7 @@ export class PlatformServer {
           const query=catalogQuery(path,parsed.searchParams);
           const controller=new AbortController();request.once('aborted',()=>controller.abort());
           if(path==='/api/workspace/bootstrap'){
-            void this.workspaceBootstrap.prepare(user).catch(()=>this.logger({type:'login.preparation_failed',userId:user.id}));
+            void this.workspaceBootstrap.prepare(user).catch(error=>this.logger({type:'login.preparation_failed',userId:user.id,error:error?.message,code:error?.code}));
             sendJson(response,200,await this.workspaceBootstrap.read(user,{...query,signal:controller.signal}),{'cache-control':'no-store'});
           }else{
             const value=await this.workspaceAdmission.start(user.id,async()=>{

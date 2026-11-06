@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveTenantLayout } from "../src/sandbox-manifest.mjs";
+import { deriveTenantLayout, sandboxConfiguration, loadSandboxImageConfiguration } from "../src/sandbox-manifest.mjs";
 import * as manifests from "../src/sandbox-manifest.mjs";
 import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, symlink, link } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
 const roots = { instances: "/srv/scikeel/workers/instances", native: "/srv/scikeel/cli-runtime/users", images: "/var/lib/scikeel/images" };
 const record = { id: "user-a", userId: "a" };
@@ -57,6 +57,24 @@ test("launcher activation requires an explicit flag and complete fixed configura
   assert.throws(() => sandboxConfiguration({ ...values, PLATFORM_SANDBOX_INSTANCES_DIR: "/other/instances" }, "/srv/platform"));
 });
 
+test("docker mode requires the docker keys and does not require an images dir", () => {
+  const env = { PLATFORM_MANAGED_SANDBOX: "1", PLATFORM_SANDBOX_BACKEND: "docker", PLATFORM_SANDBOX_SOCKET: "/run/scikeel/sandbox.sock", PLATFORM_SANDBOX_IMAGE_DIGEST: `sha256:${"a".repeat(64)}`, PLATFORM_SANDBOX_INSTANCES_DIR: "/srv/instances", PLATFORM_SANDBOX_NATIVE_DIR: "/srv/native", PLATFORM_SANDBOX_WORKER_IMAGE_MANIFEST: "/etc/scikeel/worker-image.json", PLATFORM_SANDBOX_BROKER_HOST: "broker" };
+  const value = sandboxConfiguration(env, "/srv/platform");
+  assert.equal(value.backend, "docker"); assert.equal(value.brokerHost, "broker"); assert.equal(value.workerPrefix, "scikeel-worker-");
+  assert.throws(() => sandboxConfiguration({ ...env, PLATFORM_SANDBOX_SOCKET: undefined }, "/srv/platform"), /incomplete sandbox configuration/);
+});
+
+test("docker image manifest carries runtimes and filters disabled ones", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "worker-manifest-"));
+  const manifest = join(dir, "worker-image.json");
+  await writeFile(manifest, JSON.stringify({ schema: 1, imageDigest: `sha256:${"a".repeat(64)}`, architecture: "linux/amd64", variant: "production", enabledRuntimes: ["opencode", "codex"] }), { mode: 0o644 });
+  try {
+    const env = { PLATFORM_MANAGED_SANDBOX: "1", PLATFORM_SANDBOX_BACKEND: "docker", PLATFORM_SANDBOX_SOCKET: "/run/scikeel/sandbox.sock", PLATFORM_SANDBOX_IMAGE_DIGEST: `sha256:${"a".repeat(64)}`, PLATFORM_SANDBOX_INSTANCES_DIR: "/srv/instances", PLATFORM_SANDBOX_NATIVE_DIR: "/srv/native", PLATFORM_SANDBOX_WORKER_IMAGE_MANIFEST: manifest, PLATFORM_SANDBOX_BROKER_HOST: "broker", PLATFORM_SANDBOX_DISABLED_RUNTIMES: "codex" };
+    const value = await loadSandboxImageConfiguration(sandboxConfiguration(env, "/srv/platform"), { ownerUid: process.getuid() });
+    assert.deepEqual(value.enabledRuntimes, ["opencode"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 async function installedImage(t, { codex = false } = {}) {
   await mkdir(join(homedir(), ".cache"), { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(join(homedir(), ".cache", "scikeel-image-readiness-"));
@@ -68,7 +86,7 @@ async function installedImage(t, { codex = false } = {}) {
     rootfsSha256: sha, imageDigest: image.digest, python: "3.12.12", uv: "0.11.26",
     baselineLockSha256: sha, toolLockSha256: sha, uncompressedBytes: 1000000, fileCount: 100,
     provenance: { repository: "J0nhyer/scikeel", commit, workflow: "sandbox-image.yml" },
-    runnerFiles: Object.fromEntries(["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs"]
+    runnerFiles: Object.fromEntries(["runner.mjs", "file-rpc.mjs", "cli-jobs.mjs", "project-environment.py", "science-environment.mjs", "broker-config.mjs"]
       .map(name => [`opt/scikeel/tools/${name}`, sha])),
     tools: Object.fromEntries(["osd", "opencode", "node", "uv", "python", "git", ...(codex ? ["codex"] : [])].map(name => [name, {
       version: name === "opencode" ? "1.18.32" : name === "uv" ? "0.11.26" : name === "python" ? "3.12.12" : name === "codex" ? "0.157.1" : "1.0.0",

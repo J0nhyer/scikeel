@@ -17,9 +17,8 @@
     "noFallthroughCasesInSwitch": true,
     "esModuleInterop": true,
     "types": ["vitest/globals", "@testing-library/jest-dom"],
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
+      "@/*": ["./src/*"],
       "@ai4s/shared": ["../../packages/shared/src/index.ts"],
       "@ai4s/sdk/tool-outcome": ["../../packages/sdk/src/tool-outcome.d.mts"],
       "@ai4s/sdk": ["../../packages/sdk/src/index.ts"],

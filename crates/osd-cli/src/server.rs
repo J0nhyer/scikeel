@@ -30,7 +30,12 @@ fn internal_bind_address(args: &Args) -> Result<Option<std::net::Ipv4Addr>, Stri
     }
     let address: std::net::Ipv4Addr = value.parse().map_err(|_| "--bind-address requires a numeric internal IPv4 address")?;
     let octets = address.octets();
-    if !address.is_loopback() && !(octets[..3] == [172, 31, 240] && (2..=254).contains(&octets[3])) {
+    // A managed Docker worker has no assigned 172.31.240.x address; its
+    // per-user internal network is the isolation boundary, so the wildcard
+    // address is valid only for --managed. Ordinary servers keep the strict
+    // loopback/tenant-address rule.
+    if !address.is_loopback() && !(args.has("managed") && address.is_unspecified()) &&
+        !(octets[..3] == [172, 31, 240] && (2..=254).contains(&octets[3])) {
         return Err("--bind-address requires loopback or an assigned tenant address".into());
     }
     Ok(Some(address))
@@ -45,6 +50,7 @@ mod tests {
         assert_eq!(internal_bind_address(&args("server")).unwrap(), None);
         assert_eq!(internal_bind_address(&args("server --bind-address 172.31.240.2")).unwrap(), Some(std::net::Ipv4Addr::new(172,31,240,2)));
         assert!(internal_bind_address(&args("server --bind-address 127.0.0.1")).is_ok());
+        assert!(internal_bind_address(&args("server --managed --bind-address 0.0.0.0")).is_ok());
         for value in ["0.0.0.0", "8.8.8.8", "169.254.169.254", "172.31.240.1", "172.31.240.255", "::1", "host.example"] {
             assert!(internal_bind_address(&args(&format!("server --bind-address {value}"))).is_err());
         }

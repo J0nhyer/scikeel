@@ -43,13 +43,13 @@ import { useChatScroll } from "@/lib/scrollMemory";
 import { useWheelChain } from "@/lib/wheelChain";
 import { BlockList, type BlockHandlers } from "@/components/thread/BlockList";
 import { SubagentPane } from "@/components/thread/SubagentPane";
+import { WorkspaceRecoveryActions } from "./WorkspaceRecoveryActions";
 import { SelectionActions } from "@/components/thread/SelectionActions";
 import { Elapsed } from "@/components/thread/ToolGroup";
 import { LiveLine, latestLine } from "@/components/thread/LiveLine";
 import { Composer } from "@/components/thread/Composer";
 import { GoalPill } from "@/components/thread/GoalPill";
 import { GOAL_RESUME_NUDGE } from "@/lib/goalPrompts";
-import { baseName } from "@/components/thread/WorkspaceChip";
 import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
 import { EmptySessionDecoration } from "./EmptySessionDecoration";
 import { collaborationPollingEnabled, useCollaboration } from "@/lib/collaboration";
@@ -186,6 +186,8 @@ export function SessionView({
   // SSE folds must not repaint this pane. The active thread is selected on its
   // own below (#34).
   const status = useRuntimeStore((s) => s.status);
+  const gatewayWorkspaceReport = useRuntimeStore((s) => s.gatewayWorkspaceReport);
+  const gatewayWorkspaceFailure = useRuntimeStore((s) => s.gatewayWorkspaceFailure);
   const switching = useRuntimeStore((s) => s.switching);
   const sessionListReady = useRuntimeStore((s) => s.sessionListReady);
   const webReadOnly = useRuntimeStore((s) => s.webReadOnly);
@@ -791,14 +793,9 @@ export function SessionView({
               aria-pressed={showFiles}
             >
               <FolderOpen size={13} />
-              {/* Tiled panes are narrow — show just the icon, not the folder name. */}
-              {showToolLabels && (
-                <span className="max-w-[160px] truncate">
-                  {sessionDir
-                    ? baseName(sessionDir)
-                    : t("live.filesToggle.default")}
-                </span>
-              )}
+              {/* Tiled panes are narrow — show just the icon, not the label. The
+                  label stays generic; the folder path lives in the title. */}
+              {showToolLabels && <span>{t("live.filesToggle.default")}</span>}
             </button>
           )}
           {collaboration.state.delivery && <ResearchDeliveryStatus key={`${eid}:${collaboration.state.execution}`} delivery={collaboration.state.delivery} />}
@@ -1010,6 +1007,9 @@ export function SessionView({
             style={zoom !== 1 ? { zoom } : undefined}
             className="relative z-10 mx-auto flex max-w-[760px] flex-col gap-4 px-8 pt-6"
           >
+            {!connected && !connecting && isGatewayWeb && focused && (
+              <WorkspaceRecoveryActions report={gatewayWorkspaceReport} />
+            )}
             {!connected && !connecting && !isGatewayWeb && (
               <div className="rounded-card border border-border bg-surface p-5 shadow-card">
                 <div className="text-sm font-medium text-text">{t("live.runtime.title")}</div>
@@ -1223,14 +1223,13 @@ export function SessionView({
             style={zoom !== 1 ? { zoom } : undefined}
             className="pointer-events-auto relative mx-auto w-full max-w-[760px] space-y-3 px-8"
           >
-            {error && focused && <StateNotice issueId={`runtime:${eid ?? key}:${error}`} summary={t("common:notification.problem")} detail={error} />}
+            {error && focused && !gatewayWorkspaceFailure && <StateNotice issueId={`runtime:${eid ?? key}:${error}`} summary={t("common:notification.problem")} detail={error} />}
             <ComposerNotices
               decisionInputError={decisionInputError}
               collaborationError={collaboration.error}
               collaborationErrorScope={`${eid ?? key}`}
               pendingDecision={collaboration.state.pending}
               paused={collaboration.state.phase === "paused"}
-              pausedKey={`${eid ?? key}:${collaboration.state.execution}`}
               busy={collaboration.saving}
               onDismissDecisionInputError={() => setDecisionInputError(null)}
               onRetryCollaboration={collaboration.refresh}

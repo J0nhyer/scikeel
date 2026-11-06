@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxClient, launcherRequest } from "../src/sandbox-client.mjs";
 
-async function socketFixture(handler, callback) {
+async function socketFixture(handler, callback, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "scikeel-client-"));
   const socketPath = join(directory, "s");
   const sockets = new Set();
@@ -20,7 +20,7 @@ async function socketFixture(handler, callback) {
     });
   });
   await new Promise((resolve) => server.listen(socketPath, resolve));
-  try { await callback(new SandboxClient({ socketPath, timeoutMs: 150 })); }
+  try { await callback(new SandboxClient({ socketPath, timeoutMs: 150, ...options })); }
   finally {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => server.close(resolve));
@@ -140,4 +140,20 @@ test("inspection cancellation closes the socket and never extends the launcher d
     assert.equal(received.signal, undefined);
     await assert.rejects(client.inspect({ instanceId: "a" }, { timeoutMs: 0 }), /invalid launcher timeout/);
   });
+});
+
+test("accepts docker worker names and rejects foreign hosts", async () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const token = "b".repeat(64);
+  await socketFixture((socket, request) => socket.end(response(request, request.op === "start"
+    ? { instanceId: "a", generation: 1, endpoint: "http://scikeel-worker-a:4790", runnerEndpoint: "http://scikeel-worker-a:4791", internalToken: token }
+    : { instanceId: "a", generation: 1, status: "ready", endpoint: "http://scikeel-worker-a:4790", runnerEndpoint: "http://scikeel-worker-a:4791", internalToken: token })),
+  async (client) => {
+    assert.equal((await client.start({ instanceId: "a", generation: 1, imageDigest: digest })).endpoint, "http://scikeel-worker-a:4790");
+    assert.equal((await client.inspect({ instanceId: "a" })).endpoint, "http://scikeel-worker-a:4790");
+  }, { workerPrefix: "scikeel-worker-" });
+  await socketFixture((socket, request) => socket.end(response(request, { instanceId: "a", generation: 1,
+    endpoint: "http://scikeel-worker-b:4790", runnerEndpoint: "http://scikeel-worker-b:4791", internalToken: token })),
+  async (client) => assert.rejects(client.start({ instanceId: "a", generation: 1, imageDigest: digest }), /invalid launcher endpoint/),
+  { workerPrefix: "scikeel-worker-" });
 });

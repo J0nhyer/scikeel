@@ -336,7 +336,7 @@
       "paneMenu": "Sitzungsaktionen"
     },
     "filesToggle": {
-      "default": "Dateien",
+      "default": "Ordner",
       "title": "Den Ordner dieser Sitzung neben dem Chat durchsuchen"
     },
     "runsToggle": {
