@@ -1,12 +1,10 @@
 import { ErrorNotice, type ErrorNoticeProps } from "./ErrorNotice";
 
-export interface StateNoticeProps extends ErrorNoticeProps {
-  /** Retained for source compatibility; an active issue always keeps its reopen control. */
-  dismissFully?: boolean;
-}
+export type StateNoticeProps = ErrorNoticeProps;
 
 /** Compatibility wrapper for the former inline notice. The card owns the
- *  message; this component only registers it and renders the reopen control. */
+ *  message; closing it removes the notice and leaves only a labeled recovery
+ *  action when the caller did not ask for a full dismissal. */
 export function StateNotice(props: StateNoticeProps) {
   return <ErrorNotice {...props} />;
 }

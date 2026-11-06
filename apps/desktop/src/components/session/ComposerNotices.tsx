@@ -78,6 +78,7 @@ export function ComposerNotices({
           summary={t("collaboration.syncFailed")}
           detail={collaborationError}
           action={{ label: t("collaboration.retry"), run: onRetryCollaboration }}
+          dismissFully
         />
       )}
       {pendingDecision && (

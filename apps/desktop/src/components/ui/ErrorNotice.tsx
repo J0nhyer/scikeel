@@ -1,6 +1,4 @@
 import { useEffect, useRef } from "react";
-import { AlertCircle } from "lucide-react";
-import { useTranslation } from "react-i18next";
 import { useToastStore } from "@/lib/toast";
 
 export interface ErrorNoticeProps {
@@ -9,19 +7,21 @@ export interface ErrorNoticeProps {
   detail?: string;
   action?: { label: string; run: () => void | Promise<void> };
   onDismiss?: () => void;
+  /** Remove the notice entirely when dismissed, including its action. Use when
+   *  recovery is automatic or another control on the page retries. */
+  dismissFully?: boolean;
 }
 
-/** Registers a state-derived error in the global card and leaves an icon-only
- *  reopen control after dismissal. The state that produced the error stays
- *  owned by the caller; closing the card never resolves it. */
-export function ErrorNotice({ issueId, summary, detail, action, onDismiss }: ErrorNoticeProps) {
-  const { t } = useTranslation("common");
+/** Registers a state-derived error in the global card. Closing the card removes
+ *  the notice; a recovery action with no other home stays as a labeled control
+ *  unless the caller passes dismissFully. The state that produced the error
+ *  stays owned by the caller; closing the card never resolves it. */
+export function ErrorNotice({ issueId, summary, detail, action, onDismiss, dismissFully = false }: ErrorNoticeProps) {
   const account = useToastStore((s) => s.accountId);
   const identity = JSON.stringify([account, issueId]);
   const dismissed = useToastStore((s) => s.dismissedIssues.includes(identity));
   const pushError = useToastStore((s) => s.pushError);
   const dismissIssueCard = useToastStore((s) => s.dismissIssueCard);
-  const showIssue = useToastStore((s) => s.showIssue);
   const actionRef = useRef(action);
   actionRef.current = action;
   const dismissRef = useRef(onDismiss);
@@ -42,16 +42,11 @@ export function ErrorNotice({ issueId, summary, detail, action, onDismiss }: Err
     return () => dismissIssueCard(issueId);
   }, [account, dismissed, issueId, message, pushError, dismissIssueCard]);
 
-  if (!dismissed) return null;
+  if (!dismissed || dismissFully || !action) return null;
   return (
-    <button
-      type="button"
-      aria-label={t("notification.show")}
-      title={t("notification.show")}
-      className="grid min-h-11 min-w-11 place-items-center rounded text-error hover:bg-surface-2"
-      onClick={() => showIssue(identity)}
-    >
-      <AlertCircle size={14} />
+    <button type="button" className="min-h-11 min-w-11 text-xs text-accent underline"
+      onClick={() => { void action.run(); }}>
+      {action.label}
     </button>
   );
 }

@@ -29,3 +29,12 @@ it('disables upload mutations for read-only accounts',()=>{
  expect(typeof WorkspaceUploadControls).toBe('function');useRuntimeStore.setState({webReadOnly:true});render(<WorkspaceUploadControls scope={{kind:'account'}} path='' onChanged={()=>{}}/>);
  expect(screen.getByRole('button',{name:'Upload files'})).toBeDisabled();fireEvent.change(screen.getByLabelText('Upload files',{selector:'input'}),{target:{files:[new File(['abc'],'data.bin')]}});expect(api.begin).not.toHaveBeenCalled();
 });
+it('does not open an empty uploads dialog when the file picker is cancelled',async()=>{
+ expect(typeof WorkspaceUploadControls).toBe('function');render(<WorkspaceUploadControls scope={{kind:'account'}} path='' onChanged={()=>{}}/>);
+ await waitFor(()=>expect(api.list).toHaveBeenCalled());
+ const input=screen.getByLabelText('Upload files',{selector:'input'}),click=vi.spyOn(input,'click');
+ fireEvent.click(screen.getByRole('button',{name:'Upload files'}));
+ expect(click).toHaveBeenCalledOnce();
+ expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+ click.mockRestore();
+});

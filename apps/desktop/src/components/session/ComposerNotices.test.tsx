@@ -47,7 +47,7 @@ describe("composer notices", () => {
     expect(screen.getByText("Answer the research decision first.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Close notification" }));
     expect(onDismissDecisionInputError).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: "Show error" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show error" })).not.toBeInTheDocument();
 
     view.rerender(
       <>
@@ -125,7 +125,7 @@ describe("composer notices", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Network error");
     await userEvent.click(screen.getByRole("button", { name: "Close notification" }));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show error" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show error" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 

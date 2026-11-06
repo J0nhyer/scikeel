@@ -32,7 +32,7 @@ export function WorkspaceUploadControls({scope,path,onChanged,disabled=false}:{s
  };
  const active=records.filter(record=>!['complete','cancelled'].includes(record.status)).length;
  return <>
-  <button type='button' className={icon} aria-label={t('fileManagement.upload')} title={t('fileManagement.upload')} disabled={readOnly||!account||disabled} onClick={()=>{setOpen(true);if(!records.length)input.current?.click();}}><Upload size={15}/></button>
+  <button type='button' className={icon} aria-label={t('fileManagement.upload')} title={t('fileManagement.upload')} disabled={readOnly||!account||disabled} onClick={()=>{if(records.length||error)setOpen(true);else input.current?.click();}}><Upload size={15}/></button>
   <input ref={input} type='file' multiple className='hidden' aria-label={t('fileManagement.upload')} disabled={readOnly||active>=2||disabled} onChange={event=>{select(event.target.files);event.target.value='';}}/>
   <Dialog.Root open={open} onOpenChange={setOpen}><Dialog.Portal><Dialog.Overlay className='fixed inset-0 z-50 bg-black/30'/><Dialog.Content aria-describedby={undefined} className='fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[420px] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col rounded border border-border bg-surface p-4 shadow-card'>
    <div className='flex items-center gap-2'><Dialog.Title className='min-w-0 flex-1 text-sm font-medium'>{t('fileManagement.uploads')}</Dialog.Title>
