@@ -101,6 +101,14 @@ function defaultSecret() {
         enabledModels: ["deepseek-flash", "deepseek-v4-pro"],
         routes: ["/v1/chat/completions"],
         name: "DeepSeek",
+        modelNames: {
+          "deepseek-flash": "DeepSeek V4.1 Flash",
+          "deepseek-v4-pro": "DeepSeek V4 Pro",
+        },
+        modelVariants: {
+          "deepseek-flash": ["low", "high", "max"],
+          "deepseek-v4-pro": ["low", "high", "max"],
+        },
       },
     },
     defaultProvider: "deepseek",
