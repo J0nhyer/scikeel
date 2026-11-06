@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FilePreviewInspector as FilePreviewInspectorT } from "@ai4s/shared";
 import { readArtifact } from "@/lib/artifactFile";
+import { clearMarkdownImageCache } from "@/lib/markdownImages";
 import { useRuntimeStore } from "@/lib/runtime";
 import { useToastStore } from "@/lib/toast";
 import { Toaster } from "@/components/ui/Toaster";
@@ -11,7 +12,12 @@ import { FilePreviewInspector, PreviewError } from "./FilePreviewInspector";
 // The markdown tests below carry inline `content`, so they never hit
 // readArtifact — this mock only feeds the binary-file test.
 const probeLargeFile = vi.fn();
-beforeEach(() => useToastStore.getState().reset());
+const previewUrl = vi.fn(async (path: string) => `http://files.test/${path}`);
+beforeEach(() => {
+  useToastStore.getState().reset();
+  previewUrl.mockClear();
+  clearMarkdownImageCache();
+});
 vi.mock("@/lib/artifactFile", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/artifactFile")>();
   return {
@@ -23,6 +29,7 @@ vi.mock("@/lib/artifactFile", async (importOriginal) => {
       data: "AAEC",
       size: 3,
     })),
+    previewUrl: (...args: Parameters<typeof previewUrl>) => previewUrl(...args),
     probeLargeFile: (...args: unknown[]) => probeLargeFile(...args),
     writeWorkspaceFile: (...args: Parameters<typeof writeWorkspaceFile>) =>
       writeWorkspaceFile(...args),
@@ -142,6 +149,70 @@ describe("FilePreviewInspector — markdown via readArtifact (Files browser path
       />,
     );
     expect(await screen.findByText(/desktop app/)).toBeInTheDocument();
+  });
+});
+
+describe("FilePreviewInspector — markdown images", () => {
+  it("resolves a sibling image against the markdown file's own directory", async () => {
+    vi.mocked(readArtifact).mockResolvedValueOnce({
+      path: "demo_analysis/report.md",
+      mime: "text/markdown",
+      encoding: "utf8",
+      data: "![dose response](figure1.png)",
+      size: 30,
+    });
+    render(
+      <FilePreviewInspector
+        data={{
+          variant: "file",
+          path: "demo_analysis/report.md",
+          filename: "report.md",
+          artifact: "report",
+        }}
+        workspaceDirectory="/session/workspace"
+        onClose={() => {}}
+      />,
+    );
+
+    const image = await screen.findByRole("img");
+    expect(image).toHaveAttribute("src", "http://files.test/demo_analysis/figure1.png");
+    expect(previewUrl).toHaveBeenCalledWith(
+      "demo_analysis/figure1.png",
+      undefined,
+      "/session/workspace",
+    );
+  });
+
+  it("resolves a parent-relative image inside the workspace", async () => {
+    vi.mocked(readArtifact).mockResolvedValueOnce({
+      path: "paper/paper.md",
+      mime: "text/markdown",
+      encoding: "utf8",
+      data: "![accuracy](../figures/fig_accuracy_vs_budget.png)",
+      size: 48,
+    });
+    render(
+      <FilePreviewInspector
+        data={{
+          variant: "file",
+          path: "paper/paper.md",
+          filename: "paper.md",
+          artifact: "report",
+        }}
+        workspaceDirectory="/session/workspace"
+        onClose={() => {}}
+      />,
+    );
+
+    expect(await screen.findByRole("img")).toHaveAttribute(
+      "src",
+      "http://files.test/figures/fig_accuracy_vs_budget.png",
+    );
+    expect(previewUrl).toHaveBeenCalledWith(
+      "figures/fig_accuracy_vs_budget.png",
+      undefined,
+      "/session/workspace",
+    );
   });
 });
 

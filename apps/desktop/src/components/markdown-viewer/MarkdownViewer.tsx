@@ -1,11 +1,15 @@
-import { useMemo } from "react";
-import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
+import { useEffect, useMemo, useState } from "react";
+import ReactMarkdown, {
+  defaultUrlTransform,
+  type Options as ReactMarkdownOptions,
+} from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { cn } from "@/lib/cn";
 import { HSCROLL_ATTR } from "@/lib/wheelChain";
+import { isDirectImageSource, resolveMarkdownImage } from "@/lib/markdownImages";
 import { openExternal } from "@/lib/tauri";
 
 /** Two contexts render markdown: chat bubbles (theme colors, compact) and the
@@ -25,6 +29,10 @@ const STYLES: Record<Variant, Record<string, string>> = {
     a: "text-link underline underline-offset-2",
     code: "rounded bg-surface-2 px-1 py-0.5 font-mono text-[13px] text-link",
     pre: "my-4 overflow-x-auto overflow-y-hidden rounded-input bg-surface-2 p-3 font-mono text-[13px] leading-5 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-text",
+    // `inline-block`, not the preflight's `display:block`: an image inside a
+    // sentence (a badge or icon) must stay in the flow instead of taking a
+    // line of its own. A standalone image still sits in its own paragraph.
+    img: "inline-block max-w-full rounded-sm align-middle",
     ul: "my-3.5 ml-5 list-disc space-y-1.5",
     ol: "my-3.5 ml-5 list-decimal space-y-1.5",
     h1: "mb-3 mt-6 text-2xl font-semibold first:mt-0",
@@ -51,6 +59,7 @@ const STYLES: Record<Variant, Record<string, string>> = {
     a: "font-medium text-[#bf5a34] underline decoration-[#e2bdac] decoration-1 underline-offset-[3px] transition-colors hover:decoration-[#bf5a34]",
     code: "rounded-[4px] bg-[#f7f0ea] px-1.5 py-0.5 font-mono text-[13px] text-[#a94e2c] ring-1 ring-[#eee0d6]",
     pre: "my-5 overflow-x-auto overflow-y-hidden rounded-lg bg-[#faf6f2] p-4 font-mono text-[13px] leading-6 ring-1 ring-[#ece2d9] [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[#4b433a] [&_code]:ring-0",
+    img: "inline-block max-w-full rounded-sm align-middle",
     ul: "my-4 ml-[1.15em] list-disc space-y-2 marker:text-[#c98a6b]",
     ol: "my-4 ml-[1.15em] list-decimal space-y-2 marker:text-[13px] marker:font-medium marker:text-[#c98a6b]",
     // Serif display headings give the editorial/blog feel; the stack falls back
@@ -105,10 +114,19 @@ export function MarkdownViewer({
   children,
   className,
   variant = "chat",
+  resolveImage,
+  imageCacheKey = "",
 }: {
   children: string;
   className?: string;
   variant?: Variant;
+  /** Resolve a relative image source to a URL the browser can load. Omitted
+   *  where no workspace is known (settings previews, tests), in which case a
+   *  relative source is rendered as written. */
+  resolveImage?: (src: string) => Promise<string | null>;
+  /** Namespace for the resolved-URL cache — the workspace and document
+   *  directory the sources are relative to. */
+  imageCacheKey?: string;
 }) {
   const s = STYLES[variant];
   const normalized = useMemo(() => normalizeMathDelimiters(children), [children]);
@@ -122,7 +140,32 @@ export function MarkdownViewer({
           all; see pluginsFor. */}
       <ReactMarkdown
         {...plugins}
+        // The default transform blanks every non-http(s) protocol, including
+        // the base64 images model output and notebook exports carry. A
+        // `data:image/*` source is safe inside <img>; every other URL keeps
+        // the library's default treatment.
+        urlTransform={(url, key, node) =>
+          key === "src" && node.tagName === "img" && /^data:image\//i.test(url)
+            ? url
+            : defaultUrlTransform(url)
+        }
         components={{
+          img: ({ src, alt, title }) => {
+            if (typeof src !== "string" || !src) return null;
+            if (!resolveImage || isDirectImageSource(src)) {
+              return <img src={src} alt={alt ?? ""} title={title} className={s.img} />;
+            }
+            return (
+              <ResolvedMarkdownImage
+                source={src}
+                alt={alt ?? ""}
+                title={title}
+                className={s.img}
+                resolve={resolveImage}
+                cacheKey={imageCacheKey}
+              />
+            );
+          },
           p: ({ children }) => <p className={s.p}>{children}</p>,
           a: ({ children, href }) => (
             <a
@@ -180,4 +223,49 @@ export function MarkdownViewer({
       </ReactMarkdown>
     </div>
   );
+}
+
+/** An <img> whose source is a workspace-relative path. Resolution is async
+ *  because the web client mints a short-lived ticket per file; until it lands
+ *  the image renders nothing rather than a broken-image icon. A source that
+ *  cannot be resolved falls back to its alt text. */
+function ResolvedMarkdownImage({
+  source,
+  alt,
+  title,
+  className,
+  resolve,
+  cacheKey,
+}: {
+  source: string;
+  alt: string;
+  title?: string;
+  className: string;
+  resolve: (src: string) => Promise<string | null>;
+  cacheKey: string;
+}) {
+  const [resolved, setResolved] = useState<{ source: string; url: string | null; failed: boolean }>(
+    { source, url: null, failed: false },
+  );
+  // A different source in the same position (streaming rebuilds the tree) must
+  // not show the previous image while its own lookup runs.
+  const current =
+    resolved.source === source ? resolved : { source, url: null, failed: false };
+
+  useEffect(() => {
+    if (current.url || current.failed) return;
+    let cancelled = false;
+    void resolveMarkdownImage(cacheKey, source, resolve).then((url) => {
+      if (!cancelled) setResolved({ source, url, failed: url === null });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cacheKey, source, resolve, current.url, current.failed]);
+
+  if (current.url) {
+    return <img src={current.url} alt={alt} title={title} className={className} />;
+  }
+  if (current.failed) return <span className="text-muted">{alt || source}</span>;
+  return null;
 }
