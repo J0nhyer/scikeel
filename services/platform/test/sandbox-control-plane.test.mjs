@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateBrokerConfiguration, brokerProfile, runnerProtocol, waitManagedRuntime, validateCapacity, resolveWorkerAliases } from "../src/sandbox-control-plane.mjs";
+import { validateBrokerConfiguration, brokerProfile, runnerProtocol, waitManagedRuntime, validateCapacity, resolveWorkerAliases, managedDefaultVariant } from "../src/sandbox-control-plane.mjs";
 
 const context = { userId: "a", instanceId: "user-a", generation: 1 };
 test("workspace capacity is one by default and supports only the one/two experiment", () => {
@@ -108,6 +108,26 @@ test("declared reasoning levels reach the runtime without changing models or per
     assert.throws(() => validateBrokerConfiguration({ ...configured, providers: { fixture: { ...configured.providers.fixture, modelVariants } } }));
 });
 
+test("administrator default reasoning variant applies only where the model declares it", () => {
+  const configured = { ...config, defaultModel: "approved", providers: { fixture: {
+    ...config.providers.fixture, enabledModels: ["approved", "other"],
+    modelVariants: { approved: ["low", "high"], other: ["high"] }, defaultVariant: "low",
+  } } };
+  assert.equal(validateBrokerConfiguration(configured), configured);
+  assert.equal(managedDefaultVariant(configured, "fixture", "approved"), "low");
+  assert.equal(managedDefaultVariant(configured, "fixture", "other"), null);
+  assert.equal(managedDefaultVariant(configured, undefined, undefined), "low");
+  assert.equal(managedDefaultVariant(configured, undefined, "other"), null);
+  assert.equal(managedDefaultVariant(configured, "foreign", "approved"), null);
+  assert.equal(managedDefaultVariant(configured, "fixture", "retired"), null);
+  assert.equal(managedDefaultVariant({ ...configured, providers: { fixture: {
+    ...configured.providers.fixture, defaultVariant: undefined } } }, "fixture", "approved"), null);
+  for (const defaultVariant of ["invented", 3, true, { variant: "low" }])
+    assert.throws(() => validateBrokerConfiguration({ ...configured, providers: { fixture: {
+      ...configured.providers.fixture, defaultVariant } } }));
+  assert.throws(() => validateBrokerConfiguration({ ...configured, providers: { fixture: {
+    ...configured.providers.fixture, modelVariants: undefined } } }));
+});
 test("declared thinking toggles use native enable/disable options", () => {
   const configured = { ...config, providers: { fixture: { ...config.providers.fixture, modelVariants: { approved: ["enabled", "disabled"] } } } };
   const profile = brokerProfile({ config: configured, broker: { issue: () => "a".repeat(64) }, context });

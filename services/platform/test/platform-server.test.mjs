@@ -79,7 +79,7 @@ function makeClient(base) {
   };
 }
 
-async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null, enableWorkspaceManagement = false, workspaceCatalog = null, logger = () => {}, analyticsCollector = null } = {}) {
+async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRoot = null, tenantPolicy = null, environments = null, workspaceFiles = null, enableWorkspaceManagement = false, workspaceCatalog = null, logger = () => {}, analyticsCollector = null, defaultVariantFor = null } = {}) {
   const root = providedRoot ?? (await mkdtemp(join(tmpdir(), "osd-platform-server-")));
   const authStore = new AuthStore({
     filePath: join(root, "platform", "auth.json"),
@@ -92,7 +92,7 @@ async function makeFixture({ cliRuntime = null, webRoot = null, root: providedRo
     startupTimeoutMs: 5_000,
     stopTimeoutMs: 1_000,
   });
-  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles, enableWorkspaceManagement, workspaceCatalog, logger, analyticsCollector });
+  const server = new PlatformServer({ authStore, workerManager: manager, cliRuntime, webRoot, tenantPolicy, environments, workspaceFiles, enableWorkspaceManagement, workspaceCatalog, logger, analyticsCollector, defaultVariantFor });
   const address = await server.listen();
   const fixture = { root, authStore, manager, server, cliRuntime, base: `http://${address.host}:${address.port}` };
   fixtures.push(fixture);
@@ -1023,6 +1023,59 @@ test("sandbox conversations send owned attachment copies and retain decorated hi
   assert.equal((await json(await client.request("/session/owned/message"))).length,1);
 });
 
+test("managed Web prompts use the administrator default reasoning variant unless the turn chooses one", async () => {
+  const policy = new TenantPolicy();
+  const f = await makeFixture({ tenantPolicy: policy,
+    defaultVariantFor: (provider, model) => provider === "fixture" && model === "approved" ? "low" : null });
+  const client = makeClient(f.base);
+  const { user } = await login(client, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  const worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => (id) => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: "running" }))(f.manager.getWorker);
+  const account = { userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir };
+  policy.registerAccount(account);
+  policy.registerSession(account, { id: "owned", directory: worker.workspaceDir + "/project" });
+  const post = (value) => client.request("/session/owned/prompt_async", { method: "POST",
+    headers: { "content-type": "application/json", origin: f.base }, body: JSON.stringify(value) });
+  const prompt = (extra = {}) => ({ parts: [{ type: "text", text: "Variant check" }],
+    model: { providerID: "fixture", modelID: "approved" }, ...extra });
+  assert.equal((await post(prompt())).status, 202);
+  let history = await json(await client.request("/session/owned/message"));
+  assert.equal(history.at(-1).fixtureVariant, "low");
+  assert.equal((await post(prompt({ variant: "high" }))).status, 202);
+  history = await json(await client.request("/session/owned/message"));
+  assert.equal(history.at(-1).fixtureVariant, "high");
+});
+
+
+test("collaboration guard resolves a root session once and reuses its short cache", async (t) => {
+  const policy = new TenantPolicy();
+  const f = await makeFixture({ tenantPolicy: policy });
+  const client = makeClient(f.base);
+  const { user } = await login(client, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  const worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => (id) => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: "running" }))(f.manager.getWorker);
+  const account = { userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir };
+  policy.registerAccount(account);
+  policy.registerSession(account, { id: "owned", directory: worker.workspaceDir + "/project" });
+  await f.server.runtimeCollaboration(account, { action: "capability", sessionId: "capability" });
+  const access = f.manager.getWorkerAccess(instanceId);
+  const nativeFetch = globalThis.fetch;
+  let reads = 0;
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    if (url.origin === new URL(access.url).origin && url.pathname === "/session/owned") reads += 1;
+    return nativeFetch(input, options);
+  };
+  t.after(() => { globalThis.fetch = nativeFetch; });
+  const first = await f.server.runtimeCollaboration(account, { action: "guard", sessionId: "owned" });
+  assert.equal(first.blocked, false);
+  assert.equal(reads, 1);
+  const second = await f.server.runtimeCollaboration(account, { action: "guard", sessionId: "owned" });
+  assert.equal(second.blocked, false);
+  assert.equal(reads, 1);
+});
 
 test("managed Web identifies cookie authentication without exposing a worker token", async () => {
   const root = await mkdtemp(join(tmpdir(), "osd-platform-cookie-web-"));

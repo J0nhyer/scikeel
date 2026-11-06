@@ -79,10 +79,10 @@ export function dockerEnv({ dataDir, platformUid, platformGid, frontSubnet = "17
     SANDBOX_WORKER_UID: String(platformUid),
     SANDBOX_WORKER_GID: String(platformGid),
     SANDBOX_CONTROL_GID: String(platformGid),
-    SANDBOX_WORKER_MEMORY: "1073741824",
-    SANDBOX_WORKER_SWAP: "1207959552",
+    SANDBOX_WORKER_MEMORY: "3221225472",
+    SANDBOX_WORKER_SWAP: "4294967296",
     SANDBOX_WORKER_PIDS: "256",
-    SANDBOX_WORKER_CPUS: "1",
+    SANDBOX_WORKER_CPUS: "4",
     SANDBOX_HEALTH_TIMEOUT_MS: "60000",
     SANDBOX_STOP_TIMEOUT_SECONDS: "10",
     FRONT_SUBNET: frontSubnet,
@@ -109,12 +109,19 @@ function defaultSecret() {
           "deepseek-flash": ["low", "high", "max"],
           "deepseek-v4-pro": ["low", "high", "max"],
         },
+        defaultVariant: "low",
       },
     },
     defaultProvider: "deepseek",
     defaultModel: "deepseek-flash",
     mirrorUrl: "http://package-mirror:3141",
   };
+}
+
+export function patchedWorkerJobs(source) {
+  if (typeof source !== "string") throw new Error("invalid worker runtime source");
+  return source.replace(/(OMP_NUM_THREADS|OPENBLAS_NUM_THREADS|MKL_NUM_THREADS|NUMEXPR_NUM_THREADS): "1"/g,
+    '$1: "4"');
 }
 
 function envLine(value) {
@@ -127,11 +134,15 @@ export async function bootstrap({ dataDir, imageDigest, output, adminUsername = 
   try { await lstat(join(root, "workspace-catalog", "metadata.sqlite")); catalogMigrate = "0"; }
   catch (error) { if (error.code !== "ENOENT") throw error; }
   const environment = dockerEnv({ dataDir: root, platformUid, platformGid, frontSubnet, frontPlatformIp, imageDigest, httpPort, catalogMigrate });
-  for (const relative of ["platform", "workers/instances", "cli-runtime/users", ".sandbox-state"]) {
+  for (const relative of ["platform", "workers/instances", "cli-runtime/users", ".sandbox-state", "worker-overrides"]) {
     const path = join(root, relative);
     await mkdir(path, { recursive: true, mode: 0o700 });
     await chmod(path, 0o700);
   }
+  // The worker image ships a read-only runtime with single-threaded BLAS.
+  // Local heavy analysis gets one bound override file instead of an image rebuild.
+  await writeFile(join(root, "worker-overrides", "cli-jobs.mjs"),
+    patchedWorkerJobs(await readFile(join(repo, "runtime", "sandbox", "cli-jobs.mjs"), "utf8")), { mode: 0o600 });
   await mkdir(join(repo, "secrets"), { recursive: true, mode: 0o700 });
   const secret = join(repo, "secrets", "model-brokers.json");
   try { await lstat(secret); }

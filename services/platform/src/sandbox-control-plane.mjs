@@ -19,6 +19,7 @@ import { PackageGrants } from "./package-grants.mjs";
 import {capacityError} from './workspace-capacity.mjs';
 
 const routeSet = new Set(["/v1/responses", "/v1/chat/completions", "/v1/messages"]);
+const reasoningLevels = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra", "enabled", "disabled"]);
 const brokerHostPattern = /^[A-Za-z0-9.-]{1,253}$/;
 const workerHostPattern = /^[A-Za-z0-9._-]{1,253}$/;
 export async function resolveWorkerAliases(hostname, lookupImpl = lookup) {
@@ -69,7 +70,7 @@ export function validateBrokerConfiguration(config) {
     let url;
     try { url = new URL(provider.baseUrl); } catch { throw new Error("invalid managed provider configuration"); }
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || !["http:","https:"].includes(url.protocol) || url.username || url.password || url.hash || url.search ||
-        Object.keys(provider).some((key) => !["baseUrl", "credential", "authMode", "enabledModels", "routes", "catalog", "name", "modelNames", "modelVariants"].includes(key)) ||
+        Object.keys(provider).some((key) => !["baseUrl", "credential", "authMode", "enabledModels", "routes", "catalog", "name", "modelNames", "modelVariants", "defaultVariant"].includes(key)) ||
         typeof provider.credential !== "string" || !provider.credential || /[\0\r\n]/.test(provider.credential) ||
         !["bearer", "x-api-key"].includes(provider.authMode) || !Array.isArray(provider.enabledModels) || !provider.enabledModels.length ||
         provider.enabledModels.some((model) => typeof model !== "string" || !model || model.length > 160 || /[\0\r\n]/.test(model)) ||
@@ -78,8 +79,12 @@ export function validateBrokerConfiguration(config) {
     if (provider.modelVariants !== undefined && (!provider.modelVariants || typeof provider.modelVariants !== "object" ||
         Array.isArray(provider.modelVariants) || Object.entries(provider.modelVariants).some(([id, levels]) =>
           !provider.enabledModels.includes(id) || !Array.isArray(levels) || !levels.length || levels.length > 9 ||
-          new Set(levels).size !== levels.length || levels.some((level) => !["minimal", "low", "medium", "high", "xhigh", "max", "ultra", "enabled", "disabled"].includes(level)))))
+          new Set(levels).size !== levels.length || levels.some((level) => !reasoningLevels.has(level)))))
       throw new Error("invalid managed reasoning levels");
+    if (provider.defaultVariant !== undefined && (typeof provider.defaultVariant !== "string" ||
+        !reasoningLevels.has(provider.defaultVariant) || !provider.modelVariants ||
+        !Object.values(provider.modelVariants).some((levels) => levels.includes(provider.defaultVariant))))
+      throw new Error("invalid managed default reasoning variant");
     if ((provider.catalog !== undefined && (provider.catalog !== "opencode-free" || name !== "opencode" || provider.baseUrl !== "https://opencode.ai/zen/v1")) ||
         (provider.name !== undefined && (typeof provider.name !== "string" || !provider.name || provider.name.length > 512)) ||
         (provider.modelNames !== undefined && (!provider.modelNames || typeof provider.modelNames !== "object" || Array.isArray(provider.modelNames) ||
@@ -88,6 +93,20 @@ export function validateBrokerConfiguration(config) {
   }
   if (!config.providers[config.defaultProvider]?.enabledModels.includes(config.defaultModel)) throw new Error("invalid managed default model");
   return config;
+}
+/** The administrator's default reasoning effort for this provider/model, if
+ * that model declares it. Unknown providers/models get no invented default. */
+export function managedDefaultVariant(config, providerId, modelId) {
+  const providerName = providerId === undefined ? config.defaultProvider
+    : typeof providerId === "string" && Object.hasOwn(config.providers, providerId) ? providerId : null;
+  if (providerName === null) return null;
+  const provider = config.providers[providerName];
+  if (typeof provider.defaultVariant !== "string") return null;
+  const fallbackModel = providerName === config.defaultProvider ? config.defaultModel : null;
+  const model = modelId === undefined ? fallbackModel
+    : typeof modelId === "string" && provider.enabledModels.includes(modelId) ? modelId : null;
+  if (model === null) return null;
+  return provider.modelVariants?.[model]?.includes(provider.defaultVariant) ? provider.defaultVariant : null;
 }
 export function brokerProfile({ config, broker, context, model, profileRevision, assistantPolicy, brokerHost = "172.31.240.1", now = Date.now() }) {
   validateBrokerConfiguration(config);
@@ -276,6 +295,7 @@ export async function createSandboxControlPlane({ configuration, dataDir, config
     capacity: { maxResidents },
     analyticsRegistry:{providers:new Set(Object.keys(config.providers)),models:new Set(Object.values(config.providers).flatMap(p=>p.enabledModels)),skills:new Set(['research-workflow'])},
     runtimeCatalog: createManagedModelCatalogReader({config}),
+    defaultVariantFor: (providerId, modelId) => managedDefaultVariant(config, providerId, modelId),
     saveRuntimeDefaultModel: (context, model) => saveManagedDefaultModel({ root: `${dataDir}/model-defaults`, userId: context.userId, model }),
     async close() {
       try { await manager.close(); }

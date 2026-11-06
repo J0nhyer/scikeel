@@ -106,6 +106,17 @@ async function fixture(t, handler, options = {}) {
   });
   return { broker, token, fetch, upstream };
 }
+test("sequential model requests reuse one upstream connection", async (t) => {
+  const { upstream, fetch } = await fixture(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  let connections = 0;
+  upstream.on("connection", () => { connections += 1; });
+  assert.equal((await fetch()).status, 200);
+  assert.equal((await fetch()).status, 200);
+  assert.equal(connections, 1);
+});
 test('analytics observes trusted terminal attempts without affecting SSE or retaining request content',async(t)=>{
   const seen=[];
   const {broker,fetch}=await fixture(t,(_req,res)=>{res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: {"text":"PRIVATE_OUTPUT"}\n\ndata: [DONE]\n\n');});

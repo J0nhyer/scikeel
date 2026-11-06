@@ -328,6 +328,8 @@ export class PlatformServer {
     networkEgress = null,
     searchProvider = undefined,
     runtimeCatalog = null,
+    defaultVariantFor = null,
+    collaborationOwnerTtlMs = 5000,
     saveRuntimeDefaultModel = null,
     environments = null,
     workspaceFiles = null,
@@ -496,6 +498,13 @@ export class PlatformServer {
       },
     });
     this.runtimeCatalog = runtimeCatalog;
+    this.defaultVariantFor = defaultVariantFor;
+    // A model call asks for collaboration state once per turn and often once
+    // per tool. The owner's ancestry cannot change without a session move, so
+    // a brief cache removes the repeated worker round trip while staying
+    // bounded to the current worker generation.
+    this.collaborationOwnerTtlMs = collaborationOwnerTtlMs;
+    this.collaborationOwners = new Map();
     this.saveRuntimeDefaultModel = saveRuntimeDefaultModel;
     this.environments = environments;
     if (enableWorkspaceManagement && tenantPolicy) {
@@ -732,6 +741,7 @@ export class PlatformServer {
   }
 
   async close() {
+    this.collaborationOwners.clear();
     await this.workspaceOwners?.close();
     clearInterval(this.researchTimer);
     clearInterval(this.attachmentTimer);
@@ -1613,8 +1623,8 @@ export class PlatformServer {
             executionAdmission.identity.userId===user.id&&executionAdmission.identity.conversationId===sessionId&&
             this.cliRuntime.assistantPolicy.isExecutionCurrent(executionAdmission.identity);
           if (owner.runtime !== task.runtime&&!nativeHandover || resolve(owner.directory) !== task.directory) throw Object.assign(new Error("research task belongs to a different assistant or workspace"), { status: 409 });
-          promptBody = await this.researchTasks.prepare(user.id, sessionId, body, owner,
-            nativeResearch?{onPrepared:nativeResearch.prepared,...(nativeHandover?{nativeHandover:executionAdmission.identity}:{})}:undefined);
+          promptBody = this.#applyDefaultVariant(await this.researchTasks.prepare(user.id, sessionId, body, owner,
+            nativeResearch?{onPrepared:nativeResearch.prepared,...(nativeHandover?{nativeHandover:executionAdmission.identity}:{})}:undefined));
           serializedBody = JSON.stringify(promptBody);
         } catch (error) {
           sendJson(response, error.status ?? 400, { error: error.message });
@@ -1631,6 +1641,7 @@ export class PlatformServer {
         preparedAttachments = await this.attachmentTurns.prepare(user, owner, promptBody);
         if (preparedAttachments?.replayAccepted) { sendJson(response, 202, {}); return; }
         if (preparedAttachments) promptBody = preparedAttachments.body;
+        this.#applyDefaultVariant(promptBody);
         serializedBody = JSON.stringify(promptBody);
         if (preparedAttachments) {
           response.once("finish", () => { void preparedAttachments.finish(response.statusCode < 400).catch(() => {}); });
@@ -1914,6 +1925,15 @@ export class PlatformServer {
     return this.workspaceManagement && !["GET","HEAD"].includes(method) && !stopping
       ?this.#runtimeWrite({userId:task.userId,instanceId:worker.id,generation:worker.generation},run):run();
   }
+  /** Fill an omitted reasoning variant from the administrator's per-model
+   * default, so a Web turn does not silently inherit the provider's heaviest
+   * default. An explicit turn choice always wins. */
+  #applyDefaultVariant(body) {
+    if (!body || body.variant != null || !this.defaultVariantFor) return body;
+    const variant = this.defaultVariantFor(body.model?.providerID, body.model?.modelID);
+    if (variant) body.variant = variant;
+    return body;
+  }
   async #researchOwner(user, sessionId, access, worker) {
     if (this.cliRuntime?.isManaged(user.id)) {
       let session;
@@ -1932,7 +1952,7 @@ export class PlatformServer {
           ancestry.push(row);id=row.parentID;
         }
         this.tenantPolicy.registerSessionList(context,ancestry);
-        return {...owner,sessionId,directory:ancestry[0].directory,runtime:this.cliRuntime.runtimeForUser(user.id)};
+        return {...owner,sessionId,directory:ancestry[0].directory,runtime:this.cliRuntime.runtimeForUser(user.id),parentID:ancestry[0].parentID ?? null};
       }
       if(this.tenantPolicy) {
         const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
@@ -1949,7 +1969,8 @@ export class PlatformServer {
         // Validate the entire owned chain before granting authority for a child.
         this.tenantPolicy.registerSessionList(context,ancestry);
       }
-      return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime };
+      return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: session.runtime,
+        parentID: session.publicParentId ?? session.parentId ?? null };
     }
     if(this.openCodeConversations&&this.tenantPolicy){
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation},account=this.tenantPolicy.account(context);
@@ -1964,7 +1985,7 @@ export class PlatformServer {
         }
         await this.workspaceManagement?.assertAccessible(context,target.conversation.directory);
         this.tenantPolicy.registerSessionList(context,ancestry);
-        return {...owner,sessionId:target.conversation.id,directory:target.conversation.directory,runtime:'opencode'};
+        return {...owner,sessionId:target.conversation.id,directory:target.conversation.directory,runtime:'opencode',parentID:target.conversation.parentId ?? null};
       }
     }
     if(this.tenantPolicy) {
@@ -1983,7 +2004,8 @@ export class PlatformServer {
       const registered=this.tenantPolicy.session(context,sessionId);
       if(this.tenantPolicy.directory(context,session.directory)!==registered.directory)throw Object.assign(new Error("research session changed"),{status:409});
     }
-    return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: "opencode", revertMessageID: session.revert?.messageID };
+    return { userId: user.id, instanceId: worker.id, generation: worker.generation, sessionId, directory: session.directory, workspaceDir: worker.workspaceDir, runtime: "opencode", revertMessageID: session.revert?.messageID,
+      parentID: session.parentID ?? null };
   }
   #admissionKey(kind,owner) {
     return JSON.stringify([kind,owner.userId,owner.instanceId,owner.generation,owner.sessionId,owner.execution]);
@@ -2068,8 +2090,35 @@ export class PlatformServer {
   }
 
   async #collaborationOwner(user,sessionId,access,worker) {
+    const context = { userId: user.id, instanceId: worker.id, generation: worker.generation };
+    const cacheKey = JSON.stringify([context.userId, context.instanceId, context.generation, sessionId]);
+    const cached = this.collaborationOwners.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      try {
+        const known = this.tenantPolicy?.session(context, sessionId);
+        if (!known || known.directory === cached.owner.directory) return cached.owner;
+      } catch { return cached.owner; }
+    }
+    const remember = (owner) => {
+      if (this.collaborationOwnerTtlMs > 0) {
+        const now = Date.now();
+        if (this.collaborationOwners.size >= 1024) {
+          for (const [key, value] of this.collaborationOwners) if (value.expiresAt <= now) this.collaborationOwners.delete(key);
+          if (this.collaborationOwners.size >= 1024) this.collaborationOwners.delete(this.collaborationOwners.keys().next().value);
+        }
+        this.collaborationOwners.set(cacheKey, { owner, expiresAt: now + this.collaborationOwnerTtlMs });
+      }
+      return owner;
+    };
     let owner=await this.#researchOwner(user,sessionId,access,worker);
     for(let depth=0;depth<20;depth++) {
+      // Owner resolution already knows the direct parent for current runtimes;
+      // reading the session again here duplicates that worker round trip.
+      if (owner.parentID === null) return remember(owner);
+      if (typeof owner.parentID === "string") {
+        owner=await this.#researchOwner(user,owner.parentID,access,worker);
+        continue;
+      }
       let info;
       try {
         info=await this.#workerResearchRequest(owner,`/session/${encodeURIComponent(owner.sessionId)}`);
@@ -2083,9 +2132,9 @@ export class PlatformServer {
             if(conversation?.parentId){owner=await this.#researchOwner(user,conversation.parentId,access,worker);continue;}
           }catch{/* An adopted root has no canonical parent record. */}
         }
-        return owner;
+        return remember(owner);
       }
-      if(!info.parentID)return owner;
+      if(!info.parentID)return remember(owner);
       owner=await this.#researchOwner(user,info.parentID,access,worker);
     }
     throw new Error("Collaboration ancestry unavailable");
@@ -2390,6 +2439,8 @@ export class PlatformServer {
       const checkedBody = {...body};
       if(operation.operation==="sessionPrompt_async"){delete checkedBody.attachmentTurn;delete checkedBody.collaborationRevision;}
       const input = validateRuntimeInput(operation, { query: parsed.searchParams, body:checkedBody, headers: request.headers });
+      if (request.method === "POST" && ["sessionPrompt_async", "sessionMessage"].includes(operation.operation))
+        this.#applyDefaultVariant(body);
       let directory = this.tenantPolicy.directory(context, input.directory);
       let sessionId = operation.identifiers.sessionId ?? body.sessionID;
       if (["questionReply","questionReject","permissionReply"].includes(operation.operation)) {
@@ -2493,6 +2544,7 @@ export class PlatformServer {
           body=attachmentTurn.body;
 
         }
+        this.#applyDefaultVariant(body);
         validateRuntimeInput(operation,{query:parsed.searchParams,body,headers:request.headers});
       }
       parsed.searchParams.delete("token");

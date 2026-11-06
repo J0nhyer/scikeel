@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, chown, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tenantLayout } from "../../../packages/shared/src/tenant-layout.mjs";
@@ -77,6 +78,12 @@ export class DockerSandbox {
         `${join(hostControlDir, "tenant.json")}:/opt/scikeel/tenant.json:ro`,
         `${join(hostControlDir, "runner-auth.json")}:/opt/scikeel/runner-auth.json:ro`,
       ];
+      // Local administrator override for the read-only runtime file. The
+      // production image stays sealed; an existing host override replaces only
+      // the single runtime module that carries the worker resource policy.
+      if (typeof config.dataHostDir === "string" &&
+          existsSync(join(config.dataDir, "worker-overrides", "cli-jobs.mjs")))
+        binds.push(`${join(config.dataHostDir, "worker-overrides", "cli-jobs.mjs")}:/opt/scikeel/tools/cli-jobs.mjs:ro`);
       const body = {
         Image: imageDigest,
         User: `${config.workerUid}:${config.workerGid}`,
