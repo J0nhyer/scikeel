@@ -140,6 +140,14 @@ export class CollaborationStore {
       return structuredClone(s);
     });
   }
+  /** The plugin's checkpoint loop must end as soon as the execution is no
+   *  longer running, instead of waiting until its own tool timeout. */
+  async pluginState(o) {
+    const state = await this.get(o);
+    if (!["running", "waiting_input"].includes(state.phase) || state.execution < 1)
+      throw fail("Research execution is paused", 409);
+    return state;
+  }
   async interruptGeneration(context) {
     const folder = join(this.rootDir, id(context.userId));
     let files;

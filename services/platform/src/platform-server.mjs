@@ -2312,7 +2312,7 @@ export class PlatformServer {
       body={...body,execution:(await this.collaboration.get(owner)).execution};
     }
     if(body.action==="checkpoint")return {state:await this.collaboration.checkpoint(owner,body)};
-    if(body.action==="state")return {state:await this.collaboration.get(owner)};
+    if(body.action==="state")return {state:await this.collaboration.pluginState(owner)};
     if(body.action==="delivery") {
       if (body.callId) {
         const part = await this.runningToolPart(context, body.sessionId, body.callId);
