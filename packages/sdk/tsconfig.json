@@ -8,7 +8,6 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "isolatedModules": true,
-    "baseUrl": ".",
     "paths": {
       "@ai4s/shared": ["../shared/src/index.ts"]
     }
