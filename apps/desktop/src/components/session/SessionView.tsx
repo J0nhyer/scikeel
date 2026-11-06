@@ -1230,7 +1230,6 @@ export function SessionView({
               collaborationErrorScope={`${eid ?? key}`}
               pendingDecision={collaboration.state.pending}
               paused={collaboration.state.phase === "paused"}
-              pausedKey={`${eid ?? key}:${collaboration.state.execution}`}
               busy={collaboration.saving}
               onDismissDecisionInputError={() => setDecisionInputError(null)}
               onRetryCollaboration={collaboration.refresh}
