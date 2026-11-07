@@ -288,7 +288,8 @@ In the staging `packages/opencode/src/tool/webfetch.ts`:
 - For `savePath`, use a 32 MiB cap for `content-length` and `arrayBuffer`; for
   a PDF, do not decode/convert it and return a pointer (`path`, `bytes`,
   `mime`, `url`) without the bytes. For a text/JSON response, save the raw
-  bytes and return a bounded preview (for example 256 KiB) so the raw archive
+  bytes and return a bounded preview (for example 48 KiB; the platform
+  truncates tool output at 50 KiB) so the raw archive
   and screening share one request.
 - Keep the existing 5 MiB text path unchanged.
 - Add a `maxBytes` option to `managedClient` (default 5 MiB; 32 MiB for `savePath`) and use it in `boundedBody`; websearch stays at 2 MiB.

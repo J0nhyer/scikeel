@@ -207,9 +207,9 @@ Behavior:
 - For a PDF, the tool returns a short pointer: relative path, byte count, MIME
   type, and URL. It does not return PDF bytes to the model.
 - For a text/JSON response, the tool saves the raw bytes and returns a bounded
-  text preview (for example 256 KiB), so the raw archive and screening share
-  one request. The raw file remains at `savePath`; the preview is not a second
-  fetch.
+  text preview (for example 48 KiB; the platform truncates tool output at
+  50 KiB), so the raw archive and screening share one request. The raw file
+  remains at `savePath`; the preview is not a second fetch.
 - The managed client gets a `maxBytes` option so the webfetch path can buffer
   up to 32 MiB while websearch stays at 2 MiB. The egress broker already caps at
   32 MiB.
