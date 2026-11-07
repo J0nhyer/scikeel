@@ -20,6 +20,29 @@ describe("SessionPage", () => {
     expect(screen.getAllByText(title).length).toBeGreaterThan(0);
   });
 
+  it("renders the literature citation finding and the review PDF", () => {
+    renderAt(`${base}/lit-review-citations`);
+    expect(screen.getByText("DOI 指向另一篇文献")).toBeInTheDocument();
+    expect(screen.getByText("review.pdf")).toBeInTheDocument();
+  });
+
+  it("renders the data figure and results table", () => {
+    renderAt(`${base}/data-analysis-figures`);
+    expect(screen.getAllByText("fig1_lifeexp_gdp_by_year.png").length).toBeGreaterThan(0);
+    expect(screen.getByText(/逐年横截面 OLS/)).toBeInTheDocument();
+  });
+
+  it("renders the audit warning finding", () => {
+    renderAt(`${base}/report-traceability-audit`);
+    expect(screen.getByText("20.1 年无输出文件支撑")).toBeInTheDocument();
+  });
+
+  it("renders the ML metrics table and figure", () => {
+    renderAt(`${base}/ml-student-performance`);
+    expect(screen.getAllByText("LogisticRegression").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("confusion_matrix.png").length).toBeGreaterThan(0);
+  });
+
   it("shows a not-found state for an unknown session", () => {
     renderAt(`${base}/nope`);
     expect(screen.getByText("Session not found")).toBeInTheDocument();

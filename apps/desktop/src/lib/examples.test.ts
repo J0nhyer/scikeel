@@ -18,4 +18,35 @@ describe("examples", () => {
     expect(findExampleSession("ml-student-performance")?.title).toBe("机器学习：学生成绩预测");
     expect(findExampleSession("lit-review")).toBeUndefined();
   });
+
+  it("ships the real literature run with a citation finding and the PDF facsimile", () => {
+    const session = findExampleSession("lit-review-citations")!;
+    expect(session.blocks.some((block) => block.kind === "user" && block.text.includes("AI 辅助学习"))).toBe(true);
+    expect(session.blocks.some((block) =>
+      block.kind === "reviewer" && block.findings.some((finding) => finding.check === "citation"))).toBe(true);
+    expect(session.inspector?.variant).toBe("pdf");
+    if (session.inspector?.variant === "pdf") expect(session.inspector.title).toBe("review.pdf");
+  });
+
+  it("ships the real data run with a figure and a results table", () => {
+    const session = findExampleSession("data-analysis-figures")!;
+    expect(session.blocks.some((block) => block.kind === "figure")).toBe(true);
+    expect(session.blocks.some((block) => block.kind === "table")).toBe(true);
+  });
+
+  it("ships the real audit run with a warning finding", () => {
+    const session = findExampleSession("report-traceability-audit")!;
+    expect(session.blocks.some((block) =>
+      block.kind === "reviewer" && block.findings.some((finding) => finding.level === "warn"))).toBe(true);
+  });
+
+  it("ships the real ML run with a metrics table and figures", () => {
+    const session = findExampleSession("ml-student-performance")!;
+    expect(session.blocks.some((block) => block.kind === "table")).toBe(true);
+    expect(session.blocks.some((block) => block.kind === "figure")).toBe(true);
+  });
+
+  it("ships no worker paths, account ids, or instance ids", () => {
+    expect(JSON.stringify(exampleSessions)).not.toMatch(/\/srv\/scikeel|usr_[a-f0-9]+|instanceId/);
+  });
 });
