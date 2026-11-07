@@ -12,6 +12,7 @@ import { router } from "./app/router";
 import { consumeUrlToken, installGatewayAuthGuard } from "./lib/webMode";
 import "./index.css";
 import { installLoginPreparation } from "./lib/loginPreparation";
+import { installPreloadRecovery } from "./lib/preloadRecovery";
 import { installPlatformAccountLifecycle, signOutPlatformBrowser, useRuntimeStore } from "./lib/runtime";
 
 // Web client: adopt a token from the opened link (so a copied URL just works),
@@ -21,6 +22,9 @@ consumeUrlToken();
 installGatewayAuthGuard();
 installPlatformAccountLifecycle();
 installLoginPreparation(useRuntimeStore, signOutPlatformBrowser);
+// A deploy replaces the hashed chunks; an open tab running the previous entry
+// must reload rather than fail its lazy routes with a 404.
+installPreloadRecovery();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
