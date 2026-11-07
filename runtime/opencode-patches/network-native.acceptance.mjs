@@ -15,8 +15,11 @@ async function until(fn, milliseconds = 30000) {
   while (Date.now() < deadline) { const value = await fn().catch(() => null); if (value) return value; await new Promise(r => setTimeout(r, 40)); }
   throw new Error('Native network acceptance timed out');
 }
-test('native fetch and search authorize only after permission and preserve scoped transport and bounded recovery', { timeout: 90000 }, async t => {
+test('native fetch and search authorize only after permission and preserve scoped transport and bounded recovery', { timeout: 240000 }, async t => {
   const source = process.env.OSD_SESSION_TITLE_SOURCE, binary = process.env.OSD_SESSION_TITLE_BINARY, bun = process.env.SCIKEEL_RUNTIME_BUN;
+  // The production worker reaches the broker/proxy on the Docker bridge. Local
+  // verification uses the loopback alias; CI keeps the default.
+  const managedHost = process.env.SCIKEEL_ACCEPTANCE_HOST ?? '172.31.240.1';
   assert.ok(binary || source && bun, 'A pinned runtime source or image binary is required');
   const titleLock = JSON.parse(await readFile(new URL('./session-title.lock.json', import.meta.url)));
   const networkLock = JSON.parse(await readFile(new URL('./network.lock.json', import.meta.url)));
@@ -35,11 +38,16 @@ test('native fetch and search authorize only after permission and preserve scope
   const root = await mkdtemp(join(tmpdir(), 'scikeel-network-native-'));
   const workspace = join(root, 'workspace'), config = join(root, 'config/opencode');
   await mkdir(workspace); await mkdir(config, { recursive: true });
+  await mkdir(join(root, 'outside')); await symlink(join(root, 'outside'), join(workspace, 'papers-link'), 'dir');
+  await mkdir(join(workspace, 'papers')); await symlink(join(root, 'outside/target.pdf'), join(workspace, 'papers/linked.pdf'));
   await symlink(process.env.OSD_SESSION_TITLE_DEPENDENCIES ?? join(source, 'packages/opencode/node_modules'), join(config, 'node_modules'), 'dir');
   await writeFile(join(config, 'package.json'), JSON.stringify({ private: true, dependencies: { '@opencode-ai/plugin': '1.18.32' } }));
   await writeFile(join(config, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { '@opencode-ai/plugin': '1.18.32' } } } }));
   const trace = [], authorizations = [], outbound = [], completions = [];
   let targetUrl = 'http://science.example/data', fault = 'okay', attempts = 0, toolName = 'webfetch';
+  let toolArguments = () => toolName === 'websearch' ? { query: 'Python pathlib official documentation' } : { url: targetUrl, format: 'text', timeout: 10 };
+  const pdfBytes = Buffer.from('%PDF-1.4\n% SciKeel acceptance fixture\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n');
+  const jsonBytes = Buffer.from(JSON.stringify({ marker: 'BEGIN', rows: Array.from({ length: 4000 }, (_, index) => ({ index, value: 'x'.repeat(64) })) }));
   const liveSearch = process.env.OSD_NETWORK_SEARCH_LIVE === '1';
   const searchContext = { userId: 'fixture', instanceId: 'user-fixture', generation: 1 };
   const liveFailures = [];
@@ -77,7 +85,7 @@ test('native fetch and search authorize only after permission and preserve scope
     if (Array.isArray(body.tools)) advertisedSearch.push(body.tools.some(tool => tool.function?.name === 'websearch'));
     const complete = body.messages.some(m => m.role === 'tool');
     const title = body.messages.some(m => typeof m.content === 'string' && m.content.includes('Generate a title for this conversation:'));
-    const delta = title || complete ? { content: 'Fixture completed.' } : { tool_calls: [{ index: 0, id: `functions.${toolName}:0`, type: 'function', function: { name: toolName, arguments: JSON.stringify(toolName === 'websearch' ? { query: 'Python pathlib official documentation' } : { url: targetUrl, format: 'text', timeout: 10 }) } }] };
+    const delta = title || complete ? { content: 'Fixture completed.' } : { tool_calls: [{ index: 0, id: `functions.${toolName}:0`, type: 'function', function: { name: toolName, arguments: JSON.stringify(toolArguments()) } }] };
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     for (const item of [{ choices: [{ index: 0, delta, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: title || complete ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }]) res.write(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', ...item })}\n\n`);
     res.end('data: [DONE]\n\n');
@@ -94,6 +102,9 @@ test('native fetch and search authorize only after permission and preserve scope
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'Python pathlib reference: https://docs.python.org/3/library/pathlib.html' }] } })); return;
     }
+    if (req.url === '/paper.pdf') { res.writeHead(200, { 'content-type': 'application/pdf', 'content-length': String(pdfBytes.length) }); res.end(pdfBytes); return; }
+    if (req.url === '/probe.json') { res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(jsonBytes.length) }); res.end(jsonBytes); return; }
+    if (req.url === '/huge.pdf') { res.writeHead(200, { 'content-type': 'application/pdf', 'content-length': String(32 * 1024 * 1024 + 1) }); res.end('too large'); return; }
     res.setHeader('content-type', 'text/plain'); res.end('Verified TLS fixture result.');
   });
   const tunnels = new Set();
@@ -121,18 +132,20 @@ test('native fetch and search authorize only after permission and preserve scope
     await rm(root, { recursive: true, force: true });
   });
   await liveEgress?.listen({ host: '127.0.0.1', port: 0 });
-  await new Promise(r => broker.listen(4792, '172.31.240.1', r));
-  await new Promise(r => proxy.listen(4794, '172.31.240.1', r));
+  await new Promise(r => broker.listen(4792, managedHost, r));
+  await new Promise(r => proxy.listen(4794, managedHost, r));
   await new Promise(r => model.listen(0, '127.0.0.1', r));
   await new Promise(r => tls.listen(0, '127.0.0.1', r));
-  await writeFile(join(config, 'opencode.json'), JSON.stringify({ model: 'fixture/model', enabled_providers: ['fixture'], plugin: [], permission: { webfetch: 'ask', websearch: 'ask' },
+  await writeFile(join(config, 'opencode.json'), JSON.stringify({ model: 'fixture/model', enabled_providers: ['fixture'], plugin: [], permission: { webfetch: 'ask', websearch: 'ask', edit: 'ask' },
     provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { baseURL: `http://127.0.0.1:${model.address().port}/v1`, apiKey: 'fixture' }, models: { model: { name: 'Fixture', limit: { context: 32000, output: 1000 } } } } } }));
   const reserve = createServer(); await new Promise(r => reserve.listen(0, '127.0.0.1', r)); const port = reserve.address().port; await new Promise(r => reserve.close(r));
   child = spawn(binary ?? bun, [...(binary ? [] : ['run', '--conditions=browser', join(source, 'packages/opencode/src/index.ts')]), 'serve', '--hostname', '127.0.0.1', '--port', String(port)], { cwd: workspace,
     env: { ...process.env, HOME: join(root, 'home'), XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'),
       PARALLEL_API_KEY: undefined, EXA_API_KEY: undefined, NODE_EXTRA_CA_CERTS: cert, OPENCODE_WEBSEARCH_PROVIDER: 'parallel', OPENCODE_ENABLE_PARALLEL: '1', SCIKEEL_MANAGED_NETWORK_TOKEN: token, SCIKEEL_SESSION_TITLE_POLICY: 'conversation-v1', OPENCODE_SERVER_PASSWORD: 'fixture', OPENCODE_DISABLE_MODELS_FETCH: 'true', OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true', OPENCODE_DISABLE_PROJECT_CONFIG: 'true', OPENCODE_MODELS_PATH: source ? join(source, 'packages/opencode/test/tool/fixtures/models-api.json') : undefined,
-      HTTP_PROXY: 'http://172.31.240.1:4794', HTTPS_PROXY: 'http://172.31.240.1:4794', NO_PROXY: '127.0.0.1,172.31.240.1' }, stdio: ['ignore', 'ignore', 'pipe'] });
-  let diagnostics = ''; child.stderr.on('data', data => { diagnostics = (diagnostics + data).slice(-2000); });
+      SCIKEEL_BROKER_URL: `http://${managedHost}:4792`, SCIKEEL_BROKER_PROXY_URL: `http://${managedHost}:4794`,
+      HTTP_PROXY: `http://${managedHost}:4794`, HTTPS_PROXY: `http://${managedHost}:4794`, NO_PROXY: `127.0.0.1,${managedHost}` }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let diagnostics = ''; child.stderr.on('data', data => { diagnostics = (diagnostics + data).slice(-2000); }); child.stdout.on('data', data => { diagnostics = (diagnostics + data).slice(-2000); });
+  child.on('exit', (code, signal) => { diagnostics = `${diagnostics} child-exit code=${code} signal=${signal}`; });
   const request = async (path, method = 'GET', body) => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers: { authorization: `Basic ${Buffer.from('opencode:fixture').toString('base64')}`, 'content-type': 'application/json' }, signal: AbortSignal.timeout(10000), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     assert.ok(response.ok, `${response.status} ${path}`); const raw = await response.text(); return raw ? JSON.parse(raw) : null;
@@ -161,6 +174,23 @@ test('native fetch and search authorize only after permission and preserve scope
   };
   const finishCall = session => until(async () => (await request(`/session/${session.id}/message`)).flatMap(m => m.parts ?? []).find(p => p.type === 'tool' && ['error', 'completed'].includes(p.state?.status)));
   const invoke = async () => finishCall(await startCall());
+  const answerPermission = async (sessionID, permission, reply) => {
+    try {
+      const pending = await until(async () => (await request('/permission')).find(p => p.sessionID === sessionID && p.permission === permission));
+      await request(`/permission/${pending.id}/reply`, 'POST', { reply });
+      return pending;
+    } catch (error) {
+      const all = await request('/permission').catch(() => null);
+      const messages = await request(`/session/${sessionID}/message`).catch(() => null);
+      const parts = messages?.flatMap(m => m.parts ?? []).filter(p => p.type === 'tool').map(p => ({ tool: p.tool, status: p.state?.status, error: p.state?.error, input: p.state?.input }));
+      throw new Error(`${error.message}: pending=${JSON.stringify(all)} parts=${JSON.stringify(parts)} diagnostics=${diagnostics}`);
+    }
+  };
+  const beginCall = async (text = 'Fetch the public fixture page.') => {
+    const session = await request('/session', 'POST', {});
+    await request(`/session/${session.id}/prompt_async`, 'POST', { parts: [{ type: 'text', text }] });
+    return session;
+  };
   targetUrl = 'https://science.example/data';
   const tlsResult = await invoke(); assert.equal(tlsResult.state.status, 'completed'); assert.equal(tlsResult.callID, 'functions.webfetch:0');
   assert.equal(tlsRequests.length, 1); assert.equal(tlsRequests[0]['proxy-authorization'], undefined);
@@ -214,4 +244,82 @@ test('native fetch and search authorize only after permission and preserve scope
     t.diagnostic('The real public Python documentation page was fetched by the pinned native tool through a separate scoped EgressBroker grant.');
   }
 
+  // savePath: a PDF download writes exact bytes to the workspace and returns a
+  // pointer; no PDF bytes enter the model context.
+  toolName = 'webfetch'; fault = 'okay'; targetUrl = 'https://science.example/paper.pdf';
+  toolArguments = () => ({ url: targetUrl, format: 'text', timeout: 30, savePath: 'papers/paper.pdf' });
+  const pdfAuthorizations = authorizations.length, pdfOutbound = outbound.length;
+  const pdfSession = await beginCall('Download the fixture paper.');
+  const pdfFetchPermission = await answerPermission(pdfSession.id, 'webfetch', 'once');
+  assert.deepEqual(pdfFetchPermission.patterns, [targetUrl]);
+  const pdfEditPermission = await answerPermission(pdfSession.id, 'edit', 'once');
+  assert.ok(pdfEditPermission.patterns.some(pattern => pattern.includes('papers/paper.pdf')));
+  const pdfResult = await finishCall(pdfSession);
+  assert.equal(pdfResult.state.status, 'completed', JSON.stringify(pdfResult.state));
+  assert.match(pdfResult.state.output, /papers\/paper\.pdf/);
+  assert.match(pdfResult.state.output, new RegExp(`"bytes":${pdfBytes.length}`));
+  assert.equal(pdfResult.state.output.includes('%PDF'), false);
+  assert.equal(pdfResult.state.output.includes('JVBERi0'), false);
+  assert.equal(pdfResult.state.metadata.path, 'papers/paper.pdf');
+  assert.equal(pdfResult.state.metadata.bytes, pdfBytes.length);
+  assert.equal(pdfResult.state.metadata.mime, 'application/pdf');
+  assert.deepEqual(Buffer.from(await readFile(join(workspace, 'papers/paper.pdf'))), pdfBytes);
+  assert.equal(authorizations.length, pdfAuthorizations + 1);
+  assert.equal(outbound.length, pdfOutbound + 1);
+  assert.deepEqual(authorizations.at(-1).origins, ['https://science.example']);
+
+  // A text/JSON save returns a bounded preview while the raw archive holds all bytes.
+  targetUrl = 'https://science.example/probe.json';
+  toolArguments = () => ({ url: targetUrl, timeout: 30, savePath: 'search/raw/probe.json' });
+  const jsonAuthorizations = authorizations.length;
+  const jsonSession = await beginCall('Archive the fixture response.');
+  await answerPermission(jsonSession.id, 'webfetch', 'once');
+  await answerPermission(jsonSession.id, 'edit', 'once');
+  const jsonResult = await finishCall(jsonSession);
+  assert.equal(jsonResult.state.status, 'completed', JSON.stringify(jsonResult.state));
+  assert.match(jsonResult.state.output, /Saved search\/raw\/probe\.json/);
+  assert.match(jsonResult.state.output, new RegExp(`${jsonBytes.length} bytes`));
+  assert.match(jsonResult.state.output, /"marker":"BEGIN"/);
+  assert.ok(jsonResult.state.output.length < jsonBytes.length, 'tool output is a preview, not the raw archive');
+  assert.ok(jsonResult.state.output.length <= 50 * 1024 + 4096, 'tool output is bounded');
+  assert.deepEqual(Buffer.from(await readFile(join(workspace, 'search/raw/probe.json'))), jsonBytes);
+  assert.equal(authorizations.length, jsonAuthorizations + 1);
+
+  // Workspace escapes fail before any permission or network work.
+  for (const [label, savePath] of [['parent traversal', '../escape.pdf'], ['absolute path', '/tmp/scikeel-escape.pdf'], ['symlinked parent', 'papers-link/escape.pdf'], ['symlinked file', 'papers/linked.pdf']]) {
+    targetUrl = 'https://science.example/paper.pdf';
+    toolArguments = () => ({ url: targetUrl, timeout: 30, savePath });
+    const beforeAuthorization = authorizations.length, beforeOutbound = outbound.length;
+    const escaped = await beginCall('Download the fixture paper.');
+    const failed = await finishCall(escaped);
+    assert.equal(failed.state.status, 'error', label);
+    assert.equal(authorizations.length, beforeAuthorization, label);
+    assert.equal(outbound.length, beforeOutbound, label);
+    assert.equal((await request('/permission')).some(p => p.sessionID === escaped.id), false, `${label}: no permission asked`);
+  }
+  await assert.rejects(readFile(join(root, 'escape.pdf')), { code: 'ENOENT' });
+  await assert.rejects(readFile('/tmp/scikeel-escape.pdf'), { code: 'ENOENT' });
+  await assert.rejects(readFile(join(root, 'outside/escape.pdf')), { code: 'ENOENT' });
+  await assert.rejects(readFile(join(root, 'outside/target.pdf')), { code: 'ENOENT' });
+
+  // An oversized content-length is rejected and leaves no artifact.
+  targetUrl = 'https://science.example/huge.pdf';
+  toolArguments = () => ({ url: targetUrl, timeout: 30, savePath: 'papers/huge.pdf' });
+  const hugeSession = await beginCall('Download the fixture paper.');
+  await answerPermission(hugeSession.id, 'webfetch', 'once');
+  await answerPermission(hugeSession.id, 'edit', 'once');
+  assert.equal((await finishCall(hugeSession)).state.status, 'error');
+  await assert.rejects(readFile(join(workspace, 'papers/huge.pdf')), { code: 'ENOENT' });
+
+  // Rejecting the edit permission stops the download before any network request.
+  targetUrl = 'https://science.example/paper.pdf';
+  toolArguments = () => ({ url: targetUrl, timeout: 30, savePath: 'papers/rejected.pdf' });
+  const beforeRejected = authorizations.length, beforeRejectedOutbound = outbound.length;
+  const rejectedSession = await beginCall('Download the fixture paper.');
+  await answerPermission(rejectedSession.id, 'webfetch', 'once');
+  await answerPermission(rejectedSession.id, 'edit', 'reject');
+  assert.equal((await finishCall(rejectedSession)).state.status, 'error');
+  assert.equal(authorizations.length, beforeRejected);
+  assert.equal(outbound.length, beforeRejectedOutbound);
+  await assert.rejects(readFile(join(workspace, 'papers/rejected.pdf')), { code: 'ENOENT' });
 });

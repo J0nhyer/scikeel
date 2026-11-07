@@ -38,6 +38,84 @@ test("the complete platform pack resolves helpers and styles from the loaded ski
   }
 });
 
+function tinyPdf(text) {
+  const stream = `BT /F1 12 Tf 72 720 Td (${text}) Tj ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+  ];
+  let out = "%PDF-1.4\n";
+  const offsets = [];
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.byteLength(out));
+    out += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const startxref = Buffer.byteLength(out);
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) out += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${startxref}\n%%EOF\n`;
+  return Buffer.from(out);
+}
+
+test("the large-file skill probes and extracts PDFs with pypdf", { timeout: 60000 }, async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), "pdf-helper-")); t.after(() => rm(workspace, { recursive: true, force: true }));
+  const skill = await readFile(join(pack, "large-file", "SKILL.md"), "utf8");
+  assert.match(skill, /\bPDF\b/);
+  assert.match(skill, /pypdf/);
+  assert.match(skill, /<skill-base-directory>\/pdf_text\.py/);
+  assert.match(skill, /papers\/text\//);
+  assert.match(skill, /2 MiB/);
+  assert.match(skill, /scanned/);
+  assert.match(await readFile(join(pack, "large-file", "pdf_text.py"), "utf8"), /pypdf/);
+  const probe = await readFile(join(pack, "large-file", "large_file_probe.py"), "utf8");
+  assert.match(probe, /\.pdf/);
+  assert.match(probe, /def probe_pdf/);
+
+  // The macOS system python is Xcode's 3.9 interpreter, which crashes on this
+  // OS and is not the worker interpreter. Execute helpers only with an explicit
+  // SCIKEEL_TEST_PYTHON or on a non-Darwin host (the worker uses Linux 3.12).
+  const python = process.env.SCIKEEL_TEST_PYTHON;
+  if (!python && process.platform === "darwin") {
+    t.diagnostic("PDF execution skipped on macOS; set SCIKEEL_TEST_PYTHON to a Python with pypdf");
+    return;
+  }
+  const executable = python ?? "python3";
+  await writeFile(join(workspace, "paper.pdf"), tinyPdf("Hello SciKeel PDF"));
+  const check = spawnSync(executable, ["-c", "import pypdf"], { encoding: "utf8", timeout: 10000 });
+  if (check.error || check.signal) {
+    t.diagnostic(`PDF execution skipped: ${executable} could not run (${check.signal ?? check.error})`);
+    return;
+  }
+  const available = check.status === 0;
+  const environment = { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: "1" };
+  const probed = spawnSync(executable, [join(pack, "large-file", "large_file_probe.py"), "paper.pdf"], { cwd: workspace, encoding: "utf8", timeout: 30000, env: environment });
+  assert.equal(probed.status, 0, probed.stderr);
+  const pointer = JSON.parse(probed.stdout);
+  assert.equal(pointer.format, "pdf");
+  if (!available) {
+    assert.equal(pointer.introspection, "unavailable");
+    assert.match(pointer.hint, /pypdf/);
+    return;
+  }
+  assert.equal(pointer.pages, 1);
+  assert.ok(pointer.page_characters[0] > 0);
+  assert.ok(pointer.first_page_sample.includes("Hello SciKeel PDF"));
+  const out = join(workspace, "papers/text/paper.txt");
+  const extracted = spawnSync(executable, [join(pack, "large-file", "pdf_text.py"), "paper.pdf", "--pages", "1-1", "--out", out], { cwd: workspace, encoding: "utf8", timeout: 30000, env: environment });
+  assert.equal(extracted.status, 0, extracted.stderr);
+  assert.match(await readFile(out, "utf8"), /Hello SciKeel PDF/);
+  const summary = JSON.parse(extracted.stdout);
+  assert.equal(summary.status, "pdf-text");
+  assert.equal(summary.pages, 1);
+  await writeFile(join(workspace, "blank.pdf"), tinyPdf(""));
+  const blank = spawnSync(executable, [join(pack, "large-file", "pdf_text.py"), "blank.pdf"], { cwd: workspace, encoding: "utf8", timeout: 30000, env: environment });
+  assert.equal(blank.status, 0, blank.stderr);
+  assert.equal(JSON.parse(blank.stdout).status, "scanned");
+});
+
 test("loaded-directory helper commands work against local workspace fixtures", async (t) => {
   const workspace = await mkdtemp(join(tmpdir(), "skill-helper-")); t.after(() => rm(workspace, { recursive: true, force: true }));
   await writeFile(join(workspace, "data.csv"), "x,y\n1,2\n3,4\n");

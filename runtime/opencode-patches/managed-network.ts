@@ -5,6 +5,7 @@ import { makeToolOutcome, readToolError } from "./scikeel-outcome.mjs"
 const BROKER = process.env.SCIKEEL_BROKER_URL?.replace(/\/v1$/, "") ?? "http://172.31.240.1:4792"
 const PROXY = process.env.SCIKEEL_BROKER_PROXY_URL ?? "http://172.31.240.1:4794"
 type Call = { sessionID: string; callID?: string; toolCallID?: string; abort?: AbortSignal }
+export type ManagedClientOptions = { maxBytes?: number }
 const transientCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE"])
 export const isManaged = () => process.env.SCIKEEL_MANAGED_NETWORK_TOKEN !== undefined
 export function retryAfter(value: string | null, now = Date.now()): number | undefined {
@@ -40,8 +41,9 @@ async function boundedBody(response: Response, maximum: number, signal: AbortSig
     return result
   } finally { signal.removeEventListener("abort", abort); await reader?.cancel().catch(() => {}); reader?.releaseLock() }
 }
-export function managedClient(unmanaged: HttpClient.HttpClient, call: Call, tool: "webfetch" | "websearch", redirect: (url: string) => Effect.Effect<void, unknown>) {
+export function managedClient(unmanaged: HttpClient.HttpClient, call: Call, tool: "webfetch" | "websearch", redirect: (url: string) => Effect.Effect<void, unknown>, options: ManagedClientOptions = {}) {
   if (!isManaged()) return unmanaged
+  const maximum = options.maxBytes ?? (tool === "webfetch" ? 5 * 1024 ** 2 : 2 * 1024 ** 2)
   return HttpClient.make((request, url, signal) => Effect.gen(function* () {
     const services = yield* Effect.context<never>()
     const response = yield* Effect.tryPromise({
@@ -97,7 +99,12 @@ export function managedClient(unmanaged: HttpClient.HttpClient, call: Call, tool
                 if (result.status === 303) method = "GET"
                 current = next; continue
               }
-              const bytes = await boundedBody(result, tool === "webfetch" ? 5 * 1024 ** 2 : 2 * 1024 ** 2, active)
+              const declared = Number(result.headers.get("content-length"))
+              if (Number.isFinite(declared) && declared > maximum) {
+                await result.body?.cancel().catch(() => {})
+                throw new Error("Response too large")
+              }
+              const bytes = await boundedBody(result, maximum, active)
               if (eligible && [429, 502, 503, 504].includes(result.status) && attempts < 2) {
                 const delay = retryAfter(result.headers.get("retry-after")) ?? (attempts + 1) * 1000
                 if (delay < deadline - Date.now()) { attempts++; await wait(delay, active); continue }

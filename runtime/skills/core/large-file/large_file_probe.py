@@ -159,6 +159,8 @@ def detect_format(path: Path) -> str:
         return "netcdf"
     if ext in NDJSON_EXT:
         return "ndjson"
+    if ext == ".pdf":
+        return "pdf"
     if ext in TABLE_EXT:
         return "table"
     if path.name.upper() in {"OUTCAR", "OSZICAR", "INCAR"} or ext in {".log", ".out"}:
@@ -317,6 +319,66 @@ def _needs(pkg: str, fmt: str) -> dict:
         "introspection": "unavailable",
         "hint": f"install `{pkg}` to introspect {fmt} headers/schema without loading data",
     }
+
+
+PDF_SCAN_PAGES = 100
+PDF_SAMPLE_CHARS = 1000
+
+
+def probe_pdf(path: Path) -> dict:
+    """Page count, metadata, per-page character counts, and a first-page sample.
+
+    Uses pypdf metadata/extraction only; never returns raw PDF bytes. Extraction
+    is capped at PDF_SCAN_PAGES so a huge PDF cannot stall the probe; the helper
+    `pdf_text.py` extracts the bounded page range the agent actually needs.
+    """
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except ImportError:
+        return _needs("pypdf", "pdf")
+    try:
+        reader = PdfReader(str(path))
+        if reader.is_encrypted:
+            try:
+                reader.decrypt("")
+            except Exception:
+                return {
+                    "format": "pdf",
+                    "introspection": "unavailable",
+                    "hint": "encrypted PDF; save an unlocked copy before probing",
+                }
+        total = len(reader.pages)
+        page_characters: list[int] = []
+        text_pages = 0
+        first_page_sample = ""
+        for index in range(min(total, PDF_SCAN_PAGES)):
+            text = reader.pages[index].extract_text() or ""
+            page_characters.append(len(text))
+            if text.strip():
+                text_pages += 1
+            if index == 0:
+                first_page_sample = text.strip()[:PDF_SAMPLE_CHARS]
+        metadata: dict[str, str] = {}
+        info = reader.metadata
+        if info:
+            for key, value in info.items():
+                metadata[str(key).lstrip("/")[:40]] = _clip(str(value))
+    except Exception as e:  # a probe must degrade to a pointer, never crash
+        return {"format": "pdf", "introspection": "failed", "reason": str(e)[:200]}
+    out = {
+        "format": "pdf",
+        "pages": total,
+        "pages_scanned": len(page_characters),
+        "page_characters": page_characters,
+        "text_pages": text_pages,
+        "status": "pdf-text" if text_pages else "scanned",
+        "first_page_sample": first_page_sample,
+    }
+    if metadata:
+        out["metadata"] = metadata
+    if text_pages == 0:
+        out["hint"] = "no text layer found; pdf_text.py reports `scanned` (OCR is out of scope)"
+    return out
 
 
 def probe_parquet(path: Path) -> dict:
@@ -562,6 +624,8 @@ def probe(path: Path, sample: int) -> dict:
     try:
         if fmt == "table":
             detail = probe_table(path, sample)
+        elif fmt == "pdf":
+            detail = probe_pdf(path)
         elif fmt == "ndjson":
             detail = probe_ndjson(path, sample)
         elif fmt == "parquet":

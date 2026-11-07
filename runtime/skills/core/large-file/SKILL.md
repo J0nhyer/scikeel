@@ -1,6 +1,6 @@
 ---
 name: large-file
-description: Use BEFORE reading any data file that could be large (CSV/TSV, Parquet, HDF5, FITS, NetCDF, NDJSON, genomics FASTQ/FASTA/VCF/BAM, GRIB, ROOT, or big text/simulation logs like VASP OUTCAR). Returns a compact memory pointer — header/schema/shape/sample/key numbers — by introspection and sampling in bounded memory, so you never load a file bigger than the context window into the model. Reference data via the pointer; read specific ranges deterministically.
+description: Use BEFORE reading any data file that could be large (CSV/TSV, Parquet, HDF5, FITS, NetCDF, NDJSON, genomics FASTQ/FASTA/VCF/BAM, GRIB, ROOT, downloaded PDFs, or big text/simulation logs like VASP OUTCAR). Returns a compact memory pointer — header/schema/shape/sample/key numbers — by introspection and sampling in bounded memory, so you never load a file bigger than the context window into the model. Reference data via the pointer; read specific ranges deterministically.
 ---
 
 # Large files: reference, don't load
@@ -53,14 +53,18 @@ size (a 13 MB CSV → ~800 bytes; a 16 MB HDF5 → ~450 bytes).
   sample via `pygrib`.
 - **ROOT** (`.root`) — tree/branch listing with entry counts via `uproot`
   (metadata only).
+- **PDF** (`papers/*.pdf`) — page count, document metadata, per-page character
+  counts, and a first-page sample via `pypdf`; no raw PDF bytes. A PDF with no
+  text layer is reported as `scanned`.
 - **Text / logs** — line count and head/tail; scientific logs (VASP `OUTCAR`,
   `OSZICAR`) also get deterministic numeric extraction (e.g. final
   `free energy TOTEN`, `energy(sigma->0)`, convergence flag) — the numbers, not
   the prose.
 
 Binary formats degrade gracefully: if the library (`pyarrow`/`h5py`/`astropy`/
-`netCDF4`/`pysam`/`cfgrib`/`uproot`) isn't installed, the pointer says so with an
-install hint — it never dumps raw bytes. FASTQ/FASTA/VCF need no library at all.
+`netCDF4`/`pysam`/`cfgrib`/`uproot`/`pypdf`) isn't installed, the pointer says
+so with an install hint — it never dumps raw bytes. FASTQ/FASTA/VCF need no
+library at all.
 
 ## Then read only what you need
 
@@ -78,3 +82,25 @@ with h5py.File("sim.h5") as h: block = h["density"][0:64, 0:64, :]  # a sub-arra
 ```
 
 Report which columns/ranges you read, so the analysis stays traceable.
+
+## PDFs: extract only the pages you need
+
+Downloaded open-access papers live in `papers/<id>.pdf`; extracted text is
+written to `papers/text/<id>.txt`. Probe first, then extract the page range the
+claim needs:
+
+```bash
+python "<skill-base-directory>/large_file_probe.py" papers/ID.pdf
+python "<skill-base-directory>/pdf_text.py" papers/ID.pdf --pages 1-4 --out papers/text/ID.txt
+```
+
+- `pdf_text.py` uses `pypdf` (pinned in the worker image), is read-only, and
+  writes at most **2 MiB** of extracted text per call (`--max-bytes`). Each page
+  is delimited by `--- page N ---` so a claim can cite a page.
+- A `status: "scanned"` result (or a probe with `text_pages: 0`) means the PDF
+  has no text layer. Do not treat it as full text and never invent text; OCR is
+  out of scope. Record `full_text_status` as `pdf-text` or `scanned` in
+  `references.csv`.
+- If `pypdf` is missing, both helpers return a pointer with an install hint —
+  never raw bytes. Use the abstract and mark `full_text_status` as
+  `unavailable` instead of guessing.

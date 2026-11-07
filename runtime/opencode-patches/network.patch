@@ -1,9 +1,9 @@
 diff --git a/packages/core/src/tool/scikeel-network.ts b/packages/core/src/tool/scikeel-network.ts
 new file mode 100644
-index 0000000..d541226
+index 0000000..100569b
 --- /dev/null
 +++ b/packages/core/src/tool/scikeel-network.ts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,138 @@
 +import { Cause, Effect } from "effect"
 +import { HttpClient, HttpClientError, HttpClientResponse } from "effect/unstable/http"
 +import { makeToolOutcome, readToolError } from "./scikeel-outcome.mjs"
@@ -11,6 +11,7 @@ index 0000000..d541226
 +const BROKER = process.env.SCIKEEL_BROKER_URL?.replace(/\/v1$/, "") ?? "http://172.31.240.1:4792"
 +const PROXY = process.env.SCIKEEL_BROKER_PROXY_URL ?? "http://172.31.240.1:4794"
 +type Call = { sessionID: string; callID?: string; toolCallID?: string; abort?: AbortSignal }
++export type ManagedClientOptions = { maxBytes?: number }
 +const transientCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE"])
 +export const isManaged = () => process.env.SCIKEEL_MANAGED_NETWORK_TOKEN !== undefined
 +export function retryAfter(value: string | null, now = Date.now()): number | undefined {
@@ -46,8 +47,9 @@ index 0000000..d541226
 +    return result
 +  } finally { signal.removeEventListener("abort", abort); await reader?.cancel().catch(() => {}); reader?.releaseLock() }
 +}
-+export function managedClient(unmanaged: HttpClient.HttpClient, call: Call, tool: "webfetch" | "websearch", redirect: (url: string) => Effect.Effect<void, unknown>) {
++export function managedClient(unmanaged: HttpClient.HttpClient, call: Call, tool: "webfetch" | "websearch", redirect: (url: string) => Effect.Effect<void, unknown>, options: ManagedClientOptions = {}) {
 +  if (!isManaged()) return unmanaged
++  const maximum = options.maxBytes ?? (tool === "webfetch" ? 5 * 1024 ** 2 : 2 * 1024 ** 2)
 +  return HttpClient.make((request, url, signal) => Effect.gen(function* () {
 +    const services = yield* Effect.context<never>()
 +    const response = yield* Effect.tryPromise({
@@ -103,7 +105,12 @@ index 0000000..d541226
 +                if (result.status === 303) method = "GET"
 +                current = next; continue
 +              }
-+              const bytes = await boundedBody(result, tool === "webfetch" ? 5 * 1024 ** 2 : 2 * 1024 ** 2, active)
++              const declared = Number(result.headers.get("content-length"))
++              if (Number.isFinite(declared) && declared > maximum) {
++                await result.body?.cancel().catch(() => {})
++                throw new Error("Response too large")
++              }
++              const bytes = await boundedBody(result, maximum, active)
 +              if (eligible && [429, 502, 503, 504].includes(result.status) && attempts < 2) {
 +                const delay = retryAfter(result.headers.get("retry-after")) ?? (attempts + 1) * 1000
 +                if (delay < deadline - Date.now()) { attempts++; await wait(delay, active); continue }
@@ -318,7 +325,7 @@ index 9167cb3..afc382d 100644
  
          const usePatch =
 diff --git a/packages/opencode/src/tool/webfetch.ts b/packages/opencode/src/tool/webfetch.ts
-index e615034..3c38579 100644
+index e615034..7b6a299 100644
 --- a/packages/opencode/src/tool/webfetch.ts
 +++ b/packages/opencode/src/tool/webfetch.ts
 @@ -1,3 +1,4 @@
@@ -326,24 +333,145 @@ index e615034..3c38579 100644
  import { Effect, Schema } from "effect"
  import { HttpClient, HttpClientRequest } from "effect/unstable/http"
  import { Parser } from "htmlparser2"
-@@ -25,7 +26,6 @@ export const WebFetchTool = Tool.define(
+@@ -5,8 +6,20 @@ import * as Tool from "./tool"
+ import TurndownService from "turndown"
+ import DESCRIPTION from "./webfetch.txt"
+ import { isImageAttachment } from "@/util/media"
++import { EventV2Bridge } from "@/event-v2-bridge"
++import { FileSystem } from "@opencode-ai/core/filesystem"
++import { Watcher } from "@opencode-ai/core/filesystem/watcher"
++import { FSUtil } from "@opencode-ai/core/fs-util"
++import { InstanceState } from "@/effect/instance-state"
++import path from "path"
+ 
+ const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
++const MAX_SAVE_SIZE = 32 * 1024 * 1024 // 32MB, matching the egress broker cap
++const MAX_SAVE_PATH_BYTES = 512
++// Keep the preview below the platform's 50 KiB tool-output bound so the model
++// receives the same bytes that were archived at savePath (the raw file keeps
++// the full response).
++const MAX_PREVIEW_BYTES = 48 * 1024
+ const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
+ const MAX_TIMEOUT = 120 * 1000 // 2 minutes
+ 
+@@ -19,13 +32,72 @@ export const Parameters = Schema.Struct({
+     })
+     .pipe(Schema.withDecodingDefault(Effect.succeed("markdown" as const))),
+   timeout: Schema.optional(Schema.Number).annotate({ description: "Optional timeout in seconds (max 120)" }),
++  savePath: Schema.optional(Schema.String).annotate({
++    description:
++      "Save the response bytes to this workspace-relative path instead of returning the content. Use for PDF downloads; the tool returns a pointer, not the bytes.",
++  }),
++})
++
++function normalizeSavePath(value: string) {
++  if (!value) throw new Error("savePath must be a non-empty workspace-relative path")
++  if (new TextEncoder().encode(value).byteLength > MAX_SAVE_PATH_BYTES)
++    throw new Error(`savePath must be at most ${MAX_SAVE_PATH_BYTES} bytes`)
++  if (/[\u0000-\u001f\u007f]/.test(value)) throw new Error("savePath must not contain control characters")
++  const unified = value.replaceAll("\\", "/")
++  if (unified.startsWith("/") || /^[A-Za-z]:/.test(unified))
++    throw new Error("savePath must be a workspace-relative path")
++  const parts = unified.split("/").filter((part) => part && part !== ".")
++  if (!parts.length) throw new Error("savePath must name a file")
++  if (parts.some((part) => part === "..")) throw new Error("savePath must not contain '..'")
++  return parts.join("/")
++}
++
++const isInside = (root: string, target: string) => {
++  const relative = path.relative(root, target)
++  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
++}
++
++const isTextualMime = (mime: string) =>
++  mime.startsWith("text/") ||
++  mime === "application/json" ||
++  mime.endsWith("+json") ||
++  mime === "application/xml" ||
++  mime.endsWith("+xml") ||
++  mime === "application/javascript" ||
++  mime === "application/x-javascript" ||
++  mime === "application/x-ndjson"
++
++const resolveSavePath = Effect.fn("WebFetch.resolveSavePath")(function* (fs: FSUtil.Interface, value: string) {
++  const instance = yield* InstanceState.context
++  const root = yield* fs.realPath(instance.directory).pipe(Effect.orDie)
++  const target = path.resolve(root, value)
++  if (!isInside(root, target)) throw new Error("savePath escapes the session workspace")
++  // Resolve the deepest existing ancestor so a symlinked parent cannot redirect
++  // the write outside the workspace.
++  let ancestor = target
++  const missing: string[] = []
++  while (!(yield* fs.exists(ancestor))) {
++    missing.unshift(path.basename(ancestor))
++    const parent = path.dirname(ancestor)
++    if (parent === ancestor) throw new Error("savePath escapes the session workspace")
++    ancestor = parent
++  }
++  const real = yield* fs.realPath(ancestor).pipe(Effect.orDie)
++  const resolved = path.resolve(real, ...missing)
++  if (!isInside(root, resolved)) throw new Error("savePath escapes the session workspace")
++  // A final component that is a symlink (including a broken link) could
++  // redirect the write outside the workspace; refuse it outright.
++  const link = yield* fs.readLink(resolved).pipe(Effect.catch(() => Effect.succeed(undefined)))
++  if (link !== undefined) throw new Error("savePath must not be a symlink")
++  return { absolute: resolved, relative: path.relative(root, resolved).split(path.sep).join("/") }
+ })
+ 
+ export const WebFetchTool = Tool.define(
    "webfetch",
    Effect.gen(function* () {
      const http = yield* HttpClient.HttpClient
 -    const httpOk = HttpClient.filterStatusOk(http)
++    const fs = yield* FSUtil.Service
++    const events = yield* EventV2Bridge.Service
  
      return {
        description: DESCRIPTION,
-@@ -47,6 +47,8 @@ export const WebFetchTool = Tool.define(
+@@ -36,6 +108,10 @@ export const WebFetchTool = Tool.define(
+             throw new Error("URL must start with http:// or https://")
+           }
+ 
++          // Validate and resolve the destination before any permission prompt or
++          // network request; an invalid savePath must not reach the egress broker.
++          const save = params.savePath === undefined ? undefined : yield* resolveSavePath(fs, normalizeSavePath(params.savePath))
++
+           yield* ctx.ask({
+             permission: "webfetch",
+             patterns: [params.url],
+@@ -44,9 +120,31 @@ export const WebFetchTool = Tool.define(
+               url: params.url,
+               format: params.format,
+               timeout: params.timeout,
++              ...(params.savePath === undefined ? {} : { savePath: params.savePath }),
              },
            })
  
-+          const managed = managedClient(http, ctx, "webfetch", url => ctx.ask({ permission: "webfetch", patterns: [url], always: ["*"], metadata: { url } }))
++          if (save) {
++            yield* ctx.ask({
++              permission: "edit",
++              patterns: [save.relative],
++              always: ["*"],
++              metadata: {
++                filepath: save.absolute,
++                savePath: save.relative,
++                url: params.url,
++              },
++            })
++          }
++
++          const managed = managedClient(
++            http,
++            ctx,
++            "webfetch",
++            url => ctx.ask({ permission: "webfetch", patterns: [url], always: ["*"], metadata: { url } }),
++            save ? { maxBytes: MAX_SAVE_SIZE } : undefined,
++          )
 +          const httpOk = HttpClient.filterStatusOk(managed)
            const timeout = Math.min((params.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000, MAX_TIMEOUT)
  
            // Build Accept header based on requested format with q parameters for fallbacks
-@@ -79,7 +81,7 @@ export const WebFetchTool = Tool.define(
+@@ -79,7 +177,7 @@ export const WebFetchTool = Tool.define(
            const response = yield* httpOk.execute(request).pipe(
              Effect.catchIf(
                (err) =>
@@ -352,6 +480,68 @@ index e615034..3c38579 100644
                  err.reason.response.status === 403 &&
                  err.reason.response.headers["cf-mitigated"] === "challenge",
                () =>
+@@ -92,20 +190,42 @@ export const WebFetchTool = Tool.define(
+             Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }),
+           )
+ 
++          const limit = save ? MAX_SAVE_SIZE : MAX_RESPONSE_SIZE
++          const limitLabel = save ? "32MB" : "5MB"
+           // Check content length
+           const contentLength = response.headers["content-length"]
+-          if (contentLength && parseInt(contentLength) > MAX_RESPONSE_SIZE) {
+-            throw new Error("Response too large (exceeds 5MB limit)")
++          if (contentLength && parseInt(contentLength) > limit) {
++            throw new Error(`Response too large (exceeds ${limitLabel} limit)`)
+           }
+ 
+           const arrayBuffer = yield* response.arrayBuffer
+-          if (arrayBuffer.byteLength > MAX_RESPONSE_SIZE) {
+-            throw new Error("Response too large (exceeds 5MB limit)")
++          if (arrayBuffer.byteLength > limit) {
++            throw new Error(`Response too large (exceeds ${limitLabel} limit)`)
+           }
+ 
+           const contentType = response.headers["content-type"] || ""
+           const mime = contentType.split(";")[0]?.trim().toLowerCase() || ""
+-          const title = `${params.url} (${contentType})`
++          const title = save ? `${save.relative} (${contentType})` : `${params.url} (${contentType})`
++
++          if (save) {
++            const existed = yield* fs.exists(save.absolute)
++            yield* fs.writeWithDirs(save.absolute, new Uint8Array(arrayBuffer))
++            yield* events.publish(FileSystem.Event.Edited, { file: save.absolute })
++            yield* events.publish(Watcher.Event.Updated, { file: save.absolute, event: existed ? "change" : "add" })
++            const metadata = { path: save.relative, bytes: arrayBuffer.byteLength, mime, url: params.url }
++            // A PDF (or any other non-text response) never enters the model
++            // context; the model gets a pointer to the workspace file.
++            if (!isTextualMime(mime)) {
++              return { title, metadata, output: JSON.stringify(metadata) }
++            }
++            const preview = new TextDecoder().decode(arrayBuffer.slice(0, MAX_PREVIEW_BYTES))
++            const truncated = arrayBuffer.byteLength > MAX_PREVIEW_BYTES
++            return {
++              title,
++              metadata,
++              output: `Saved ${save.relative} (${arrayBuffer.byteLength} bytes, ${mime}).${truncated ? ` Preview limited to the first ${MAX_PREVIEW_BYTES} bytes.` : ""}\n\n${preview}`,
++            }
++          }
+ 
+           if (isImageAttachment(mime)) {
+             const base64Content = Buffer.from(arrayBuffer).toString("base64")
+diff --git a/packages/opencode/src/tool/webfetch.txt b/packages/opencode/src/tool/webfetch.txt
+index 169aade..a1509ea 100644
+--- a/packages/opencode/src/tool/webfetch.txt
++++ b/packages/opencode/src/tool/webfetch.txt
+@@ -9,5 +9,8 @@ Usage notes:
+   - The URL must be a fully-formed valid URL
+   - HTTP URLs will be automatically upgraded to HTTPS
+   - Format options: "markdown" (default), "text", or "html"
+-  - This tool is read-only and does not modify any files
++  - This tool is read-only when savePath is omitted; it does not modify any files
+   - Results may be summarized if the content is very large
++  - savePath (optional): save the response bytes to this workspace-relative path instead of returning the content. Use it for PDF downloads. The paths must stay inside the session workspace and are written only after an edit permission.
++  - A savePath response is capped at 32 MB and returns a pointer (path, byte count, MIME type) for PDFs and other binary files; the PDF bytes are never added to the conversation.
++  - For a text/JSON response saved with savePath, the raw bytes are stored at the path and a bounded preview (up to 48 KiB) is returned.
 diff --git a/packages/opencode/src/tool/websearch.ts b/packages/opencode/src/tool/websearch.ts
 index d08ae1d..5c2b361 100644
 --- a/packages/opencode/src/tool/websearch.ts
