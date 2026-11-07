@@ -1,10 +1,11 @@
 import type { Inspector, PdfDoc, PdfSection, Session, ThreadBlock } from "@ai4s/shared";
 import litCaptured from "./examples/captured/lit-review-citations.json";
-import litReview from "./examples/captured/lit-review-citations.review.json";
+import litFinal from "./examples/captured/lit-review-citations.final.json";
 import dataCaptured from "./examples/captured/data-analysis-figures.json";
 import auditCaptured from "./examples/captured/report-traceability-audit.json";
 import mlCaptured from "./examples/captured/ml-student-performance.json";
 import { dataLifeExpGdp, dataSlopeR2, mlConfusionMatrix, mlFeatureImportance } from "./examples/assets";
+import { redactExampleText } from "./examples/capture";
 
 export type ExampleId =
   | "lit-review-citations"
@@ -104,8 +105,10 @@ function insertBeforeReview(blocks: ThreadBlock[], artifacts: ThreadBlock[]): Th
   return [...blocks.slice(0, reviewIndex), ...artifacts, ...blocks.slice(reviewIndex)];
 }
 
+const litFinalContent = litFinal as Record<string, string>;
+
 function reviewDoc(): PdfDoc {
-  const lines = litReview.reviewMd.split("\n");
+  const lines = redactExampleText(litFinalContent["examples/lit-review/review.md"] ?? "").split("\n");
   const title = lines.find((line) => line.startsWith("# "))?.slice(2).trim() ?? "文献综述";
   const sections: PdfSection[] = [];
   let current: { heading: string; body: string[] } | null = null;
@@ -124,15 +127,21 @@ function reviewDoc(): PdfDoc {
       columns: ["记录", "年份", "证据层级", "检索方式"],
       rows: [["10", "2017–2026", "abstract-only", "OpenAlex 离线语料"]],
     },
-    sections: sections.filter((section) => section.body).slice(0, 8),
+    sections: sections.filter((section) => section.body),
   };
 }
 
 const litInspector: Inspector = { variant: "pdf", title: "review.pdf", doc: reviewDoc() };
 
+const litBlocks = (litCaptured as unknown as ThreadBlock[]).map((block) => {
+  if (block.kind !== "artifact") return block;
+  const content = litFinalContent[block.path];
+  return content ? { ...block, content: redactExampleText(content) } : block;
+});
+
 const capturedById: Record<ExampleId, { blocks: ThreadBlock[]; inspector?: Inspector }> = {
   "lit-review-citations": {
-    blocks: litCaptured as unknown as ThreadBlock[],
+    blocks: litBlocks,
     inspector: litInspector,
   },
   "data-analysis-figures": {

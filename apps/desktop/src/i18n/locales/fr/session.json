@@ -588,7 +588,7 @@
   },
   "thread": {
     "exampleBadge": "Exemple · lecture seule",
-    "sampleNotice": "Il s'agit d'une session d'exemple. Démarrez une session d'agent en direct pour discuter réellement."
+    "sampleNotice": "Session réelle, extrait. Lecture seule ; démarrez une session d'agent en direct pour discuter réellement."
   },
   "workspaceChip": {
     "fallbackName": "Espace de travail",

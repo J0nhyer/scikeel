@@ -24,6 +24,7 @@ describe("SessionPage", () => {
     renderAt(`${base}/lit-review-citations`);
     expect(screen.getByText("DOI 指向另一篇文献")).toBeInTheDocument();
     expect(screen.getByText("review.pdf")).toBeInTheDocument();
+    expect(screen.getByText(/Real session, excerpt|真实会话，节选/)).toBeInTheDocument();
   });
 
   it("renders the data figure and results table", () => {

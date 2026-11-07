@@ -588,7 +588,7 @@
   },
   "thread": {
     "exampleBadge": "Beispiel · nur lesbar",
-    "sampleNotice": "Dies ist eine Beispielsitzung. Starten Sie eine Live-Agentensitzung, um wirklich zu chatten."
+    "sampleNotice": "Echte Sitzung, Auszug. Nur lesen; starten Sie eine Live-Agentensitzung, um wirklich zu chatten."
   },
   "workspaceChip": {
     "fallbackName": "Arbeitsbereich",

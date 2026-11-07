@@ -588,7 +588,7 @@
   },
   "thread": {
     "exampleBadge": "Ejemplo · solo lectura",
-    "sampleNotice": "Esta es una sesión de ejemplo. Inicia una sesión de agente en vivo para chatear de verdad."
+    "sampleNotice": "Sesión real, extracto. Solo lectura; inicia una sesión de agente en vivo para conversar de verdad."
   },
   "workspaceChip": {
     "fallbackName": "Espacio de trabajo",

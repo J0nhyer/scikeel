@@ -588,7 +588,7 @@
   },
   "thread": {
     "exampleBadge": "示例 · 只读",
-    "sampleNotice": "这是一个示例会话。请启动一个实时代理会话以进行真实对话。"
+    "sampleNotice": "真实会话，节选。只读查看；启动一个实时代理会话以进行真实对话。"
   },
   "workspaceChip": {
     "fallbackName": "工作区",

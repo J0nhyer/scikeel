@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import type { ArtifactBlock } from "@ai4s/shared";
 import { describe, expect, it } from "vitest";
 import { EXAMPLE_IDS, EXAMPLE_META, exampleSessions, findExampleSession } from "./examples";
 
@@ -46,7 +49,38 @@ describe("examples", () => {
     expect(session.blocks.some((block) => block.kind === "figure")).toBe(true);
   });
 
-  it("ships no worker paths, account ids, or instance ids", () => {
-    expect(JSON.stringify(exampleSessions)).not.toMatch(/\/srv\/scikeel|usr_[a-f0-9]+|instanceId/);
+  it("ships no worker paths, account ids, instance ids, or internal URLs", () => {
+    const dir = join(process.cwd(), "src/lib/examples/captured");
+    for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
+      const text = readFileSync(join(dir, file), "utf8");
+      expect(text, file).not.toMatch(
+        /\/srv\/|\/opt\/|\/Users\/|\busr_[A-Za-z0-9]+|\bses_[A-Za-z0-9]+|instanceId|localhost|127\.0\.0\.1|https?:\/\/172\.|https?:\/\/10\.|broker|\.scikeel\b/,
+      );
+    }
+  });
+
+  it("keeps one artifact card per path and the literature deliverables' final content", () => {
+    for (const id of EXAMPLE_IDS) {
+      const session = findExampleSession(id)!;
+      const artifacts = session.blocks.filter((block): block is ArtifactBlock => block.kind === "artifact");
+      expect(new Set(artifacts.map((artifact) => artifact.path)).size, id).toBe(artifacts.length);
+      expect(artifacts.every((artifact) => !artifact.path.includes(".scikeel")), id).toBe(true);
+    }
+    const lit = findExampleSession("lit-review-citations")!;
+    const artifacts = lit.blocks.filter((block): block is ArtifactBlock => block.kind === "artifact");
+    const references = artifacts.find((artifact) => artifact.path.endsWith("references.csv"));
+    expect(references?.content?.trim().split("\n").length ?? 0).toBeGreaterThanOrEqual(11);
+    const searchLog = artifacts.find((artifact) => artifact.path.endsWith("search_log.md"));
+    expect(searchLog?.content).toContain("staged corpus fallback");
+  });
+
+  it("keeps the review conclusion and limitations in the PDF facsimile", () => {
+    const lit = findExampleSession("lit-review-citations")!;
+    expect(lit.inspector?.variant).toBe("pdf");
+    if (lit.inspector?.variant === "pdf") {
+      const headings = lit.inspector.doc.sections.map((section) => section.heading);
+      expect(headings.some((heading) => heading.includes("结论"))).toBe(true);
+      expect(headings.some((heading) => heading.includes("局限"))).toBe(true);
+    }
   });
 });

@@ -54,6 +54,9 @@ is not enough.
   `node scripts/dev/stage-sandbox-image.mjs --manifest <manifest> --dry-run`,
   then `--install`; set `PLATFORM_SANDBOX_IMAGE_DIGEST` to the new `sha256:`
   digest and restart through `pnpm live:maintenance`.
+- Redeploy the platform source from the same commit as well: `CORE_SKILLS`
+  gates which image directories are seeded, so the worker image alone does
+  not make the new skills available.
 - Verify the image contains
   `/opt/scikeel/tools/resources/skills-core/literature-review/SKILL.md` and
   `.../citation-reviewer/SKILL.md`, and that `/skills` lists both as builtin.

@@ -596,7 +596,7 @@
   },
   "thread": {
     "exampleBadge": "Example · read-only",
-    "sampleNotice": "This is a sample session. Start a live agent session to chat for real."
+    "sampleNotice": "Real session, excerpt. Read-only; start a live agent session to chat for real."
   },
   "workspaceChip": {
     "fallbackName": "Workspace",
