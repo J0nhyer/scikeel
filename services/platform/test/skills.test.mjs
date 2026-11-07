@@ -25,6 +25,36 @@ test("ships the research workflow Skill for both managed research runtimes", asy
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("ships the literature review and citation reviewer skills", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-literature-skills-"));
+  try {
+    const home = join(root, "home");
+    const workspace = join(root, "workspace");
+    await mkdir(home);
+    await mkdir(workspace);
+    const bundled = await seedSkills(home);
+    assert.ok(bundled.has("literature-review"));
+    assert.ok(bundled.has("citation-reviewer"));
+    const lit = await readFile(join(home, ".config/opencode/skills/literature-review/SKILL.md"), "utf8");
+    assert.match(lit, /OpenAlex/);
+    assert.match(lit, /Crossref/);
+    assert.match(lit, /webfetch/);
+    assert.match(lit, /references\.csv/);
+    assert.match(lit, /search_log\.md/);
+    assert.match(lit, /Never invent|never invent/);
+    assert.match(lit, /unreachable|staged|do not invent/i);
+    const cit = await readFile(join(home, ".config/opencode/skills/citation-reviewer/SKILL.md"), "utf8");
+    assert.match(cit, /Crossref/);
+    assert.match(cit, /retraction/i);
+    assert.match(cit, /check: "citation"|citation/);
+    for (const runtime of ["claude", "codex"]) {
+      const list = await discoverSkills({ home, runtime, workspaceDir: workspace, bundled });
+      assert.equal(list.find((skill) => skill.name === "literature-review").source, "builtin");
+      assert.equal(list.find((skill) => skill.name === "citation-reviewer").source, "builtin");
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("native skills include curated packs and workspace overrides, and cannot cross account boundaries", async () => {
   const root = await mkdtemp(join(tmpdir(), "scikeel-skills-"));
   try {

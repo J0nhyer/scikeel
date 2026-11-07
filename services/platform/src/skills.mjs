@@ -3,7 +3,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load, JSON_SCHEMA } from "js-yaml";
 
-const CORE_SKILLS = new Set(["domain-check", "large-file", "publication-figures", "stats-integrity", "traceability-review", "research-workflow"]);
+const CORE_SKILLS = new Set(["citation-reviewer", "domain-check", "large-file", "literature-review", "publication-figures", "stats-integrity", "traceability-review", "research-workflow"]);
 const contains = (root, path) => {
   const rel = relative(root, path);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(rel));
