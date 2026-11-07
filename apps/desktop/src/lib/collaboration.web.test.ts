@@ -1,8 +1,12 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { collaborationPollingEnabled, useCollaboration, defaultCollaboration, prepareCollaborationSend } from "./collaboration";
+import { collaborationPollingEnabled, useCollaboration, defaultCollaboration, prepareCollaborationSend, type CollaborationState } from "./collaboration";
+import { useRuntimeStore } from "./runtime";
 vi.mock("./webMode", () => ({ isGatewayWeb: true, isPlatformWeb: false, gatewayOrigin: () => "" }));
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  useRuntimeStore.setState({ gatewayUserRole: null, gatewayUser: null });
+});
 describe("conversation collaboration", () => {
   it("enables collaboration polling for platform Web independently of the selected runtime", () => {
     expect(collaborationPollingEnabled({ isGatewayWeb: true, isPlatformWeb: true, connected: true })).toBe(true);
@@ -219,4 +223,38 @@ it("notifies a live verified execution once but never replays restored completio
   const restored = renderHook(() => useCollaboration("delivery-case", true));
   await waitFor(() => expect(restored.result.current.state.delivery?.status).toBe("completed"));
   expect(success).toHaveBeenCalledOnce(); restored.unmount(); useToastStore.getState().reset();
+});
+
+it("does not notify a non-admin of a failed delivery", async () => {
+  const { toast, useToastStore } = await import("./toast");
+  useToastStore.getState().reset();
+  useToastStore.getState().setAccount("user-1");
+  useRuntimeStore.setState({ gatewayUserRole: "user", gatewayUser: { id: "user-1", username: "user-1", role: "user" } });
+  const error = vi.spyOn(toast, "error");
+  let state: CollaborationState = { ...defaultCollaboration, revision: 1, execution: 1, delivery: { status: "pending", attempts: 0, report: null } };
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ available: true, state })));
+  const view = renderHook(() => useCollaboration("delivery-failure-user", true));
+  await waitFor(() => expect(view.result.current.state.execution).toBe(1));
+  state = { ...state, revision: 2, delivery: { status: "failed", attempts: 1, issue: "missing_outputs", report: null } };
+  await waitFor(() => expect(view.result.current.state.delivery?.status).toBe("failed"), { timeout: 4000 });
+  expect(error).not.toHaveBeenCalled();
+  view.unmount(); useToastStore.getState().reset();
+});
+
+it("notifies an admin of a failed delivery", async () => {
+  const { toast, useToastStore } = await import("./toast");
+  useToastStore.getState().reset();
+  useToastStore.getState().setAccount("admin-1");
+  useRuntimeStore.setState({ gatewayUserRole: "admin", gatewayUser: { id: "admin-1", username: "admin-1", role: "admin" } });
+  const error = vi.spyOn(toast, "error");
+  let state: CollaborationState = { ...defaultCollaboration, revision: 1, execution: 1, delivery: { status: "pending", attempts: 0, report: null } };
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ available: true, state })));
+  const view = renderHook(() => useCollaboration("delivery-failure-admin", true));
+  await waitFor(() => expect(view.result.current.state.execution).toBe(1));
+  state = { ...state, revision: 2, delivery: { status: "failed", attempts: 1, issue: "missing_outputs", report: null } };
+  await waitFor(() => expect(error).toHaveBeenCalledOnce(), { timeout: 4000 });
+  expect(error).toHaveBeenCalledWith("Delivery verification failed", expect.objectContaining({
+    eventId: "delivery:1:failed:1", sessionId: "delivery-failure-admin",
+  }));
+  view.unmount(); useToastStore.getState().reset();
 });

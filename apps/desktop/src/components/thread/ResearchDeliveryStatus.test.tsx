@@ -1,8 +1,21 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { useRuntimeStore } from "@/lib/runtime";
 import { ResearchDeliveryStatus } from "./ResearchDeliveryStatus";
 
 describe("delivery verification status", () => {
+  beforeEach(() => {
+    useRuntimeStore.setState({ gatewayUserRole: "admin", gatewayUser: { id: "admin", username: "admin", role: "admin" } });
+  });
+  afterEach(() => {
+    act(() => useRuntimeStore.setState({ gatewayUserRole: null, gatewayUser: null }));
+  });
+  it("hides failure details from non-admin accounts", () => {
+    useRuntimeStore.setState({ gatewayUserRole: "user", gatewayUser: { id: "user", username: "user", role: "user" } });
+    const { container } = render(<ResearchDeliveryStatus delivery={{ status: "failed", attempts: 3,
+      issue: "missing_outputs", report: null }} />);
+    expect(container).toBeEmptyDOMElement();
+  });
   it("shows failed checks and repair exhaustion without claiming completion", () => {
     render(<ResearchDeliveryStatus delivery={{ status: "failed", attempts: 3,
       issue: "missing_outputs", report: null }} />);

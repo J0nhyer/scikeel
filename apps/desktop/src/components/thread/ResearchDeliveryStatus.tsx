@@ -1,11 +1,13 @@
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, X } from "lucide-react";
+import { useRuntimeStore } from "@/lib/runtime";
 import type { ResearchDelivery } from "@/lib/collaboration";
 
-/** Unresolved delivery failures remain inspectable; completion uses a toast only. */
+/** Unresolved delivery failures remain inspectable for admins; completion uses a toast only. */
 export function ResearchDeliveryStatus({ delivery }: { delivery: ResearchDelivery }) {
   const { t } = useTranslation(["session", "common"]);
-  if (delivery.status !== "failed") return null;
+  const isAdmin = useRuntimeStore((s) => s.gatewayUserRole === "admin");
+  if (!isAdmin || delivery.status !== "failed") return null;
   const label = t("collaboration.deliveryFailed");
   return <details className="relative shrink-0 text-xs">
     <summary aria-label={label} title={label} className="grid min-h-11 min-w-11 cursor-pointer list-none place-items-center rounded text-muted hover:bg-surface-2 [&::-webkit-details-marker]:hidden">

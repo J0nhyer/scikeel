@@ -166,7 +166,7 @@ export function useCollaboration(sessionId: string | null, enabled: boolean) {
             toast.success(i18n.t("session:collaboration.deliveryCompleted"), {
               accountId, sessionId, eventId: `delivery:${value.state.execution}:completed`,
             });
-          } else if (observed && status === "failed" && (observed.execution !== value.state.execution || observed.status !== "failed")) {
+          } else if (useRuntimeStore.getState().gatewayUserRole === "admin" && observed && status === "failed" && (observed.execution !== value.state.execution || observed.status !== "failed")) {
             toast.error(i18n.t("session:collaboration.deliveryFailed"), {
               accountId, sessionId, eventId: `delivery:${value.state.execution}:failed:${value.state.delivery?.attempts ?? 0}`,
             });
