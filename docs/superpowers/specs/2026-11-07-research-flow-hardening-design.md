@@ -40,6 +40,32 @@ The user's decisions:
 - Use the app's `question` tool to let the user decide which core papers to
   download when the choice is not obvious.
 
+### Coordinator decisions after the builder check
+
+- **Runtime scope:** OpenCode only. The Codex native tool surface
+  (`runtime/sandbox/native-tools.mjs`, `native-network.mjs`) does not accept
+  `savePath`; extending it is a separate future task. Document the limitation.
+- **Unpaywall:** not used by default. It is a free DOI-to-legal-OA-copy API that
+  needs a contact email; using a fabricated address violates the no-fabrication
+  rule. Add it only if the user supplies a real email. The default discovery
+  order is Europe PMC → OpenAlex → Semantic Scholar → arXiv.
+- **Diagnostics:** the tool result and `search_log.md` carry the URL/host and
+  failure; do not add a UI field or change the outcome schema.
+- **`savePath` and raw archive:** for a PDF, return a pointer only. For a
+  text/JSON response, save the raw bytes and return a bounded text preview, so
+  the raw archive and screening share one request.
+- **Citation usage:** only `screening=include` rows in `references.csv` must be
+  cited; excluded/maybe rows are not required. Uncited *included* references
+  fail delivery.
+- **Citation artifacts:** `citation-reviewer` writes `citation_check.md` and
+  `citation_check.json` when it audits a workspace document; the `review` block
+  remains the last thing in the reply.
+- **Report steps:** an invalid `status` is rejected with a field-level error,
+  not silently coerced to `pending`.
+- **Reference status:** `abstract_status` is `abstract-only` or `none`;
+  `full_text_status` is `pdf-text`, `html-text`, `scanned`, or `unavailable`.
+  The old ambiguous `full-text` value is removed.
+
 ## Goals
 
 1. MEDLINE coverage via Europe PMC, with no dependency on `eutils.ncbi.nlm.nih.gov`.
@@ -65,6 +91,10 @@ The user's decisions:
 - Do not promise full text for paywalled papers. If no open-access copy exists,
   mark it unavailable and ask the user to provide the PDF if they need it.
 - Do not change desktop-only behavior; this is Web-gateway work.
+- Do not extend the Codex native tool surface with `savePath`/PDF download in
+  this change; Codex full text is a documented future task.
+- Do not add a UI diagnostic field or change the tool-outcome schema; the tool
+  result and search log carry the failure detail.
 
 ## Anti-goals
 
@@ -128,9 +158,11 @@ in this order:
 
 1. Europe PMC `fullTextUrlList` OA PDF/HTML.
 2. OpenAlex `best_oa_location.pdf_url` / `open_access.oa_url`.
-3. Unpaywall `https://api.unpaywall.org/v2/<doi>?email=<configured-mailto>`.
-4. Semantic Scholar `openAccessPdf`.
-5. arXiv PDF for arXiv records.
+3. Semantic Scholar `openAccessPdf`.
+4. arXiv PDF for arXiv records.
+
+Unpaywall is optional only when the user supplies a real contact email; never
+substitute a fabricated address. Do not include it in the default order.
 
 For each paper:
 
@@ -172,8 +204,12 @@ Behavior:
   `maxBytes`), not the current 5 MiB text cap. The tool checks
   `content-length` and the buffered byte count. `timeout` remains capped at 120
   seconds; the skill uses 120 for PDFs.
-- The tool returns a short pointer: relative path, byte count, MIME type, and
-  URL. It does not return PDF bytes to the model.
+- For a PDF, the tool returns a short pointer: relative path, byte count, MIME
+  type, and URL. It does not return PDF bytes to the model.
+- For a text/JSON response, the tool saves the raw bytes and returns a bounded
+  text preview (for example 256 KiB), so the raw archive and screening share
+  one request. The raw file remains at `savePath`; the preview is not a second
+  fetch.
 - The managed client gets a `maxBytes` option so the webfetch path can buffer
   up to 32 MiB while websearch stays at 2 MiB. The egress broker already caps at
   32 MiB.
@@ -220,7 +256,8 @@ For each claim in `review.md` that carries one or more citations:
 - Emit a `warn` for `partial`/`unverifiable`, an `error` for `unsupported`, and
   `ok` only for `supported`. Never say a citation is "correct".
 
-`citation-reviewer` writes two artifacts:
+When auditing a workspace document, `citation-reviewer` writes two artifacts
+and still ends with exactly one `review` block:
 
 - `citation_check.md` — the human-readable metadata and claim tables:
   `claim_id | section | claim | citations | evidence_level | support | evidence`
@@ -248,11 +285,12 @@ For each claim in `review.md` that carries one or more citations:
 Citation-usage validation is structural:
 
 - Every `[n]` in `review.md` maps to a row in `references.csv`.
-- Every row in `references.csv` is cited at least once in `review.md`.
-- Uncited references are `warn` in the human report; for delivery,
-  `usage.uncited` must be empty (cite or remove the reference). This is the
-  process fix for the `[24]`/`[26]` class of defect; it does not repair the
-  existing session's artifacts.
+- Every row with `screening=include` is cited at least once in `review.md`;
+  excluded/maybe rows are not required to be cited.
+- Uncited included references are `warn` in the human report; for delivery,
+  `usage.uncited` must be empty for included references (cite or remove them).
+  This is the process fix for the `[24]`/`[26]` class of defect; it does not
+  repair the existing session's artifacts.
 - Citations to missing rows are `error`; `usage.unknown` must be empty.
 
 `literature-review` calls `citation-reviewer` after the draft and requires both
@@ -274,6 +312,9 @@ message, for example:
 Research report steps[0] must be an object with a non-empty "title" and a
 valid "status" (pending, running, completed, failed); found keys: step, note.
 ```
+
+An invalid `status` is rejected, not coerced to `pending`; the test suite
+covers a `"done"`/`"complete"` status and asserts the field-level error.
 
 `research_delivery`'s tool description (and the `research-workflow` skill) shows
 the minimal report template with `title`/`status`, so the model does not need to
@@ -344,10 +385,9 @@ reference, an unknown citation, and a missing evidence path.
 
 ### 9. Diagnostics
 
-- `webfetch` transport failures should include the destination host and, when
-  available, the egress failure code in the tool output; the UI's generic
-  "tool failed" message is not enough. Keep the existing outcome schema; do not
-  expose private upstream bodies.
+- `webfetch` transport failures include the URL/host in the tool result and
+  `search_log.md`; the UI's generic "tool failed" card stays. Do not add a UI
+  field or change the outcome schema; do not expose private upstream bodies.
 - The search log records source failure and the chosen fallback.
 - The acceptance test reports the downloaded path, byte count, extracted page
   count, and the claim-support counts.

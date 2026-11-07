@@ -16,6 +16,10 @@
 - Do not repair the 2026-11-07 session's `review.md`, `references.csv`, or `citation_check.md`; only fix the process.
 - PDF full text is the selected option (A). The OpenCode patch and worker image must be rebuilt for both local acceptance and cloud deployment.
 - Europe PMC replaces the PubMed-only MEDLINE path. Do not keep a dead `eutils.ncbi.nlm.nih.gov` step.
+- Full text/PDF is OpenCode-only. Codex native tools are unchanged and documented as a limitation; do not send `savePath` to Codex.
+- Do not use Unpaywall unless the user supplies a real contact email; never fabricate one. Default discovery is Europe PMC → OpenAlex → Semantic Scholar → arXiv.
+- Diagnostics stay in the tool result and `search_log.md`; no UI diagnostic field or outcome-schema change.
+- Citation usage applies to `screening=include` rows only; excluded/maybe rows are not required to be cited.
 - Recommended scope: claim support, delivery errors, full text, Europe PMC, citation usage, pre-specified screening criteria, raw-response archive. Venue quality is a preference, never a hard filter.
 - No fabricated citation, quotation, page, abstract, or full-text claim. `full-text` is used only after parsed text exists.
 - Keep the managed network, sandbox permissions, workspace isolation, and delivery gate intact. Do not bypass or weaken them.
@@ -65,6 +69,9 @@ In `runtime/skills/core/literature-review/SKILL.md`:
 - Add the pre-search contract section: topic, population/method, date range, language, publication types, inclusion/exclusion, and a venue preference (`top`, `field-core`, `other`). Record it at the top of `search_log.md` before the first query.
 - Extend the `references.csv` schema to:
   `id,title,authors,year,venue,venue_tier,doi,pmid,pmcid,arxiv_id,source_url,abstract_status,full_text_status,full_text_url,full_text_path,screening`.
+  `abstract_status` is `abstract-only|none` (the old ambiguous `full-text`
+  value is removed); `full_text_status` is
+  `pdf-text|html-text|scanned|unavailable`.
 - Add the raw archive paths `search/raw/<timestamp>-<source>.json`, `papers/`, and `papers/text/`; keep them after the run.
 - Add the `question` tool instruction: after screening, when the core set or paywalled priorities are ambiguous, ask the user; do not silently choose abstract-only for everything.
 - Remove the PubMed-only URL and the claim that it is the default MEDLINE path.
@@ -96,7 +103,7 @@ git commit -m "feat(skills): use Europe PMC and pre-specify the literature searc
 
 - [ ] **Step 1: Write the failing assertions**
 
-In `services/platform/test/skills.test.mjs`, assert the literature skill contains `Unpaywall`, `openAccessPdf`, `savePath`, `papers/`, `pdf-text`, `scanned`, `unavailable`, and `question`; assert the research-workflow skill's delivery prepare list contains `citation_check.md` and `citation_check.json`.
+In `services/platform/test/skills.test.mjs`, assert the literature skill contains `Europe PMC`, `Semantic Scholar`, `openAccessPdf`, `savePath`, `papers/`, `pdf-text`, `scanned`, `unavailable`, and `question`; assert the research-workflow skill's delivery prepare list contains `citation_check.md` and `citation_check.json`.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -105,7 +112,7 @@ Expected: FAIL on the new markers.
 
 - [ ] **Step 3: Implement the full-text contract**
 
-In `literature-review/SKILL.md`, add the acquisition order: Europe PMC `fullTextUrlList` → OpenAlex `best_oa_location`/`open_access.oa_url` → Unpaywall `https://api.unpaywall.org/v2/<doi>?email=<mailto>` → Semantic Scholar `openAccessPdf` → arXiv PDF. For each core paper (no fixed 5–10 default: usually 2–3, adaptive to the topic; the user prompt or field conventions can specify a different count; record the chosen set in `search_log.md`; use `question` when ambiguous):
+In `literature-review/SKILL.md`, add the acquisition order: Europe PMC `fullTextUrlList` → OpenAlex `best_oa_location`/`open_access.oa_url` → Semantic Scholar `openAccessPdf` → arXiv PDF. Unpaywall is optional only with a real user-supplied email; never fabricate one. For each core paper (no fixed 5–10 default: usually 2–3, adaptive to the topic; the user prompt or field conventions can specify a different count; record the chosen set in `search_log.md`; use `question` when ambiguous):
 
 - `webfetch` with `savePath: papers/<safe-id>.pdf` and `timeout: 120`.
 - Parse with the `large-file` PDF helper into `papers/text/<safe-id>.txt`.
@@ -155,7 +162,11 @@ In `citation-reviewer/SKILL.md`:
 - Require a claims table for every claim that carries `[n]`: `claim_id`, `section`, `claim`, `citations`, `evidence_level`, `support`, `evidence`, `evidence_path`.
 - Define `support` as `supported|partial|unsupported|unverifiable`; `evidence_level` as `pdf-text|html-text|abstract-only|none`.
 - Require `citation_check.json` v1 with `references`, `claims`, `usage`, and `summary` in the shape from the spec.
-- Require `usage.uncited` and `usage.unknown` empty for delivery; uncited references are a process failure, not a silent omission.
+- Write the artifacts when auditing a workspace document; keep exactly one
+  `review` block as the last thing in the reply.
+- Require `usage.uncited` and `usage.unknown` empty for delivery for
+  `screening=include` rows; excluded/maybe rows are not required to be cited.
+  Uncited included references are a process failure, not a silent omission.
 - Keep the metadata/retraction table; cross-check with Europe PMC/OpenAlex/Crossref; do not require PubMed.
 - Emit `warn` for partial/unverifiable, `error` for unsupported, `ok` only for supported; never say "correct".
 - Emit `citation_check.md` as the human table and `citation_check.json` as the evidence.
@@ -194,10 +205,12 @@ In `services/platform/test/citation-check.test.mjs`, test:
 - a valid v1 check passes;
 - a check with `claims: []` fails;
 - a claim with an unknown support value fails;
-- a reference listed in `usage.uncited` fails;
+- an included reference in `usage.uncited` fails; an excluded/maybe reference
+  there does not;
 - a claim citation not in `references` fails;
 - a full-text claim whose `evidence_path` does not exist fails;
-- a metadata-only check with no claims fails.
+- a metadata-only check with no claims fails;
+- an invalid step status `"done"` fails with a field-level message.
 
 In `services/platform/test/collaboration-delivery.test.mjs`, add a test that writes a report with `steps: [{"step": "...", "status": "completed"}]` and asserts `delivery.reportError` contains `steps[0]`, `title`, and `status`; repair with `title` and pass.
 
@@ -215,7 +228,7 @@ Create `services/platform/src/citation-check.mjs`:
 
 Modify `research-tasks.mjs`:
 
-- Replace the generic steps catch with a check for a non-empty `title` and a valid `status`; include the received keys.
+- Replace the generic steps catch with a check for a non-empty `title` and a valid `status`; include the received keys. Reject an invalid status (no coercion to `pending`).
 - Add `readArtifact(owner, path)` (or equivalent) to read the citation check through the same workspace boundary as `artifact`/`evidence`; expose it to the delivery path.
 - Keep the existing `missing_progress` issue code for compatibility; the `reportError` message is the actionable part.
 
@@ -257,7 +270,7 @@ git commit -m "fix(platform): validate citation checks and report schema errors"
 
 In `network-native.acceptance.mjs`, add a case where the fixture model calls:
 `{url: "https://science.example/paper.pdf", savePath: "papers/paper.pdf", timeout: 30}`
-with a TLS fixture returning `application/pdf` bytes. The test must reply to both the `webfetch` and `edit` permissions, assert the tool output contains the relative path/byte count, read the file from the session workspace, and compare bytes. Add negative cases for `../escape.pdf`, `/tmp/escape.pdf`, a symlinked parent, a >32 MiB `content-length`, and a rejected `edit` permission.
+with a TLS fixture returning `application/pdf` bytes. The test must reply to both the `webfetch` and `edit` permissions, assert the tool output contains the relative path/byte count, read the file from the session workspace, and compare bytes. Add a JSON `savePath` case (`search/raw/probe.json`) that asserts the output is a bounded preview while the raw file contains the full bytes. Add negative cases for `../escape.pdf`, `/tmp/escape.pdf`, a symlinked parent, a >32 MiB `content-length`, and a rejected `edit` permission.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -272,7 +285,11 @@ In the staging `packages/opencode/src/tool/webfetch.ts`:
 - Add `savePath: Schema.optional(Schema.String)`.
 - Validate relative path, ≤512 bytes, no `..`, absolute, NUL/control; resolve against `InstanceState.context.directory`; reject outside or symlinked-parent escapes.
 - Ask `webfetch` for the URL and `edit` for the path; use `FSUtil`/`Bun.write` to create parents and write the bytes; publish the normal file events if the tool has the services.
-- For `savePath`, use a 32 MiB cap for `content-length` and `arrayBuffer`; do not decode/convert the PDF; return a pointer (`path`, `bytes`, `mime`, `url`) and not the bytes.
+- For `savePath`, use a 32 MiB cap for `content-length` and `arrayBuffer`; for
+  a PDF, do not decode/convert it and return a pointer (`path`, `bytes`,
+  `mime`, `url`) without the bytes. For a text/JSON response, save the raw
+  bytes and return a bounded preview (for example 256 KiB) so the raw archive
+  and screening share one request.
 - Keep the existing 5 MiB text path unchanged.
 - Add a `maxBytes` option to `managedClient` (default 5 MiB; 32 MiB for `savePath`) and use it in `boundedBody`; websearch stays at 2 MiB.
 - Add the `savePath` parameter to the tool's `ctx.ask` metadata and to the `webfetch` description.
@@ -414,7 +431,8 @@ Build the science/worker image from `runtime/sandbox/image` with the new `pypdf`
 
 - [ ] **Step 2: Run the local live acceptance**
 
-On the local stack:
+On the local stack, using the OpenCode runtime (Codex full text is a documented
+limitation in this change; no UI/outcome-schema change):
 1. Start a fresh session with the literature prompt.
 2. Confirm Europe PMC returns hits (200) and PubMed is not required.
 3. Download one OA PDF from Europe PMC/PMC with `webfetch savePath`; parse it with `large-file`; cite a page-level claim.
@@ -431,6 +449,10 @@ Update `docs/WEB_RELEASE_CHECKLIST.md`:
 - The image must contain the new `savePath` binary and `pypdf`.
 - The platform source must be redeployed for the citation-check validator and the field-level report errors.
 - The local overlay digest is local-only; never use it in production.
+- Codex full text/`savePath` remains a future task; do not claim it in this
+  change.
+- No UI diagnostic field or outcome-schema change; the tool result and
+  `search_log.md` carry the failure detail.
 
 Add one `PROGRESS.md` line with the verified local result and the cloud image/platform requirement.
 
@@ -462,19 +484,23 @@ git commit -m "docs: record the research flow hardening release"
 The user chose **two subagents working side by side, supervising each other,
 with the coordinator integrating**. Execution is on a new branch.
 
-### Branch and worktrees
+### Branch and workspace
 
-- Create `feat/research-flow-hardening` from `feat/examples-entry` (the current
-  branch has the literature/citation skills and the examples work).
-- Force-add this spec and plan to the new branch (the repository gitignores
-  `docs/superpowers/`, but the existing plans/specs are tracked; the agents need
-  the documents).
-- Track A (runtime/PDF) works in the main tree because it needs the verified
-  `.deploy/opencode-source` and the local image tooling. Use a dedicated
-  worktree for Track B (contracts/platform) so the two agents never write the
-  same index or run conflicting tests.
-- Both tracks commit on their own branches; the coordinator merges them into
-  `feat/research-flow-hardening` after the cross-review.
+- `feat/research-flow-hardening` is created from `feat/examples-entry` (the
+  current branch has the literature/citation skills and the examples work).
+- This spec and plan are force-added and committed on the new branch (the
+  repository gitignores `docs/superpowers/`, but the existing plans/specs are
+  tracked; the agents need the documents).
+- Both agents work in the feature-branch tree with disjoint file ownership.
+  They do not run `git commit`; the coordinator reviews and commits after the
+  cross-review. This keeps the two agents side by side without a shared-index
+  race.
+- Track A uses the verified `.deploy/opencode-source` and local Docker/Bun
+  tooling; Track B uses the repo's installed `node_modules`. If the heavy
+  runtime build interferes with Track B's tests, the coordinator serializes
+  that build; file ownership stays disjoint.
+- The coordinator integrates the two tracks on `feat/research-flow-hardening`;
+  there are no separate merge branches to reconcile.
 
 ### Track split (disjoint file ownership)
 
@@ -529,7 +555,8 @@ Both agents write against these before starting:
 
 ### Completion gate
 
-- The two branches are merged and the spec/plan tasks are green.
+- The two tracks are integrated on `feat/research-flow-hardening` and the
+  spec/plan tasks are green.
 - The live flow downloads one OA PDF (2–3 core papers is a normal set; the
   number is topic/user-driven), parses it, and cites page-level evidence.
 - `citation_check.json` fails on an uncited reference/unknown citation and
