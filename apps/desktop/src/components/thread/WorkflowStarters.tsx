@@ -18,43 +18,39 @@ export const WORKFLOW_STARTERS: WorkflowStarter[] = [
     id: "research-idea",
     icon: <Lightbulb size={13} strokeWidth={1.75} />,
     prompt:
-      "Help me start a research project from an idea, whether for an undergraduate thesis or a possible paper. " +
-      "Begin with a short welcome and at most three conversational questions about my discipline, any ideas I have, " +
-      "and the materials or resources available to me. Use anything I have already told you instead of asking again, " +
-      "then wait for my answers. If I have no topic yet, help me compare two or three feasible directions after " +
-      "learning my situation. Explain how an interest becomes a research question, suggest a manageable plan " +
-      "and one concrete next step, and discuss the plan with me. Do not ask me to fill out a form or specify output " +
-      "filenames before we know what to do. When I have data, connect the next step to Analyze my data; when I " +
-      "have a draft, connect it to Audit a report for traceability. Select relevant available Skills when needed " +
-      "and explain their purpose. Do not invent data, citations, results, or claims of novelty.",
+      "I have a rough research idea and want to turn it into a real plan — could we talk it through? " +
+      "It could end as an undergraduate thesis or a paper, I don't know yet. Ask me a few easy questions (max three) " +
+      "about my major, what I already have in mind, and what materials I can use, then wait for my answers. " +
+      "If I'm still missing a topic, help me compare two or three workable directions. Once we settle on one, " +
+      "let's map out a plan I can actually follow — and point me to Analyze my data next if I get data, or to " +
+      "Audit a report for traceability if I have a draft. Please don't invent data or citations.",
   },
   {
     id: "demo",
     icon: <FlaskConical size={13} strokeWidth={1.75} />,
     prompt:
-      "Run a complete demo analysis end to end: simulate a small dose–response dataset in Python, " +
-      "analyze it (fit + summary statistics), save one publication-quality figure as demo_analysis/figure1.png, " +
-      "and write demo_analysis/report.md summarizing the findings — every number in the report must come from " +
-      "the code you ran. Keep all files in the workspace.",
+      "Show me what a full research run looks like — use simulated data so I don't have to prepare anything. " +
+      "In Python: generate a small dose-response dataset, fit a model and get the summary stats, save one " +
+      "publication-quality figure as demo_analysis/figure1.png, and write demo_analysis/report.md. " +
+      "Every number in the report should come from the code you actually ran. Keep everything in the workspace.",
   },
   {
     id: "analyze",
     icon: <LineChart size={13} strokeWidth={1.75} />,
     prompt:
-      "Analyze the data file I added to the workspace end to end: explore it, run the analysis in code, " +
-      "save at least one figure as a PNG, and write report.md with the findings — every number traced to " +
-      "the code that produced it. Ask me which file to use if there is more than one candidate.",
+      "Please analyze the data file I added to this workspace for me. Explore it, run the analysis in code, " +
+      "save at least one PNG figure of the key result, and write report.md with the findings — every number " +
+      "should trace back to the code that produced it. If there are several candidates, ask me which one first.",
   },
   {
     id: "audit",
     icon: <FileSearch size={13} strokeWidth={1.75} />,
     prompt:
-      "Use the traceability-review skill to audit the report or manuscript in my workspace: resolve every " +
-      "citation, flag numbers with no traceable source, and check figures against the code that generated them. " +
-      "Ask me which document to audit if there is more than one candidate.",
+      "Please audit the report or manuscript in my workspace for traceability with the traceability-review skill: " +
+      "check every citation, flag numbers that have no traceable source, and verify the figures match the code " +
+      "that generated them. If there are several candidates, ask me which one to audit.",
   },
 ];
-
 /** The three actions the empty session shows, in display order. */
 export const HOME_STARTER_IDS = ["analyze", "research-idea", "demo"] as const;
 

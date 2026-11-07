@@ -13,7 +13,7 @@ import {
 const figureSession: Session = {
   id: "figure-canvas",
   projectId: "cross-species",
-  title: "Cross-species atlas figure",
+  title: "数据出图：发表级图表",
   group: "Examples",
   status: "done",
   blocks: [
@@ -100,7 +100,7 @@ for (const d of [10, 20, 30, 50]) {
 const sweepSession: Session = {
   id: "scvi-sweep",
   projectId: "cross-species",
-  title: "SCVI Hyperparameter Screen",
+  title: "超参数对比：小规模扫参",
   group: "Examples",
   status: "running",
   badge: 8,
@@ -172,13 +172,13 @@ clean.write_h5ad("covid_pbmc_40k_hvg.h5ad")`,
 const litSession: Session = {
   id: "lit-review",
   projectId: "cross-species",
-  title: "Cross-species scRNA-seq Integration",
+  title: "文献综述与引用核查",
   group: "Examples",
   status: "warn",
   blocks: [
     {
       kind: "user",
-      text: "Write a literature review on cross-species single-cell RNA-seq integration. Pull the primary methods papers and recent benchmarks. Output the report as a LaTeX doc and a compiled PDF.",
+      text: "跨物种单细胞整合的综述帮我写一下，把主要方法论文和最新 benchmark 拉齐，记得核对引用，出 LaTeX 和 PDF 两版。",
     },
     {
       kind: "step-summary",
@@ -268,13 +268,13 @@ const preprintsCsv = `doi,posted,subfield,title,authors
 const browserSession: Session = {
   id: "browser-harvest",
   projectId: "cross-species",
-  title: "Live web harvest — new preprints",
+  title: "每周文献追踪",
   group: "Examples",
   status: "done",
   blocks: [
     {
       kind: "user",
-      text: "Every Monday I skim new bioRxiv neuroscience preprints. Pull this week's, tag them by subfield, and give me a chart plus a CSV I can sort.",
+      text: "每周要扫一遍新的预印本，帮我按子领域打标，出一张图和一份能排序的 CSV。",
     },
     {
       kind: "step-summary",
@@ -403,13 +403,13 @@ fig.savefig("subfield_mix.png", dpi=200)`,
 const reproSession: Session = {
   id: "repro-scvi",
   projectId: "cross-species",
-  title: "Reproduce scVI benchmark (A100)",
+  title: "复现验证：结果能对上吗",
   group: "Examples",
   status: "done",
   blocks: [
     {
       kind: "user",
-      text: "Reproduce the scVI integration benchmark from the methods paper on our A100 and tell me whether the ARI matches within tolerance.",
+      text: "这篇方法论文的 benchmark 帮我复现一下，ARI 对得上吗？容差内算过。",
     },
     {
       kind: "step-summary",
@@ -523,13 +523,13 @@ print(f"ARI vs author labels = {ari:.3f}")   # -> 0.790`,
 const surveySession: Session = {
   id: "protein-lm-survey",
   projectId: "cross-species",
-  title: "Research landscape — protein LMs",
+  title: "多源调研综述",
   group: "Examples",
   status: "done",
   blocks: [
     {
       kind: "user",
-      text: "Survey protein language models for function prediction. Fan out the search across sources, sanity-check the citations, and compile a short PDF.",
+      text: "蛋白语言模型做功能预测的现状，多源搜一遍，把引用核对好，出一份短综述 PDF。",
     },
     {
       kind: "step-summary",
@@ -615,7 +615,7 @@ const surveySession: Session = {
 
 export const mockProject: Project = {
   id: "cross-species",
-  name: "Cross-species scRNA-seq",
+  name: "科研演示项目",
   sessions: [figureSession, browserSession, reproSession, surveySession, sweepSession, litSession],
 };
 

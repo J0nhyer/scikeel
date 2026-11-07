@@ -10,7 +10,7 @@ describe("SessionPage", () => {
 
   it("renders the literature session with a reviewer finding and the PDF inspector", () => {
     renderAt(`${base}/lit-review`);
-    expect(screen.getAllByText("Cross-species scRNA-seq Integration").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("文献综述与引用核查").length).toBeGreaterThan(0);
     expect(screen.getByText(/PMID 31178118 assigned to both/)).toBeInTheDocument();
     const inspector = document.querySelector('[data-variant="pdf"]');
     expect(inspector).toBeInTheDocument();
@@ -19,7 +19,7 @@ describe("SessionPage", () => {
 
   it("renders the sweep session with a data table and the notebook inspector", () => {
     renderAt(`${base}/scvi-sweep`);
-    expect(screen.getAllByText("SCVI Hyperparameter Screen").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("超参数对比：小规模扫参").length).toBeGreaterThan(0);
     expect(screen.getByText("REMOTE · 8")).toBeInTheDocument();
     expect(document.querySelector('[data-variant="notebook"]')).toBeInTheDocument();
   });
