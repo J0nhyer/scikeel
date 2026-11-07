@@ -38,11 +38,14 @@ describe("WorkflowStarters strings (i18n)", () => {
       </>,
     );
     expect(screen.getByText("What should we look into?")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Run a complete example/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Turn an idea into a plan/ })).toBeInTheDocument();
-    expect(
-      screen.queryByText("Simulate a dataset, fit a model, and produce a figure and a traceable report."),
-    ).toBeNull();
+    for (const label of [
+      "Turn an idea into a plan",
+      "Review the literature",
+      "Analyze my data",
+      "Audit a report",
+    ]) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
   });
 });
 

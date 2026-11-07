@@ -241,6 +241,7 @@
     "actions": {
       "newSession": "Neue Sitzung",
       "analyzeData": "Meine Daten analysieren (neuer Workflow)",
+      "literatureReview": "Literatur recherchieren (mit Zitationsprüfung)",
       "auditReport": "Bericht prüfen (Nachvollziehbarkeitsprüfung)",
       "openNotebooks": "Notebooks öffnen",
       "manageSkills": "Skills verwalten",

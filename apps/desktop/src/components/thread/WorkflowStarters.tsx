@@ -1,9 +1,9 @@
 import { useTranslation } from "react-i18next";
-import { FileSearch, FlaskConical, Lightbulb, LineChart } from "lucide-react";
+import { BookOpen, FileSearch, Lightbulb, LineChart } from "lucide-react";
 import { resolveLocale } from "@/i18n/config";
 import zhWorkflowPrompts from "@/i18n/locales/zh-Hans/workflow-prompts.json";
 
-export type WorkflowStarterId = "research-idea" | "demo" | "analyze" | "audit";
+export type WorkflowStarterId = "research-idea" | "literature" | "analyze" | "audit";
 
 export interface WorkflowStarter {
   id: WorkflowStarterId;
@@ -18,41 +18,45 @@ export const WORKFLOW_STARTERS: WorkflowStarter[] = [
     id: "research-idea",
     icon: <Lightbulb size={13} strokeWidth={1.75} />,
     prompt:
-      "I have a rough research idea and want to turn it into a real plan — could we talk it through? " +
-      "It could end as an undergraduate thesis or a paper, I don't know yet. Ask me a few easy questions (max three) " +
-      "about my major, what I already have in mind, and what materials I can use, then wait for my answers. " +
-      "If I'm still missing a topic, help me compare two or three workable directions. Once we settle on one, " +
-      "let's map out a plan I can actually follow — and point me to Analyze my data next if I get data, or to " +
-      "Audit a report for traceability if I have a draft. Please don't invent data or citations.",
+      "I have a rough research idea and want to turn it into a real plan. Ask me up to three easy questions " +
+      "about my field, what I already have in mind, and the materials I can use, then wait for my answers. " +
+      "If I have no topic yet, help me compare two or three workable directions. Once we choose one, use the " +
+      "research-workflow skill to write `plan.md` with the research question, method, data needs, deliverables, " +
+      "and risks, and confirm it with me before doing more. Do not invent data, citations, or results.",
   },
   {
-    id: "demo",
-    icon: <FlaskConical size={13} strokeWidth={1.75} />,
+    id: "literature",
+    icon: <BookOpen size={13} strokeWidth={1.75} />,
     prompt:
-      "Show me what a full research run looks like — use simulated data so I don't have to prepare anything. " +
-      "In Python: generate a small dose-response dataset, fit a model and get the summary stats, save one " +
-      "publication-quality figure as demo_analysis/figure1.png, and write demo_analysis/report.md. " +
-      "Every number in the report should come from the code you actually ran. Keep everything in the workspace.",
+      "I want a literature review. Ask me for the topic, scope, and intended use (course paper, thesis proposal, " +
+      "or submission) if I haven't said. Use the literature-review skill to search public scholarly sources and " +
+      "organize the key papers, and the citation-reviewer skill to verify every reference. Produce `review.md`, " +
+      "`references.csv`, and `search_log.md`. Mark papers you cannot access or verify instead of inventing them; " +
+      "ask me before expanding a very broad scope.",
   },
   {
     id: "analyze",
     icon: <LineChart size={13} strokeWidth={1.75} />,
     prompt:
-      "Please analyze the data file I added to this workspace for me. Explore it, run the analysis in code, " +
-      "save at least one PNG figure of the key result, and write report.md with the findings — every number " +
-      "should trace back to the code that produced it. If there are several candidates, ask me which one first.",
+      "I want to analyze data in my workspace. First ask me what question I want to answer and which file to use " +
+      "if there are several. Use the large-file skill to inspect large data before reading it, run the analysis " +
+      "in code, use the publication-figures skill for the final figure, and use the stats-integrity and " +
+      "domain-check skills where the analysis warrants them. Produce `analysis.py`, at least one PNG figure, and " +
+      "`report.md`; every number in the report must trace to the code that produced it. Tell me the assumptions " +
+      "and limitations.",
   },
   {
     id: "audit",
     icon: <FileSearch size={13} strokeWidth={1.75} />,
     prompt:
-      "Please audit the report or manuscript in my workspace for traceability with the traceability-review skill: " +
-      "check every citation, flag numbers that have no traceable source, and verify the figures match the code " +
-      "that generated them. If there are several candidates, ask me which one to audit.",
+      "Audit the report or manuscript in my workspace for traceability. If there are several candidates, ask me " +
+      "which one. Use the traceability-review skill to resolve every citation, flag numbers with no traceable " +
+      "source, and check figures against the code that generated them. Produce a structured review with findings " +
+      "and a correction checklist. Do not claim the document is error-free.",
   },
 ];
-/** The three actions the empty session shows, in display order. */
-export const HOME_STARTER_IDS = ["analyze", "research-idea", "demo"] as const;
+/** The four actions the empty session shows, in display order. */
+export const HOME_STARTER_IDS = ["research-idea", "literature", "analyze", "audit"] as const;
 
 /** Keep starter chips and command-palette actions on the same locale-aware prompt. */
 export function workflowStarterPrompt(id: WorkflowStarterId, locale: string): string {
@@ -77,13 +81,14 @@ export function WorkflowStarters({ bottomInset = 0 }: { bottomInset?: number }) 
   );
 }
 
-/** The three starter actions, shown directly above the composer. */
+/** The four starter actions, shown directly above the composer. */
 export function WorkflowStarterChips({ onPick }: { onPick: (prompt: string) => void }) {
   const { t, i18n } = useTranslation(["session", "common"]);
-  const chipCopy: Record<string, string> = {
-    analyze: t("starters.chips.analyze"),
+  const chipCopy: Record<WorkflowStarterId, string> = {
     "research-idea": t("starters.chips.research-idea"),
-    demo: t("starters.chips.demo"),
+    literature: t("starters.chips.literature"),
+    analyze: t("starters.chips.analyze"),
+    audit: t("starters.chips.audit"),
   };
 
   return (

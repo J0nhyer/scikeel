@@ -270,11 +270,12 @@
     "chips": {
       "analyze": "分析我的数据",
       "research-idea": "把想法变成计划",
-      "demo": "跑一个完整示例"
+      "literature": "读文献 / 做综述",
+      "audit": "审查报告"
     },
-    "demo": {
-      "title": "端到端运行一次演示分析",
-      "description": "模拟一份数据集，拟合模型，并生成图表和可追溯的报告。"
+    "literature": {
+      "title": "读文献 / 做综述",
+      "description": "检索核心文献、写出综述，并逐条核对引用。"
     },
     "analyze": {
       "title": "分析我的数据",

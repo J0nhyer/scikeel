@@ -270,11 +270,12 @@
     "chips": {
       "analyze": "Analyze my data",
       "research-idea": "Turn an idea into a plan",
-      "demo": "Run a complete example"
+      "literature": "Review the literature",
+      "audit": "Audit a report"
     },
-    "demo": {
-      "title": "Run a demo analysis, end to end",
-      "description": "Simulate a dataset, fit a model, and produce a figure and a traceable report."
+    "literature": {
+      "title": "Review the literature",
+      "description": "Search the literature, synthesize it, and verify every citation."
     },
     "analyze": {
       "title": "Analyze my data",

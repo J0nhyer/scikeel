@@ -33,6 +33,7 @@ describe("CommandPalette", () => {
 
   it.each([
     ["分析我的数据（新建工作流）", "report.md"],
+    ["做一次文献综述（含引用核查）", "references.csv"],
     ["审查报告（溯源性审查）", "traceability-review"],
   ])("sends the Chinese workflow from the %s action", async (label, task) => {
     const sendPrompt = vi.fn().mockResolvedValue("session-cn-workflow");

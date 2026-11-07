@@ -235,6 +235,7 @@
     "actions": {
       "newSession": "新規セッション",
       "analyzeData": "データを分析する（新しいワークフロー）",
+      "literatureReview": "文献レビュー（引用チェック付き）",
       "auditReport": "レポートを検証する（トレーサビリティレビュー）",
       "openNotebooks": "ノートブックを開く",
       "manageSkills": "スキルを管理",

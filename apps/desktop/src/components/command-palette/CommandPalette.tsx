@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Command } from "cmdk";
 import { useNavigate } from "react-router-dom";
 import {
+  BookOpen,
   FileSearch,
   Moon,
   NotebookPen,
@@ -69,6 +70,7 @@ export function CommandPalette() {
   const actions: Action[] = [
     { id: "new", label: t("commandPalette.actions.newSession"), icon: <Plus size={16} />, run: () => { if (newPaneAllowed) useLayoutStore.getState().openInNewGroup(null); useRuntimeStore.getState().startDraft(); navigate("/live"); close(); } },
     { id: "analyze", label: t("commandPalette.actions.analyzeData"), icon: <FileSearch size={16} />, run: () => void runWorkflow("analyze") },
+    { id: "literature", label: t("commandPalette.actions.literatureReview"), icon: <BookOpen size={16} />, run: () => void runWorkflow("literature") },
     { id: "review", label: t("commandPalette.actions.auditReport"), icon: <ShieldCheck size={16} />, run: () => void runWorkflow("audit") },
     { id: "notebooks", label: t("commandPalette.actions.openNotebooks"), icon: <NotebookPen size={16} />, run: () => { navigate("/notebooks"); close(); } },
     { id: "skills", label: t("commandPalette.actions.manageSkills"), icon: <PackagePlus size={16} />, run: () => { navigate("/skills"); close(); } },

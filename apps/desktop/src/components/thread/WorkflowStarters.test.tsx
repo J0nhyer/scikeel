@@ -24,52 +24,72 @@ describe("WorkflowStarters", () => {
     expect(screen.getByText("What should we look into?").parentElement).toHaveStyle({ bottom: "160px" });
   });
 
-  it("renders three compact starter chips", () => {
+  it("renders four compact starter chips", () => {
     render(<WorkflowStarterChips onPick={() => {}} />);
 
-    expect(screen.getByRole("button", { name: /Analyze my data/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Turn an idea into a plan/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Run a complete example/ })).toBeInTheDocument();
-    expect(screen.getAllByRole("button")).toHaveLength(3);
-
-    expect(screen.queryByText("Audit a report for traceability")).toBeNull();
-    expect(screen.queryByText("Explore an example: climate trends")).toBeNull();
-    expect(HOME_STARTER_IDS).toEqual(["analyze", "research-idea", "demo"]);
+    for (const label of [
+      "Turn an idea into a plan",
+      "Review the literature",
+      "Analyze my data",
+      "Audit a report",
+    ]) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("button")).toHaveLength(4);
+    expect(HOME_STARTER_IDS).toEqual(["research-idea", "literature", "analyze", "audit"]);
   });
 
-  it("keeps audit available to the command palette without putting it on the homepage", () => {
-    expect(WORKFLOW_STARTERS).toHaveLength(4);
-    expect(WORKFLOW_STARTERS.some((starter) => starter.id === "audit")).toBe(true);
-    expect(HOME_STARTER_IDS).not.toContain("audit");
+  it("ships four workflow starters in display order and no demo", () => {
+    expect(WORKFLOW_STARTERS.map((starter) => starter.id)).toEqual([
+      "research-idea",
+      "literature",
+      "analyze",
+      "audit",
+    ]);
   });
 
-  it("sends the full-workflow prompt on click", async () => {
+  it("sends the literature workflow prompt on click", async () => {
     const onPick = vi.fn();
     render(<WorkflowStarterChips onPick={onPick} />);
 
-    await userEvent.click(screen.getByRole("button", { name: /Run a complete example/ }));
-    await waitFor(() => expect(onPick).toHaveBeenCalledWith(expect.stringContaining("figure1.png")));
-    expect(onPick.mock.calls[0][0]).toContain("report.md");
+    await userEvent.click(screen.getByRole("button", { name: "Review the literature" }));
+    await waitFor(() => expect(onPick).toHaveBeenCalledTimes(1));
+    const prompt: string = onPick.mock.calls[0][0];
+    for (const marker of [
+      "literature-review",
+      "citation-reviewer",
+      "review.md",
+      "references.csv",
+      "search_log.md",
+    ]) {
+      expect(prompt).toContain(marker);
+    }
   });
 
-  it("sends Chinese requests and confirms deliverable languages in a Chinese session", async () => {
+  it("sends Chinese requests and names the same literature deliverables in a Chinese session", async () => {
     await act(async () => { await i18n.changeLanguage("zh-Hans"); });
     const onPick = vi.fn();
     render(<WorkflowStarterChips onPick={onPick} />);
 
-    await userEvent.click(screen.getByRole("button", { name: /分析我的数据/ }));
+    await userEvent.click(screen.getByRole("button", { name: /读文献 \/ 做综述/ }));
     await waitFor(() => expect(onPick).toHaveBeenCalledTimes(1));
-    expect(onPick.mock.calls[0][0]).toContain("请主要用中文与我交流");
-    expect(onPick.mock.calls[0][0]).toContain("中文、英文还是双语");
-    expect(onPick.mock.calls[0][0]).toContain("请对我添加到当前工作空间的数据文件");
-    expect(onPick.mock.calls[0][0]).toContain("report.md");
-    expect(onPick.mock.calls[0][0]).not.toContain("Analyze the data file");
+    const prompt: string = onPick.mock.calls[0][0];
+    expect(prompt).toContain("请主要用中文与我交流");
+    for (const marker of [
+      "literature-review",
+      "citation-reviewer",
+      "review.md",
+      "references.csv",
+      "search_log.md",
+    ]) {
+      expect(prompt).toContain(marker);
+    }
 
     for (const starter of WORKFLOW_STARTERS) {
-      const prompt = workflowStarterPrompt(starter.id, "zh-Hans");
-      expect(prompt).toContain("请主要用中文与我交流");
-      expect(prompt).toContain("中文、英文还是双语");
-      expect(prompt).not.toBe(starter.prompt);
+      const localized = workflowStarterPrompt(starter.id, "zh-Hans");
+      expect(localized).toContain("请主要用中文与我交流");
+      expect(localized).toContain("中文、英文还是双语");
+      expect(localized).not.toBe(starter.prompt);
     }
     expect(workflowStarterPrompt("audit", "en")).toContain("traceability-review");
   });

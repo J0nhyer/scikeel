@@ -270,11 +270,12 @@
     "chips": {
       "analyze": "Analyser mes données",
       "research-idea": "Transformer une idée en plan",
-      "demo": "Lancer un exemple complet"
+      "literature": "Explorer la littérature",
+      "audit": "Auditer un rapport"
     },
-    "demo": {
-      "title": "Exécuter une analyse de démonstration, de bout en bout",
-      "description": "Simuler un jeu de données, ajuster un modèle, et produire une figure et un rapport traçable."
+    "literature": {
+      "title": "Explorer la littérature",
+      "description": "Recherchez la littérature, synthétisez-la et vérifiez chaque citation."
     },
     "analyze": {
       "title": "Analyser mes données",

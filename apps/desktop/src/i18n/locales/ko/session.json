@@ -270,11 +270,12 @@
     "chips": {
       "analyze": "내 데이터 분석",
       "research-idea": "아이디어를 계획으로",
-      "demo": "전체 예제 실행"
+      "literature": "문헌 검토",
+      "audit": "보고서 감사"
     },
-    "demo": {
-      "title": "데모 분석을 처음부터 끝까지 실행",
-      "description": "데이터셋을 시뮬레이션하고, 모델을 적합시키고, 그림과 추적 가능한 리포트를 생성합니다."
+    "literature": {
+      "title": "문헌 검토",
+      "description": "문헌을 검색하고 정리하며 모든 인용을 확인합니다."
     },
     "analyze": {
       "title": "내 데이터 분석",

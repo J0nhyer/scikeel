@@ -235,6 +235,7 @@
     "actions": {
       "newSession": "新建会话",
       "analyzeData": "分析我的数据（新建工作流）",
+      "literatureReview": "做一次文献综述（含引用核查）",
       "auditReport": "审查报告（溯源性审查）",
       "openNotebooks": "打开笔记本",
       "manageSkills": "管理技能",

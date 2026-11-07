@@ -241,6 +241,7 @@
     "actions": {
       "newSession": "New session",
       "analyzeData": "Analyze my data (new workflow)",
+      "literatureReview": "Review the literature (with citation check)",
       "auditReport": "Audit a report (traceability review)",
       "openNotebooks": "Open notebooks",
       "manageSkills": "Manage skills",
