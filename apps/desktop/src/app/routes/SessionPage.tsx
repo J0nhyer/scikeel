@@ -1,6 +1,6 @@
 import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { findSession } from "@/lib/mock";
+import { findExampleSession } from "@/lib/examples";
 import { useUiStore } from "@/lib/store";
 import { ThreadView } from "@/components/thread/ThreadView";
 import { InspectorShell } from "@/components/inspector/InspectorShell";
@@ -10,7 +10,7 @@ import { EmptyState } from "@/components/cards/EmptyState";
 export function SessionPage() {
   const { t } = useTranslation(["session", "common"]);
   const { sessionId } = useParams();
-  const session = sessionId ? findSession(sessionId) : undefined;
+  const session = sessionId ? findExampleSession(sessionId) : undefined;
   const inspectorOpen = useUiStore((s) => s.inspectorOpen);
   const setInspectorOpen = useUiStore((s) => s.setInspectorOpen);
 

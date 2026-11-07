@@ -20,7 +20,11 @@
     "files": "ファイル",
     "runs": "実行",
     "skills": "スキル",
-    "projects": "プロジェクト"
+    "projects": "プロジェクト",
+    "examples": "サンプル"
+  },
+  "examples": {
+    "readOnly": "閲覧のみ"
   },
   "projects": {
     "heading": "プロジェクト",
@@ -104,7 +108,6 @@
   "history": {
     "heading": "セッション",
     "empty": "まだ会話がありません。",
-    "exampleTag": "例",
     "deleteAria": "{{title}} を削除",
     "running": "実行中",
     "seeAll": "すべてのセッション",
@@ -154,10 +157,7 @@
   "confirmDelete": {
     "sessionTitle": "セッションを削除しますか？",
     "sessionBody": "「{{title}}」とそのメッセージが削除されます。この操作は取り消せません。",
-    "exampleTitle": "サンプルを非表示にしますか？",
-    "exampleBody": "「{{title}}」がサイドバーから非表示になります。",
-    "deleteAction": "削除",
-    "hideAction": "非表示"
+    "deleteAction": "削除"
   },
   "status": {
     "usage": {
@@ -244,7 +244,6 @@
   },
   "rowMenu": {
     "sessionLabel": "セッションの操作",
-    "projectLabel": "プロジェクトの操作",
-    "exampleLabel": "サンプルの操作"
+    "projectLabel": "プロジェクトの操作"
   }
 }

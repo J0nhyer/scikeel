@@ -20,7 +20,11 @@
     "files": "文件",
     "runs": "运行",
     "skills": "技能",
-    "projects": "项目"
+    "projects": "项目",
+    "examples": "示例"
+  },
+  "examples": {
+    "readOnly": "只读"
   },
   "projects": {
     "heading": "项目",
@@ -104,7 +108,6 @@
   "history": {
     "heading": "会话",
     "empty": "暂无对话。",
-    "exampleTag": "示例",
     "deleteAria": "删除 {{title}}",
     "running": "运行中",
     "seeAll": "全部会话",
@@ -154,10 +157,7 @@
   "confirmDelete": {
     "sessionTitle": "删除会话？",
     "sessionBody": "“{{title}}”及其消息将被删除，此操作无法撤销。",
-    "exampleTitle": "隐藏示例？",
-    "exampleBody": "“{{title}}”将从侧边栏中隐藏。",
-    "deleteAction": "删除",
-    "hideAction": "隐藏"
+    "deleteAction": "删除"
   },
   "status": {
     "usage": {
@@ -244,7 +244,6 @@
   },
   "rowMenu": {
     "sessionLabel": "会话操作",
-    "projectLabel": "项目操作",
-    "exampleLabel": "示例操作"
+    "projectLabel": "项目操作"
   }
 }

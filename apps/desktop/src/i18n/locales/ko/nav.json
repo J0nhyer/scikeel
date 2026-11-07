@@ -20,7 +20,11 @@
     "files": "파일",
     "runs": "실행",
     "skills": "스킬",
-    "projects": "프로젝트"
+    "projects": "프로젝트",
+    "examples": "예제"
+  },
+  "examples": {
+    "readOnly": "읽기 전용"
   },
   "projects": {
     "heading": "프로젝트",
@@ -104,7 +108,6 @@
   "history": {
     "heading": "세션",
     "empty": "아직 대화가 없습니다.",
-    "exampleTag": "예제",
     "deleteAria": "{{title}} 삭제",
     "running": "작업 중",
     "seeAll": "모든 세션",
@@ -154,10 +157,7 @@
   "confirmDelete": {
     "sessionTitle": "세션을 삭제하시겠습니까?",
     "sessionBody": "\"{{title}}\" 및 관련 메시지가 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-    "exampleTitle": "예제를 숨기시겠습니까?",
-    "exampleBody": "\"{{title}}\"이(가) 사이드바에서 숨겨집니다.",
-    "deleteAction": "삭제",
-    "hideAction": "숨기기"
+    "deleteAction": "삭제"
   },
   "status": {
     "usage": {
@@ -244,7 +244,6 @@
   },
   "rowMenu": {
     "sessionLabel": "세션 작업",
-    "projectLabel": "프로젝트 작업",
-    "exampleLabel": "예제 작업"
+    "projectLabel": "프로젝트 작업"
   }
 }

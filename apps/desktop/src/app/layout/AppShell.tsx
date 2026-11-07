@@ -9,7 +9,6 @@ import { CommandPalette } from "@/components/command-palette/CommandPalette";
 import { PaneDragGhost } from "@/components/session/PaneDragGhost";
 import { StatusBar } from "@/components/status-bar/StatusBar";
 import { SshSignInDialog } from "@/components/ui/SshSignInDialog";
-import { mockProject } from "@/lib/mock";
 import { adoptSourceFolder, installWebRecovery, useRuntimeStore } from "@/lib/runtime";
 import { useHoverTracking } from "@/lib/hoverTracking";
 import { useConversationLeases } from "@/lib/conversationLeases";
@@ -217,7 +216,7 @@ export function AppShell() {
     <div className="flex h-screen w-screen flex-col overflow-hidden text-text" aria-busy={signingOut || undefined}>
       {signingOut && <div className="fixed inset-0 z-[2147483646] cursor-wait" aria-hidden="true" />}
       <div className="flex min-h-0 flex-1">
-        <Sidebar project={mockProject} />
+        <Sidebar />
         {/* Mobile: dim + close the overlay drawer by tapping outside it. */}
         {isMobile && !sidebarCollapsed && (
           <div

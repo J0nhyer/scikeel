@@ -20,7 +20,11 @@
     "files": "Files",
     "runs": "Runs",
     "skills": "Skills",
-    "projects": "Projects"
+    "projects": "Projects",
+    "examples": "Examples"
+  },
+  "examples": {
+    "readOnly": "Read-only"
   },
   "projects": {
     "heading": "Projects",
@@ -104,7 +108,6 @@
   "history": {
     "heading": "Sessions",
     "empty": "No conversations yet.",
-    "exampleTag": "example",
     "deleteAria": "Delete {{title}}",
     "running": "Working",
     "seeAll": "All sessions",
@@ -160,10 +163,7 @@
   "confirmDelete": {
     "sessionTitle": "Delete session?",
     "sessionBody": "\"{{title}}\" and its messages will be deleted. This cannot be undone.",
-    "exampleTitle": "Hide example?",
-    "exampleBody": "\"{{title}}\" will be hidden from the sidebar.",
-    "deleteAction": "Delete",
-    "hideAction": "Hide"
+    "deleteAction": "Delete"
   },
   "status": {
     "usage": {
@@ -250,7 +250,6 @@
   },
   "rowMenu": {
     "sessionLabel": "Session actions",
-    "projectLabel": "Project actions",
-    "exampleLabel": "Example actions"
+    "projectLabel": "Project actions"
   }
 }

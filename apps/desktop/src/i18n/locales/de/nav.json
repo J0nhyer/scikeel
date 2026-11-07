@@ -20,7 +20,11 @@
     "files": "Dateien",
     "runs": "Durchläufe",
     "skills": "Skills",
-    "projects": "Projekte"
+    "projects": "Projekte",
+    "examples": "Beispiele"
+  },
+  "examples": {
+    "readOnly": "Nur lesen"
   },
   "projects": {
     "heading": "Projekte",
@@ -104,7 +108,6 @@
   "history": {
     "heading": "Sitzungen",
     "empty": "Noch keine Unterhaltungen.",
-    "exampleTag": "Beispiel",
     "deleteAria": "{{title}} löschen",
     "running": "Arbeitet",
     "seeAll": "Alle Sitzungen",
@@ -160,10 +163,7 @@
   "confirmDelete": {
     "sessionTitle": "Sitzung löschen?",
     "sessionBody": "„{{title}}“ und die zugehörigen Nachrichten werden gelöscht. Dies kann nicht widerrufen werden.",
-    "exampleTitle": "Beispiel ausblenden?",
-    "exampleBody": "„{{title}}“ wird in der Seitenleiste ausgeblendet.",
-    "deleteAction": "Löschen",
-    "hideAction": "Ausblenden"
+    "deleteAction": "Löschen"
   },
   "status": {
     "usage": {
@@ -250,7 +250,6 @@
   },
   "rowMenu": {
     "sessionLabel": "Sitzungsaktionen",
-    "projectLabel": "Projektaktionen",
-    "exampleLabel": "Beispielaktionen"
+    "projectLabel": "Projektaktionen"
   }
 }

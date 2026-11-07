@@ -20,7 +20,11 @@
     "files": "Fichiers",
     "runs": "Exécutions",
     "skills": "Compétences",
-    "projects": "Projets"
+    "projects": "Projets",
+    "examples": "Exemples"
+  },
+  "examples": {
+    "readOnly": "Lecture seule"
   },
   "projects": {
     "heading": "Projets",
@@ -104,7 +108,6 @@
   "history": {
     "heading": "Sessions",
     "empty": "Aucune conversation pour le moment.",
-    "exampleTag": "exemple",
     "deleteAria": "Supprimer {{title}}",
     "running": "En cours",
     "seeAll": "Toutes les sessions",
@@ -160,10 +163,7 @@
   "confirmDelete": {
     "sessionTitle": "Supprimer la session ?",
     "sessionBody": "« {{title}} » et ses messages seront supprimés. Cette action est irréversible.",
-    "exampleTitle": "Masquer l'exemple ?",
-    "exampleBody": "« {{title}} » sera masqué dans la barre latérale.",
-    "deleteAction": "Supprimer",
-    "hideAction": "Masquer"
+    "deleteAction": "Supprimer"
   },
   "status": {
     "usage": {
@@ -250,7 +250,6 @@
   },
   "rowMenu": {
     "sessionLabel": "Actions de la session",
-    "projectLabel": "Actions du projet",
-    "exampleLabel": "Actions de l’exemple"
+    "projectLabel": "Actions du projet"
   }
 }

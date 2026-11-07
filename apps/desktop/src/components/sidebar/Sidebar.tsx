@@ -23,7 +23,6 @@ import {
   Settings,
   Trash2,
 } from "lucide-react";
-import type { Project } from "@ai4s/shared";
 import { cn } from "@/lib/cn";
 import { draftKeyFor, rootSessionOf, useRuntimeStore } from "@/lib/runtime";
 import {
@@ -51,6 +50,7 @@ import { isGatewayWeb, isPlatformWeb } from "@/lib/webMode";
 import { pathKey, samePath } from "@/lib/workspacePath";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { GatewayAccountMenu } from "@/components/sidebar/GatewayAccountMenu";
+import { ExampleMenu } from "@/components/sidebar/ExampleMenu";
 import {
   ContextMenu,
   ContextMenuEmpty,
@@ -67,7 +67,6 @@ interface Row {
   title: string;
   rawTitle?: string;
   to: string;
-  kind: "session" | "example";
   /** The project this session belongs to, if any. Names the Screen a click
    *  opens — "Screen 3" says nothing about what is in it. */
   project?: string;
@@ -105,7 +104,7 @@ function initialCollapsedProjects(): string[] {
   }
 }
 
-export function Sidebar({ project }: { project: Project }) {
+export function Sidebar() {
   const { t } = useTranslation(["nav", "settings"]);
   const navigate = useNavigate();
   const location = useLocation();
@@ -125,7 +124,6 @@ export function Sidebar({ project }: { project: Project }) {
   const gatewayUser = useRuntimeStore((s) => s.gatewayUser);
   const projects = useRuntimeStore((s) => s.projects);
   const workspace = useRuntimeStore((s) => s.workspace);
-  const hiddenExamples = useRuntimeStore((s) => s.hiddenExamples);
   const startDraft = useRuntimeStore((s) => s.startDraft);
   const startDraftInWorkspace = useRuntimeStore((s) => s.startDraftInWorkspace);
   const createProject = useRuntimeStore((s) => s.createProject);
@@ -137,7 +135,6 @@ export function Sidebar({ project }: { project: Project }) {
   const setSessionArchived = useRuntimeStore((s) => s.setSessionArchived);
   const setProjectPinned = useRuntimeStore((s) => s.setProjectPinned);
   const deleteProject = useRuntimeStore((s) => s.deleteProject);
-  const hideExample = useRuntimeStore((s) => s.hideExample);
   // Which sessions are working right now — so a background session (or its
   // subagent) shows it's busy without opening it. A running subagent surfaces
   // on the top-level session at the root of its parent chain.
@@ -361,7 +358,6 @@ export function Sidebar({ project }: { project: Project }) {
       title: displayTitle(s) ?? s.title,
       rawTitle: editableSessionTitle(s),
       to: `/live/${s.id}`,
-      kind: "session",
     };
     const owner = s.directory ? projectByPath.get(pathKey(s.directory)) : undefined;
     if (owner) {
@@ -387,14 +383,6 @@ export function Sidebar({ project }: { project: Project }) {
     ...byRecency.filter((p) => !p.pinned).slice(0, RECENT_LIMIT),
   ];
   const hiddenProjectCount = projects.length - visibleProjects.length;
-  const exampleRows: Row[] = project.sessions
-    .filter((e) => !hiddenExamples.includes(e.id))
-    .map((e) => ({
-      id: e.id,
-      title: e.title,
-      to: `/example/${e.id}`,
-      kind: "example" as const,
-    }));
 
   const [pendingDelete, setPendingDelete] = useState<Row | null>(null);
   const [pendingRemoveProject, setPendingRemoveProject] = useState<ProjectInfo | null>(null);
@@ -403,8 +391,7 @@ export function Sidebar({ project }: { project: Project }) {
     const row = pendingDelete;
     setPendingDelete(null);
     if (!row) return;
-    if (row.kind === "session") void deleteSession(row.id);
-    else hideExample(row.id);
+    void deleteSession(row.id);
     if (location.pathname === row.to) navigate("/live");
   };
 
@@ -426,7 +413,7 @@ export function Sidebar({ project }: { project: Project }) {
   const sessionDirOf = (id: string) => sessions.find((x) => x.id === id)?.directory;
 
   const sessionRow = (row: Row) => {
-    const running = row.kind === "session" && activeRoots.has(row.id);
+    const running = activeRoots.has(row.id);
     // A session the runtime never auto-titled stays "New session - <stamp>"
     // (#63); double-clicking the row is the way out, matching project rename.
     if (renamingSession === row.id)
@@ -445,55 +432,49 @@ export function Sidebar({ project }: { project: Project }) {
     return (
     <ContextMenu
       key={row.to}
-      label={row.kind === "example" ? t("rowMenu.exampleLabel") : t("rowMenu.sessionLabel")}
+      label={t("rowMenu.sessionLabel")}
       items={
-        row.kind === "example" ? (
-          <ContextMenuItem icon={<Trash2 size={14} />} danger onSelect={() => setPendingDelete(row)}>
-            {t("confirmDelete.hideAction")}
+        <>
+          <ContextMenuItem
+            icon={<Pencil size={14} />}
+            disabled={webReadOnly}
+            // Mount the editor after the menu hands focus back, or the
+            // restore blurs the fresh input and a blur commits it.
+            onSelect={() => requestAnimationFrame(() => setRenamingSession(row.id))}
+          >
+            {t("history.rename")}
           </ContextMenuItem>
-        ) : (
-          <>
-            <ContextMenuItem
-              icon={<Pencil size={14} />}
-              disabled={webReadOnly}
-              // Mount the editor after the menu hands focus back, or the
-              // restore blurs the fresh input and a blur commits it.
-              onSelect={() => requestAnimationFrame(() => setRenamingSession(row.id))}
-            >
-              {t("history.rename")}
-            </ContextMenuItem>
-            <ContextMenuSub icon={<FolderInput size={14} />} label={t("history.moveTo")}>
-              {projects.length === 0 && (
-                <ContextMenuEmpty>{t("history.moveToNone")}</ContextMenuEmpty>
-              )}
-              {projects.map((p) => (
-                <ContextMenuItem
-                  key={p.id}
-                  disabled={samePath(p.path, sessionDirOf(row.id))}
-                  onSelect={() => void moveSessionToWorkspace(row.id, p.path)}
-                >
-                  {p.name}
-                </ContextMenuItem>
-              ))}
-            </ContextMenuSub>
-            <ContextMenuItem
-              icon={<Archive size={14} />}
-              disabled={webReadOnly}
-              onSelect={() => void setSessionArchived(row.id, true)}
-            >
-              {t("history.archive")}
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              icon={<Trash2 size={14} />}
-              danger
-              disabled={webReadOnly}
-              onSelect={() => setPendingDelete(row)}
-            >
-              {t("confirmDelete.deleteAction")}
-            </ContextMenuItem>
-          </>
-        )
+          <ContextMenuSub icon={<FolderInput size={14} />} label={t("history.moveTo")}>
+            {projects.length === 0 && (
+              <ContextMenuEmpty>{t("history.moveToNone")}</ContextMenuEmpty>
+            )}
+            {projects.map((p) => (
+              <ContextMenuItem
+                key={p.id}
+                disabled={samePath(p.path, sessionDirOf(row.id))}
+                onSelect={() => void moveSessionToWorkspace(row.id, p.path)}
+              >
+                {p.name}
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSub>
+          <ContextMenuItem
+            icon={<Archive size={14} />}
+            disabled={webReadOnly}
+            onSelect={() => void setSessionArchived(row.id, true)}
+          >
+            {t("history.archive")}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={<Trash2 size={14} />}
+            danger
+            disabled={webReadOnly}
+            onSelect={() => setPendingDelete(row)}
+          >
+            {t("confirmDelete.deleteAction")}
+          </ContextMenuItem>
+        </>
       }
     >
     <div className="group relative">
@@ -506,7 +487,7 @@ export function Sidebar({ project }: { project: Project }) {
         onDragStart={(e) => e.preventDefault()}
         onPointerDown={(e) => {
           // Drag a session row into the pane area to dock it (desktop only).
-          if (row.kind === "session" && !isMobile && !isGatewayWeb) {
+          if (!isMobile && !isGatewayWeb) {
             // eslint-disable-next-line i18next/no-literal-string -- DragSource kind, not UI copy
             startPaneDrag(e, { kind: "session", sessionId: row.id }, row.title);
           }
@@ -518,7 +499,7 @@ export function Sidebar({ project }: { project: Project }) {
           // a modifier-click opens the session in a NEW split pane; a plain
           // click opens it full-screen in the tentative "preview" screen (#3).
           // Web/phone (single-pane) fall through to the NavLink as before.
-          if (row.kind === "session" && !isMobile && !isGatewayWeb) {
+          if (!isMobile && !isGatewayWeb) {
             e.preventDefault();
             const layout = useLayoutStore.getState();
             if (e.metaKey || e.ctrlKey || e.altKey) {
@@ -550,18 +531,13 @@ export function Sidebar({ project }: { project: Project }) {
             aria-label={t("history.running")}
           />
         ) : (
-          <span
-            className={cn(
-              "h-1.5 w-1.5 shrink-0 rounded-full",
-              row.kind === "example" ? "bg-muted" : "bg-ok",
-            )}
-          />
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok" />
         )}
         <span
           className="flex-1 truncate"
-          title={row.kind === "session" ? t("history.renameHint") : undefined}
+          title={t("history.renameHint")}
           onDoubleClick={(e) => {
-            if (row.kind !== "session" || webReadOnly) return;
+            if (webReadOnly) return;
             e.preventDefault();
             e.stopPropagation();
             setRenamingSession(row.id);
@@ -569,11 +545,6 @@ export function Sidebar({ project }: { project: Project }) {
         >
           {row.title}
         </span>
-        {row.kind === "example" && (
-          <span className="shrink-0 rounded-full bg-surface-2 px-1.5 text-[10px] uppercase tracking-wide text-muted ring-1 ring-border">
-            {t("history.exampleTag")}
-          </span>
-        )}
       </NavLink>
       <button
         onClick={() => setPendingDelete(row)}
@@ -730,6 +701,7 @@ export function Sidebar({ project }: { project: Project }) {
             label={t("items.skills")}
             onClick={() => navigate("/skills")}
           />
+          <ExampleMenu />
         </nav>
 
         <div className="mt-4 flex-1 overflow-y-auto px-3 pb-2">
@@ -1019,7 +991,7 @@ export function Sidebar({ project }: { project: Project }) {
               {t("history.seeAll")}
             </button>
           </div>
-          {looseRows.length === 0 && exampleRows.length === 0 && (
+          {looseRows.length === 0 && (
             <div className="px-2 py-2 text-xs text-muted">
               {t("history.empty")}
             </div>
@@ -1032,7 +1004,6 @@ export function Sidebar({ project }: { project: Project }) {
               onClick={() => navigate("/history")}
             />
           )}
-          {exampleRows.map(sessionRow)}
         </div>
 
         {!isGatewayWeb && <div className="flex flex-wrap items-center gap-1 border-t border-border px-3 py-3">
@@ -1071,21 +1042,9 @@ export function Sidebar({ project }: { project: Project }) {
 
         {pendingDelete && (
           <ConfirmDialog
-            title={
-              pendingDelete.kind === "session"
-                ? t("confirmDelete.sessionTitle")
-                : t("confirmDelete.exampleTitle")
-            }
-            body={
-              pendingDelete.kind === "session"
-                ? t("confirmDelete.sessionBody", { title: displayTitle(pendingDelete) })
-                : t("confirmDelete.exampleBody", { title: pendingDelete.title })
-            }
-            confirmLabel={
-              pendingDelete.kind === "session"
-                ? t("confirmDelete.deleteAction")
-                : t("confirmDelete.hideAction")
-            }
+            title={t("confirmDelete.sessionTitle")}
+            body={t("confirmDelete.sessionBody", { title: displayTitle(pendingDelete) })}
+            confirmLabel={t("confirmDelete.deleteAction")}
             onConfirm={confirmDelete}
             onCancel={() => setPendingDelete(null)}
           />

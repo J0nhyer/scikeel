@@ -20,7 +20,11 @@
     "files": "Archivos",
     "runs": "Ejecuciones",
     "skills": "Habilidades",
-    "projects": "Proyectos"
+    "projects": "Proyectos",
+    "examples": "Ejemplos"
+  },
+  "examples": {
+    "readOnly": "Solo lectura"
   },
   "projects": {
     "heading": "Proyectos",
@@ -104,7 +108,6 @@
   "history": {
     "heading": "Sesiones",
     "empty": "Aún no hay conversaciones.",
-    "exampleTag": "ejemplo",
     "deleteAria": "Eliminar {{title}}",
     "running": "Trabajando",
     "seeAll": "Todas las sesiones",
@@ -160,10 +163,7 @@
   "confirmDelete": {
     "sessionTitle": "¿Eliminar sesión?",
     "sessionBody": "\"{{title}}\" y sus mensajes se eliminarán. Esta acción no se puede deshacer.",
-    "exampleTitle": "¿Ocultar ejemplo?",
-    "exampleBody": "\"{{title}}\" se ocultará de la barra lateral.",
-    "deleteAction": "Eliminar",
-    "hideAction": "Ocultar"
+    "deleteAction": "Eliminar"
   },
   "status": {
     "usage": {
@@ -250,7 +250,6 @@
   },
   "rowMenu": {
     "sessionLabel": "Acciones de la sesión",
-    "projectLabel": "Acciones del proyecto",
-    "exampleLabel": "Acciones del ejemplo"
+    "projectLabel": "Acciones del proyecto"
   }
 }

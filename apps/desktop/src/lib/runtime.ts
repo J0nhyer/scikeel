@@ -133,7 +133,6 @@ import { clearWorkspaceTextDrafts, confirmWorkspaceDraftLeave } from "@/lib/work
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const URL_KEY = "ai4s.opencodeUrl";
-const HIDDEN_KEY = "ai4s.hiddenExamples";
 // The composer's chosen reasoning-effort variant, kept across restarts (favorites
 // / recent models persist too, so the effort should as well). Sibling of the
 // model-preferences keys in components/settings/modelPreferences.
@@ -164,14 +163,6 @@ function saveRecord(key: string, rec: Record<string, unknown>): void {
 function initialUrl(): string {
   if (typeof window === "undefined") return DEFAULT_OPENCODE_URL;
   return window.localStorage.getItem(URL_KEY) ?? DEFAULT_OPENCODE_URL;
-}
-function initialHidden(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    return JSON.parse(window.localStorage.getItem(HIDDEN_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
 }
 function initialReasoningVariant(): string | null {
   if (typeof window === "undefined") return null;
@@ -417,7 +408,6 @@ interface RuntimeState {
   /** Persist the network-proxy setting (restarts the sidecar) and reconnect. */
   setProxySetting: (mode: ProxyMode, url: string) => Promise<void>;
   tools: ToolStatus[];
-  hiddenExamples: string[];
   error: string | null;
   /** Pending interactive requests the agent is blocked on, newest last. */
   questions: QuestionAskedEvent[];
@@ -664,7 +654,6 @@ interface RuntimeState {
   /** Archive a conversation (or restore it). Nothing is deleted — archiving
    *  only takes it out of the sidebar and the default history view. */
   setSessionArchived: (id: string, archived: boolean) => Promise<boolean>;
-  hideExample: (id: string) => void;
   /** Install a skill. A pasted SKILL.md is written straight into the profile's
    *  user skills dir (`installed`); anything else (a URL, a description) hands
    *  the job to an agent session (`session`, whose id the caller opens) and is
@@ -4459,7 +4448,6 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
   modelSwitching: false,
   approvalMode: isGatewayWeb ? "full" : "approve",
   tools: [],
-  hiddenExamples: initialHidden(),
   error: null,
   questions: [],
   permissions: [],
@@ -6191,12 +6179,6 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => {
     if (archived) void get().refreshProjectCounts();
     else void get().refreshSessions();
     return true;
-  },
-
-  hideExample: (id) => {
-    const next = Array.from(new Set([...get().hiddenExamples, id]));
-    if (typeof window !== "undefined") window.localStorage.setItem(HIDDEN_KEY, JSON.stringify(next));
-    set({ hiddenExamples: next });
   },
 
   // Install a skill (#1). Installed skills land in the app profile's user
