@@ -130,7 +130,7 @@ export function collaborationHooks({ token, request: provided }) {
     },
   };
   const delivery = {
-    description: "Prepare an explicitly authorized Basic Delegated file scope before editing originals or producing outputs, then verify its version-1 report against actual workspace files. At most two repairs after the first failed candidate. The result checks files and evidence, not scientific correctness.",
+    description: "Prepare an explicitly authorized Basic Delegated file scope before editing originals or producing outputs, then verify its version-1 report against actual workspace files. Report steps are objects like {\"title\": \"...\", \"status\": \"completed\"}; a \"step\" field is invalid and an invalid status is rejected, not coerced to pending. A literature delivery prepares review.md, references.csv, search_log.md, citation_check.md, and citation_check.json; the check titled \"citation metadata + claim support\" uses citation_check.json, whose claims and usage are validated structurally, and a missing or invalid citation check fails verification. At most two repairs after the first failed candidate. The result checks files and evidence, not scientific correctness.",
     args: {
       action: { type: "string", enum: ["prepare", "verify"] },
       inputs: { type: "array", items: { type: "string" }, maxItems: 30 },

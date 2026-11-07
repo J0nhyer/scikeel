@@ -43,15 +43,69 @@ test("ships the literature review and citation reviewer skills", async () => {
     assert.match(lit, /search_log\.md/);
     assert.match(lit, /Never invent|never invent/);
     assert.match(lit, /unreachable|staged|do not invent/i);
+    // Task 1: Europe PMC and the pre-specified search contract.
+    assert.match(lit, /Europe PMC/);
+    assert.doesNotMatch(lit, /eutils\.ncbi\.nlm\.nih\.gov/);
+    assert.match(lit, /fullTextUrlList/);
+    assert.match(lit, /pmcid/);
+    assert.match(lit, /full_text_status/);
+    assert.match(lit, /venue_tier/);
+    assert.match(lit, /search\/raw/);
+    assert.match(lit, /papers\//);
+    assert.match(lit, /`question`|AskQuestion/);
+    // Task 2: open-access full-text acquisition.
+    assert.match(lit, /Semantic Scholar/);
+    assert.match(lit, /openAccessPdf/);
+    assert.match(lit, /savePath/);
+    assert.match(lit, /pdf-text/);
+    assert.match(lit, /html-text/);
+    assert.match(lit, /scanned/);
+    assert.match(lit, /unavailable/);
+    assert.match(lit, /citation_check\.json/);
+    assert.match(lit, /citation_check\.md/);
     const cit = await readFile(join(home, ".config/opencode/skills/citation-reviewer/SKILL.md"), "utf8");
     assert.match(cit, /Crossref/);
     assert.match(cit, /retraction/i);
     assert.match(cit, /check: "citation"|citation/);
+    assert.match(cit, /Europe PMC/);
+    assert.doesNotMatch(cit, /eutils\.ncbi\.nlm\.nih\.gov/);
+    assert.match(cit, /citation_check\.json/);
+    assert.match(cit, /citation_check\.md/);
+    assert.match(cit, /"usage"/);
+    assert.match(cit, /uncited/);
+    assert.match(cit, /unknown/);
+    assert.match(cit, /supported/);
+    assert.match(cit, /partial/);
+    assert.match(cit, /unsupported/);
+    assert.match(cit, /unverifiable/);
+    assert.match(cit, /evidence_path/);
+    assert.match(cit, /full-text/);
+    assert.match(cit, /abstract-only/);
     for (const runtime of ["claude", "codex"]) {
       const list = await discoverSkills({ home, runtime, workspaceDir: workspace, bundled });
       assert.equal(list.find((skill) => skill.name === "literature-review").source, "builtin");
       assert.equal(list.find((skill) => skill.name === "citation-reviewer").source, "builtin");
     }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("ships the research delivery contract with all citation artifacts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scikeel-delivery-skill-"));
+  try {
+    const home = join(root, "home");
+    const workspace = join(root, "workspace");
+    await mkdir(home);
+    await mkdir(workspace);
+    await seedSkills(home);
+    const flow = await readFile(join(home, ".config/opencode/skills/research-workflow/SKILL.md"), "utf8");
+    for (const artifact of ["review.md", "references.csv", "search_log.md", "citation_check.md", "citation_check.json"]) {
+      assert.ok(flow.includes(artifact), `research-workflow must name ${artifact}`);
+    }
+    assert.match(flow, /prepare/);
+    assert.match(flow, /claim support/);
+    assert.match(flow, /citation metadata \+ claim support/);
+    assert.ok(flow.includes('{"title": "...", "status": "completed"}'), "research-workflow must show the minimal report step");
+    assert.match(flow, /`"step"`|"step" is not|invalid status/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

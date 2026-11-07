@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { researchPaths } from "./research-tasks.mjs";
+import { validateCitationCheck } from "./citation-check.mjs";
 const fail = (message, status = 409) =>
   Object.assign(new Error(message), { status });
 const businessFailure = (code, message, status = 409, details) =>
@@ -16,6 +17,30 @@ const text = (v) => {
     throw fail("A research answer or question is required", 400);
   return v.trim();
 };
+// A delivery that declares review artifacts is a literature delivery: the
+// machine-readable citation check is required and validated structurally.
+const CITATION_ARTIFACTS = new Set(["citation_check.json", "citation_check.md", "review.md", "references.csv"]);
+const requiresCitationCheck = (deliverables) =>
+  deliverables.some((path) => CITATION_ARTIFACTS.has(basename(path)));
+async function citationCheckFailure(research, owner, path) {
+  const text = await research.readArtifact(owner, path);
+  if (text === null) {
+    const artifact = await research.artifact(owner, path);
+    return artifact.exists
+      ? `citation_check.json ${path} could not be read`
+      : `citation_check.json is required for a literature delivery; ${path} is missing`;
+  }
+  let value;
+  try { value = JSON.parse(text); }
+  catch { return "citation_check.json is not valid JSON"; }
+  try {
+    await validateCitationCheck(value, { exists: (candidate) => research.evidence(owner, candidate) });
+    return null;
+  } catch (error) {
+    if (error?.reportInvalid) return error.message;
+    throw error;
+  }
+}
 /** Gateway-owned decisions; runtime callers can propose but cannot answer. */
 export class CollaborationStore {
   constructor({
@@ -289,10 +314,17 @@ export class CollaborationStore {
         const unchanged = inputs.every((v, i) => v.exists && v.sha256 === d.inputs[i].sha256);
         const outputs = d.deliverables.every((path) => report?.artifacts.some((v) => v.path === path && v.exists));
         const checks = report?.checks.length > 0 && report.checks.every((v) => v.status === "passed" && v.evidenceExists);
+        const declaredCitation = d.deliverables.find((path) => basename(path) === "citation_check.json");
+        const reportedCitation = report?.artifacts?.find((artifact) => basename(artifact.path) === "citation_check.json")?.path;
+        const citationFailure = requiresCitationCheck(d.deliverables) || reportedCitation
+          ? await citationCheckFailure(this.research, o, declaredCitation ?? reportedCitation ?? "citation_check.json")
+          : null;
         const issue = !unchanged ? "changed_inputs" : !report ? "missing_progress" :
           report.decisions.length ? "pending_decisions" : report.status !== "completed" ? "incomplete_report" :
-          !outputs ? "missing_outputs" : !checks ? "failed_checks" : null;
-        if (progress.error) d.reportError = progress.error; else delete d.reportError;
+          !outputs ? "missing_outputs" : citationFailure ? "failed_checks" : !checks ? "failed_checks" : null;
+        if (progress.error) d.reportError = progress.error;
+        else if (citationFailure) d.reportError = citationFailure;
+        else delete d.reportError;
         Object.assign(d, { report, status: issue ? "failed" : "completed", issue, checkedAt: this.now() });
         d.attempts++;
       } else throw fail("Invalid delivery operation", 400);

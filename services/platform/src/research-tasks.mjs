@@ -3,10 +3,17 @@ import { createReadStream, promises as fs } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 const MODES = new Set(["guided", "collaborative", "delegated"]);
+const STEP_STATUSES = ["pending", "running", "completed", "failed"];
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/;
 const LEASE_MS = 45_000;
 const error = (message, status = 400) => Object.assign(new Error(message), { status });
 const invalidReport = (message) => Object.assign(error(message), { reportInvalid: true });
+const receivedKeys = (value) => {
+  if (Array.isArray(value)) return "array";
+  if (!value || typeof value !== "object") return value === null ? "null" : typeof value;
+  const keys = Object.keys(value).slice(0, 8);
+  return keys.length ? keys.join(", ") : "none";
+};
 const publicTask=task=>task?structuredClone(Object.fromEntries(Object.entries(task).filter(([key])=>!key.startsWith('analytics')))):task;
 const inside = (root, file) => {
   const rel = relative(root, file);
@@ -69,6 +76,16 @@ export class ResearchTasks {
   }
   artifact(owner, path) {return this.workspace ? this.workspace.artifact(owner,path) : artifact(owner.directory,path);}
   async evidence(owner,path) {return this.workspace ? (await this.workspace.artifact(owner,path)).exists : Boolean(await safeFile(owner.directory,path));}
+  /** Read a bounded workspace artifact through the same boundary as `artifact`/`evidence`. */
+  async readArtifact(owner, path) {
+    if (this.workspace) return this.workspace.readReport(owner, path);
+    const actual = await safeFile(owner.directory, path);
+    if (!actual) return null;
+    try {
+      if ((await fs.stat(actual)).size > 128 * 1024) return null;
+      return await fs.readFile(actual, "utf8");
+    } catch { return null; }
+  }
   key(userId, sessionId) { return `${id(userId)}/${id(sessionId)}`; }
   async locked(userId, sessionId, fn) {
     const key = this.key(userId, sessionId);
@@ -225,8 +242,14 @@ export class ResearchTasks {
     if (new Set(decisions.map((d) => d.id)).size !== decisions.length)
       throw invalidReport("Research report decisions contain duplicate ids");
     const steps = (report.steps ?? []).slice(0, 30).map((step, index) => {
-      try { return { title: text(step.title, 500), status: ["pending", "running", "completed", "failed"].includes(step.status) ? step.status : "pending" }; }
-      catch { throw invalidReport(`Research report steps[${index}] is invalid`); }
+      if (!step || typeof step !== "object" || Array.isArray(step))
+        throw invalidReport(`Research report steps[${index}] must be an object with a non-empty "title" and a valid "status" (pending, running, completed, failed); found ${receivedKeys(step)}`);
+      const title = typeof step.title === "string" ? step.title.trim() : "";
+      if (!title || title.length > 500)
+        throw invalidReport(`Research report steps[${index}] must have a non-empty "title" and a valid "status" (pending, running, completed, failed); found keys: ${receivedKeys(step)}`);
+      if (!STEP_STATUSES.includes(step.status))
+        throw invalidReport(`Research report steps[${index}].status must be one of pending, running, completed, failed; found ${JSON.stringify(step.status)}; found keys: ${receivedKeys(step)}`);
+      return { title, status: step.status };
     });
     let artifactPaths;
     try { artifactPaths = paths(report.artifacts ?? []); }

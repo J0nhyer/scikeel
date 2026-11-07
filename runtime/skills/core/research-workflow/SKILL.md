@@ -29,12 +29,20 @@ essential inputs. Before multi-step work that produces files, call
 `research_delivery` with action `prepare`, original input paths, and promised
 `deliverables`. Use its returned `execution` and `delivery.reportPath` for the
 version-1 report below. This reuses conversation state; no task form is required.
-Record real check evidence and then call action `verify`. A failed initial
-candidate permits at most two repairs within the captured scope. After exhaustion,
-explain partial outputs and the blocker; never label a failed candidate completed.
-Delivery verification checks files, evidence presence and input hashes; it is not
-an independent scientific review. Explicit single operations and discussion need
-no delivery report.
+A literature delivery prepares all five deliverables: `review.md`,
+`references.csv`, `search_log.md`, `citation_check.md`, and
+`citation_check.json`. The citation check is required, not optional: the
+`citation-reviewer` skill writes both `citation_check.md` and
+`citation_check.json`, and the check titled "citation metadata + claim support"
+uses `citation_check.json` as its evidence. Only `screening=include` references
+must be cited; `usage.uncited` and `usage.unknown` must be empty for delivery.
+Use the `question` tool when the core full-text set or a paywalled priority is
+ambiguous. Record real check evidence and then call action `verify`. A failed
+initial candidate permits at most two repairs within the captured scope. After
+exhaustion, explain partial outputs and the blocker; never label a failed
+candidate completed. Delivery verification checks files, evidence presence,
+citation-check structure and input hashes; it is not an independent scientific
+review. Explicit single operations and discussion need no delivery report.
 
 ## Establish the task
 
@@ -105,7 +113,11 @@ overwrite a report belonging to another execution. Report shape:
 ```
 
 Allowed report states are `running`, `waiting_input`, `completed`, and `failed`.
-Step states are `pending`, `running`, `completed`, and `failed`. A decision is
+Step states are `pending`, `running`, `completed`, and `failed`. Each step is an
+object with a non-empty `title` and a `status`; a minimal step is exactly
+`{"title": "...", "status": "completed"}`. A `"step"` or `"name"` field and an
+invalid status such as `"done"` are rejected with a field-level error, and an
+invalid status is not coerced to `pending`. A decision is
 `{"id":"stable-choice-id","question":"Concrete choice for the student"}`.
 Keep its ID and question unchanged while awaiting confirmation. Read the user
 answer from the next supplied task record. A confirmation authorizes only that
@@ -115,12 +127,20 @@ Artifacts are relative paths to files actually produced. Include every requested
 deliverable. A check is `{"title":"What was checked","status":"passed",
 "evidence":"checks/verification.txt"}`. Its evidence must be an actual workspace
 file recording inputs, method and observed output, not an assertion without a
-check. Check states are `passed`, `failed`, and `pending`. Write limitations as
-plain text. Preserve previous steps and confirmed-decision context when updating.
+check. For a literature review, the citation check is
+`{"title":"citation metadata + claim support","status":"passed","evidence":"citation_check.json"}`;
+`citation_check.json` carries the per-claim support and citation usage, and
+`citation_check.md` is a separate prepared artifact. Check states are `passed`,
+`failed`, and `pending`. Write limitations as plain text. Preserve previous steps
+and confirmed-decision context when updating.
 
-Before ending a turn, save the final report. Use `completed` only when the
-requested outputs exist and every required check was executed and passed. Use
-`failed` when a requested check or execution failed. Use `waiting_input` when a
-student decision is needed, then stop execution and explain that decision in the
-conversation. The platform verifies artifact existence and hashes; scientific
-check conclusions remain Agent-reported and must be described that way.
+Use `completed` only for the requested output or check that actually succeeded.
+A source that failed and was replaced (for example PubMed E-utilities replaced
+by Europe PMC) belongs in `limitations`, never in a step marked as a successful
+source. Before ending a turn, save the final report. Use `completed` only when
+the requested outputs exist and every required check was executed and passed.
+Use `failed` when a requested check or execution failed. Use `waiting_input` when
+a student decision is needed, then stop execution and explain that decision in
+the conversation. The platform verifies artifact existence, citation-check
+structure, and hashes; scientific check conclusions remain Agent-reported and
+must be described that way.

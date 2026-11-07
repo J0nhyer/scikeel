@@ -195,6 +195,92 @@ test("delivery validation rejects missing originals, escape paths, and stale exe
   await assert.rejects(f.verify(), /prepare/i);
 });
 
+const literatureDeliverables = ["review.md", "references.csv", "search_log.md", "citation_check.md", "citation_check.json"];
+function citationCheck(overrides = {}) {
+  return JSON.stringify({
+    version: 1,
+    references: [{ id: "1", doi: "10.1000/one", metadata: "resolved", retracted: false, screening: "include", full_text_status: "unavailable" }],
+    claims: [{ claim_id: "c1", section: "2", claim: "The method improves recall.", citations: ["1"], evidence_level: "abstract-only", support: "supported", evidence: "The abstract reports improved recall.", evidence_path: "search/raw/2026-11-07-europepmc.json" }],
+    usage: { cited: ["1"], uncited: [], unknown: [] },
+    summary: { claims: 1, supported: 1, partial: 0, unsupported: 0, unverifiable: 0 },
+    ...overrides,
+  });
+}
+async function writeLiterature(directory, { citation = citationCheck() } = {}) {
+  await writeFile(join(directory, "review.md"), "# Review\n\nRecall improved [1].\n");
+  await writeFile(join(directory, "references.csv"), "id,title,screening\n1,Example,include\n");
+  await writeFile(join(directory, "search_log.md"), "# Search log\n");
+  await writeFile(join(directory, "citation_check.md"), "| claim_id | support |\n| c1 | supported |\n");
+  if (citation !== null) await writeFile(join(directory, "citation_check.json"), citation);
+  await mkdir(join(directory, "search/raw"), { recursive: true });
+  await writeFile(join(directory, "search/raw/2026-11-07-europepmc.json"), '{"resultList":{}}');
+}
+const citationCheckReport = {
+  artifacts: literatureDeliverables,
+  checks: [{ title: "citation metadata + claim support", status: "passed", evidence: "citation_check.json" }],
+};
+
+test("a literature delivery prepares all five artifacts and validates the citation check", async (t) => {
+  const f = await fixture(t);
+  await f.prepare(["input.csv"], literatureDeliverables);
+  await writeLiterature(f.owner.directory);
+  await f.report(citationCheckReport);
+  const done = await f.verify();
+  assert.equal(done.delivery.status, "completed");
+  assert.equal(done.delivery.reportError, undefined);
+});
+
+test("a structural citation-check failure overrides self-reported passed checks", async (t) => {
+  const f = await fixture(t);
+  await f.prepare(["input.csv"], literatureDeliverables);
+  await writeLiterature(f.owner.directory, { citation: citationCheck({ claims: [] }) });
+  await f.report(citationCheckReport);
+  const failed = await f.verify();
+  assert.equal(failed.delivery.status, "failed");
+  assert.equal(failed.delivery.issue, "failed_checks");
+  assert.match(failed.delivery.reportError, /claims must contain at least one claim/);
+});
+
+test("a literature delivery without citation_check.json fails verification", async (t) => {
+  const f = await fixture(t);
+  const deliverables = ["review.md", "references.csv", "search_log.md", "citation_check.md"];
+  await f.prepare(["input.csv"], deliverables);
+  await writeLiterature(f.owner.directory, { citation: null });
+  await f.report({
+    artifacts: deliverables,
+    checks: [{ title: "citation metadata + claim support", status: "passed", evidence: "citation_check.md" }],
+  });
+  const failed = await f.verify();
+  assert.equal(failed.delivery.status, "failed");
+  assert.equal(failed.delivery.issue, "failed_checks");
+  assert.match(failed.delivery.reportError, /citation_check\.json.*missing/i);
+});
+
+test("a report step using 'step' instead of 'title' fails with the expected fields", async (t) => {
+  const f = await fixture(t);
+  await f.prepare(); await f.outputs();
+  await f.report({ steps: [{ step: "Run the analysis", status: "completed" }] });
+  const failed = await f.verify();
+  assert.equal(failed.delivery.status, "failed");
+  assert.equal(failed.delivery.issue, "missing_progress");
+  assert.match(failed.delivery.reportError, /steps\[0\]/);
+  assert.match(failed.delivery.reportError, /title/);
+  assert.match(failed.delivery.reportError, /status/);
+  await f.report({ steps: [{ title: "Run the analysis", status: "completed" }] });
+  const completed = await f.verify();
+  assert.equal(completed.delivery.status, "completed");
+  assert.equal(completed.delivery.reportError, undefined);
+});
+
+test("the research_delivery tool describes the report template and citation check", async () => {
+  const { collaborationHooks } = await import("../../../runtime/sandbox/collaboration.mjs");
+  const hooks = collaborationHooks({ token: "a".repeat(64), request: async () => ({ state: { execution: 1 } }) });
+  const description = hooks.tool.research_delivery.description;
+  assert.ok(description.includes('{"title": "...", "status": "completed"}'));
+  assert.match(description, /citation_check\.json/);
+  assert.match(description, /citation metadata \+ claim support/);
+});
+
 test("a pending Delegated method decision blocks delivery operations", async (t) => {
   const f = await fixture(t);
   const state = await f.store.get(f.owner);
