@@ -2678,6 +2678,13 @@ export class PlatformServer {
           const reader = upstream.body.getReader();
           const decoder = new TextDecoder();
           let buffer = "";
+          // One authorization per session per stream window: the runtime emits
+          // a delta for every token, and a worker-backed access check on each
+          // one caps delivery at the worker RPC rate (observed ~350ms/event).
+          // Re-check after the TTL so a workspace trashed mid-stream is still
+          // fenced without a per-token round trip.
+          const sessionAccess = new Map();
+          const sessionAccessTtlMs = 30_000;
           try {
             while (true) {
               const { value, done } = await reader.read();
@@ -2700,11 +2707,19 @@ export class PlatformServer {
                   this.tenantPolicy.registerRequest(context, properties);
                 if(this.workspaceManagement){
                   const id=properties?.sessionID??properties?.info?.id??properties?.part?.sessionID;
-                  if(id){try{const owned=await this.sessionAuthority.ensure(context,id);await this.workspaceManagement.assertAccessible(context,owned.directory);}catch(error){
-                    // Transient failures must reconnect rather than lose an idle/checkpoint event silently.
-                    if(error.code==="protected_path" || [403,404].includes(error.statusCode ?? error.status))continue;
-                    throw error;
-                  }}
+                  if(id){
+                    const cached=sessionAccess.get(id);
+                    if(!cached||cached.expiresAt<=Date.now()){
+                      try{const owned=await this.sessionAuthority.ensure(context,id);await this.workspaceManagement.assertAccessible(context,owned.directory);
+                        sessionAccess.set(id,{expiresAt:Date.now()+sessionAccessTtlMs});
+                        if(sessionAccess.size>256)sessionAccess.delete(sessionAccess.keys().next().value);
+                      }catch(error){
+                        // Transient failures must reconnect rather than lose an idle/checkpoint event silently.
+                        if(error.code==="protected_path" || [403,404].includes(error.statusCode ?? error.status))continue;
+                        throw error;
+                      }
+                    }
+                  }
                 }
                 if (type === "permission.asked" && properties && await this.automaticToolPermissions.answer(context, properties)) continue;
                 if (properties?.sessionID) this.tenantPolicy.session(context, properties.sessionID);

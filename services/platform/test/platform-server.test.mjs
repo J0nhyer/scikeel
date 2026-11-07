@@ -2551,6 +2551,26 @@ test("transient workspace validation closes SSE for recovery rather than silentl
   f.server.workspaceManagement={assertAccessible:async()=>{throw Object.assign(new Error("Workspace is busy."),{statusCode:429,code:"workspace_rpc_busy"});}};
   await assert.rejects(async()=>{const response=await f.client.request("/event");await response.text();});
 });
+test("SSE token deltas authorize a session once per stream, not once per event",async t=>{
+  const f=await managedPromptFixture(t),access=f.manager.getWorkerAccess(f.context.instanceId),nativeFetch=globalThis.fetch;
+  const frames=[];
+  for(let i=0;i<40;i++)frames.push({type:"message.part.delta",properties:{sessionID:"owned",partID:"prt_one",field:"text",delta:"字"}});
+  frames.push({type:"session.idle",properties:{sessionID:"owned"}});
+  globalThis.fetch=async(input,init)=>{
+    const url=new URL(String(input));
+    if(url.origin===new URL(access.url).origin && url.pathname==="/event")return new Response(
+      frames.map(event=>`data: ${JSON.stringify(event)}\n\n`).join(""),{headers:{"content-type":"text/event-stream"}});
+    return nativeFetch(input,init);
+  };
+  t.after(()=>{globalThis.fetch=nativeFetch;});
+  let checks=0;
+  f.server.workspaceManagement={assertAccessible:async()=>{checks++;}};
+  const response=await f.client.request("/event");
+  assert.equal(response.status,200);
+  const body=await response.text();
+  assert.match(body,/message\.part\.delta/);assert.match(body,/session\.idle/);
+  assert.equal(checks,1,"streamed deltas must not perform a worker access check each");
+});
 
 test("monitor cannot settle slow preparation and Stop prevents its late dispatch",async t=>{
   const f=await managedPromptFixture(t);f.server.collaboration.running=f.monitor;

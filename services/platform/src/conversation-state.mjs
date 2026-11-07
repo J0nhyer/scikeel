@@ -53,11 +53,16 @@ const originKey=(binding,event)=>digest([binding,event.nativeEventId]);
 /** Versioned owned references and delivery metadata; native transcripts stay in their existing stores. */
 export class ConversationState {
  #queues=new Map();
+ #changeVersion=0;
  constructor({rootDir,authorize,authorizeRecovery,beforeCommit=async()=>{},maxStateBytes=8*1024**2}) {
   if(!path(rootDir) || typeof authorize!=='function' || authorizeRecovery!==undefined && typeof authorizeRecovery!=='function' ||
      !Number.isSafeInteger(maxStateBytes) || maxStateBytes<1)throw invalid();
   Object.assign(this,{rootDir,authorize,authorizeRecovery:authorizeRecovery??authorize,beforeCommit,maxStateBytes});
  }
+ /** Monotonic in-process write counter. Derived read caches may reuse a
+  *  snapshot while this is unchanged; cross-process writes are bounded by the
+  *  caller's TTL instead. */
+ get changeVersion(){return this.#changeVersion;}
  async #owner(owner,authorize=this.authorize) {
   const value=ownerInput(owner);
   if(owner.generation!==undefined) {
@@ -187,6 +192,7 @@ export class ConversationState {
    const parent=await filesystem.open(folder,constants.O_RDONLY|(constants.O_DIRECTORY??0)|(constants.O_NOFOLLOW??0));
    try {await parent.sync();}finally{await parent.close();}
   }finally{await rm(temporary,{force:true});}
+  this.#changeVersion++;
   if(project)await projectEnvelope(this.catalog,data,()=>this.#save(data,owner,{project:false,authorize}));
  }
  pendingCatalogChanges(userId){return this.#serialized(userId,async()=>[...(await this.#load(userId)).catalogOutbox]);}

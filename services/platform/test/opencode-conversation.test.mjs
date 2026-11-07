@@ -68,3 +68,19 @@ test('only protocol identity fields are translated while tool inputs remain exac
  await f.conversations.bind(owner,value.id,{expectedRevision:value.revision,binding:{runtime:'codex',nativeSessionId:'codex-new',identityRevision:'codex-profile',representedSequence:0}});
  assert.equal(await f.adapter.publicValue(owner,event),null);
 });
+test('streamed events reuse the conversation alias map until the canonical state changes',async t=>{
+ const f=await fixture(t);
+ await f.adapter.prepare(owner,'public-owned',{body:{parts:[]},requestId:'request-one',policyRevision:3});
+ let lists=0;const list=f.conversations.list.bind(f.conversations);
+ f.conversations.list=async(...args)=>{lists++;return list(...args);};
+ const event={type:'message.part.updated',properties:{part:{sessionID:'oc-private',messageID:'actual-user',type:'text',text:'x'}}};
+ for(let i=0;i<50;i++){
+  const value=await f.adapter.publicValue(owner,event);
+  assert.equal(value.properties.part.sessionID,'public-owned');
+ }
+ assert.equal(lists,1,'the alias map is built once for many streamed events');
+ const value=await f.conversations.open(owner,'public-owned');
+ await f.conversations.bind(owner,value.id,{expectedRevision:value.revision,binding:{runtime:'opencode',nativeSessionId:'oc-new',identityRevision:'trusted-profile',representedSequence:0}});
+ assert.equal(await f.adapter.publicValue(owner,event),null,'a binding change invalidates the cached aliases');
+ assert.equal(lists,2);
+});

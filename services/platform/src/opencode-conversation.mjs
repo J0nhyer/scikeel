@@ -8,6 +8,12 @@ const name=value=>typeof value==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.t
 // adapter. Ordinary OpenCode sessions keep their existing worker workflow.
 export class OpenCodeConversation {
  #queues=new Map();
+ /** owner key → {version, at, aliases}. publicValue runs once per streamed
+  *  event, and rebuilding this map lists every canonical conversation (with a
+  *  worker-backed authorization per conversation). Token streams must not pay
+  *  that cost per delta; changeVersion invalidates on local writes and the TTL
+  *  bounds a write made by another process. */
+ #aliasCache=new Map();
  constructor(options){Object.assign(this,options);}
  async resolve(owner,id,{internal=false}={}){
   const values=await this.conversations.list(owner);
@@ -85,11 +91,25 @@ export class OpenCodeConversation {
     }};
   }catch(error){await admitted.settle({cleanupVerified:true});throw error;}
  }
- async publicValue(owner,value,{status=false}={}){
+ async #aliasesFor(owner){
+  const version=this.conversations.changeVersion;
+  const key=JSON.stringify([owner.userId,owner.instanceId,owner.generation,owner.workspaceDir,owner.directory]);
+  if(Number.isSafeInteger(version)){
+   const cached=this.#aliasCache.get(key);
+   if(cached&&cached.version===version&&Date.now()-cached.at<30_000)return cached.aliases;
+  }
   const conversations=await this.conversations.list(owner),aliases=new Map();
   for(const conversation of conversations)for(const binding of conversation.bindings)if(binding.runtime==='opencode'&&binding.nativeSessionId!==conversation.id){
    aliases.set(binding.nativeSessionId,{conversation,binding,current:binding.id===conversation.currentBindingId});
   }
+  if(Number.isSafeInteger(version)){
+   this.#aliasCache.set(key,{version,at:Date.now(),aliases});
+   if(this.#aliasCache.size>256)this.#aliasCache.delete(this.#aliasCache.keys().next().value);
+  }
+  return aliases;
+ }
+ async publicValue(owner,value,{status=false}={}){
+  const aliases=await this.#aliasesFor(owner);
   if(status)return Object.fromEntries(Object.entries(value).flatMap(([id,state])=>{
    const alias=aliases.get(id);return alias?(alias.current?[[alias.conversation.id,state]]:[]):[[id,state]];
   }));
