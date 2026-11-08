@@ -2534,6 +2534,18 @@ export class PlatformServer {
       }
       if(this.workspaceManagement && !["sessionList","sessionStatus","event"].includes(operation.operation))
         await this.workspaceManagement.assertAccessible(context,directory);
+      // Create/fork/move start the directory observer synchronously; only a
+      // dispatched turn waits for it, so opening a session does not pay the
+      // directory-initialization delay twice.
+      const analyticsWatch = !["sessionList","sessionStatus","event"].includes(operation.operation)
+        ? this.analyticsCollector?.watchContext?.(context, directory) : null;
+      if (analyticsWatch) {
+        const settled = Promise.resolve(analyticsWatch).catch(() => {});
+        if (["sessionMessage","sessionPrompt_async","sessionCommand","sessionShell"].includes(operation.operation))
+          await settled;
+        else
+          void settled;
+      }
       trace.sessionId=sessionId;
       if(interaction){interaction.record.directory=directory;interaction.record.sessionId=sessionId;}
       if (body.parentID) {const parent=await this.sessionAuthority.ensure(context, body.parentID);await this.workspaceManagement?.assertAccessible(context,parent.directory);}

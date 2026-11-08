@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -897,6 +897,43 @@ test("managed runtime proxy rejects raw paths, peer directories, unknown session
   assert.equal(events.status, 200);
   const text = await events.text();
   assert.ok(!text.includes("Basic "));
+});
+test("the runtime waits for the session directory observer before forwarding the turn", async (t) => {
+  const policy = new TenantPolicy();
+  const watched = [];
+  const root = await mkdtemp(join(await realpath(tmpdir()), ".scikeel-platform-analytics-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let release, calls = 0;
+  const pending = new Promise(resolve => { release = resolve; });
+  const fixture = await makeFixture({ root, tenantPolicy: policy, analyticsCollector: {
+    watchContext: (context, directory) => {
+      watched.push({ context, directory });
+      calls++;
+      return calls === 1 ? Promise.resolve(true) : pending;
+    },
+  } });
+  const client = makeClient(fixture.base);
+  const { user } = await login(client, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  const worker = await fixture.manager.ensureWorker({ instanceId, userId: user.id });
+  policy.registerAccount({ userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir });
+  fixture.manager.getWorker = ((original) => (id) => ({ ...original.call(fixture.manager, id), generation: 1 }))(fixture.manager.getWorker);
+  const directory = `${worker.workspaceDir}/sessions/demo`;
+  const headers = { origin: fixture.base, "content-type": "application/json", accept: "application/json" };
+  const created = await client.request("/session", { method: "POST", headers, body: JSON.stringify({ title: "Analytics directory", directory }) });
+  assert.equal(created.status, 200);
+  const session = await json(created);
+  assert.equal(session.directory, directory);
+  const prompting = client.request(`/session/${session.id}/prompt_async`, { method: "POST", headers, body: JSON.stringify({ parts: [{ type: "text", text: "Begin" }] }) });
+  await until(() => calls === 2);
+  const early = await Promise.race([prompting.then(() => "completed"), new Promise(resolve => setTimeout(() => resolve("pending"), 30))]);
+  assert.equal(early, "pending");
+  release(true);
+  const prompted = await prompting;
+  assert.equal(prompted.status, 202);
+  assert.ok(watched.some(entry => entry.directory === directory));
+  assert.equal(watched.at(-1).context.userId, user.id);
+  assert.equal(watched.at(-1).context.generation, 1);
 });
 test("worker operation leases cover proxy responses and release when they finish", async () => {
   const fixture = await makeFixture(); const client = makeClient(fixture.base);

@@ -154,7 +154,7 @@ const platform = new PlatformServer({
 if(controlPlane) {
   const scope=context=>({accountId:context.userId,runtime:context.runtime??'opencode',instanceId:context.instanceId,generation:context.generation});
   controlPlane.manager.onWorkerReady=({context,access})=>{
-    if(cliRuntime.runtimeForUser(context.userId)==='opencode')analyticsCollector?.workerReady({scope:scope(context),access});
+    if(cliRuntime.runtimeForUser(context.userId)==='opencode')analyticsCollector?.workerReady({scope:scope(context),access,workspaceDir:context.workspaceDir});
   };
   controlPlane.manager.onWorkerRevoked=context=>analyticsCollector?.workerRevoked(scope(context));
   controlPlane.manager.beforeStop=context=>platform.disconnectWorkspace(context);

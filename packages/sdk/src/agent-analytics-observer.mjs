@@ -45,8 +45,12 @@ export function metadataFacts(event, now = Date.now()) {
         return [{ kind: 'runtime_error', entityId: p.sessionID, sessionId: p.sessionID, code: 'runtime_error', endedAt: now }];
     return [];
 }
-export function createOpenCodeMetadataObserver({ baseUrl, token, fetchImpl = fetch, onFact, onGap, onConnected = () => { } }) {
-    let closed = false, controller, timer, attempt = 0;
+// onGap reports a fact-loss frame while the stream stays open; onDisconnected
+// reports stream loss; onRecovered fires on the first valid frame after a gap.
+// onActivity fires for every parsed non-heartbeat frame, including text-only
+// streams that produce no analytics fact.
+export function createOpenCodeMetadataObserver({ baseUrl, token, directory, fetchImpl = fetch, onFact, onGap, onConnected = () => { }, onDisconnected = () => { }, onRecovered = () => { }, onActivity = () => { } }) {
+    let closed = false, controller, timer, attempt = 0, gapped = false;
     async function connect() {
         if (closed)
             return;
@@ -54,7 +58,10 @@ export function createOpenCodeMetadataObserver({ baseUrl, token, fetchImpl = fet
         const opening = setTimeout(() => controller.abort(), 15000);
         opening.unref?.();
         try {
-            const res = await fetchImpl(new URL('/event', baseUrl), { headers: { authorization: `Basic ${Buffer.from(`opencode:${token}`).toString('base64')}`, accept: 'text/event-stream' }, signal: controller.signal });
+            const endpoint = new URL('/event', baseUrl);
+            if (directory)
+                endpoint.searchParams.set('directory', directory);
+            const res = await fetchImpl(endpoint, { headers: { authorization: `Basic ${Buffer.from(`opencode:${token}`).toString('base64')}`, accept: 'text/event-stream' }, signal: controller.signal });
             if (!res.ok || !res.body)
                 throw new Error('observer_unavailable');
             clearTimeout(opening);
@@ -74,6 +81,7 @@ export function createOpenCodeMetadataObserver({ baseUrl, token, fetchImpl = fet
                     buffer = buffer.slice(boundary + 2);
                     if (dropping || frame.length > 262144) {
                         dropping = false;
+                        gapped = true;
                         onGap('observer_disconnected');
                         continue;
                     }
@@ -83,29 +91,36 @@ export function createOpenCodeMetadataObserver({ baseUrl, token, fetchImpl = fet
                     try {
                         const raw = JSON.parse(text);
                         const event = raw.payload ?? raw;
+                        if (event?.type !== 'server.connected' && event?.type !== 'server.heartbeat')
+                            onActivity();
                         for (const fact of metadataFacts(event))
                             onFact(fact);
+                        if (gapped) {
+                            gapped = false;
+                            onRecovered();
+                        }
                     }
                     catch {
+                        gapped = true;
                         onGap('observer_disconnected');
                     }
                 }
                 if (buffer.length > 262144) {
                     buffer = '';
                     dropping = true;
+                    gapped = true;
                     onGap('observer_disconnected');
                 }
                 }
             }
         }
         catch {
-            if (!closed)
-                onGap('observer_disconnected');
+            // The stream loss is reported once by the finally block.
         }
         finally {
             clearTimeout(opening);
             if (!closed) {
-                onGap('observer_disconnected');
+                onDisconnected();
                 timer = setTimeout(() => void connect(), Math.min(15000, 1000 * 2 ** attempt++));
                 timer.unref?.();
             }
