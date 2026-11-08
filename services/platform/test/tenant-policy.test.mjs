@@ -50,6 +50,21 @@ test("session lists may return children before parents but foreign parents never
   assert.throws(() => p.session(a, "orphan"), { statusCode: 404 });
 });
 
+test("a moved session keeps its parent while an explicit root stays root", () => {
+  const p = policy();
+  p.registerSession(a, { id: "parent", directory: "/owned/a/p" });
+  p.registerSession(a, { id: "child", parentID: "parent", directory: "/owned/a/p" });
+  p.registerSession(a, { id: "child", directory: "/owned/a/q" });
+  assert.equal(p.session(a, "child").parentID, "parent");
+  assert.equal(p.session(a, "child").directory, "/owned/a/q");
+  p.registerSession(a, { id: "root", directory: "/owned/a/p" });
+  assert.equal(p.session(a, "root").parentID, null);
+  p.registerSession(a, { id: "root", parentID: null, directory: "/owned/a/q" });
+  assert.equal(p.session(a, "root").parentID, null);
+  assert.throws(() => p.registerSession(a, { id: "self", parentID: "self", directory: "/owned/a/p" }),
+    { statusCode: 400 });
+});
+
 
 test("provider tool-call IDs are correlation metadata, not session identifiers", () => {
   const p = policy();

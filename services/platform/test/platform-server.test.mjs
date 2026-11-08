@@ -1048,7 +1048,7 @@ test("managed Web prompts use the administrator default reasoning variant unless
 });
 
 
-test("collaboration guard resolves a root session once and reuses its short cache", async (t) => {
+test("collaboration guard resolves a registered root without a worker session read", async (t) => {
   const policy = new TenantPolicy();
   const f = await makeFixture({ tenantPolicy: policy });
   const client = makeClient(f.base);
@@ -1071,10 +1071,72 @@ test("collaboration guard resolves a root session once and reuses its short cach
   t.after(() => { globalThis.fetch = nativeFetch; });
   const first = await f.server.runtimeCollaboration(account, { action: "guard", sessionId: "owned" });
   assert.equal(first.blocked, false);
-  assert.equal(reads, 1);
+  assert.equal(reads, 0, "a registered root must not be re-read from the worker");
   const second = await f.server.runtimeCollaboration(account, { action: "guard", sessionId: "owned" });
   assert.equal(second.blocked, false);
-  assert.equal(reads, 1);
+  assert.equal(reads, 0);
+});
+
+test("collaboration guard resolves a registered child to its root without worker reads", async (t) => {
+  const policy = new TenantPolicy();
+  const f = await makeFixture({ tenantPolicy: policy });
+  const client = makeClient(f.base);
+  const { user } = await login(client, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  const worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => (id) => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: "running" }))(f.manager.getWorker);
+  const account = { userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir };
+  policy.registerAccount(account);
+  policy.registerSession(account, { id: "root", directory: worker.workspaceDir + "/project" });
+  policy.registerSession(account, { id: "child", parentID: "root", directory: worker.workspaceDir + "/project" });
+  await f.server.runtimeCollaboration(account, { action: "capability", sessionId: "capability" });
+  const access = f.manager.getWorkerAccess(instanceId);
+  const nativeFetch = globalThis.fetch;
+  let reads = 0;
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    if (url.origin === new URL(access.url).origin && url.pathname.startsWith("/session/")) reads += 1;
+    return nativeFetch(input, options);
+  };
+  t.after(() => { globalThis.fetch = nativeFetch; });
+  const result = await f.server.runtimeCollaboration(account, { action: "guard", sessionId: "child" });
+  assert.equal(result.blocked, false);
+  assert.equal(result.state.sessionId, "root");
+  assert.equal(reads, 0);
+});
+
+test("collaboration guard recovers an unregistered session once and reuses the plugin cache", async (t) => {
+  const policy = new TenantPolicy();
+  const f = await makeFixture({ tenantPolicy: policy });
+  const client = makeClient(f.base);
+  const { user } = await login(client, "admin", "admin-password");
+  const instanceId = `user-${user.id}`;
+  const worker = await f.manager.ensureWorker({ instanceId, userId: user.id });
+  f.manager.getWorker = ((original) => (id) => ({ ...original.call(f.manager, id), userId: user.id, generation: 1, status: "running" }))(f.manager.getWorker);
+  const account = { userId: user.id, instanceId, generation: 1, workspaceDir: worker.workspaceDir };
+  policy.registerAccount(account);
+  await f.server.runtimeCollaboration(account, { action: "capability", sessionId: "capability" });
+  let recoveries = 0;
+  f.server.sessionAuthority.readSession = async (_context, id) => {
+    recoveries += 1;
+    return { id, directory: worker.workspaceDir + "/project" };
+  };
+  const access = f.manager.getWorkerAccess(instanceId);
+  const nativeFetch = globalThis.fetch;
+  let reads = 0;
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    if (url.origin === new URL(access.url).origin && url.pathname.startsWith("/session/")) reads += 1;
+    return nativeFetch(input, options);
+  };
+  t.after(() => { globalThis.fetch = nativeFetch; });
+  const first = await f.server.runtimeCollaboration(account, { action: "guard", sessionId: "fresh" });
+  assert.equal(first.blocked, false);
+  assert.equal(recoveries, 1);
+  assert.equal(reads, 0, "recovery registers the session; the plugin path still skips the worker read");
+  const second = await f.server.runtimeCollaboration(account, { action: "guard", sessionId: "fresh" });
+  assert.equal(second.blocked, false);
+  assert.equal(recoveries, 1, "the plugin owner cache must absorb the second guard");
 });
 
 test("managed Web identifies cookie authentication without exposing a worker token", async () => {

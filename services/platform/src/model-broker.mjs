@@ -398,16 +398,32 @@ export class ModelBroker {
             !validName(body.sessionId) || (body.callId !== undefined && !isToolCallId(body.callId)) || Object.keys(body).some(key => !["action", "sessionId", "kind", "question", "suggestedAnswer", "execution", "operation", "inputs", "deliverables", "callId"].includes(key)))
           throw failure("model_request_denied");
         collaborationCorrelation = body.callId ?? `collab_${randomBytes(16).toString("hex")}`;
-        if (["checkpoint", "delivery"].includes(body.action)) this.#requireInference(grantKey, operation);
-        const work = Promise.resolve().then(() => {
-          controller.signal.throwIfAborted();
-          if (operation.inference) this.#requireInference(grantKey, operation);
-          return this.collaborationHandler(context, body);
-        });
-        if (operation.inference) operation.effect = work;
-        const result = await wait(() => work, controller.signal);
-        res.writeHead(200, {"content-type":"application/json", "cache-control":"no-store"});
-        res.end(JSON.stringify(result)); return;
+        const collaborationStartedAt = performance.now();
+        let collaborationOutcome = "success";
+        try {
+          if (["checkpoint", "delivery"].includes(body.action)) this.#requireInference(grantKey, operation);
+          const work = Promise.resolve().then(() => {
+            controller.signal.throwIfAborted();
+            if (operation.inference) this.#requireInference(grantKey, operation);
+            return this.collaborationHandler(context, body);
+          });
+          if (operation.inference) operation.effect = work;
+          const result = await wait(() => work, controller.signal);
+          res.writeHead(200, {"content-type":"application/json", "cache-control":"no-store"});
+          res.end(JSON.stringify(result)); return;
+        } catch (error) {
+          collaborationOutcome = String(error?.code ?? "error").slice(0, 80);
+          throw error;
+        } finally {
+          // The worker's bridge gives this handler only 5 s. Keep a record of
+          // slow/failed calls (no question/answer content) so a timeout can be
+          // attributed to the handler instead of guessed from missing logs.
+          const elapsedMs = Math.round(performance.now() - collaborationStartedAt);
+          if (elapsedMs >= 1000 || collaborationOutcome !== "success")
+            this.logger({ type: "collaboration.operation", correlationId: collaborationCorrelation, action: body.action,
+              sessionId: body.sessionId, userId: context?.userId, instanceId: context?.instanceId, generation: context?.generation,
+              outcome: collaborationOutcome, elapsedMs });
+        }
       }
       const provider = this.#providers.get(capability.provider);
       this.#requireInference(grantKey, operation);

@@ -346,6 +346,7 @@ export class PlatformServer {
     runtimeCatalog = null,
     defaultVariantFor = null,
     collaborationOwnerTtlMs = 5000,
+    collaborationPluginOwnerTtlMs = 30000,
     saveRuntimeDefaultModel = null,
     environments = null,
     workspaceFiles = null,
@@ -521,6 +522,12 @@ export class PlatformServer {
     // bounded to the current worker generation.
     this.collaborationOwnerTtlMs = collaborationOwnerTtlMs;
     this.collaborationOwners = new Map();
+    // Plugin callbacks run on the worker's critical path with a hard 5 s
+    // budget. They only need ancestry, and a session cannot move without the
+    // platform's own move route, so this cache can safely outlive the shared
+    // one and skip the worker round trip entirely for registered sessions.
+    this.collaborationPluginOwnerTtlMs = collaborationPluginOwnerTtlMs;
+    this.collaborationPluginOwners = new Map();
     this.saveRuntimeDefaultModel = saveRuntimeDefaultModel;
     this.environments = environments;
     if (enableWorkspaceManagement && tenantPolicy) {
@@ -759,6 +766,7 @@ export class PlatformServer {
 
   async close() {
     this.collaborationOwners.clear();
+    this.collaborationPluginOwners.clear();
     await this.workspaceOwners?.close();
     clearInterval(this.researchTimer);
     clearInterval(this.attachmentTimer);
@@ -1958,7 +1966,7 @@ export class PlatformServer {
     if (variant) body.variant = variant;
     return body;
   }
-  async #researchOwner(user, sessionId, access, worker) {
+  async #researchOwner(user, sessionId, access, worker, {workerSessionRead = true} = {}) {
     if (this.cliRuntime?.isManaged(user.id)) {
       let session;
       try{({session}=await this.cliRuntime.getOwnedSession(user.id,sessionId));}
@@ -2016,6 +2024,13 @@ export class PlatformServer {
       const context={userId:user.id,instanceId:worker.id,generation:worker.generation};
       const owned=await this.sessionAuthority.ensure(context,sessionId);
       await this.workspaceManagement?.assertAccessible(context,owned.directory);
+      // The plugin's guard runs on the worker's critical path with a 5 s
+      // budget. The registered record already carries the owned directory and
+      // parent, so the worker read (and its own 5 s timeout) is unnecessary.
+      // Revert-sensitive callers keep the default read below.
+      if(!workerSessionRead)
+        return { userId:user.id, instanceId:worker.id, generation:worker.generation, sessionId, directory:owned.directory,
+          workspaceDir:worker.workspaceDir, runtime:"opencode", parentID:owned.parentID ?? null };
     }
     const result = await fetch(new URL(`/session/${encodeURIComponent(sessionId)}`, access.url), {
       headers: { authorization: `Basic ${workerBasicToken(access.token)}` }, signal: AbortSignal.timeout(5000),
@@ -2113,34 +2128,39 @@ export class PlatformServer {
     await visit(task.sessionId);
   }
 
-  async #collaborationOwner(user,sessionId,access,worker) {
+  async #collaborationOwner(user,sessionId,access,worker,{workerSessionRead=true,ownerCache=this.collaborationOwners,ownerTtlMs=this.collaborationOwnerTtlMs,strictCache=false}={}) {
     const context = { userId: user.id, instanceId: worker.id, generation: worker.generation };
     const cacheKey = JSON.stringify([context.userId, context.instanceId, context.generation, sessionId]);
-    const cached = this.collaborationOwners.get(cacheKey);
+    const cached = ownerCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       try {
         const known = this.tenantPolicy?.session(context, sessionId);
         if (!known || known.directory === cached.owner.directory) return cached.owner;
-      } catch { return cached.owner; }
+      } catch {
+        // A deleted session must not keep serving its old owner to the plugin;
+        // the shared cache keeps its historical best-effort behavior.
+        if (!strictCache) return cached.owner;
+        ownerCache.delete(cacheKey);
+      }
     }
     const remember = (owner) => {
-      if (this.collaborationOwnerTtlMs > 0) {
+      if (ownerTtlMs > 0) {
         const now = Date.now();
-        if (this.collaborationOwners.size >= 1024) {
-          for (const [key, value] of this.collaborationOwners) if (value.expiresAt <= now) this.collaborationOwners.delete(key);
-          if (this.collaborationOwners.size >= 1024) this.collaborationOwners.delete(this.collaborationOwners.keys().next().value);
+        if (ownerCache.size >= 1024) {
+          for (const [key, value] of ownerCache) if (value.expiresAt <= now) ownerCache.delete(key);
+          if (ownerCache.size >= 1024) ownerCache.delete(ownerCache.keys().next().value);
         }
-        this.collaborationOwners.set(cacheKey, { owner, expiresAt: now + this.collaborationOwnerTtlMs });
+        ownerCache.set(cacheKey, { owner, expiresAt: now + ownerTtlMs });
       }
       return owner;
     };
-    let owner=await this.#researchOwner(user,sessionId,access,worker);
+    let owner=await this.#researchOwner(user,sessionId,access,worker,{workerSessionRead});
     for(let depth=0;depth<20;depth++) {
       // Owner resolution already knows the direct parent for current runtimes;
       // reading the session again here duplicates that worker round trip.
       if (owner.parentID === null) return remember(owner);
       if (typeof owner.parentID === "string") {
-        owner=await this.#researchOwner(user,owner.parentID,access,worker);
+        owner=await this.#researchOwner(user,owner.parentID,access,worker,{workerSessionRead});
         continue;
       }
       let info;
@@ -2153,13 +2173,13 @@ export class PlatformServer {
         if(this.conversations){
           try{
             const conversation=await this.conversations.open(owner,owner.sessionId);
-            if(conversation?.parentId){owner=await this.#researchOwner(user,conversation.parentId,access,worker);continue;}
+            if(conversation?.parentId){owner=await this.#researchOwner(user,conversation.parentId,access,worker,{workerSessionRead});continue;}
           }catch{/* An adopted root has no canonical parent record. */}
         }
         return remember(owner);
       }
       if(!info.parentID)return remember(owner);
-      owner=await this.#researchOwner(user,info.parentID,access,worker);
+      owner=await this.#researchOwner(user,info.parentID,access,worker,{workerSessionRead});
     }
     throw new Error("Collaboration ancestry unavailable");
   }
@@ -2312,7 +2332,9 @@ export class PlatformServer {
     // Native roots and descendants are owned by the native session store; the
     // OpenCode authority remains responsible for OpenCode sessions only.
     if(this.tenantPolicy && !this.cliRuntime?.isManaged(context.userId))await this.sessionAuthority.ensure(context,body.sessionId);
-    const owner=await this.#collaborationOwner({id:context.userId},body.sessionId,access,worker);
+    const pluginOwner=this.tenantPolicy&&!this.cliRuntime?.isManaged(context.userId);
+    const owner=await this.#collaborationOwner({id:context.userId},body.sessionId,access,worker,
+      pluginOwner?{workerSessionRead:false,ownerCache:this.collaborationPluginOwners,ownerTtlMs:this.collaborationPluginOwnerTtlMs,strictCache:true}:{});
     if(body.action==="checkpoint"&&body.execution===undefined){
       // The installed OpenCode plugin predates the explicit execution fence.
       // Native effects always send it; this keeps the older plugin compatible.

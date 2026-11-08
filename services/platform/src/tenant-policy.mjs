@@ -73,9 +73,16 @@ export class TenantPolicy {
   registerSession(context, record) {
     const directory = this.directory(context, record.directory);
     const key = this.#key(context, record.id);
-    if (record.parentID) this.session(context, record.parentID);
-    const safe = Object.freeze({ id: record.id, directory,
-      ...(record.parentID ? { parentID: record.parentID } : {}) });
+    const prior = this.#sessions.get(key);
+    // A move registers only {id,directory}; keep the known parent, while an
+    // explicit null (a refreshed root) clears it. `parentID` is always stored
+    // so callers can distinguish "known root" from "not resolved yet".
+    const parentID = record.parentID !== undefined ? record.parentID : prior?.parentID ?? null;
+    if (parentID) {
+      if (parentID === record.id) throw denied(400, "invalid parent session");
+      this.session(context, parentID);
+    }
+    const safe = Object.freeze({ id: record.id, directory, parentID: parentID ?? null });
     this.#sessions.set(key, safe);
     return safe;
   }
@@ -95,7 +102,7 @@ export class TenantPolicy {
       if (!candidates.has(record.parentID)) this.session(context, record.parentID);
     }
     for (const record of records) this.#sessions.set(this.#key(context, record.id), Object.freeze({
-      id: record.id, directory: record.directory, ...(record.parentID ? { parentID: record.parentID } : {}),
+      id: record.id, directory: record.directory, parentID: record.parentID ?? null,
     }));
   }
   session(context, id) {
