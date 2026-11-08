@@ -48,3 +48,18 @@ test('nested owned starts finish without deadlock but detached continuations re-
  await new Promise(done=>setImmediate(done));assert.equal(finished,false);
  release();await locked;assert.equal(await background,42);
 });
+
+test('a stuck read deadline releases the account queue',async()=>{
+ const admission=new WorkspaceAdmission({resolveExecution:async()=>false});
+ const stuck=admission.start('a',()=>new Promise(()=>{}),{timeoutMs:20});
+ await assert.rejects(stuck,{code:'workspace_admission_timeout',statusCode:503});
+ assert.equal(await admission.start('a',async()=>42,{timeoutMs:100}),42);
+});
+
+test('a stuck queued read times out and later reads proceed',async()=>{
+ const admission=new WorkspaceAdmission({resolveExecution:async()=>false});
+ const held=admission.start('a',()=>new Promise(()=>{}));
+ await new Promise(done=>setImmediate(done));
+ await assert.rejects(admission.start('a',async()=>42,{timeoutMs:20}),{code:'workspace_admission_timeout',statusCode:503});
+ assert.equal(await admission.start('a',async()=>42,{timeoutMs:100}),42);
+});

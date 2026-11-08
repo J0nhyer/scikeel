@@ -33,7 +33,9 @@ everything.
 
 Use the managed `webfetch` tool for every request. Do not use shell network
 commands unless the user explicitly approves them. URL-encode the query and run
-one request at a time.
+one request at a time. Put only one `webfetch` call in each assistant message:
+the runtime executes same-message tool calls concurrently, and the scholarly
+APIs plus the egress broker rate-limit bursts.
 
 - Europe PMC (the MEDLINE source):
   `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=<encoded>&format=json&pageSize=25&resultType=core`
@@ -45,10 +47,13 @@ one request at a time.
 - Crossref: `https://api.crossref.org/works?query=<query>&rows=25`
 - Semantic Scholar:
   `https://api.semanticscholar.org/graph/v1/paper/search?query=<encoded>&limit=25&fields=title,authors,year,venue,externalIds,abstract,openAccessPdf,isOpenAccess`
+  Anonymous requests are commonly HTTP 429. Treat this source as optional and
+  do not retry it more than once.
 - arXiv: `https://export.arxiv.org/api/query?search_query=all:<query>&start=0&max_results=25`
 
-PubMed E-utilities are unreachable from the platform egress. Do not use them or
-keep a dead PubMed-only step. If Europe PMC
+PubMed E-utilities and the NCBI PMC HTML pages (`pmc.ncbi.nlm.nih.gov`,
+`www.ncbi.nlm.nih.gov/pmc/...`) are unreachable from the platform egress. Do not
+use them or keep a dead PubMed-only step. If Europe PMC
 fails, record the failure and the fallback in `search_log.md`, continue with the
 remaining sources, and tell the user which source failed. Do not replace a
 failed search with model memory.
@@ -92,13 +97,21 @@ After screening, try open access in this order:
 
 1. Europe PMC `fullTextUrlList` (`availabilityCode: OA`; `documentStyle` `pdf`
    or `html`), or the XML fallback
-   `https://www.ebi.ac.uk/europepmc/webservices/rest/{source}/{id}/fullTextXML`.
+   `https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML`.
    Save an HTML/XML copy with `webfetch` `savePath: papers/<safe-id>.html` (or
    `.xml`) before using it as evidence; the saved raw file is the
    `full_text_path` for `html-text`.
 2. OpenAlex `best_oa_location.pdf_url` or `open_access.oa_url`.
 3. Semantic Scholar `openAccessPdf`.
 4. arXiv PDF for arXiv records.
+
+Do not use `https://europepmc.org/articles/<PMCID>?pdf=render`; this egress gets
+HTTP 403 and the request is wasted. Use the XML fallback or a publisher OA URL.
+Europe PMC XML returns HTTP 500 intermittently even for records in its
+open-access subset; the same URL can return 200 on the next attempt. Retry up
+to three times with 15–30 s pauses, recording each attempt, before declaring
+the full text unavailable. A record that never succeeds may simply be outside
+the open-access subset; do not retry it indefinitely.
 
 Unpaywall is optional only when the user supplies a real contact email; never
 fabricate one. Do not include it in the default order.
@@ -169,8 +182,10 @@ If an API is unreachable, returns an error, rate-limits you, or returns no
 usable records:
 
 1. Record the exact failure and URL in `search_log.md`.
-2. Tell the user which source failed and what is still available.
-3. Ask for a staged corpus of PDFs or abstracts to review offline.
+2. On HTTP 429 or 500, wait 15–30 s and retry the same request, serially;
+   Europe PMC XML may need up to three attempts.
+3. Tell the user which source failed and what is still available.
+4. Ask for a staged corpus of PDFs or abstracts to review offline.
 
 Do not replace a failed search with model memory, and do not invent a record to
 fill a gap. A review with fewer, verified sources is acceptable; a fabricated

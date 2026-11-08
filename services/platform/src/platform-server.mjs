@@ -346,7 +346,7 @@ export class PlatformServer {
     runtimeCatalog = null,
     defaultVariantFor = null,
     collaborationOwnerTtlMs = 5000,
-    collaborationPluginOwnerTtlMs = 30000,
+    collaborationPluginOwnerTtlMs = 300000,
     saveRuntimeDefaultModel = null,
     environments = null,
     workspaceFiles = null,
@@ -638,7 +638,7 @@ export class PlatformServer {
           if(cliRuntime.assistantSnapshot(user.id).recoveryRequired)throw workspaceError('assistant_recovery_required',503);
           return cliRuntime.describe(user.id);
         },
-        withAccount:(userId,run)=>this.workspaceAdmission.start(userId,run),
+        withAccount:(userId,run)=>this.workspaceAdmission.start(userId,run,{timeoutMs:20000}),
         // Only the managed runtime streams through the platform, so only it can
         // announce the workspace on the event stream.
         eventAcknowledgement:user=>cliRuntime.isManaged(user.id),
@@ -3133,7 +3133,7 @@ export class PlatformServer {
               return path.endsWith('/project-counts')?this.workspaceCatalog.projectCounts(user.id)
                 :path.endsWith('/conversations')?this.workspaceCatalog.listConversations(user.id,query)
                 :this.workspaceCatalog.listProjects(user.id,query);
-            });sendJson(response,200,value,{'cache-control':'no-store'});
+            },{timeoutMs:20000});sendJson(response,200,value,{'cache-control':'no-store'});
           }return;
         }
         if (path === "/api/workspace/status" && request.method === "GET") {

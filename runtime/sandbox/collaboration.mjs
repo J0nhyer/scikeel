@@ -4,9 +4,15 @@ import { brokerConfig } from "./broker-config.mjs";
 export function collaborationHooks({ token, request: provided }) {
   if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token))
     throw new Error("Invalid collaboration bridge");
+  // Delivery and checkpoint validate workspace artifacts through the platform
+  // files API, which can take longer than a guard. Give each action a bounded
+  // budget instead of aborting a completed verification at the guard limit.
+  const budget = (body) =>
+    body?.action === "delivery" || body?.action === "checkpoint" ? 30000 : 10000;
   const request =
     provided ??
     (async (sessionId, body, signal) => {
+      const timeout = budget(body);
       const response = await fetch(`${brokerConfig().model.replace(/\/v1$/, "")}/collaboration`, {
         method: "POST",
         headers: {
@@ -15,8 +21,8 @@ export function collaborationHooks({ token, request: provided }) {
         },
         body: JSON.stringify({ sessionId, ...body }),
         signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(5000)])
-          : AbortSignal.timeout(5000),
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeout)])
+          : AbortSignal.timeout(timeout),
       });
       if (!response.ok) {
         // Cap bytes while reading: a malicious upstream must not allocate an unbounded body.

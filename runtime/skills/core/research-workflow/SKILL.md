@@ -36,8 +36,11 @@ A literature delivery prepares all five deliverables: `review.md`,
 `citation_check.json`, and the check titled "citation metadata + claim support"
 uses `citation_check.json` as its evidence. Only `screening=include` references
 must be cited; `usage.uncited` and `usage.unknown` must be empty for delivery.
-Use the `question` tool when the core full-text set or a paywalled priority is
-ambiguous. Record real check evidence and then call action `verify`. A failed
+Before synthesis, acquire the core full-text set with the `literature-review`
+download order (Europe PMC XML or an open-access PDF); an abstract-only review
+is acceptable only when the user accepts it or the paper is genuinely
+unavailable. Use the `question` tool when the core full-text set or a paywalled
+priority is ambiguous. Record real check evidence and then call action `verify`. A failed
 initial candidate permits at most two repairs within the captured scope. After
 exhaustion, explain partial outputs and the blocker; never label a failed
 candidate completed. Delivery verification checks files, evidence presence,
