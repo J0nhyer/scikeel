@@ -325,7 +325,7 @@ index 9167cb3..afc382d 100644
  
          const usePatch =
 diff --git a/packages/opencode/src/tool/webfetch.ts b/packages/opencode/src/tool/webfetch.ts
-index e615034..7b6a299 100644
+index e615034..c48fd89 100644
 --- a/packages/opencode/src/tool/webfetch.ts
 +++ b/packages/opencode/src/tool/webfetch.ts
 @@ -1,3 +1,4 @@
@@ -354,7 +354,7 @@ index e615034..7b6a299 100644
  const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
  const MAX_TIMEOUT = 120 * 1000 // 2 minutes
  
-@@ -19,13 +32,72 @@ export const Parameters = Schema.Struct({
+@@ -19,13 +32,85 @@ export const Parameters = Schema.Struct({
      })
      .pipe(Schema.withDecodingDefault(Effect.succeed("markdown" as const))),
    timeout: Schema.optional(Schema.Number).annotate({ description: "Optional timeout in seconds (max 120)" }),
@@ -393,6 +393,19 @@ index e615034..7b6a299 100644
 +  mime === "application/x-javascript" ||
 +  mime === "application/x-ndjson"
 +
++// Some publishers answer a PDF URL with an HTML bot challenge or login page.
++// Writing those bytes under a .pdf name produces a file that no PDF reader can
++// open, so require the PDF signature (allowing a small leading prefix) before
++// committing the download.
++const isPdfBytes = (bytes: Uint8Array) => {
++  const head = bytes.subarray(0, 1024)
++  for (let index = 0; index + 5 <= head.length; index++) {
++    if (head[index] === 0x25 && head[index + 1] === 0x50 && head[index + 2] === 0x44 && head[index + 3] === 0x46 && head[index + 4] === 0x2d)
++      return true
++  }
++  return false
++}
++
 +const resolveSavePath = Effect.fn("WebFetch.resolveSavePath")(function* (fs: FSUtil.Interface, value: string) {
 +  const instance = yield* InstanceState.context
 +  const root = yield* fs.realPath(instance.directory).pipe(Effect.orDie)
@@ -428,7 +441,7 @@ index e615034..7b6a299 100644
  
      return {
        description: DESCRIPTION,
-@@ -36,6 +108,10 @@ export const WebFetchTool = Tool.define(
+@@ -36,6 +121,10 @@ export const WebFetchTool = Tool.define(
              throw new Error("URL must start with http:// or https://")
            }
  
@@ -439,7 +452,7 @@ index e615034..7b6a299 100644
            yield* ctx.ask({
              permission: "webfetch",
              patterns: [params.url],
-@@ -44,9 +120,31 @@ export const WebFetchTool = Tool.define(
+@@ -44,9 +133,31 @@ export const WebFetchTool = Tool.define(
                url: params.url,
                format: params.format,
                timeout: params.timeout,
@@ -471,7 +484,7 @@ index e615034..7b6a299 100644
            const timeout = Math.min((params.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000, MAX_TIMEOUT)
  
            // Build Accept header based on requested format with q parameters for fallbacks
-@@ -79,7 +177,7 @@ export const WebFetchTool = Tool.define(
+@@ -79,7 +190,7 @@ export const WebFetchTool = Tool.define(
            const response = yield* httpOk.execute(request).pipe(
              Effect.catchIf(
                (err) =>
@@ -480,7 +493,7 @@ index e615034..7b6a299 100644
                  err.reason.response.status === 403 &&
                  err.reason.response.headers["cf-mitigated"] === "challenge",
                () =>
-@@ -92,20 +190,42 @@ export const WebFetchTool = Tool.define(
+@@ -92,20 +203,51 @@ export const WebFetchTool = Tool.define(
              Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }),
            )
  
@@ -507,8 +520,17 @@ index e615034..7b6a299 100644
 +          const title = save ? `${save.relative} (${contentType})` : `${params.url} (${contentType})`
 +
 +          if (save) {
++            const bytes = new Uint8Array(arrayBuffer)
++            // A .pdf destination promises a PDF. Refuse a challenge/login page
++            // instead of storing bytes that every PDF reader will reject.
++            if (/\.pdf$/i.test(save.relative) && !isPdfBytes(bytes)) {
++              const preview = new TextDecoder().decode(bytes.subarray(0, 200)).replace(/\s+/g, " ").trim()
++              throw new Error(
++                `Refusing to save ${save.relative} from ${params.url}: response is ${mime || "an unknown content type"} (${bytes.byteLength} bytes), not a PDF.${preview ? ` Response starts with: ${preview}` : ""}`,
++              )
++            }
 +            const existed = yield* fs.exists(save.absolute)
-+            yield* fs.writeWithDirs(save.absolute, new Uint8Array(arrayBuffer))
++            yield* fs.writeWithDirs(save.absolute, bytes)
 +            yield* events.publish(FileSystem.Event.Edited, { file: save.absolute })
 +            yield* events.publish(Watcher.Event.Updated, { file: save.absolute, event: existed ? "change" : "add" })
 +            const metadata = { path: save.relative, bytes: arrayBuffer.byteLength, mime, url: params.url }
@@ -529,10 +551,10 @@ index e615034..7b6a299 100644
            if (isImageAttachment(mime)) {
              const base64Content = Buffer.from(arrayBuffer).toString("base64")
 diff --git a/packages/opencode/src/tool/webfetch.txt b/packages/opencode/src/tool/webfetch.txt
-index 169aade..a1509ea 100644
+index 169aade..b8735a4 100644
 --- a/packages/opencode/src/tool/webfetch.txt
 +++ b/packages/opencode/src/tool/webfetch.txt
-@@ -9,5 +9,8 @@ Usage notes:
+@@ -9,5 +9,9 @@ Usage notes:
    - The URL must be a fully-formed valid URL
    - HTTP URLs will be automatically upgraded to HTTPS
    - Format options: "markdown" (default), "text", or "html"
@@ -540,6 +562,7 @@ index 169aade..a1509ea 100644
 +  - This tool is read-only when savePath is omitted; it does not modify any files
    - Results may be summarized if the content is very large
 +  - savePath (optional): save the response bytes to this workspace-relative path instead of returning the content. Use it for PDF downloads. The paths must stay inside the session workspace and are written only after an edit permission.
++  - When savePath ends in .pdf, the response must contain a PDF signature (%PDF-); an HTML challenge or login page is rejected with an error instead of being written.
 +  - A savePath response is capped at 32 MB and returns a pointer (path, byte count, MIME type) for PDFs and other binary files; the PDF bytes are never added to the conversation.
 +  - For a text/JSON response saved with savePath, the raw bytes are stored at the path and a bounded preview (up to 48 KiB) is returned.
 diff --git a/packages/opencode/src/tool/websearch.ts b/packages/opencode/src/tool/websearch.ts

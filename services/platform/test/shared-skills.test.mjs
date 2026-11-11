@@ -38,6 +38,15 @@ test("the complete platform pack resolves helpers and styles from the loaded ski
   }
 });
 
+test("literature-review acquires publisher PDFs before falling back to XML", async () => {
+  const text = await readFile(join(pack, "literature-review", "SKILL.md"), "utf8");
+  assert.match(text, /PDF first/);
+  assert.match(text, /%PDF-/);
+  assert.match(text, /full_text_status: pdf-text/);
+  assert.match(text, /full_text_url` is the exact URL that produced the saved/);
+  assert.match(text, /never `papers\/<safe-id>\.pdf`/);
+});
+
 function tinyPdf(text) {
   const stream = `BT /F1 12 Tf 72 720 Td (${text}) Tj ET`;
   const objects = [

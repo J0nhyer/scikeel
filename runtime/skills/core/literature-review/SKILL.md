@@ -93,46 +93,53 @@ Deduplicate by DOI first, then by normalized title and year.
 
 ## 4 · Acquire open-access full text
 
-After screening, try open access in this order:
+PDF first. For each included record, try PDF sources in this order:
 
-1. Europe PMC `fullTextUrlList` (`availabilityCode: OA`; `documentStyle` `pdf`
-   or `html`), or the XML fallback
-   `https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML`.
-   Save an HTML/XML copy with `webfetch` `savePath: papers/<safe-id>.html` (or
-   `.xml`) before using it as evidence; the saved raw file is the
-   `full_text_path` for `html-text`.
+1. Europe PMC `fullTextUrlList` entries with `availabilityCode: OA` and
+   `documentStyle: pdf`, except the Europe PMC render URL
+   `https://europepmc.org/articles/<PMCID>?pdf=render` (this egress gets HTTP
+   403; do not waste a request on it).
 2. OpenAlex `best_oa_location.pdf_url` or `open_access.oa_url`.
 3. Semantic Scholar `openAccessPdf`.
 4. arXiv PDF for arXiv records.
 
-Do not use `https://europepmc.org/articles/<PMCID>?pdf=render`; this egress gets
-HTTP 403 and the request is wasted. Use the XML fallback or a publisher OA URL.
-Europe PMC XML returns HTTP 500 intermittently even for records in its
-open-access subset; the same URL can return 200 on the next attempt. Retry up
-to three times with 15–30 s pauses, recording each attempt, before declaring
-the full text unavailable. A record that never succeeds may simply be outside
-the open-access subset; do not retry it indefinitely.
+Save a PDF with `webfetch` `savePath: papers/<safe-id>.pdf` and `timeout: 120`.
+The OpenCode runtime rejects an HTML/XML response under a `.pdf` name with an
+error; treat that error as a failed download, do not retry the same URL more
+than once, and try the next PDF source. A saved PDF starts with `%PDF-`; parse it
+with the `large-file` skill's PDF helper into `papers/text/<safe-id>.txt`,
+read only the pages or sections a claim needs, and record
+`full_text_status: pdf-text`. The `savePath` download mode exists only in the
+OpenCode runtime; in Codex, ask the user to upload the PDF (documented
+limitation).
+
+Only when no PDF source works, fall back to a full-text HTML/XML copy:
+
+- Europe PMC `fullTextXML`
+  `https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML` (the
+  saved file is XML). Europe PMC XML returns HTTP 500 intermittently even for
+  records in its open-access subset; the same URL can return 200 on the next
+  attempt. Retry up to three times with 15–30 s pauses, recording each
+  attempt, before declaring the full text unavailable.
+- A publisher HTML article page (for example the `fullTextUrlList` `html`
+  entry or an OA landing page).
+
+Save the HTML/XML copy with `webfetch` `savePath: papers/<safe-id>.html` or
+`papers/<safe-id>.xml` — never `papers/<safe-id>.pdf`. Record that exact saved
+path as `full_text_path` with `full_text_status: html-text`. A derived text
+file such as `papers/text/<safe-id>.txt` may be recorded instead only after it
+actually exists.
 
 Unpaywall is optional only when the user supplies a real contact email; never
 fabricate one. Do not include it in the default order.
 
 For each paper in the core set:
 
-- Download with `webfetch` `savePath: papers/<safe-id>.pdf` and `timeout: 120`.
-  A PDF download returns a path pointer, not PDF bytes. The `savePath` download
-  mode exists only in the OpenCode runtime; in Codex, ask the user to upload the
-  PDF (documented limitation).
-- Parse the PDF with the `large-file` skill's PDF helper into
-  `papers/text/<safe-id>.txt`; read only the pages or sections a claim needs.
-- For an HTML or XML copy, save it with `webfetch`
-  `savePath: papers/<safe-id>.html` or `papers/<safe-id>.xml`. Record that exact
-  saved path as `full_text_path` with `full_text_status: html-text`. A derived
-  text file such as `papers/text/<safe-id>.txt` may be recorded instead only
-  after it actually exists.
 - Record `full_text_status`, `full_text_url`, `full_text_path`, and `pmcid` in
-  `references.csv`. `full_text_path` must be a file that the flow actually
-  wrote; leave it empty for `scanned` or `unavailable` unless a real extracted
-  text file exists.
+  `references.csv`. `full_text_url` is the exact URL that produced the saved
+  bytes, not the DOI or a landing page. `full_text_path` must be a file that
+  the flow actually wrote; leave it empty for `scanned` or `unavailable` unless
+  a real extracted text file exists.
 - If no open-access copy exists, set `full_text_status` to `unavailable` and use
   the abstract. When the user needs that paper, use the `question` tool to ask
   whether to proceed with abstract-only evidence or to upload the PDF.

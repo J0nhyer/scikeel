@@ -103,6 +103,7 @@ test('native fetch and search authorize only after permission and preserve scope
       res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'Python pathlib reference: https://docs.python.org/3/library/pathlib.html' }] } })); return;
     }
     if (req.url === '/paper.pdf') { res.writeHead(200, { 'content-type': 'application/pdf', 'content-length': String(pdfBytes.length) }); res.end(pdfBytes); return; }
+    if (req.url === '/not-a-pdf') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end('<!DOCTYPE html><html><head><title>Client Challenge</title></head><body>challenge</body></html>'); return; }
     if (req.url === '/probe.json') { res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(jsonBytes.length) }); res.end(jsonBytes); return; }
     if (req.url === '/huge.pdf') { res.writeHead(200, { 'content-type': 'application/pdf', 'content-length': String(32 * 1024 * 1024 + 1) }); res.end('too large'); return; }
     res.setHeader('content-type', 'text/plain'); res.end('Verified TLS fixture result.');
@@ -192,7 +193,7 @@ test('native fetch and search authorize only after permission and preserve scope
     return session;
   };
   targetUrl = 'https://science.example/data';
-  const tlsResult = await invoke(); assert.equal(tlsResult.state.status, 'completed'); assert.equal(tlsResult.callID, 'functions.webfetch:0');
+  const tlsResult = await invoke(); assert.equal(tlsResult.state.status, 'completed', JSON.stringify(tlsResult.state)); assert.equal(tlsResult.callID, 'functions.webfetch:0');
   assert.equal(tlsRequests.length, 1); assert.equal(tlsRequests[0]['proxy-authorization'], undefined);
   targetUrl = 'http://science.example/data'; fault = 'transient'; attempts = 0;
   assert.equal((await invoke()).state.status, 'completed'); assert.equal(attempts, 3);
@@ -267,6 +268,18 @@ test('native fetch and search authorize only after permission and preserve scope
   assert.equal(authorizations.length, pdfAuthorizations + 1);
   assert.equal(outbound.length, pdfOutbound + 1);
   assert.deepEqual(authorizations.at(-1).origins, ['https://science.example']);
+
+  // A .pdf destination must contain the PDF signature. An HTML challenge page
+  // (Fastly/Cloudflare bot protection) is rejected instead of becoming a fake PDF.
+  targetUrl = 'https://science.example/not-a-pdf';
+  toolArguments = () => ({ url: targetUrl, format: 'text', timeout: 30, savePath: 'papers/challenge.pdf' });
+  const challengeSession = await beginCall('Download the fixture paper.');
+  await answerPermission(challengeSession.id, 'webfetch', 'once');
+  await answerPermission(challengeSession.id, 'edit', 'once');
+  const challengeResult = await finishCall(challengeSession);
+  assert.equal(challengeResult.state.status, 'error');
+  assert.match(challengeResult.state.error ?? '', /not a PDF/);
+  await assert.rejects(readFile(join(workspace, 'papers/challenge.pdf')), { code: 'ENOENT' });
 
   // A text/JSON save returns a bounded preview while the raw archive holds all bytes.
   targetUrl = 'https://science.example/probe.json';
