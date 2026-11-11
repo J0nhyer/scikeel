@@ -45,7 +45,7 @@ services:
       - "${SANDBOX_DATA_HOST_DIR}:${PLATFORM_DATA_DIR}"
       - "${SANDBOX_INSTANCES_HOST_DIR}:${PLATFORM_SANDBOX_INSTANCES_DIR}"
       - "${SANDBOX_NATIVE_HOST_DIR}:${PLATFORM_SANDBOX_NATIVE_DIR}"
-      - "./apps/desktop/dist:${PLATFORM_WEB_ROOT}:ro"
+      - "./apps/web/dist:${PLATFORM_WEB_ROOT}:ro"
       - "./.deploy/worker-image.json:${PLATFORM_SANDBOX_WORKER_IMAGE_MANIFEST}:ro"
       - "./secrets/model-brokers.json:/etc/scikeel/model-brokers.json:ro"
       - "sandbox-run:/run/scikeel"

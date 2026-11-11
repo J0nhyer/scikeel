@@ -48,7 +48,7 @@ export function dockerEnv({ dataDir, platformUid, platformGid, frontSubnet = "17
     LOCAL_HTTP_PORT: String(httpPort),
     SCIKEEL_PYPI_MIRROR: "https://pypi.tuna.tsinghua.edu.cn/simple/",
     PLATFORM_DATA_DIR: DATA_ROOT,
-    PLATFORM_WEB_ROOT: "/app/apps/desktop/dist",
+    PLATFORM_WEB_ROOT: "/app/apps/web/dist",
     PLATFORM_HOST: frontPlatformIp,
     PLATFORM_PORT: "4790",
     PLATFORM_UID: String(platformUid),

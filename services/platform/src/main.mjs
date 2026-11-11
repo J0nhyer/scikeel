@@ -144,7 +144,7 @@ const platform = new PlatformServer({
   environments: controlPlane?.environments,
   workspaceFiles: controlPlane?.files,
   enableWorkspaceManagement: Boolean(controlPlane),
-  webRoot: optionalPath("PLATFORM_WEB_ROOT", join(process.cwd(), "apps/desktop/dist")),
+  webRoot: optionalPath("PLATFORM_WEB_ROOT", join(process.cwd(), "apps/web/dist")),
   // The current internal deployment is still plain HTTP; set this to true
   // when the reverse proxy terminates HTTPS.
   secureCookies: boolEnv("PLATFORM_SECURE_COOKIES", false),

@@ -10,7 +10,7 @@ import { writeManifest, readManifest, recordStage, canResume, classifyStorage } 
 import { selectVerification } from './web-release-policy.mjs';
 
 test('appearance changes require actual browser coverage without adding model calls', () => {
-  for (const path of ['apps/desktop/src/lib/store.ts', 'apps/desktop/src/index.css', 'apps/desktop/public/assets/brand/cdut-emblem.png', 'services/platform/src/login-appearance.mjs']) {
+  for (const path of ['apps/web/src/lib/store.ts', 'apps/web/src/index.css', 'apps/web/public/assets/brand/cdut-emblem.png', 'services/platform/src/login-appearance.mjs']) {
     const selected = selectVerification([path], { known: true });
     assert.ok(selected.browserGroups.includes('appearance'));
     assert.equal(selected.liveAssistant, false);
@@ -34,17 +34,17 @@ test('source fingerprints capture content, additions and deletions independently
 });
 test('snapshot freezes untracked source and excludes deployment, credentials and dependencies', async (t) => {
   const root = await fixture(t); const source = join(root, 'source'); const out = join(root, 'snapshot');
-  await mkdir(join(source, 'apps/desktop/src'), { recursive: true });
+  await mkdir(join(source, 'apps/web/src'), { recursive: true });
   await mkdir(join(source, '.deploy'), { recursive: true });
   await writeFile(join(source, 'package.json'), '{}');
-  await writeFile(join(source, 'apps/desktop/src/new.ts'), 'export const a = 1;');
+  await writeFile(join(source, 'apps/web/src/new.ts'), 'export const a = 1;');
   await writeFile(join(source, '.env'), 'PASSWORD=secret');
   await writeFile(join(source, '.deploy/private.json'), 'secret');
   const files = await inventorySource(source, { git: false });
-  assert.deepEqual(files.map((f) => f.path), ['apps/desktop/src/new.ts', 'package.json']);
+  assert.deepEqual(files.map((f) => f.path), ['apps/web/src/new.ts', 'package.json']);
   await freezeSource(source, out, files, { linkDependencies: false });
-  await writeFile(join(source, 'apps/desktop/src/new.ts'), 'changed');
-  assert.equal(await readFile(join(out, 'apps/desktop/src/new.ts'), 'utf8'), 'export const a = 1;');
+  await writeFile(join(source, 'apps/web/src/new.ts'), 'changed');
+  assert.equal(await readFile(join(out, 'apps/web/src/new.ts'), 'utf8'), 'export const a = 1;');
 });
 test('Web release artifacts retain the login preload manifest in compatible recovery copies', async (t) => {
   const root = await fixture(t), web = join(root, 'web'), reader = join(root, 'reader');
@@ -72,24 +72,24 @@ test('a legacy published Web bundle without a Vite manifest remains archivable f
 });
 test('source symlink escapes and source changes during copying fail', async (t) => {
   const root = await fixture(t); const source = join(root, 'source');
-  await mkdir(join(source, 'apps/desktop/src'), { recursive: true });
+  await mkdir(join(source, 'apps/web/src'), { recursive: true });
   await writeFile(join(root, 'outside.ts'), 'outside');
-  await symlink(join(root, 'outside.ts'), join(source, 'apps/desktop/src/escape.ts'));
+  await symlink(join(root, 'outside.ts'), join(source, 'apps/web/src/escape.ts'));
   await assert.rejects(inventorySource(source, { git: false }), /symlink/i);
 });
 test('unknown sources and incomplete baseline broaden verification; docs do not build', () => {
-  assert.equal(selectVerification(['apps/desktop/src/new-area.ts'], { known: true }).frontendFull, true);
-  assert.equal(selectVerification(['apps/desktop/src/components/thread/WorkflowStarters.tsx'], { known: false }).full, true);
-  assert.equal(selectVerification(['apps/desktop/src/components/thread/WorkflowStarters.tsx'], { known: false }).liveAssistant, false);
+  assert.equal(selectVerification(['apps/web/src/new-area.ts'], { known: true }).frontendFull, true);
+  assert.equal(selectVerification(['apps/web/src/components/thread/WorkflowStarters.tsx'], { known: false }).full, true);
+  assert.equal(selectVerification(['apps/web/src/components/thread/WorkflowStarters.tsx'], { known: false }).liveAssistant, false);
   const docs = selectVerification(['README.md'], { known: true });
   assert.equal(docs.buildWeb, false); assert.equal(docs.deploy, false);
 });
 test('known leaf UI does not run platform or models; locale changes add parity', () => {
-  const leaf = selectVerification(['apps/desktop/src/components/thread/WorkflowStarters.tsx'], { known: true });
+  const leaf = selectVerification(['apps/web/src/components/thread/WorkflowStarters.tsx'], { known: true });
   assert.equal(leaf.frontendFull, false); assert.equal(leaf.platformFull, false);
   assert.equal(leaf.liveAssistant, false); assert.equal(leaf.imageRequired, false);
   assert(leaf.frontendFiles.includes('src/components/thread/WorkflowStarters.test.tsx'));
-  const locale = selectVerification(['apps/desktop/src/i18n/locales/en/session.json'], { known: true });
+  const locale = selectVerification(['apps/web/src/i18n/locales/en/session.json'], { known: true });
   assert(locale.frontendFiles.includes('src/i18n/parity.test.ts'));
 });
 test('runtime transport selects security and the active assistant, not image without image input changes', () => {
@@ -127,7 +127,7 @@ test('release bundles only the matching checked source and excludes ACP', async 
   assert.deepEqual(calls, ['vendor', 'bundle']);
   await assert.rejects(runWebStages({ profile: 'release', sourceFingerprint: 'new', checkedFingerprint: 'old' }), /typecheck/);
   calls.length = 0;
-  await runWebStages({ profile: 'desktop', check: stage('check'), acp: stage('acp'), vendor: stage('vendor'), bundle: stage('bundle') });
+  await runWebStages({ profile: 'server', check: stage('check'), acp: stage('acp'), vendor: stage('vendor'), bundle: stage('bundle') });
   assert.deepEqual(calls, ['check', 'acp', 'vendor', 'bundle']);
   calls.length = 0;
   await runWebStages({ profile: 'web', check: stage('check'), acp: stage('acp'), vendor: stage('vendor'), bundle: stage('bundle') });
@@ -137,7 +137,7 @@ test('release bundles only the matching checked source and excludes ACP', async 
 import { browserStage, prepareRelease, requireBrowserConfiguration, parseArguments, validateResume, validateInstalledImage, assertSelectedSource } from './web-release.mjs';
 
 test('admin analytics source changes select browser coverage without requiring it for publication', () => {
-  for (const path of ['services/platform/src/agent-analytics-store.mjs','packages/sdk/src/agent-analytics-observer.mjs','apps/desktop/src/components/sidebar/GatewayAccountMenu.tsx']) {
+  for (const path of ['services/platform/src/agent-analytics-store.mjs','packages/sdk/src/agent-analytics-observer.mjs','apps/web/src/components/sidebar/GatewayAccountMenu.tsx']) {
     const selection=selectVerification([path],{known:true});
     assert.ok(selection.browserGroups.includes('agent-analytics'),path);
     assert.equal(selection.buildWeb,true);
@@ -387,19 +387,19 @@ test('publication and recovery configuration pin the effective data directory th
 
 
 test('snapshot validation rejects added inputs and executable-mode changes', async (t) => {
-  const root = await fixture(t); await mkdir(join(root, 'apps/desktop/src'), { recursive: true });
-  await writeFile(join(root, 'apps/desktop/src/a.ts'), 'export const value = 1;');
+  const root = await fixture(t); await mkdir(join(root, 'apps/web/src'), { recursive: true });
+  await writeFile(join(root, 'apps/web/src/a.ts'), 'export const value = 1;');
   const files = await inventorySource(root, { git: false });
   const candidate = { source: { root, files, fingerprint: fingerprintFiles(files) } };
   await validateSourceSnapshot(candidate);
-  await writeFile(join(root, 'apps/desktop/src/b.ts'), 'additional input');
+  await writeFile(join(root, 'apps/web/src/b.ts'), 'additional input');
   await assert.rejects(validateSourceSnapshot(candidate), /source changed/);
 });
 test('unknown empty baseline runs conservative bootstrap while runtime callers and Rust widen checks', () => {
   assert.equal(selectVerification([], { known: false }).full, true);
   assert.equal(selectVerification([], { known: false }).liveAssistant, false);
   assert.equal(selectVerification([], { known: true }, { full: true }).full, true);
-  assert.equal(selectVerification(['apps/desktop/src/lib/runtime.ts'], { known: true }).platformFull, true);
+  assert.equal(selectVerification(['apps/web/src/lib/runtime.ts'], { known: true }).platformFull, true);
   assert.deepEqual(selectVerification(['crates/osd-core/src/gateway.rs'], { known: true }).rustPackages, ['osd-core']);
 });
 test('artifact-producing stages cannot resume without validated output identities', () => {
@@ -445,11 +445,11 @@ test('unknown deployment and platform runtime dependencies switch to frozen sour
 
 test('secret and private state directories are excluded even if tracked', async (t) => {
   const root = await fixture(t);
-  for (const file of ['secrets/provider.json', '.openscience/account.json', '.ai4s-workbench/state.json', 'apps/desktop/src/good.ts']) {
+  for (const file of ['secrets/provider.json', '.openscience/account.json', '.ai4s-workbench/state.json', 'apps/web/src/good.ts']) {
     await mkdir(join(root, file, '..'), { recursive: true }); await writeFile(join(root, file), 'input');
   }
   const files = await inventorySource(root, { git: false });
-  assert.deepEqual(files.map((file) => file.path), ['apps/desktop/src/good.ts']);
+  assert.deepEqual(files.map((file) => file.path), ['apps/web/src/good.ts']);
 });
 
 test('served index identity includes managed Web flags and existing login preparation', () => {
@@ -528,7 +528,7 @@ test('a stopped or partially switched service can recover only its recorded conf
 });
 
 test('source edits between selection and freezing cannot omit newly affected checks', () => {
-  const selected = [{ path: 'apps/desktop/src/leaf.ts', sha256: 'same' }];
+  const selected = [{ path: 'apps/web/src/leaf.ts', sha256: 'same' }];
   assertSelectedSource(selected, selected);
   assert.throws(() => assertSelectedSource(selected, [...selected, { path: 'packages/sdk/src/transport.ts', sha256: 'added' }]), /selection and snapshot/);
 });
@@ -606,18 +606,18 @@ test('storage dry-run retains a recoverable publication even after its pointer w
 test('dependency snapshots accept installed scoped package links and local workspace links, but reject escapes', async (t) => {
   const root = await fixture(t); const install = join(root, 'install'); const source = join(root, 'source');
   await mkdir(join(install, 'node_modules/.pnpm'), { recursive: true });
-  await mkdir(join(install, 'apps/desktop/node_modules/@codemirror/example'), { recursive: true });
-  await mkdir(join(source, 'apps/desktop/node_modules/@ai4s'), { recursive: true });
+  await mkdir(join(install, 'apps/web/node_modules/@codemirror/example'), { recursive: true });
+  await mkdir(join(source, 'apps/web/node_modules/@ai4s'), { recursive: true });
   await mkdir(join(source, 'packages/sdk'), { recursive: true });
   await writeFile(join(install, 'node_modules/.pnpm/lock.yaml'), 'locked');
   await writeFile(join(source, 'pnpm-lock.yaml'), 'locked');
-  await writeFile(join(install, 'apps/desktop/node_modules/@codemirror/example/index.js'), 'export default 1');
+  await writeFile(join(install, 'apps/web/node_modules/@codemirror/example/index.js'), 'export default 1');
   await symlink(join(install, 'node_modules'), join(source, 'node_modules'));
-  await symlink(join(install, 'apps/desktop/node_modules/@codemirror'), join(source, 'apps/desktop/node_modules/@codemirror'));
-  await symlink(join(source, 'packages/sdk'), join(source, 'apps/desktop/node_modules/@ai4s/sdk'));
+  await symlink(join(install, 'apps/web/node_modules/@codemirror'), join(source, 'apps/web/node_modules/@codemirror'));
+  await symlink(join(source, 'packages/sdk'), join(source, 'apps/web/node_modules/@ai4s/sdk'));
   assert.match((await dependencyIdentity(source)).fingerprint, /^[a-f0-9]{64}$/);
   await mkdir(join(root, 'outside')); await writeFile(join(root, 'outside/private'), 'fixture');
-  await symlink(join(root, 'outside'), join(source, 'apps/desktop/node_modules/escape'));
+  await symlink(join(root, 'outside'), join(source, 'apps/web/node_modules/escape'));
   await assert.rejects(dependencyIdentity(source), /escapes approved roots/);
 });
 
@@ -627,16 +627,16 @@ test('a frozen dependency view can be frozen again without mistaking installed f
   await mkdir(sharedStore, { recursive: true });
   await mkdir(join(install, 'node_modules'), { recursive: true });
   await symlink(sharedStore, join(install, 'node_modules/.pnpm'));
-  await mkdir(join(install, 'apps/desktop/node_modules'), { recursive: true });
-  await mkdir(join(source, 'apps/desktop'), { recursive: true });
+  await mkdir(join(install, 'apps/web/node_modules'), { recursive: true });
+  await mkdir(join(source, 'apps/web'), { recursive: true });
   await writeFile(join(install, 'node_modules/.pnpm/lock.yaml'), 'locked');
   await writeFile(join(install, 'node_modules/.modules.yaml'), 'installed');
   await writeFile(join(source, 'pnpm-lock.yaml'), 'locked');
-  for (const path of ['packages/sdk', 'packages/shared', 'packages/ui', 'apps/desktop', 'services/platform']) {
+  for (const path of ['packages/sdk', 'packages/shared', 'apps/web', 'services/platform']) {
     await mkdir(join(source, path), { recursive: true }); await writeFile(join(source, path, 'package.json'), '{}');
   }
   await symlink(join(install, 'node_modules'), join(source, 'node_modules'));
-  await symlink(join(install, 'apps/desktop/node_modules'), join(source, 'apps/desktop/node_modules'));
+  await symlink(join(install, 'apps/web/node_modules'), join(source, 'apps/web/node_modules'));
   const files = await inventorySource(source, { git: false });
   const frozen = join(root, 'frozen'); const next = join(root, 'next');
   await freezeSource(source, frozen, files);
@@ -652,7 +652,7 @@ test('a frozen dependency view can be frozen again without mistaking installed f
 
 test('session verification includes recovery even when continuity already exists', async (t) => {
   const root = await fixture(t);
-  const desktop = join(root, 'apps/desktop/src/test');
+  const desktop = join(root, 'apps/web/src/test');
   await mkdir(desktop, { recursive: true });
   await writeFile(join(desktop, 'webNotifications.acceptance.test.mjs'), 'fixture');
   await writeFile(join(desktop, 'webProjects.acceptance.test.mjs'), 'fixture');
@@ -720,7 +720,7 @@ test('session verification includes recovery even when continuity already exists
 
 
 test('every tool-reliability path selects the staged session browser gate', () => {
-  for (const path of ['apps/desktop/src/components/thread/ToolCallRow.tsx', 'apps/desktop/src/components/thread/ToolGroup.tsx', 'services/platform/src/network-operations.mjs', 'services/platform/src/tool-outcomes.mjs', 'runtime/opencode-patches/managed-network.ts', 'runtime/sandbox/tool-outcome.mjs', 'packages/sdk/src/tool-outcome.mjs']) {
+  for (const path of ['apps/web/src/components/thread/ToolCallRow.tsx', 'apps/web/src/components/thread/ToolGroup.tsx', 'services/platform/src/network-operations.mjs', 'services/platform/src/tool-outcomes.mjs', 'runtime/opencode-patches/managed-network.ts', 'runtime/sandbox/tool-outcome.mjs', 'packages/sdk/src/tool-outcome.mjs']) {
     const selection = selectVerification([path], { known: true });
     assert.equal(selection.buildWeb, true, path);
     assert.ok(selection.browserGroups.includes('session'), path);
@@ -728,7 +728,7 @@ test('every tool-reliability path selects the staged session browser gate', () =
 });
 
 test('interaction changes select required session and interaction browser acceptance without an image rebuild',()=>{
- for(const path of ['services/platform/src/session-authority.mjs','apps/desktop/src/lib/interactionState.ts','apps/desktop/src/components/thread/InteractionPrompt.tsx']){
+ for(const path of ['services/platform/src/session-authority.mjs','apps/web/src/lib/interactionState.ts','apps/web/src/components/thread/InteractionPrompt.tsx']){
   const selection=selectVerification([path],{known:true});
   assert(selection.browserGroups.includes('session'));assert(selection.browserGroups.includes('interactions'));
   assert.equal(selection.imageRequired,false);
@@ -740,7 +740,7 @@ test('assistant authority changes require versioned selected-runtime and assista
   'services/platform/src/conversation-router.mjs','services/platform/src/conversation-handover.mjs',
   'services/platform/src/execution-permissions.mjs','services/platform/src/native-effects.mjs',
   'services/platform/src/sandbox-native-jobs.mjs','runtime/sandbox/native-tools.mjs','scripts/dev/web-release-recovery.mjs',
-  'apps/desktop/src/components/settings/ManagedAgentsCard.tsx']) {
+  'apps/web/src/components/settings/ManagedAgentsCard.tsx']) {
   const selection=selectVerification([path],{known:true});
   assert.equal(selection.liveAssistant,true,path);assert.equal(selection.liveGateVersion,2,path);
   assert.equal(selection.platformFull,true,path);assert.equal(selection.buildWeb,true,path);

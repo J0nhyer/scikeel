@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { withLoginPreparation } from "../src/login-page.mjs";
 
-const { JSDOM } = createRequire(new URL("../../../apps/desktop/package.json", import.meta.url))("jsdom");
+const { JSDOM } = createRequire(new URL("../../../apps/web/package.json", import.meta.url))("jsdom");
 
 function preparation(locale, { storage = {} } = {}) {
   return new JSDOM(withLoginPreparation("<html><head></head><body><div id=\"root\"></div></body></html>"), {

@@ -1,5 +1,9 @@
 # AI4S Workbench Desktop — Technical Design
 
+> **Historical design (v0.1, 2026-07-02).** The Tauri desktop shell described
+> below was retired. The current product is the Web-only workbench described in
+> `README.md` and `AGENTS.md`; this document is kept for design history.
+
 > **Implementation status (v0.1, 2026-07-02).** Built and verified: Tauri 2 shell + React
 > UI; **OpenCode** bundled as an isolated sidecar (auto-started, app-private config/data,
 > dedicated port); `OpenCodeClient` over HTTP + SSE; real multi-session chat with history;
@@ -438,18 +442,22 @@ Monorepo:
 
 ```text
 ai4s-workbench/
-  apps/desktop/{src,src-tauri}/
-  packages/{ui,shared,sdk}/
-  runtime/{manager,opencode-profile,mcp,skills}/
+  apps/web/src/
+  packages/{shared,sdk}/
+  services/platform/
+  crates/{osd-core,osd-cli,osd-sandbox-host}/
+  runtime/{opencode-profile,skills,sandbox,tools}/
   docs/{PRD.md,TECHNICAL_DESIGN.md}
   examples/bci-trends/
-  scripts/{release,dev}/     # dev/fetch-opencode.sh fetches the pinned sidecar
+  scripts/{release,dev}/
 ```
 
-- `apps/desktop` — Tauri + React desktop app; `src-tauri/src/runtime.rs` supervises the
-  bundled OpenCode sidecar (`OpenCodeClient` lives in `packages/sdk`).
-- `runtime/manager` — local runtime manager (detect deps, workspace, provenance, logs).
-- `runtime/opencode-profile` — the AI4S Workbench OpenCode config/skills bundle.
+- `apps/web` — React Web interface; it talks to the gateway through
+  `OpenCodeClient` (`packages/sdk`).
+- `services/platform` — the multi-user control plane (auth, accounts, runtime
+  selection, proxying).
+- `crates/osd-*` — the headless worker server and sandbox host.
+- `runtime/opencode-profile` — the OpenCode config/skills bundle.
 - `runtime/skills` — self-authored scientific skills.
 - `examples` — the complete demo project.
 

@@ -5,7 +5,7 @@ node_modules
 .local
 .superpowers
 docs
-apps/desktop/dist
+apps/web/dist
 runtime/binaries
 target
 secrets

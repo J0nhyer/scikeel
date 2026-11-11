@@ -1,0 +1,39 @@
+import "./lib/polyfills";
+import React from "react";
+import ReactDOM from "react-dom/client";
+import { RouterProvider } from "react-router-dom";
+import "./i18n";
+import { LocaleProvider } from "./app/providers/LocaleProvider";
+import { ThemeProvider } from "./app/providers/ThemeProvider";
+import { PlatformBootGate } from "./components/boot/PlatformBootGate";
+import { Toaster } from "./components/ui/Toaster";
+import { router } from "./app/router";
+import { consumeUrlToken, installGatewayAuthGuard } from "./lib/webMode";
+import "./index.css";
+import { installLoginPreparation } from "./lib/loginPreparation";
+import { installPreloadRecovery } from "./lib/preloadRecovery";
+import { installPlatformAccountLifecycle, signOutPlatformBrowser, useRuntimeStore } from "./lib/runtime";
+
+// Web client: adopt a token from the opened link (so a copied URL just works),
+// then catch gateway 401s (rotated/revoked token) → re-auth. Both before any
+// OpenCodeClient binds fetch or the app reads the stored token.
+consumeUrlToken();
+installGatewayAuthGuard();
+installPlatformAccountLifecycle();
+installLoginPreparation(useRuntimeStore, signOutPlatformBrowser);
+// A deploy replaces the hashed chunks; an open tab running the previous entry
+// must reload rather than fail its lazy routes with a 404.
+installPreloadRecovery();
+
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <LocaleProvider>
+      <ThemeProvider>
+        <PlatformBootGate>
+          <RouterProvider router={router} />
+        </PlatformBootGate>
+        <Toaster />
+      </ThemeProvider>
+    </LocaleProvider>
+  </React.StrictMode>,
+);

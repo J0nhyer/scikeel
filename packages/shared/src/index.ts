@@ -150,7 +150,7 @@ export type ToolCallStatus =
   | "warning"
   | "failed";
 
-/** Closed vocabulary emitted by `toolPresentation()` (apps/desktop/src/lib/runtime.ts)
+/** Closed vocabulary emitted by `toolPresentation()` (apps/web/src/lib/runtime.ts)
  *  — never derived from LLM/tool output, so each value maps to a per-key
  *  translation (`session:tool.verb.<Verb>`), not raw text. */
 export type ToolVerb = "Ran" | "Created" | "Edited" | "Read" | "Searched" | "Listed" | "Fetched";

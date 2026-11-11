@@ -35,8 +35,8 @@ test("the authenticated app bootstrap does not leave a competing system listener
 });
 
 test("login and workbench embed the preferred original favicon without a network fetch", async () => {
-  const icon = await readFile(new URL("../../../apps/desktop/public/assets/brand/scikeel-icon-v4.png", import.meta.url));
-  const workbench = await readFile(new URL("../../../apps/desktop/index.html", import.meta.url), "utf8");
+  const icon = await readFile(new URL("../../../apps/web/public/assets/brand/scikeel-icon-v4.png", import.meta.url));
+  const workbench = await readFile(new URL("../../../apps/web/index.html", import.meta.url), "utf8");
   for (const html of [loginPage(), workbench]) {
     const links = html.match(/<link\b[^>]*rel="icon"[^>]*>/g);
     assert.equal(links.length, 1);

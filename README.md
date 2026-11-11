@@ -1,5 +1,7 @@
 # SciKeel
 
+[English](./README.md) · [简体中文](./README.zh.md)
+
 **An AI research workbench in your browser.**
 
 SciKeel brings research conversations, literature, code, data, figures, and reports
@@ -121,7 +123,7 @@ research files out of commits and Issue/PR attachments.
 
 | Path | Purpose |
 | --- | --- |
-| `apps/desktop/src/` | Shared React Web interface and gateway browser behavior. |
+| `apps/web/src/` | Shared React Web interface and gateway browser behavior. |
 | `services/platform/` | Node platform: authentication, accounts, runtime management, and proxying. |
 | `packages/sdk/` | API client wrapper used by the UI. |
 | `packages/shared/` | Shared types and domain models. |
@@ -147,7 +149,7 @@ the workbench is separate from GitHub collaborator membership.
 ## License and attribution
 
 SciKeel derives from [Open Science Desktop](https://github.com/ai4s-research/open-science)
-under the [MIT license](./LICENSE); the inherited desktop code is retained.
-Third-party resources keep their own licenses. Historical design documents,
-translated upstream READMEs, and [CITATION.cff](./CITATION.cff) may describe the
-upstream project; they do not identify a SciKeel release or research citation.
+under the [MIT license](./LICENSE); the Web interface and headless server are
+retained. Third-party resources keep their own licenses. Historical design
+documents and [CITATION.cff](./CITATION.cff) may describe the upstream project;
+they do not identify a SciKeel release or research citation.

@@ -69,20 +69,20 @@ export async function inventorySource(root, { git = true, includeViteManifest = 
 }
 export async function dependencyIdentity(root, { references: pinnedReferences } = {}) {
   const references = pinnedReferences ? [...pinnedReferences] : [];
-  for (const path of pinnedReferences ? [] : ['node_modules', 'apps/desktop/node_modules', 'services/platform/node_modules']) {
+  for (const path of pinnedReferences ? [] : ['node_modules', 'apps/web/node_modules', 'services/platform/node_modules']) {
     const resolved = await realpath(join(root, path)).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
     if (resolved) references.push({ path, resolved });
   }
-  if (!references.some((ref) => ref.path === 'apps/desktop/node_modules')) throw new Error('Installed frontend dependencies unavailable');
+  if (!references.some((ref) => ref.path === 'apps/web/node_modules')) throw new Error('Installed frontend dependencies unavailable');
   const installedLock = join(references.find((ref) => ref.path === 'node_modules')?.resolved ?? '', '.pnpm/lock.yaml');
   if (await sha256(join(root, 'pnpm-lock.yaml')) !== await sha256(installedLock)) throw new Error('Source lockfile does not match installed dependencies');
   const files = []; const visited = new Set();
   const installedModules = dirname(dirname(await realpath(installedLock)));
   const installBase = dirname(installedModules);
   const workspaceRoots = new Set([installBase, root, ...references.filter(ref => ref.resolved.endsWith('/' + ref.path)).map(ref => ref.resolved.slice(0, -ref.path.length - 1))]);
-  const workspaceTargets = new Set([...workspaceRoots].flatMap(base => ['packages/sdk', 'packages/shared', 'packages/ui', 'apps/desktop', 'services/platform'].map(path => join(base, path))));
+  const workspaceTargets = new Set([...workspaceRoots].flatMap(base => ['packages/sdk', 'packages/shared', 'apps/web', 'services/platform'].map(path => join(base, path))));
   const approved = [installedModules, ...references.map((ref) => ref.resolved)];
-  for (const path of ['apps/desktop/node_modules', 'services/platform/node_modules']) {
+  for (const path of ['apps/web/node_modules', 'services/platform/node_modules']) {
     const installed = await realpath(join(installBase, path)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
     if (installed) approved.push(installed);
   }
@@ -123,8 +123,8 @@ export async function freezeSource(root, destination, files, { linkDependencies 
           for (const child of await readdir(input)) {
             const scoped = join(target, child);
             const actual = await realpath(join(input, child));
-            const mapped = name === '@ai4s' ? join(destination, child === 'desktop' ? 'apps' : child === 'platform' ? 'services' : 'packages', child) : actual;
-            if (name === '@ai4s' && !['sdk', 'shared', 'ui', 'desktop', 'platform'].includes(child)) throw new Error('Unknown workspace dependency');
+            const mapped = name === '@ai4s' ? join(destination, child === 'web' ? 'apps' : child === 'platform' ? 'services' : 'packages', child) : actual;
+            if (name === '@ai4s' && !['sdk', 'shared', 'web', 'platform'].includes(child)) throw new Error('Unknown workspace dependency');
             await symlink(mapped, scoped, process.platform === 'win32' ? 'junction' : 'dir');
             views.push({ path: relative(destination, scoped), target: mapped });
           }
@@ -142,7 +142,7 @@ export async function freezeSource(root, destination, files, { linkDependencies 
       for (const name of await readdir(ref.resolved)) await linkEntry(join(ref.resolved, name), join(output, name), name);
       if (ref.path === 'node_modules' && !await lstat(join(output, '@ai4s')).catch(() => null)) {
         await mkdir(join(output, '@ai4s'));
-        for (const [name, packagePath] of [['sdk', 'packages/sdk'], ['shared', 'packages/shared'], ['desktop', 'apps/desktop'], ['platform', 'services/platform']]) {
+        for (const [name, packagePath] of [['sdk', 'packages/sdk'], ['shared', 'packages/shared'], ['web', 'apps/web'], ['platform', 'services/platform']]) {
           const target = join(destination, packagePath); const scoped = join(output, '@ai4s', name);
           await symlink(target, scoped, process.platform === 'win32' ? 'junction' : 'dir'); views.push({ path: relative(destination, scoped), target });
         }
@@ -169,7 +169,7 @@ export async function inspectProduction({ run = command } = {}) {
   const actualSource = run('sudo', ['-n', 'readlink', `/proc/${pid}/cwd`]);
   if (await realpath(source) !== await realpath(actualSource)) throw new Error('Effective service source differs from running process');
   source = actualSource;
-  const webRoot = safe.PLATFORM_WEB_ROOT || join(source, 'apps/desktop/dist');
+  const webRoot = safe.PLATFORM_WEB_ROOT || join(source, 'apps/web/dist');
   const configuration = run('sudo', ['-n', 'systemctl', 'cat', 'osd-platform.service']);
   const envFiles = configuration.split('\n').filter((line) => line.startsWith('EnvironmentFile=')).map((line) => line.slice(16).replace(/^-/, ''));
   const managedEnv = '/etc/scikeel/platform-sandbox.env';

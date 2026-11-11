@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 export async function buildVendor({ root = fileURLToPath(new URL("../..", import.meta.url)), outputDirectory = resolve(root, ".deploy/vendor") } = {}) {
 await mkdir(outputDirectory, { recursive: true });
 await build({
-  entryPoints: [resolve(root, "apps/desktop/node_modules/pptx-preview/dist/pptx-preview.es.js")],
+  entryPoints: [resolve(root, "apps/web/node_modules/pptx-preview/dist/pptx-preview.es.js")],
   outfile: join(outputDirectory, "pptx-preview.mjs"),
   bundle: true,
   platform: "browser",
@@ -18,7 +18,7 @@ await build({
   logLevel: "warning",
 });
 await build({
-  entryPoints: [resolve(root, "apps/desktop/node_modules/monaco-editor/esm/vs/index.js")],
+  entryPoints: [resolve(root, "apps/web/node_modules/monaco-editor/esm/vs/index.js")],
   outfile: join(outputDirectory, "monaco-editor.mjs"),
   bundle: true,
   platform: "browser",
@@ -34,7 +34,7 @@ for (const [name, entry] of [
   ["typescript", "language/typescript/ts.worker.js"],
 ]) {
   await build({
-    entryPoints: [resolve(root, "apps/desktop/node_modules/monaco-editor/esm/vs", entry)],
+    entryPoints: [resolve(root, "apps/web/node_modules/monaco-editor/esm/vs", entry)],
     outfile: join(outputDirectory, `${name}.worker.js`),
     bundle: true,
     platform: "browser",
@@ -51,7 +51,7 @@ for (const [name, entry] of [
   ["3dmol", "3dmol/build/3Dmol.es6-min.js"],
 ]) {
   await build({
-    entryPoints: [resolve(root, "apps/desktop/node_modules", entry)],
+    entryPoints: [resolve(root, "apps/web/node_modules", entry)],
     outfile: join(outputDirectory, `${name}.mjs`),
     bundle: true, platform: "browser", target: "es2020", format: "esm", minify: true, logLevel: "warning",
   });

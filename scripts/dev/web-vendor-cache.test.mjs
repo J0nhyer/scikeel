@@ -37,25 +37,25 @@ test('failed refresh leaves previous valid cache readable and never publishes pa
 test('fingerprint detects dependency bytes, lockfile and tooling changes and ignores candidate path', async (t) => {
   const root = await fixture(t);
   async function setup(path) {
-    for (const file of ['pnpm-lock.yaml', 'scripts/dev/build-web-vendor.mjs', 'scripts/dev/web-vendor-cache.mjs', 'apps/desktop/web-vendor.ts', 'apps/desktop/vite.config.ts']) { await mkdir(join(path, file, '..'), { recursive: true }); await writeFile(join(path, file), 'fixed input'); }
+    for (const file of ['pnpm-lock.yaml', 'scripts/dev/build-web-vendor.mjs', 'scripts/dev/web-vendor-cache.mjs', 'apps/web/web-vendor.ts', 'apps/web/vite.config.ts']) { await mkdir(join(path, file, '..'), { recursive: true }); await writeFile(join(path, file), 'fixed input'); }
     for (const name of ['pptx-preview', 'monaco-editor', 'openchemlib', 'exceljs', 'docx-preview', '3dmol', 'esbuild']) {
-      const pkg = join(path, name === 'esbuild' ? 'node_modules' : 'apps/desktop/node_modules', name);
+      const pkg = join(path, name === 'esbuild' ? 'node_modules' : 'apps/web/node_modules', name);
       await mkdir(pkg, { recursive: true }); await writeFile(join(pkg, 'package.json'), JSON.stringify({ name, version: '1.0.0', main: 'index.js' })); await writeFile(join(pkg, 'index.js'), 'exports.value = 1;');
     }
   }
   const a = join(root, 'a'); const b = join(root, 'b'); await setup(a); await setup(b);
   for (const path of [a, b]) {
-    const dependency = join(path, 'apps/desktop/node_modules/string_decoder');
+    const dependency = join(path, 'apps/web/node_modules/string_decoder');
     await mkdir(dependency, { recursive: true });
     await writeFile(join(dependency, 'package.json'), JSON.stringify({ name: 'string_decoder', version: '1.0.0' }));
     await writeFile(join(dependency, 'index.js'), 'exports.value = 1;');
-    const entry = join(path, 'apps/desktop/node_modules/exceljs/package.json');
+    const entry = join(path, 'apps/web/node_modules/exceljs/package.json');
     const metadata = JSON.parse(await readFile(entry, 'utf8')); metadata.dependencies = { string_decoder: '1.0.0' };
     await writeFile(entry, JSON.stringify(metadata));
   }
   const original = await vendorInputFingerprint({ root: a });
   assert.equal(original, await vendorInputFingerprint({ root: b }));
-  await writeFile(join(a, 'apps/desktop/node_modules/monaco-editor/index.js'), 'exports.value = 2;');
+  await writeFile(join(a, 'apps/web/node_modules/monaco-editor/index.js'), 'exports.value = 2;');
   assert.notEqual(original, await vendorInputFingerprint({ root: a }));
   await writeFile(join(b, 'pnpm-lock.yaml'), 'changed lock'); assert.notEqual(original, await vendorInputFingerprint({ root: b }));
 });

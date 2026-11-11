@@ -1,0 +1,553 @@
+import { useInRouterContext, useSearchParams } from "react-router-dom";
+import { workspaceEntries, type WorkspaceScope } from "@/lib/workspaceManagement";
+import { confirmWorkspaceDraftLeave, hasWorkspaceDrafts } from "@/lib/workspaceDrafts";
+import { WorkspaceFileActions, WorkspaceFileControls } from "@/components/files/WorkspaceFileActions";
+import { StateNotice } from "@/components/ui/StateNotice";
+import { useCallback, useMemo, useRef, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import {
+  ChevronRight,
+  ChevronDown,
+  Dna,
+  Download,
+  FileText,
+  Film,
+  FlaskConical,
+  Folder,
+  Image as ImageIcon,
+  Highlighter,
+  Loader2,
+  NotebookPen,
+  RefreshCw,
+  Sheet,
+  X,
+} from "lucide-react";
+import { extOf, extToKind, previewKindForName, type PreviewKind } from "@/lib/artifacts";
+import { downloadArtifact, listDir, type DirEntry } from "@/lib/artifactFile";
+import { toast } from "@/lib/toast";
+import { isGatewayWeb, isPlatformWeb } from "@/lib/webMode";
+import { useIsMobile } from "@/lib/useIsMobile";
+import { useRuntimeStore } from "@/lib/runtime";
+import { baseName } from "@/components/thread/WorkspaceChip";
+import { NotebookEditor } from "@/components/notebook/NotebookEditor";
+import { FilePreviewInspector } from "@/components/inspector/FilePreviewInspector";
+import { FileContextMenu } from "@/components/files/FileContextMenu";
+import { PaneTitlebarInset, PANE_HEADER } from "@/components/inspector/RightPane";
+import { cn } from "@/lib/cn";
+
+const EXT_LANG: Record<string, string> = {
+  py: "python", r: "r", jl: "julia", sh: "bash", tex: "latex", md: "markdown",
+};
+
+const FILE_LOCATIONS_KEY = "openscience.files.locations.v1";
+const GLOBAL_FILES_LOCATION = "base";
+const ACCOUNT_SCOPE:WorkspaceScope={kind:"account"};
+
+function safeDirectory(value: unknown): string {
+  if (typeof value !== "string" || value.startsWith("/") || value.includes("\\")) return "";
+  return value.split("/").some((part) => part === "..") ? "" : value;
+}
+
+function fileLocations(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const value = JSON.parse(window.localStorage.getItem(FILE_LOCATIONS_KEY) ?? "{}") as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value).map(([key, dir]) => [key, safeDirectory(dir)]),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function rememberedDirectory(key: string): string {
+  return fileLocations()[key] ?? "";
+}
+
+function rememberDirectory(key: string, dir: string): void {
+  if (typeof window === "undefined") return;
+  const locations = fileLocations();
+  locations[key] = safeDirectory(dir);
+  try {
+    window.localStorage.setItem(FILE_LOCATIONS_KEY, JSON.stringify(locations));
+  } catch {
+    // Browsing still works when storage is unavailable or full.
+  }
+}
+
+function iconFor(entry: DirEntry) {
+  if (entry.isDir) return <Folder size={15} className="text-accent" />;
+  const kind = previewKindForName(entry.name);
+  const cls = "text-muted";
+  if (entry.name.endsWith(".ipynb")) return <NotebookPen size={15} className={cls} />;
+  if (kind === "image" || kind === "fits" || kind === "anomaly" || kind === "phase") return <ImageIcon size={15} className={cls} />;
+  if (kind === "video") return <Film size={15} className={cls} />;
+  if (kind === "table") return <Sheet size={15} className={cls} />;
+  if (kind === "molecule" || kind === "dos" || kind === "bands") return <FlaskConical size={15} className={cls} />;
+  if (kind === "genome") return <Dna size={15} className={cls} />;
+  if (kind === "qcode") return <Highlighter size={15} className={cls} />;
+  return <FileText size={15} className={cls} />;
+}
+
+function humanSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FileDownloadButton({ entry, root, directory }: { entry: DirEntry; root: "workspace" | "base"; directory?: string }) {
+  const { t } = useTranslation("inspector");
+  const [busy, setBusy] = useState(false);
+  if (!isGatewayWeb || entry.isDir) return null;
+  const download = async () => {
+    setBusy(true);
+    try { await downloadArtifact(entry.path, root, directory); }
+    catch (e) { toast.error(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+  return <button type="button" onClick={() => void download()} disabled={busy}
+    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
+    aria-label={`${t("filePreview.download")}: ${entry.name}`} title={t("filePreview.download")}>
+    {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+  </button>;
+}
+
+/**
+ * GLOBAL file explorer: browses from the base folder (Settings → Workspace),
+ * which contains the structured `projects/` and `sessions/` collections — not
+ * the active session only.
+ * Directories are navigable via a breadcrumb; files open in the same viewers
+ * used elsewhere (figures, tables, PDF, molecule, genome tracks, notebooks),
+ * so all past work is reachable in one place.
+ */
+interface FilesPageProps {onOpenFile?: (entry: DirEntry) => void; onClose?: () => void; scope?: WorkspaceScope;}
+export function FilesPage(props:FilesPageProps={}) {
+  const routed=useInRouterContext();
+  const identity=useRuntimeStore(state=>isPlatformWeb?JSON.stringify([state.gatewayUser?.id,state.gatewayContext?.instanceId,state.gatewayContext?.generation]):'desktop');
+  return routed?<RoutedFilesPage key={identity} {...props}/>:<FilesExplorer key={identity} {...props} scope={props.scope??(isPlatformWeb?ACCOUNT_SCOPE:undefined)}/>;
+}
+function RoutedFilesPage(props:FilesPageProps) {
+  const [query]=useSearchParams();
+  const project=query.get("project");
+  const scope=useMemo(()=>props.scope??(isGatewayWeb && project?{kind:"project" as const,projectId:project}:isPlatformWeb?ACCOUNT_SCOPE:undefined),[props.scope,project]);
+  return <FilesExplorer key={scope?JSON.stringify(scope):"base"} {...props} scope={scope}/>;
+}
+function FilesExplorer({
+  onOpenFile,
+  onClose,
+  scope,
+}: {
+  scope?: WorkspaceScope;
+  onOpenFile?: (entry: DirEntry) => void;
+  /** In a pane: the ✕ goes at the end of the breadcrumb row, since this page
+   *  has no title bar of its own and the pane adds none. */
+  onClose?: () => void;
+} = {}) {
+  const { t } = useTranslation(["pages", "common", "nav"]);
+  const isMobile = useIsMobile();
+  // Base-relative; "" = the base folder. Persisted client-side so returning to
+  // Files continues from the directory the user was browsing.
+  const account=useRuntimeStore(state=>state.gatewayUser?.id);
+  const locationKey=scope?JSON.stringify([account,scope]):GLOBAL_FILES_LOCATION;
+  const fileRoot=scope?"workspace":"base";
+  const [dir, setDirState] = useState(() => rememberedDirectory(locationKey));
+  const [entries, setEntries] = useState<DirEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<DirEntry | null>(null);
+  const [canCreate,setCanCreate]=useState(false);
+  const [nextCursor,setNextCursor]=useState<string|null>(null),[loadingMore,setLoadingMore]=useState(false);const pageLock=useRef(false);
+  // The base folder's path, for the root crumb (name + full path on hover).
+  const [basePath, setBasePath] = useState<string | null>(() => useRuntimeStore.getState().gatewayWorkspace);
+
+  const setDir = (next: string) => {
+    if(scope && !confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope))return;
+    rememberDirectory(locationKey, next);
+    setDirState(next);
+  };
+
+  const loadGeneration = useRef(0);
+  const load = useCallback(async (rel: string) => {
+    const generation = ++loadGeneration.current;
+    pageLock.current = false;
+    setLoadingMore(false);
+    setEntries(null);
+    setError(null);
+    setNextCursor(null);
+    try {
+      const managed=isGatewayWeb && scope?await workspaceEntries(scope,rel):null;
+      const next=managed?managed.entries:await listDir(rel,"base");
+      if(managed && generation===loadGeneration.current){setBasePath(managed.directory);setCanCreate(managed.capabilities?.create===true);setNextCursor(managed.nextCursor??null);}
+      if (generation === loadGeneration.current) setEntries(next);
+    } catch (e) {
+      if (generation !== loadGeneration.current) return;
+      if (rel) {
+        rememberDirectory(locationKey, "");
+        setDirState("");
+        return;
+      }
+      setError(e instanceof Error ? e.message : String(e));
+      setEntries([]);
+    }
+  }, [locationKey,scope]);
+
+  useEffect(() => {
+    void load(dir);
+    // This ref tracks request generations, rather than a mounted DOM node.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { loadGeneration.current++; };
+  }, [dir, load]);
+  const changed=()=>{if(!scope || !hasWorkspaceDrafts(scope))setSelected(null);void load(dir);};
+  const loadMore=async()=>{
+    if(!scope || !nextCursor || pageLock.current)return;
+    const generation=loadGeneration.current,owner=useRuntimeStore.getState().gatewayUser?.id;pageLock.current=true;setLoadingMore(true);
+    try{const result=await workspaceEntries(scope,dir,nextCursor);if(generation===loadGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id){setEntries(previous=>[...(previous??[]).filter(entry=>!result.entries.some(next=>next.path===entry.path)),...result.entries]);setNextCursor(result.nextCursor??null);setError(null);}}
+    catch(error){if(generation===loadGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setError(error instanceof Error?error.message:String(error));}
+    finally{pageLock.current=false;if(generation===loadGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setLoadingMore(false);}
+  };
+  useEffect(()=>{
+    if(!scope)return;
+    const refresh=(event:Event)=>{const detail=(event as CustomEvent<{scope?:WorkspaceScope}>).detail;if(!detail?.scope || JSON.stringify(detail.scope)===JSON.stringify(scope)){if(!hasWorkspaceDrafts(scope))setSelected(null);void load(dir);}};
+    window.addEventListener('scikeel.workspace-files-updated',refresh);
+    return()=>window.removeEventListener('scikeel.workspace-files-updated',refresh);
+  },[scope,dir,load]);
+
+  const open = (entry: DirEntry) => {
+    if(scope && selected?.path === entry.path && !entry.isDir)return;
+    if(scope && selected && !confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope,selected.path))return;
+    if (entry.isDir) {
+      setSelected(null);
+      setDir(entry.path);
+      return;
+    }
+    // In a pane the caller opens the file beside the tree; as a route there is
+    // nowhere to put it but here, so the page takes itself over.
+    if (onOpenFile) onOpenFile(entry);
+    else setSelected(entry);
+  };
+
+  const crumbs = dir ? dir.split("/") : [];
+  // In a pane the file opens BESIDE this one, so there is nothing to preview
+  // here: the tree takes the whole pane, the way a file tree does in VS Code or
+  // in Orca's sidebar. Keeping the preview column gave every Files pane a dead
+  // half reading "Select a file to preview it here" that could never fill.
+  const isTree = Boolean(onOpenFile);
+
+  // Phone-width: the fixed 288px list + preview can't share the screen, so the
+  // page becomes single-pane — the list fills the width, opening a file swaps
+  // to a full-width preview, and its Close button returns to the list.
+  return (
+    <div className="flex h-full min-h-0">
+      <div
+        className={cn(
+          "flex flex-col",
+          isTree
+            ? "w-full"
+            : cn("border-r border-border", isMobile ? cn("w-full", selected && "hidden") : "w-72 shrink-0"),
+        )}
+      >
+        <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-3 py-2.5 text-[13px]">
+          <button
+            className={cn("rounded px-1 hover:bg-surface-2", dir ? "text-link" : "font-medium text-text")}
+            onClick={() => setDir("")}
+            title={basePath ?? undefined}
+          >
+            {baseName(basePath)}
+          </button>
+          {crumbs.map((part, i) => {
+            const to = crumbs.slice(0, i + 1).join("/");
+            const isLast = i === crumbs.length - 1;
+            return (
+              <span key={to} className="flex items-center gap-0.5">
+                <ChevronRight size={13} className="text-muted" />
+                <button
+                  className={cn("rounded px-1 hover:bg-surface-2", isLast ? "font-medium text-text" : "text-link")}
+                  onClick={() => setDir(to)}
+                >
+                  {part}
+                </button>
+              </span>
+            );
+          })}
+          <button type="button" className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center text-muted hover:text-text"
+            aria-label={t("files.refresh")} title={t("files.refresh")} disabled={entries === null} onClick={() => void load(dir)}>
+            <RefreshCw size={14} />
+          </button>
+          {scope && <WorkspaceFileControls scope={scope} path={dir} onChanged={changed} disabled={!canCreate||entries===null}/>}
+          {onClose && (
+            <>
+              <div className="flex-1" />
+              <button
+                onClick={()=>{if(!scope || confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope))onClose();}}
+                aria-label={t("files.pane.closeAria")}
+                className="rounded p-1 text-muted hover:bg-border hover:text-error"
+              >
+                <X size={13} strokeWidth={1.5} />
+              </button>
+            </>
+          )}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {entries === null && (
+            <div className="flex items-center gap-2 p-2 text-sm text-muted">
+              <Loader2 size={14} className="animate-spin" /> {t("files.loading")}
+            </div>
+          )}
+          {error && <StateNotice issueId={`files-base:${dir}:${error}`} summary={t("common:notification.problem")} detail={error} action={{ label: t("common:notification.retry"), run: () => load(dir) }} />}
+          {entries && entries.length === 0 && !error && (
+            <div className="p-2 text-sm text-muted">
+              {isGatewayWeb ? t("files.folderEmpty") : t("files.explorerUnavailableWeb")}
+            </div>
+          )}
+          {entries?.map((entry) => (
+            <FileContextMenu key={entry.path} entry={entry} root={fileRoot} directory={fileRoot==="workspace"?basePath??undefined:undefined}>
+              <div className="flex min-w-0 items-center">
+              <button
+                onClick={() => open(entry)}
+                className={cn(
+                  "flex min-w-0 flex-1 items-center gap-2 rounded-input px-2 py-1.5 text-left text-[13px] hover:bg-surface-2",
+                  selected?.path === entry.path ? "bg-surface-2 text-text" : "text-text/90",
+                )}
+              >
+                {iconFor(entry)}
+                <span className="flex-1 truncate">{entry.name}</span>
+                {!entry.isDir && <span className="shrink-0 text-[11px] text-muted">{humanSize(entry.size)}</span>}
+                {entry.isDir && <ChevronRight size={14} className="shrink-0 text-muted" />}
+              </button>
+              <FileDownloadButton entry={entry} root={fileRoot} directory={fileRoot==="workspace"?basePath??undefined:undefined} />
+              {scope && entry.capabilities && <WorkspaceFileActions scope={scope} entry={entry} onChanged={changed}/>}
+              </div>
+            </FileContextMenu>
+          ))}
+          {nextCursor && <button type='button' disabled={loadingMore} aria-label={t('nav:fileManagement.loadMore')} title={t('nav:fileManagement.loadMore')} className='mx-auto mt-2 flex h-8 w-8 items-center justify-center rounded border border-border disabled:opacity-50' onClick={()=>void loadMore()}><ChevronDown size={15}/></button>}
+        </div>
+      </div>
+
+      {!isTree && (
+        <div className={cn("min-h-0 flex-1", isMobile && !selected && "hidden")}>
+          {selected ? (
+            <FilePreview key={selected.path} entry={selected} root={fileRoot} workspaceScope={scope} workspaceDirectory={fileRoot==="workspace"?basePath??undefined:undefined} onClose={() => setSelected(null)} />
+          ) : (
+            <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted">
+              {t("files.selectFilePrompt")}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilePreview({
+  entry,
+  root,
+  onClose,
+  controls,
+  workspaceDirectory,
+  workspaceScope,
+}: {
+  entry: DirEntry;
+  root: "workspace" | "base";
+  onClose: () => void;
+  controls?: React.ReactNode;
+  workspaceDirectory?: string;
+  workspaceScope?: WorkspaceScope;
+}) {
+  const ext = extOf(entry.name);
+  if (ext === "ipynb")
+    return <NotebookEditor path={entry.path} root={root} onClose={onClose} controls={controls} />;
+  const kind: PreviewKind = previewKindForName(entry.name);
+  return (
+    <FilePreviewInspector
+      data={{
+        variant: "file",
+        path: entry.path,
+        filename: entry.name,
+        artifact: extToKind(ext),
+        language: EXT_LANG[ext] ?? (kind === "text" ? ext : undefined),
+        root,
+      }}
+      onClose={onClose}
+      controls={controls}
+      workspaceDirectory={workspaceDirectory}
+      workspaceScope={workspaceScope}
+    />
+  );
+}
+
+/**
+ * Compact browser for the CURRENT session's folder, shown in the right
+ * inspector pane beside the conversation (the session-scoped quick entry —
+ * the Files page itself is global). Clicking a file swaps the pane to its
+ * preview; closing the preview returns to the list.
+ */
+export function SessionFilesPane(props:{sessionId:string;sessionDir?:string;onClose:()=>void;controls?:React.ReactNode}){
+  const identity=useRuntimeStore(state=>isPlatformWeb?JSON.stringify([state.gatewayUser?.id,state.gatewayContext?.instanceId,state.gatewayContext?.generation]):'desktop');
+  return <SessionFilesExplorer key={identity} {...props}/>;
+}
+function SessionFilesExplorer({
+  sessionId,
+  sessionDir,
+  onClose,
+  controls,
+}: {
+  sessionId: string;
+  sessionDir?: string;
+  onClose: () => void;
+  /** Pane-level header buttons (e.g. maximize), rendered before Close. */
+  controls?: React.ReactNode;
+}) {
+  const { t } = useTranslation(["pages", "common", "nav"]);
+  const workspace = useRuntimeStore((s) => s.workspace);
+  const scope=useMemo<WorkspaceScope>(()=>({kind:"session",sessionId}),[sessionId]);
+  const [managedDirectory,setManagedDirectory]=useState<string|null>(null),[canCreate,setCanCreate]=useState(false);
+  const directory=managedDirectory??sessionDir;
+  const account=useRuntimeStore(state=>state.gatewayUser?.id);
+  const locationKey = isPlatformWeb?JSON.stringify([account,'session',sessionId]):`session:${sessionId}`;
+  const [dir, setDirState] = useState(() => rememberedDirectory(locationKey));
+  const [entries, setEntries] = useState<DirEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<DirEntry | null>(null);
+  const [reload, setReload] = useState(0);
+  const [nextCursor,setNextCursor]=useState<string|null>(null),[loadingMore,setLoadingMore]=useState(false);const pageLock=useRef(false),listingGeneration=useRef(0);
+
+  const setDir = (next: string) => {
+    if(isPlatformWeb && !confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope))return;
+    setSelected(null);
+    rememberDirectory(locationKey, next);
+    setDirState(next);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    listingGeneration.current++;pageLock.current=false;setLoadingMore(false);setNextCursor(null);
+    setEntries(null);
+    setError(null);
+    const listing=isPlatformWeb?workspaceEntries(scope,dir).then(result=>{
+      if(!cancelled){setManagedDirectory(result.directory);setCanCreate(result.capabilities?.create===true);setNextCursor(result.nextCursor??null);}return result.entries;
+    }):listDir(dir, "workspace", sessionDir);
+    listing
+      .then((e) => {
+        if (!cancelled) setEntries(e);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          if (dir) {
+            rememberDirectory(locationKey, "");
+            setDirState("");
+            return;
+          }
+          setError(e instanceof Error ? e.message : String(e));
+          setEntries([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dir, locationKey, sessionDir, reload,scope]);
+  const changed=()=>{setSelected(null);setReload(value=>value+1);};
+  const loadMore=async()=>{
+    if(!nextCursor || pageLock.current)return;
+    const generation=listingGeneration.current,owner=useRuntimeStore.getState().gatewayUser?.id;pageLock.current=true;setLoadingMore(true);
+    try{const result=await workspaceEntries(scope,dir,nextCursor);if(generation===listingGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id){setEntries(previous=>[...(previous??[]).filter(entry=>!result.entries.some(next=>next.path===entry.path)),...result.entries]);setNextCursor(result.nextCursor??null);setError(null);}}
+    catch(error){if(generation===listingGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setError(error instanceof Error?error.message:String(error));}
+    finally{pageLock.current=false;if(generation===listingGeneration.current && owner===useRuntimeStore.getState().gatewayUser?.id)setLoadingMore(false);}
+  };
+  useEffect(()=>{
+    if(!isPlatformWeb)return;
+    const refresh=(event:Event)=>{const detail=(event as CustomEvent<{scope?:WorkspaceScope}>).detail;if(!detail?.scope || JSON.stringify(detail.scope)===JSON.stringify(scope)){if(!hasWorkspaceDrafts(scope))setSelected(null);setReload(value=>value+1);}};
+    window.addEventListener('scikeel.workspace-files-updated',refresh);
+    return()=>window.removeEventListener('scikeel.workspace-files-updated',refresh);
+  },[scope]);
+
+  if (selected) {
+    return (
+      <FilePreview
+        entry={selected}
+        root="workspace"
+        onClose={() => setSelected(null)}
+        controls={controls}
+        workspaceDirectory={directory}
+        workspaceScope={isPlatformWeb?scope:undefined}
+      />
+    );
+  }
+
+  const crumbs = dir ? dir.split("/") : [];
+  return (
+    <div className="flex h-full flex-col">
+      <div className={PANE_HEADER}>
+        <PaneTitlebarInset />
+        <Folder size={14} strokeWidth={1.5} className="shrink-0 text-text" />
+        <span
+          className="min-w-0 truncate text-[13px] font-medium text-text"
+          title={directory ?? workspace ?? undefined}
+        >
+          {t("files.pane.title")}
+        </span>
+        <div className="flex-1" />
+        {isPlatformWeb && <WorkspaceFileControls scope={scope} path={dir} onChanged={changed} disabled={!canCreate||entries===null}/>}
+        <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center text-muted hover:text-text"
+          aria-label={t("files.refresh")} title={t("files.refresh")} disabled={entries === null} onClick={() => setReload((value) => value + 1)}>
+          <RefreshCw size={14} />
+        </button>
+        {controls}
+        <button className="text-text hover:opacity-60" aria-label={t("files.pane.closeAria")} onClick={()=>{if(!isPlatformWeb || confirmWorkspaceDraftLeave(t('nav:fileManagement.discardDraft'),scope))onClose();}}>
+          <X size={14} strokeWidth={1.5} />
+        </button>
+      </div>
+      {crumbs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-3 py-2 text-[12px]">
+          <button className="rounded px-1 text-link hover:bg-surface-2" onClick={() => setDir("")}>
+            {t("files.pane.title")}
+          </button>
+          {crumbs.map((part, i) => {
+            const to = crumbs.slice(0, i + 1).join("/");
+            const isLast = i === crumbs.length - 1;
+            return (
+              <span key={to} className="flex items-center gap-0.5">
+                <ChevronRight size={12} className="text-muted" />
+                <button
+                  className={cn("rounded px-1 hover:bg-surface-2", isLast ? "font-medium text-text" : "text-link")}
+                  onClick={() => setDir(to)}
+                >
+                  {part}
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {entries === null && (
+          <div className="flex items-center gap-2 p-2 text-sm text-muted">
+            <Loader2 size={14} className="animate-spin" /> {t("files.loading")}
+          </div>
+        )}
+        {error && <StateNotice issueId={`files-session:${sessionId}:${dir}:${error}`} summary={t("common:notification.problem")} detail={error} action={{ label: t("common:notification.retry"), run: () => setReload(n => n + 1) }} />}
+        {entries && entries.length === 0 && !error && (
+          <div className="p-2 text-sm text-muted">{t("files.folderEmpty")}</div>
+        )}
+        {entries?.map((entry) => (
+          <FileContextMenu key={entry.path} entry={entry} root="workspace" directory={directory}>
+            <div className="flex min-w-0 items-center">
+            <button
+              onClick={() => (entry.isDir ? setDir(entry.path) : setSelected(entry))}
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-input px-2 py-1.5 text-left text-[13px] text-text/90 hover:bg-surface-2"
+            >
+              {iconFor(entry)}
+              <span className="flex-1 truncate">{entry.name}</span>
+              {!entry.isDir && <span className="shrink-0 text-[11px] text-muted">{humanSize(entry.size)}</span>}
+              {entry.isDir && <ChevronRight size={14} className="shrink-0 text-muted" />}
+            </button>
+            <FileDownloadButton entry={entry} root="workspace" directory={directory} />
+            {isPlatformWeb && entry.capabilities && <WorkspaceFileActions scope={scope} entry={entry} onChanged={changed}/>}
+            </div>
+          </FileContextMenu>
+        ))}
+        {nextCursor && <button type='button' disabled={loadingMore} aria-label={t('nav:fileManagement.loadMore')} title={t('nav:fileManagement.loadMore')} className='mx-auto mt-2 flex h-8 w-8 items-center justify-center rounded border border-border disabled:opacity-50' onClick={()=>void loadMore()}><ChevronDown size={15}/></button>}
+      </div>
+    </div>
+  );
+}

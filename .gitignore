@@ -76,3 +76,4 @@ dist-osd/
 # The app's own per-workspace state, written when this repo is opened as a
 # workspace. Machine inventories and run records are local, never source.
 .openscience/
+.omo/

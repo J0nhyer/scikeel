@@ -1,20 +1,20 @@
 const leafGroups = new Map([
-  ['apps/desktop/src/components/thread/WorkflowStarters.tsx', ['src/components/thread/WorkflowStarters.test.tsx']],
+  ['apps/web/src/components/thread/WorkflowStarters.tsx', ['src/components/thread/WorkflowStarters.test.tsx']],
 ]);
 const docs = (path) => /^(?:docs\/|(?:README|PROGRESS|AGENTS|CLAUDE)\.md$|scripts\/README\.md$)/.test(path);
 const broad = (path) => /(?:pnpm-lock|package\.json|vite\.config|tsconfig|eslint|tailwind|postcss|scripts\/|\.github\/|Cargo\.(?:toml|lock))/.test(path);
-const workflow = (path) => /^(?:scripts\/dev\/(?:web-release|web-build|web-vendor|build-web-vendor|safe-desktop-task)|package\.json$|apps\/desktop\/(?:package\.json|vite\.config|web-vendor)|pnpm-lock\.yaml$)/.test(path);
+const workflow = (path) => /^(?:scripts\/dev\/(?:web-release|web-build|web-vendor|build-web-vendor|safe-desktop-task)|package\.json$|apps\/web\/(?:package\.json|vite\.config|web-vendor)|pnpm-lock\.yaml$)/.test(path);
 export const imageInputPath = (path) => /^(?:runtime\/(?:sandbox|skills\/core|opencode-patches|codex-patches)\/|crates\/|scripts\/dev\/(?:prepare-science-image|stage-sandbox-image|install-sandbox-image|inspect-sandbox-archive|fetch-sandbox-codex|fetch-opencode|fetch-uv|build-opencode-title-runtime|build-codex-guard-runtime|probe-production-runner)|\.github\/workflows\/sandbox-image|(?:services\/platform\/fixtures\/native-protocol\.mjs|packages\/sdk\/src\/tool-outcome\.(?:mjs|d\.mts)|Cargo\.(?:toml|lock)|OPENCODE_VERSION)$)/.test(path);
-const interactions = (path) => /^(?:services\/platform\/src\/(?:session-authority|interaction-replies|tenant-policy|platform-server|collaboration|research-tasks|managed-worker-manager)|apps\/desktop\/src\/(?:lib\/(?:runtime|interactionState)|components\/(?:thread\/(?:InteractionPrompt|ResearchTaskPanel)|session\/SessionView))|packages\/sdk\/src\/(?:OpenCodeClient|runtime|types))/.test(path);
-const toolReliability = (path) => /^(?:apps\/desktop\/src\/components\/thread\/Tool(?:CallRow|Group)|runtime\/(?:opencode-patches\/(?:managed-network|network)|sandbox\/(?:runner|collaboration|tool-outcome))|services\/platform\/src\/(?:network-operations|tool-outcomes|collaboration|egress-broker|model-broker|tenant-policy|platform-server)|packages\/sdk\/src\/(?:tool-outcome|OpenCodeClient)|packages\/shared\/src\/toolOutcome)/.test(path);
+const interactions = (path) => /^(?:services\/platform\/src\/(?:session-authority|interaction-replies|tenant-policy|platform-server|collaboration|research-tasks|managed-worker-manager)|apps\/web\/src\/(?:lib\/(?:runtime|interactionState)|components\/(?:thread\/(?:InteractionPrompt|ResearchTaskPanel)|session\/SessionView))|packages\/sdk\/src\/(?:OpenCodeClient|runtime|types))/.test(path);
+const toolReliability = (path) => /^(?:apps\/web\/src\/components\/thread\/Tool(?:CallRow|Group)|runtime\/(?:opencode-patches\/(?:managed-network|network)|sandbox\/(?:runner|collaboration|tool-outcome))|services\/platform\/src\/(?:network-operations|tool-outcomes|collaboration|egress-broker|model-broker|tenant-policy|platform-server)|packages\/sdk\/src\/(?:tool-outcome|OpenCodeClient)|packages\/shared\/src\/toolOutcome)/.test(path);
 const live = (path) => /^(?:runtime\/|crates\/)|^services\/platform\/src\/(?:model-broker|tenant-policy|sandbox-|managed-worker|cli-runtime|cli-profile|attachment-turns)/.test(path);
-const assistants = path => /^(?:services\/platform\/(?:src\/(?:assistant-|conversation-|execution-permissions|native-|sandbox-native-jobs|cli-runtime|cli-profile|model-broker)|fixtures\/assistant-(?:runtime-live|rollback-reader))|scripts\/dev\/web-(?:assistant-release|release-(?:deploy|recovery))|runtime\/(?:sandbox|codex-patches)\/|apps\/desktop\/src\/(?:components\/settings\/(?:ManagedAgentsCard|RuntimePicker)|lib\/runtime)|packages\/sdk\/src\/(?:OpenCodeClient|runtime|types))/.test(path);
+const assistants = path => /^(?:services\/platform\/(?:src\/(?:assistant-|conversation-|execution-permissions|native-|sandbox-native-jobs|cli-runtime|cli-profile|model-broker)|fixtures\/assistant-(?:runtime-live|rollback-reader))|scripts\/dev\/web-(?:assistant-release|release-(?:deploy|recovery))|runtime\/(?:sandbox|codex-patches)\/|apps\/web\/src\/(?:components\/settings\/(?:ManagedAgentsCard|RuntimePicker)|lib\/runtime)|packages\/sdk\/src\/(?:OpenCodeClient|runtime|types))/.test(path);
 export function selectVerification(paths, baseline, { full = false, assistant, imageSwitch = false } = {}) {
   const source = paths.filter((path) => !docs(path));
   if (!source.length && (full || assistant || imageSwitch || (!baseline.known && !paths.length))) source.push('__bootstrap__');
   const result = { full: false, frontendFull: false, platformFull: false, frontendFiles: [], platformFiles: [],
     browserGroups: [], typecheck: false, lint: false, buildWeb: false, deployPlatform: false, deploy: source.length > 0,
-    rustPackages: [...new Set(source.map((path) => /^crates\/(osd-core|osd-cli|osd-sandbox-host)\//.exec(path)?.[1]).filter(Boolean))], workflowTests: source.some(workflow) || !baseline.known || full, imageRequired: source.some(imageInputPath), liveAssistant: source.some(live) || source.some(assistants) || source.some(imageInputPath) || source.some((path) => /^(?:apps\/desktop\/src\/lib\/runtime\.ts|packages\/sdk\/src\/OpenCodeClient\.ts|services\/platform\/src\/platform-server\.mjs)$/.test(path)), liveGateVersion: 2, reasons: [] };
+    rustPackages: [...new Set(source.map((path) => /^crates\/(osd-core|osd-cli|osd-sandbox-host)\//.exec(path)?.[1]).filter(Boolean))], workflowTests: source.some(workflow) || !baseline.known || full, imageRequired: source.some(imageInputPath), liveAssistant: source.some(live) || source.some(assistants) || source.some(imageInputPath) || source.some((path) => /^(?:apps\/web\/src\/lib\/runtime\.ts|packages\/sdk\/src\/OpenCodeClient\.ts|services\/platform\/src\/platform-server\.mjs)$/.test(path)), liveGateVersion: 2, reasons: [] };
   if (!source.length) { result.reasons.push('No source changes: no build or deployment'); return result; }
   if (assistant || imageSwitch) {
     result.liveAssistant = true;
@@ -30,15 +30,15 @@ export function selectVerification(paths, baseline, { full = false, assistant, i
       result.buildWeb = result.frontendFull = result.platformFull = result.typecheck = result.lint = true;
       browser.add('assistants'); browser.add('session');
     }
-    if (/^(?:apps\/desktop\/(?:public\/assets\/brand\/|src\/(?:lib\/(?:appearance|store)\.|index\.css|app\/providers\/ThemeProvider|components\/(?:settings\/AppearancePicker|brand\/|session\/(?:EmptySessionDecoration|SessionView))|test\/webAppearance))|services\/platform\/src\/login-(?:appearance|page))/.test(path)) {
+    if (/^(?:apps\/web\/(?:public\/assets\/brand\/|src\/(?:lib\/(?:appearance|store)\.|index\.css|app\/providers\/ThemeProvider|components\/(?:settings\/AppearancePicker|brand\/|session\/(?:EmptySessionDecoration|SessionView))|test\/webAppearance))|services\/platform\/src\/login-(?:appearance|page))/.test(path)) {
       browser.add('appearance'); result.buildWeb = result.typecheck = result.lint = true;
     }
     if (interactions(path)) { result.buildWeb = result.typecheck = result.lint = true; browser.add('session'); browser.add('interactions'); }
     if (toolReliability(path)) { result.buildWeb = result.typecheck = result.lint = true; browser.add('session'); }
-    if (path.startsWith('apps/desktop/')) {
+    if (path.startsWith('apps/web/')) {
       result.buildWeb = result.typecheck = result.lint = true;
       if (leafGroups.has(path)) leafGroups.get(path).forEach((file) => frontend.add(file));
-      else if (path.startsWith('apps/desktop/src/i18n/locales/')) {
+      else if (path.startsWith('apps/web/src/i18n/locales/')) {
         ['src/i18n/parity.test.ts', 'src/i18n/config.test.ts', 'src/i18n/index.test.ts'].forEach((file) => frontend.add(file));
       } else result.frontendFull = true;
       if (/login|runtime|session|SessionView|history|webMode/i.test(path)) { browser.add('session'); result.platformFull = true; }

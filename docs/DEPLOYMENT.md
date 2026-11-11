@@ -147,7 +147,7 @@ paths must be absolute. The sample checkout is `/opt/open-science-desktop`:
 PLATFORM_HOST=127.0.0.1
 PLATFORM_PORT=4790
 PLATFORM_DATA_DIR=/opt/open-science-desktop/.deploy/platform-data
-PLATFORM_WEB_ROOT=/opt/open-science-desktop/apps/desktop/dist
+PLATFORM_WEB_ROOT=/opt/open-science-desktop/apps/web/dist
 PLATFORM_ADMIN_USERNAME=admin
 PLATFORM_ADMIN_PASSWORD='REPLACE_WITH_A_UNIQUE_PASSWORD'
 PLATFORM_SECURE_COOKIES=false
@@ -441,7 +441,7 @@ access and is separate from a workbench account. Test with two browser profiles:
 
 `/health` only checks the control plane. It does not verify worker startup, provider
 credentials, or model responses. Automated browser acceptance in
-`apps/desktop/src/test/webWorkspace.acceptance.test.mjs` is opt-in and requires a
+`apps/web/src/test/webWorkspace.acceptance.test.mjs` is opt-in and requires a
 browser installation plus private test credentials; ordinary tests skip it.
 
 ## Update, rollback, and backup

@@ -47,27 +47,27 @@ export function runProcess(binary, args, cwd, environment = {}) {
 }
 export async function runWebStages(options) {
   const { profile, sourceFingerprint, checkedFingerprint, check, acp, vendor, bundle } = options;
-  if (!['desktop', 'web', 'release'].includes(profile)) throw new Error('Invalid build profile');
+  if (!['server', 'web', 'release'].includes(profile)) throw new Error('Invalid build profile');
   if (profile === 'release') {
     if (!sourceFingerprint || sourceFingerprint !== checkedFingerprint) throw new Error('Candidate typecheck does not match source');
   } else await check();
-  if (profile === 'desktop') await acp();
+  if (profile === 'server') await acp();
   await vendor(); return bundle();
 }
 export async function buildWeb({ root, profile = 'web', sourceFingerprint, checkedStage, vendorDirectory, outDir, store }) {
   verifyTaskLimits();
-  const desktop = join(root, 'apps/desktop');
+  const web = join(root, 'apps/web');
   const staging = store ?? join(root, '.deploy');
   const small = process.platform === 'linux' && (totalmem() < 5 * 1024 ** 3 || process.env.OSD_TASK_FORCE_LIMITS === '1');
-  const stageOnly = profile !== 'desktop' || process.env.OSD_WEB_STAGE_ONLY === '1';
+  const stageOnly = profile !== 'server' || process.env.OSD_WEB_STAGE_ONLY === '1';
   await mkdir(staging, { recursive: true });
-  const stage = outDir ?? (small || stageOnly ? await mkdtemp(join(staging, 'web-build-')) : join(desktop, 'dist'));
+  const stage = outDir ?? (small || stageOnly ? await mkdtemp(join(staging, 'web-build-')) : join(web, 'dist'));
   let retained = false;
   try {
     await runWebStages({ profile, sourceFingerprint,
       checkedFingerprint: checkedStage?.status === 'passed' ? checkedStage.inputFingerprint : null,
-      check: () => runProcess(process.execPath, [join(desktop, 'node_modules/typescript/bin/tsc'), '--noEmit'], desktop),
-      acp: () => runProcess(process.execPath, [join(root, 'scripts/build-acp-server.mjs')], desktop),
+      check: () => runProcess(process.execPath, [join(web, 'node_modules/typescript/bin/tsc'), '--noEmit'], web),
+      acp: () => runProcess(process.execPath, [join(root, 'scripts/build-acp-server.mjs')], web),
       vendor: async () => {
         if (vendorDirectory) return;
         const { ensureVendorCache } = await import('./web-vendor-cache.mjs');
@@ -75,7 +75,7 @@ export async function buildWeb({ root, profile = 'web', sourceFingerprint, check
         vendorDirectory = cache.directory;
         console.log(`Vendor cache ${cache.hit ? 'hit' : 'miss'}: ${cache.key}`);
       },
-      bundle: () => runProcess(process.execPath, [`--max-old-space-size=${small ? 1024 : 4096}`, join(desktop, 'node_modules/vite/bin/vite.js'), 'build', '--outDir', stage, '--emptyOutDir'], desktop, { OSD_WEB_VENDOR_DIR: vendorDirectory }),
+      bundle: () => runProcess(process.execPath, [`--max-old-space-size=${small ? 1024 : 4096}`, join(web, 'node_modules/vite/bin/vite.js'), 'build', '--outDir', stage, '--emptyOutDir'], web, { OSD_WEB_VENDOR_DIR: vendorDirectory }),
     });
     if (!existsSync(join(stage, 'index.html')) || !(await readdir(join(stage, 'assets'))).length) throw new Error('Staged Web output is incomplete');
     if (stageOnly || outDir) {
@@ -83,7 +83,7 @@ export async function buildWeb({ root, profile = 'web', sourceFingerprint, check
       if (profile !== 'release') await writeFile(join(staging, 'attachments-build-path'), stage + '\n');
       console.log(`Web build staged at ${stage}`); return { directory: stage };
     }
-    const dist = join(desktop, 'dist');
+    const dist = join(web, 'dist');
     if (stage !== dist) {
       const backup = join(staging, `web-before-${Date.now()}-${process.pid}`);
       if (existsSync(dist)) await rename(dist, backup);
@@ -93,6 +93,6 @@ export async function buildWeb({ root, profile = 'web', sourceFingerprint, check
     }
     retained = true; return { directory: dist };
   } finally {
-    if (!retained && stage !== join(desktop, 'dist') && existsSync(stage)) await rm(stage, { recursive: true, force: true });
+    if (!retained && stage !== join(web, 'dist') && existsSync(stage)) await rm(stage, { recursive: true, force: true });
   }
 }

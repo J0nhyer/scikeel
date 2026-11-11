@@ -9,7 +9,7 @@ manual check by explicit product decision; it is not registered in the
 Run the standalone scenario against the candidate Web bundle:
 
 ```bash
-cd apps/desktop
+cd apps/web
 OSD_FIRST_TURN_BROWSER=1 \
 OSD_WEB_CANDIDATE=/path/to/candidate/web \
 OSD_PLAYWRIGHT_PATH="$(node -p "require('/opt/open-science-desktop/.deploy/web-release-settings.json').OSD_PLAYWRIGHT_PATH")" \

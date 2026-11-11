@@ -10,7 +10,7 @@ import { load, JSON_SCHEMA } from "js-yaml";
 const pack = fileURLToPath(new URL("../../../runtime/skills/core/", import.meta.url));
 const helpers = { "domain-check": "domain_check.py", "large-file": "large_file_probe.py", "modal-run": "record_run.py",
   "remote-compute": "record_run.py", "stats-integrity": "stats_integrity_check.py", "traceability-review": "pdf_extract.py" };
-const names = ["citation-reviewer", "computer-use", "domain-check", "large-file", "literature-review", "modal-run", "publication-figures", "remote-compute", "research-workflow", "stats-integrity", "traceability-review"];
+const names = ["citation-reviewer", "domain-check", "large-file", "literature-review", "modal-run", "publication-figures", "remote-compute", "research-workflow", "stats-integrity", "traceability-review"];
 
 test("the complete platform pack resolves helpers and styles from the loaded skill directory", async () => {
   const entries = (await readdir(pack, { withFileTypes: true })).filter((entry) => entry.isDirectory());

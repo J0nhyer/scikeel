@@ -10,9 +10,9 @@ async function hashFile(path) { const hash = createHash('sha256'); for await (co
 const hashValue = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export async function vendorInputFingerprint({ root }) {
   const tooling = [];
-  for (const path of ['pnpm-lock.yaml', 'scripts/dev/build-web-vendor.mjs', 'scripts/dev/web-vendor-cache.mjs', 'apps/desktop/web-vendor.ts', 'apps/desktop/vite.config.ts']) tooling.push({ path, sha256: await hashFile(join(root, path)) });
+  for (const path of ['pnpm-lock.yaml', 'scripts/dev/build-web-vendor.mjs', 'scripts/dev/web-vendor-cache.mjs', 'apps/web/web-vendor.ts', 'apps/web/vite.config.ts']) tooling.push({ path, sha256: await hashFile(join(root, path)) });
   const approved = [];
-  for (const path of ['node_modules', 'apps/desktop/node_modules', 'node_modules/.pnpm']) {
+  for (const path of ['node_modules', 'apps/web/node_modules', 'node_modules/.pnpm']) {
     const directory = await realpath(join(root, path)).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
     if (directory) approved.push(directory);
   }
@@ -63,7 +63,7 @@ export async function vendorInputFingerprint({ root }) {
     }
     return entry;
   }
-  for (const name of vendors) await register(join(root, 'apps/desktop/node_modules', name));
+  for (const name of vendors) await register(join(root, 'apps/web/node_modules', name));
   await register(join(root, 'node_modules/esbuild'));
   const identities = [...packages.values()].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   return hashValue({ schema: 1, node: process.versions.node, platform: process.platform, architecture: process.arch, tooling, identities });

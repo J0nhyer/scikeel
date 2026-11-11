@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const script = fileURLToPath(import.meta.url);
 const root = resolve(dirname(script), "../..");
-const desktop = join(root, "apps/desktop");
+const desktop = join(root, "apps/web");
 const stagingRoot = join(root, ".deploy");
 // Linked worktrees must serialize with the main checkout, not just themselves.
 const gitCommon = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -208,7 +208,7 @@ if (mode === "core-test" || mode === "core-check" || mode === "core-build") {
  } else if (mode === "build" || mode === "web-build") {
   if (args.length) throw new Error("Build options are not supported by the guarded build");
   const { buildWeb } = await import("./web-build.mjs");
-  await buildWeb({ root, profile: mode === "build" ? "desktop" : "web", store: stagingRoot });
+  await buildWeb({ root, profile: mode === "build" ? "server" : "web", store: stagingRoot });
 } else if (mode === "release") {
   const { releaseWorker } = await import("./web-release.mjs");
   await releaseWorker(args, { root, sharedStore: sharedTaskRoot });

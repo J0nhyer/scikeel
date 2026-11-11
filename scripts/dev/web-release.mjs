@@ -140,7 +140,7 @@ export async function validateInstalledImage(candidate, digest, { execute = comm
 }
 export async function browserStage(candidate, run = runProcess) {
   requireBrowserConfiguration(process.env);
-  const desktop = join(candidate.source.root, 'apps/desktop');
+  const desktop = join(candidate.source.root, 'apps/web');
   const notificationScenario = 'src/test/webNotifications.acceptance.test.mjs';
   if (!await lstat(join(desktop, notificationScenario)).catch(() => null)) throw new Error('Required notification browser scenario is unavailable');
   const projectScenario = 'src/test/webProjects.acceptance.test.mjs';
@@ -213,7 +213,7 @@ async function validateTooling(candidate) {
 }
 async function prepareCandidate(candidate, path) {
   await validateTooling(candidate);
-  const root = candidate.source.root; const desktop = join(root, 'apps/desktop'); const s = candidate.selection;
+  const root = candidate.source.root; const desktop = join(root, 'apps/web'); const s = candidate.selection;
   const actions = {
     'assistant-launcher': () => verifyReleaseLauncher(),
     lint: () => runProcess(process.execPath, [join(desktop, 'node_modules/eslint/bin/eslint.js'), '.'], desktop),

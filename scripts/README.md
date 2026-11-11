@@ -2,8 +2,8 @@
 
 Repo tooling.
 
-- `release/` — packaging and release scripts (Tauri build matrix, signing/notarization
-  helpers, GitHub Release upload, `latest.json` generation).
+- `release/` — packaging and release scripts (headless `osd` packaging and the
+  Web publication tooling).
 - `dev/` — local development helpers (bootstrap, run the app, seed the demo workspace).
 
 ## Gateway Web updates
@@ -43,7 +43,7 @@ No package install or browser download is performed. Missing required browser
 configuration fails acceptance rather than silently skipping it. Fixture
 acceptance uses synthetic accounts; Claude is excluded from live release gates.
 
-Standalone `pnpm build` retains desktop typecheck and ACP packaging.
+Standalone `pnpm build` retains the server typecheck and ACP packaging.
 `pnpm web:build` checks types and stages a Web-only bundle. Vendor cache entries
 include verified Monaco CSS and worker files; changes/corruption force a refresh.
 

@@ -113,7 +113,7 @@ try {
   if (!skillsResponse.ok) throw new Error(`managed skill discovery failed (${skillsResponse.status}): ${(await skillsResponse.text()).slice(0, 500)}`);
   const skills = await skillsResponse.json();
   const shared = "/opt/scikeel/tools/resources/skills-core";
-  const platformNames = ["computer-use", "domain-check", "large-file", "modal-run", "publication-figures",
+  const platformNames = ["domain-check", "large-file", "modal-run", "publication-figures",
     "remote-compute", "research-workflow", "stats-integrity", "traceability-review"];
   for (const name of platformNames) {
     const entries = skills.filter((skill) => skill.name === name);

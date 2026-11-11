@@ -21,57 +21,51 @@ Keep it **simple, explicit, clear, complete**.
 
 ## What this project is
 
-An open-source, local-first, model-agnostic, reproducible AI research desktop
-for macOS, Windows, and Linux. See `README.md`, `docs/PRD.md`, and
-`docs/TECHNICAL_DESIGN.md`.
+An open-source, model-agnostic, reproducible AI research workbench served in the
+browser. See `README.md`, `docs/PRD.md`, and `docs/TECHNICAL_DESIGN.md`.
 
-Recommended stack: **Tauri 2 + React + TypeScript + Vite**, Tailwind + Radix UI,
-**OpenCode** as the agent runtime (bundled single-binary sidecar; HTTP + SSE API),
-local workspace + SQLite + JSONL provenance.
+Recommended stack: **React + TypeScript + Vite**, Tailwind + Radix UI,
+**OpenCode** as the agent runtime (server-side; HTTP + SSE API), and the Rust
+`osd` worker server with SQLite + JSONL provenance.
 
 ## Repository map
 
-- `apps/desktop/` — Tauri + React desktop shell (`src/` frontend, `src-tauri/` Rust).
-- `packages/` — `ui`, `shared`, `sdk` (the `OpenCodeClient` wrapper).
-- `runtime/` — `manager`, `opencode-profile`, `mcp`, `skills`, the OpenCode
-  guard plugins and custom tools, and `computer/` (the computer-use host layer).
-- `native/` — the per-platform computer-use providers (macOS Swift helper app,
-  Linux AT-SPI script, Windows UI Automation script), ported from Orca (MIT).
-  Staged into the bundle by `scripts/dev/build-computer-use.mjs`.
+- `apps/web/` — the React Web interface and gateway browser behavior.
+- `packages/` — `shared`, `sdk` (the `OpenCodeClient` wrapper).
+- `crates/` — `osd-core`, `osd-cli`, `osd-sandbox-host`: the headless worker
+  server and sandbox host.
+- `runtime/` — `opencode-profile`, `skills`, the OpenCode guard plugins and
+  custom tools, and the sandbox runtime.
+- `services/platform/` — the multi-user gateway control plane.
 - `docs/` — product and technical specs.
 - `examples/bci-trends/` — the built-in demo project.
 - `scripts/` — release and dev scripts.
 
 ## Architecture guardrails
 
-- The UI never calls OpenCode directly — it goes through `packages/sdk` (`OpenCodeClient`).
-  Pin the OpenCode version (see `OPENCODE_VERSION`) and bundle it as a sidecar.
-- Keep the frontend, desktop shell, and agent runtime decoupled.
+- The UI never calls OpenCode directly — it goes through `packages/sdk`
+  (`OpenCodeClient`). Pin the OpenCode version (see `OPENCODE_VERSION`).
+- Keep the frontend, platform control plane, and worker runtime decoupled.
 - Skills, MCP servers, and model providers must stay pluggable.
 - Keep the artifact schema and workflow templates stable and versioned.
-- Every feature must work on Windows, macOS, and Linux, AND in the gateway web
-  client — including phone-width viewports (the web client is used from
-  phones). If a feature fundamentally cannot work over the web (local kernels,
-  native dialogs, host filesystem access), hide it in web mode (`isGatewayWeb`)
-  instead of shipping a control that fails.
+- The product is Web-only: every feature must work in the gateway Web client,
+  including phone-width viewports. If a capability needs a host filesystem or a
+  native dialog, it belongs on the server, not in the browser.
 
-## Safety defaults (non-negotiable for the desktop)
+## Safety defaults (non-negotiable for the Web deployment)
 
 - The agent may only access the current workspace.
 - Command execution, file deletion, dependency install, and remote connections
   require approval (manual approval mode by default — never ship `off`).
-- API keys go to the OS keychain / credential manager; never into provenance,
-  logs, crash reports, git, or exported projects.
+- API keys stay in platform-managed secrets / the OS keychain; never in
+  provenance, logs, crash reports, git, or exported projects.
 
 ## Working conventions
 
 - Default working language for discussion is Chinese; **all project files and
   code are in English** (this is a pure-English project).
-- Current product work targets the public multi-user gateway Web client only.
-  Unless the user explicitly requests desktop work, scope product design,
-  implementation, deployment, and acceptance testing to Web. Shared code must
-  not intentionally break desktop builds, but desktop UX and feature parity are
-  not current deliverables.
+- The product is the public multi-user gateway Web client. Scope product
+  design, implementation, deployment, and acceptance testing to Web.
 - Runtime availability (user-confirmed on 2026-10-02): Claude is currently
   unusable. Exclude Claude from live acceptance tests and release gates; do not
   probe alternative Claude models or endpoints unless the user explicitly

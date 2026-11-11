@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let dist = manifest.join("../../apps/desktop/dist");
+    let dist = manifest.join("../../apps/web/dist");
     println!("cargo:rerun-if-changed={}", dist.display());
 
     let mut files = Vec::new();
