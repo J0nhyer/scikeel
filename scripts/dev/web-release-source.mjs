@@ -80,7 +80,7 @@ export async function dependencyIdentity(root, { references: pinnedReferences } 
   const installedModules = dirname(dirname(await realpath(installedLock)));
   const installBase = dirname(installedModules);
   const workspaceRoots = new Set([installBase, root, ...references.filter(ref => ref.resolved.endsWith('/' + ref.path)).map(ref => ref.resolved.slice(0, -ref.path.length - 1))]);
-  const workspaceTargets = new Set([...workspaceRoots].flatMap(base => ['packages/sdk', 'packages/shared', 'apps/web', 'services/platform'].map(path => join(base, path))));
+  const workspaceTargets = new Set([...workspaceRoots].flatMap(base => ['packages/sdk', 'packages/shared', 'apps/web', 'services/platform', 'services/sandbox-backend'].map(path => join(base, path))));
   const approved = [installedModules, ...references.map((ref) => ref.resolved)];
   for (const path of ['apps/web/node_modules', 'services/platform/node_modules']) {
     const installed = await realpath(join(installBase, path)).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
