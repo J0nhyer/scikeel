@@ -200,6 +200,16 @@ pub fn run(args: &Args) -> Result<(), String> {
     eprintln!("Starting the agent runtime…");
     let sidecar = runtime::start_runtime(&env)?;
 
+    // A managed worker has no frontend reconnect loop to replace a wedged
+    // sidecar; the platform only learns that the workspace stopped answering.
+    // Restarting the sidecar in place takes seconds instead of the tens a
+    // worker replacement costs, and keeps the generation and workspace data.
+    let mut watchdog = if args.has("managed") {
+        Some(osd_core::runtime_watchdog::spawn(env.clone()))
+    } else {
+        None
+    };
+
     // From here on the sidecar is OURS to clean up: it is a separate process, so
     // returning an error without killing it (a port already in use is the easy
     // way to hit this) would leave an OpenCode running with nothing driving it.
@@ -241,6 +251,9 @@ pub fn run(args: &Args) -> Result<(), String> {
     wait_for_shutdown();
 
     eprintln!("\nStopping…");
+    if let Some(watchdog) = watchdog.as_mut() {
+        watchdog.stop();
+    }
     gateway::shutdown(&env, &state);
     runtime::kill_child(env.runtime());
     Ok(())

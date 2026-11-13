@@ -26,6 +26,7 @@ pub mod provenance;
 pub mod runs;
 pub mod runs_index;
 pub mod runtime;
+pub mod runtime_watchdog;
 pub mod session_sync;
 pub mod system_proxy;
 pub mod usage;
