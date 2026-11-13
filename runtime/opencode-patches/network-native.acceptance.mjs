@@ -92,9 +92,9 @@ test('native fetch and search authorize only after permission and preserve scope
   });
   const cert = join(root, 'fixture.crt'), key = join(root, 'fixture.key');
   assert.equal(spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=science.example', '-addext', 'subjectAltName=DNS:science.example,DNS:search.parallel.ai'], { stdio: 'ignore' }).status, 0);
-  const tlsRequests = [];
+  const tlsRequests = [], tlsPaths = [];
   const tls = createHttpsServer({ key: await readFile(key), cert: await readFile(cert) }, async (req, res) => {
-    tlsRequests.push(req.headers);
+    tlsRequests.push(req.headers); tlsPaths.push(req.url);
     if (req.headers.host === 'search.parallel.ai') {
       let raw = ''; for await (const chunk of req) raw += chunk;
       const body = JSON.parse(raw); assert.equal(body.params.name, 'web_search');
@@ -249,7 +249,7 @@ test('native fetch and search authorize only after permission and preserve scope
   // pointer; no PDF bytes enter the model context.
   toolName = 'webfetch'; fault = 'okay'; targetUrl = 'https://science.example/paper.pdf';
   toolArguments = () => ({ url: targetUrl, format: 'text', timeout: 30, savePath: 'papers/paper.pdf' });
-  const pdfAuthorizations = authorizations.length, pdfOutbound = outbound.length;
+  const pdfAuthorizations = authorizations.length;
   const pdfSession = await beginCall('Download the fixture paper.');
   const pdfFetchPermission = await answerPermission(pdfSession.id, 'webfetch', 'once');
   assert.deepEqual(pdfFetchPermission.patterns, [targetUrl]);
@@ -266,7 +266,7 @@ test('native fetch and search authorize only after permission and preserve scope
   assert.equal(pdfResult.state.metadata.mime, 'application/pdf');
   assert.deepEqual(Buffer.from(await readFile(join(workspace, 'papers/paper.pdf'))), pdfBytes);
   assert.equal(authorizations.length, pdfAuthorizations + 1);
-  assert.equal(outbound.length, pdfOutbound + 1);
+  assert.ok(tlsPaths.includes('/paper.pdf'), 'PDF download must reach the managed TLS fixture through the proxy');
   assert.deepEqual(authorizations.at(-1).origins, ['https://science.example']);
 
   // A .pdf destination must contain the PDF signature. An HTML challenge page

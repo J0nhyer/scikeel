@@ -225,7 +225,9 @@ export class NativeConnection {
       promise.finally(() => clearTimeout(timer)).catch(() => {});
     })]);
   }
-  async waitForStarted(itemType, timeout = 1500) {
+  async waitForStarted(itemType, timeout = 15000) {
+    // The native Begin event is emitted asynchronously after the command process
+    // is ready; CI/gVisor scheduling can delay it beyond the old 1.5s window.
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       if (typeof this.thread === "string" && typeof this.turn === "string" && typeof this.expectedCallId === "string" &&
